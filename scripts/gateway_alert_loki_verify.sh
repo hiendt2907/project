@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # POST alert Alertmanager (pod+namespace) vào gateway → trace_id → logs pod + Loki.
 #
-# Master Plan V3 (split): dùng deploy có Pod sẵn (mặc định omni-prober) để POST nội bộ;
-# gom log từ omni-prober / omni-analyst / omni-core / omni-executor (+ omni-worker nếu scale > 0).
+# Master Plan V3 (split): exec mặc định deploy/omni-prober (consumer omni-alerts — đúng luồng Alert).
+# Không dùng omni-worker khi replicas=0; tùy chọn debug: E2E_EXEC_DEPLOY=omni-core (cùng image worker).
+# Gom log: omni-prober / omni-analyst / omni-core / omni-executor (+ omni-worker nếu scale > 0).
 #
 # Usage: scripts/gateway_alert_loki_verify.sh [path/to/alert.json]
 # Env:

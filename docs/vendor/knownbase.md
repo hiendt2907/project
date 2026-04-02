@@ -4,6 +4,19 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+### Verify scripts vs MPV3 split topology (tránh tham chiếu Pod sai / nhiễu RAG)
+
+**Chuẩn lab hiện tại:** `omni-prober` / `omni-analyst` / `omni-core` / `omni-executor` + `omni-gateway`; `omni-worker` thường **replicas=0** (không dùng làm mặc định cho `kubectl exec`).
+
+| Script / artifact | Trạng thái |
+|---------------------|------------|
+| `scripts/gateway_alert_loki_verify.sh` | **Đã cập nhật:** `exec` mặc định **`deploy/omni-prober`** (`E2E_EXEC_DEPLOY`); log + Loki gom split + gateway. |
+| `scripts/follow-trace.sh` | **Đã cập nhật:** quét deploy split (+ `omni-worker` nếu scale>0); `FOLLOW_TRACE_DEPLOYS` override. |
+| `scripts/proactive_e2e.sh` | **OK** — rollout cả split + gateway; `omni-worker` optional (`|| true` rollout status). |
+| `scripts/full_system_audit.py` | **OK** — chọn metrics deploy prober khi worker=0. |
+| `scripts/deploy_v6.sh`, `scripts/v63_deploy_test.sh` | **Legacy monolith** — chỉ đúng khi dùng một Deployment `omni-worker`; với split: **không** dùng làm pipeline chính (cập nhật doc hoặc khai tử khi bỏ hẳn legacy). |
+| `scripts/chaos_autonomous_smoke.sh` | **Cần chỉnh hoặc gắn nhãn legacy** — vẫn `rollout`/`logs` `omni-worker`; chạy split phải trỏ prober/core hoặc tách job. |
+
 **Symptom:** `scripts/gateway_alert_loki_verify.sh` treo / fail vì `kubectl exec deploy/omni-worker` trong khi lab MPV3 **scale omni-worker = 0**.  
 **Fix:** Script dùng **`E2E_EXEC_DEPLOY=omni-prober`** (Python + worker image); gom log trace từ **prober/analyst/core/executor** (+ worker nếu replicas>0); Loki LogQL `pod_name=~` cả split + gateway. `follow-trace.sh` cùng logic.
 
