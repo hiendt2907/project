@@ -2,6 +2,8 @@
 
 Generated: 2026-04-02 (implement step).
 
+**Báo cáo review đầy đủ (Phase 0.5 → 7, Git, verify, hạn chế):** xem [`master_plan_v3_review_report.md`](master_plan_v3_review_report.md).
+
 ## SSD / disk (`df -h /`)
 
 **Before (pre-Docker prune):** Avail ~193Gi on `/` (see agent log).
