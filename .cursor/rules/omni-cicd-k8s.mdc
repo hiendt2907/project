@@ -48,7 +48,7 @@ Dùng `./scripts/with_working_kube.sh` làm prefix `kubectl` khi nhiều kubecon
 | Mục tiêu | Lệnh |
 |----------|------|
 | Proactive stream + audit + build/deploy gói | `make e2e-proactive` → `scripts/proactive_e2e.sh` |
-| Alert gateway + logs + Loki + nghiệp vụ business | `bash scripts/gateway_alert_loki_verify.sh` |
+| Alert gateway + logs + Loki + nghiệp vụ business | `bash scripts/gateway_alert_loki_verify.sh` (exec mặc định `omni-prober`; log gom prober/analyst/core/executor; `omni-worker` nếu scale>0) |
 
 **Không** coi `pytest` thuần là đủ cho thay đổi hành vi worker trên cluster; cần ít nhất rollout + một trong hai e2e trên khi cluster sống.
 

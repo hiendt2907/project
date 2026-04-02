@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** `scripts/gateway_alert_loki_verify.sh` treo / fail vì `kubectl exec deploy/omni-worker` trong khi lab MPV3 **scale omni-worker = 0**.  
+**Fix:** Script dùng **`E2E_EXEC_DEPLOY=omni-prober`** (Python + worker image); gom log trace từ **prober/analyst/core/executor** (+ worker nếu replicas>0); Loki LogQL `pod_name=~` cả split + gateway. `follow-trace.sh` cùng logic.
+
 **Symptom:** Log `deep_scout` / `deep_scout_autonomous`: **404** `http://ollama-service:11434/api/embed` hoặc `/api/chat` — Ollama host cũ hoặc build không có route mới.  
 **Fix:** `llm/ollama_client.py`: `embed` fallback `POST /api/embeddings` + `prompt` khi `/api/embed` → 404 (input str); `chat` fallback `POST /api/generate` + `system`/`prompt` khi `/api/chat` → 404 (non-stream). Verify: `pytest tests/test_ollama_client.py`.
 
