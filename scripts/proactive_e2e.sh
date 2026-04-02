@@ -58,10 +58,12 @@ if [[ "${SKIP_RESTART}" -eq 0 ]]; then
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-prober.yaml"
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-analyst.yaml"
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-core.yaml"
-  "${KUBE}" rollout restart deployment/omni-worker deployment/omni-prober deployment/omni-analyst deployment/omni-core -n multi-agent
+  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-executor.yaml"
+  "${KUBE}" rollout restart deployment/omni-worker deployment/omni-prober deployment/omni-analyst deployment/omni-core deployment/omni-executor -n multi-agent
   "${KUBE}" rollout status deployment/omni-prober -n multi-agent --timeout=180s || true
   "${KUBE}" rollout status deployment/omni-analyst -n multi-agent --timeout=180s || true
   "${KUBE}" rollout status deployment/omni-core -n multi-agent --timeout=180s || true
+  "${KUBE}" rollout status deployment/omni-executor -n multi-agent --timeout=180s || true
   "${KUBE}" rollout status deployment/omni-worker -n multi-agent --timeout=60s || true
   METRICS_DEPLOY="omni-prober"
   if replicas="$("${KUBE}" get deploy omni-worker -n multi-agent -o jsonpath='{.spec.replicas}' 2>/dev/null)" && [[ "${replicas:-0}" != "0" ]]; then
