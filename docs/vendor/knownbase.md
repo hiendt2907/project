@@ -4,6 +4,12 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Cần Redis Sentinel HA thay vì một Pod `redis` standalone.  
+**Fix:** Set `OMNI_REDIS_SENTINEL_HOSTS` (CSV `host:26379`) + `OMNI_REDIS_SENTINEL_MASTER_NAME` trong ConfigMap; worker dùng `redis.asyncio.sentinel.Sentinel`. Sentinel trên cluster: tự dựng StatefulSet/Helm theo [Redis Sentinel](https://redis.io/docs/management/sentinel/) — xem `docs/vendor/redis_sentinel_lab.md`. Rỗng → vẫn `OMNI_REDIS_URL`.
+
+**Symptom:** Tách mutation khỏi analyst — chỉ executor chạy `pkg.executor`.  
+**Fix:** `OMNI_WORKER_ROLE=executor` + Deployment `omni-executor` consume `omni-actions`; payload JSON `{"action":"execute_write_pending","trace_id":"…","data":{...}}` (cùng schema `execute_write_pending_from_redis`). Analyst chỉ `reason_diagnostic_evidence_only` (không `handle_inbound`). `make deploy-worker` áp `omni-executor.yaml`; `make ensure-kafka-topics` tạo `omni-actions`.
+
 **Symptom:** Worker Pod CrashLoop — `socket.gaierror` / `Name or service not known` khi `init_pg_pool`; DSN mặc định code trỏ `pgpool-gateway` (không có Service trong namespace lab).  
 **Fix:** Set `POSTGRES_RAG_DSN` từ Secret CNPG `omni-postgres-app` key `uri` (env trong Deployment, không hardcode password vào ConfigMap). `kubectl rollout restart deployment/omni-prober …` sau khi áp manifest.
 

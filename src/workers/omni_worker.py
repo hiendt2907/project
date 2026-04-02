@@ -26,7 +26,9 @@ from workers.forecast_autonomous_loop import autonomous_forecast_loop
 from workers.alert_to_event import build_anomaly_event_from_alert_payload
 from workers.diagnostic_dispatcher import run_diagnostic_pipeline
 from workers.evidence_consumer import reason_from_diagnostic_evidence
-from workers.handlers import WorkerHandlerContext, handle_inbound_payload
+from workers.handler_context import WorkerHandlerContext
+from workers.handlers import handle_inbound_payload
+from workers.kafka_actions_consumer import kafka_actions_loop
 from messaging.kafka_bus import KafkaBus, create_producer, decode_kafka_value_to_fields, kafka_msg_id
 from workers.proactive_observer import kafka_proactive_incidents_loop, proactive_evaluate_loop
 from workers.request_trace import log_end_request, log_start_request
@@ -446,6 +448,9 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
     """Split Kafka and periodic loops by ``OMNI_WORKER_ROLE`` (Master Plan V3)."""
     role = ctx.settings.worker_role
     tasks: list[asyncio.Task[Any]] = []
+    if role == "executor":
+        tasks.append(asyncio.create_task(kafka_actions_loop(ctx, stop), name="kafka_actions_loop"))
+        return tasks
     if role in ("full", "prober"):
         tasks.extend(
             [
@@ -522,7 +527,7 @@ async def run_worker() -> None:
 
     summary = DeepScoutSummary()
     role = ctx.settings.worker_role
-    if role == "analyst":
+    if role in ("analyst", "executor"):
         ctx.scout_ready.set()
     else:
         try:
@@ -536,7 +541,7 @@ async def run_worker() -> None:
             asyncio.create_task(_run_autonomous_safe(ctx), name="deep_scout_autonomous_startup")
 
     if (
-        role != "analyst"
+        role not in ("analyst", "executor")
         and ctx.telegram is not None
         and ctx.settings.telegram_admin_chat_id is not None
     ):

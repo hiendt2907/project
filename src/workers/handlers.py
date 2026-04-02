@@ -8,7 +8,6 @@ import logging
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
 from typing import Any
 
 import redis.asyncio as redis
@@ -77,6 +76,7 @@ from workers.tool_registry import get_tool_registry
 from workers.tools import TOOL_REGISTRY, ToolCallPayload
 from workers import ollama_prompts_en as ope
 from workers.prometheus_alert_enrichment import build_ollama_anchor_en, infer_alert_trigger_dimension
+from workers.handler_context import WorkerHandlerContext
 from workers.vm_slot_accumulation import (
     enrich_slots_from_discovery,
     extract_vm_slots_from_text,
@@ -610,31 +610,6 @@ def _k8s_smart_target_hint(user_text: str) -> str | None:
         "List cluster only when you need a pod menu → `list_all_pods_sdk` / `k8s_list_pods` (god/lab: kubectl; else SDK). "
         "Do not guess namespace; tool names must be registered tools only."
     )
-
-
-@dataclass
-class WorkerHandlerContext:
-    settings: WorkerSettings
-    redis: redis.Redis
-    ollama: OllamaClient
-    vector_store: PGVectorStore
-    ledger: ErrorLedger
-    semaphore: RedisOllamaSemaphore
-    telegram: TelegramClient | None
-    kafka: KafkaBus | None = None
-    # Gán mỗi request (Telegram): tool tự dùng để gửi chart nếu LLM không truyền chat_id
-    telegram_chat_id: int | None = None
-    inbound_source: str = ""
-    inbound_user_text: str = ""
-    restart_rollout_explicit: bool = False
-    pod_discovery_pairs: list[tuple[str, str]] = field(default_factory=list)
-    scout_ready: asyncio.Event = field(default_factory=asyncio.Event)
-    inbound_trace_id: str = "unknown"  # đồng bộ với workers.request_trace.current_trace_id() trong luồng xử lý
-    ollama_slot_held: bool = False
-    inbound_proactive: bool = False  # True khi xử lý incidents:proactive — bỏ HITL rollout theo policy
-    k8s_mutated: bool = False # Flag ho tro Hybrid Caching V6
-    # Fallback layer: 3 lệnh parse từ SUGGESTIONS_JSON → nút inline Telegram
-    fallback_inline_commands: list[str] | None = None
 
 
 def _embedding_from_ollama(resp: dict[str, Any]) -> list[float]:

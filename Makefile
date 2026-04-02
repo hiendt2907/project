@@ -16,10 +16,12 @@ deploy-worker:
 	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-prober.yaml
 	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-analyst.yaml
 	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-core.yaml
-	./scripts/with_working_kube.sh rollout restart deployment/omni-prober deployment/omni-analyst deployment/omni-core -n multi-agent
+	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-executor.yaml
+	./scripts/with_working_kube.sh rollout restart deployment/omni-prober deployment/omni-analyst deployment/omni-core deployment/omni-executor -n multi-agent
 	./scripts/with_working_kube.sh rollout status deployment/omni-prober -n multi-agent --timeout=180s
 	./scripts/with_working_kube.sh rollout status deployment/omni-analyst -n multi-agent --timeout=180s
 	./scripts/with_working_kube.sh rollout status deployment/omni-core -n multi-agent --timeout=180s
+	./scripts/with_working_kube.sh rollout status deployment/omni-executor -n multi-agent --timeout=180s
 
 # Single-process legacy: OMNI_WORKER_ROLE=full (monolith). Scale omni-prober/analyst/core to 0 if using this.
 deploy-worker-legacy:

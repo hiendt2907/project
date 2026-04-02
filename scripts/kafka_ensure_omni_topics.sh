@@ -10,6 +10,7 @@ BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka:9092}"
 TOPICS=(
   "omni-alerts"
   "omni-diagnostic-evidence"
+  "omni-actions"
   "omni-dlq"
   "omni-proactive-incidents"
   "omni-audit-sandbox"

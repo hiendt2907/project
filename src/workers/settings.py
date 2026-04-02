@@ -60,7 +60,11 @@ class WorkerSettings(BaseSettings):
     redis_url: str = Field(default="redis://redis:6379/0")
     redis_sentinel_hosts: str = Field(
         default="",
-        description="Future: comma-separated host:port for Redis Sentinel; empty = single redis_url only.",
+        description="Comma-separated host:26379 for Redis Sentinel; empty = OMNI_REDIS_URL standalone only.",
+    )
+    redis_sentinel_master_name: str = Field(
+        default="mymaster",
+        description="Redis Sentinel master name (must match sentinel config).",
     )
 
     kafka_bootstrap_servers: str = Field(
@@ -101,6 +105,11 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_TOOL_AUDIT"),
         description="Mutating tool audit (former events:audit).",
     )
+    kafka_topic_actions: str = Field(
+        default="omni-actions",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_ACTIONS"),
+        description="Executor service: mutation jobs (JSON envelope).",
+    )
 
     @field_validator(
         "kafka_topic_alerts",
@@ -111,6 +120,7 @@ class WorkerSettings(BaseSettings):
         "kafka_topic_audit_agent",
         "kafka_topic_diagnostic_evidence",
         "kafka_topic_tool_audit",
+        "kafka_topic_actions",
         mode="after",
     )
     @classmethod
@@ -125,6 +135,7 @@ class WorkerSettings(BaseSettings):
             "kafka_topic_audit_agent": "omni-audit-agent",
             "kafka_topic_diagnostic_evidence": "omni-diagnostic-evidence",
             "kafka_topic_tool_audit": "omni-tool-audit",
+            "kafka_topic_actions": "omni-actions",
         }
         fb = defaults.get(info.field_name or "", "omni-alerts")
         if not isinstance(v, str) or not v.strip():
@@ -141,11 +152,16 @@ class WorkerSettings(BaseSettings):
         description="Kafka group for svc-analyst — consumes omni-diagnostic-evidence only.",
     )
     consumer_name_analyst: str = Field(default="omni-analyst-1")
-    worker_role: Literal["full", "prober", "analyst", "core"] = Field(
+    consumer_group_executor: str = Field(
+        default="omni-executor-actions",
+        description="Kafka group for svc-executor — consumes omni-actions only.",
+    )
+    consumer_name_executor: str = Field(default="omni-executor-1")
+    worker_role: Literal["full", "prober", "analyst", "core", "executor"] = Field(
         default="full",
         description=(
             "Master Plan V3 process split: prober=omni-alerts+diagnostic; analyst=evidence only; "
-            "core=periodic/proactive without Kafka ingress; full=legacy single process."
+            "core=periodic/proactive without Kafka ingress; executor=omni-actions mutations; full=legacy single process."
         ),
     )
 
@@ -154,7 +170,7 @@ class WorkerSettings(BaseSettings):
     def _normalize_worker_role(cls, v: object) -> object:
         if isinstance(v, str):
             s = v.strip().lower()
-            if s in ("full", "prober", "analyst", "core"):
+            if s in ("full", "prober", "analyst", "core", "executor"):
                 return s
         return v
 
