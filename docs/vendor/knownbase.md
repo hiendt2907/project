@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Log `deep_scout` / `deep_scout_autonomous`: **404** `http://ollama-service:11434/api/embed` hoặc `/api/chat` — Ollama host cũ hoặc build không có route mới.  
+**Fix:** `llm/ollama_client.py`: `embed` fallback `POST /api/embeddings` + `prompt` khi `/api/embed` → 404 (input str); `chat` fallback `POST /api/generate` + `system`/`prompt` khi `/api/chat` → 404 (non-stream). Verify: `pytest tests/test_ollama_client.py`.
+
 **Symptom:** `omni-analyst` log `kafka_evidence_loop message error: fetch_baseline_system_prompt() missing 1 required positional argument: 'max_chars'` — evidence path hỏng sau đổi signature baseline.  
 **Fix:** `reasoning_evidence_inbound.reason_diagnostic_evidence_only`: gọi `fetch_baseline_system_prompt(ctx.redis, ctx.settings.baseline_system_prompt_max_chars)` khi `baseline_snapshot_enabled` (cùng pattern `handlers.py`). Verify: log analyst không còn TypeError; `pytest tests/test_proactive_react_evidence.py`.
 
