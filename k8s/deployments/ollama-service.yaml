@@ -1,0 +1,19 @@
+# Ollama chạy trên Mac (Ollama.app / CLI) — K8s chỉ có Service DNS trỏ về host.
+# Pod gọi `http://ollama-service:11434` → CNAME `host.docker.internal` (OrbStack / Docker Desktop).
+#
+# Trên Mac: bật Ollama listen mọi interface (không chỉ localhost), ví dụ:
+#   launchctl setenv OLLAMA_HOST "0.0.0.0:11434"
+# hoặc trong Ollama.app Settings → bind 0.0.0.0 — nếu không, Pod cluster không vào được dù DNS đúng.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  namespace: multi-agent
+spec:
+  type: ExternalName
+  externalName: host.docker.internal
+  ports:
+    - name: http
+      protocol: TCP
+      port: 11434
+      targetPort: 11434

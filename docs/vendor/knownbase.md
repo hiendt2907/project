@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Muốn dùng Ollama chạy sẵn trên Mac (M4), không deploy `ollama/ollama` trong K8s.  
+**Fix:** Service **`ExternalName`** `ollama-service` → `host.docker.internal` — `k8s/deployments/ollama-service.yaml`; `make deploy-ollama`. Pod gọi `http://ollama-service:11434` → host Ollama. Nếu **connection refused**: trên Mac bật bind `0.0.0.0:11434` (ví dụ `OLLAMA_HOST=0.0.0.0:11434`). Verify: `kubectl exec deploy/omni-prober -n multi-agent -- curl -s -o /dev/null -w "%{http_code}" http://ollama-service:11434/api/tags` → **200**.
+
 **Symptom:** Cần Redis Sentinel HA thay vì một Pod `redis` standalone.  
 **Fix:** Set `OMNI_REDIS_SENTINEL_HOSTS` (CSV `host:26379`) + `OMNI_REDIS_SENTINEL_MASTER_NAME` trong ConfigMap; worker dùng `redis.asyncio.sentinel.Sentinel`. Sentinel trên cluster: tự dựng StatefulSet/Helm theo [Redis Sentinel](https://redis.io/docs/management/sentinel/) — xem `docs/vendor/redis_sentinel_lab.md`. Rỗng → vẫn `OMNI_REDIS_URL`.
 
