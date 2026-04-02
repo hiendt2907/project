@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: test-evidence docker-worker deploy-worker deploy-worker-legacy deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive
+.PHONY: test-evidence docker-worker deploy-worker deploy-worker-legacy deploy-gateway deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive
 
 test-evidence:
 	bash scripts/run_test_evidence.sh
@@ -22,6 +22,12 @@ deploy-worker:
 	./scripts/with_working_kube.sh rollout status deployment/omni-analyst -n multi-agent --timeout=180s
 	./scripts/with_working_kube.sh rollout status deployment/omni-core -n multi-agent --timeout=180s
 	./scripts/with_working_kube.sh rollout status deployment/omni-executor -n multi-agent --timeout=180s
+
+# Gateway (optional): không nằm trong deploy-worker — image trong manifest có thể khác `multi-agent-system:latest`; chỉnh tag trước khi lab.
+deploy-gateway:
+	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-gateway.yaml
+	./scripts/with_working_kube.sh rollout restart deployment/omni-gateway -n multi-agent
+	./scripts/with_working_kube.sh rollout status deployment/omni-gateway -n multi-agent --timeout=180s
 
 # Single-process legacy: OMNI_WORKER_ROLE=full (monolith). Scale omni-prober/analyst/core to 0 if using this.
 deploy-worker-legacy:
