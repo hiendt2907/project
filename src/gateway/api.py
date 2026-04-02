@@ -14,14 +14,26 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import redis.asyncio as aioredis
 from aiokafka import AIOKafkaProducer
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
+
+
+def _json_with_trace(content: dict[str, Any], *, trace_id: str, status_code: int = 200) -> JSONResponse:
+    """Mọi response webhook đều có trace_id trong body + header để correlate với log / downstream."""
+    return JSONResponse(
+        content=content,
+        status_code=status_code,
+        headers={"X-Omni-Trace-Id": trace_id},
+    )
 
 # ─── Config from env ──────────────────────────────────────────────────────────
 import os
@@ -126,6 +138,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Omni Gateway", version="1.0.0", lifespan=lifespan)
 
+
+class GatewayTraceMiddleware(BaseHTTPMiddleware):
+    """Sau handler: một dòng log có trace_id (request.state) — bổ sung cho access log Uvicorn không có trace."""
+
+    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        response = await call_next(request)
+        tid = getattr(request.state, "trace_id", None)
+        if tid and request.url.path.startswith("/webhook"):
+            logger.info(
+                "[GATEWAY][%s] http_done path=%s status=%s",
+                tid,
+                request.url.path,
+                response.status_code,
+            )
+        return response
+
+
+app.add_middleware(GatewayTraceMiddleware)
+
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 gw_requests = Counter("omni_gateway_requests_total", "Total requests received by gateway", ["status"])
 
@@ -141,17 +172,23 @@ async def health():
 @app.post("/webhook/prometheus")
 async def prometheus_webhook(request: Request) -> JSONResponse:
     """Nhận Alert từ Prometheus/Alertmanager → produce Kafka topic ``OMNI_KAFKA_TOPIC_ALERTS``."""
+    # Trace ngay đầu luồng — mọi nhánh (429/503/200) đều cùng id để grep xuyên suốt.
+    trace_id = f"gw-prom-{uuid.uuid4().hex[:12]}"
+    request.state.trace_id = trace_id
+    logger.info("[GATEWAY][%s] webhook_prometheus enter", trace_id)
+
     # ── 1. Rate Limiting (Token Bucket) ──────────────────────────────────────
     assert _rate_semaphore is not None
     acquired = _rate_semaphore._value > 0
     if acquired:
         await _rate_semaphore.acquire()
     else:
-        logger.warning("[GATEWAY] Rate limit exceeded (%d TPS). Dropping request.", RATE_LIMIT_TPS)
+        logger.warning("[GATEWAY][%s] Rate limit exceeded (%d TPS). Dropping request.", trace_id, RATE_LIMIT_TPS)
         gw_requests.labels(status="429_rate_limit").inc()
-        return JSONResponse(
+        return _json_with_trace(
+            {"error": "Too Many Requests", "detail": f"Rate limit {RATE_LIMIT_TPS} TPS exceeded.", "trace_id": trace_id},
+            trace_id=trace_id,
             status_code=429,
-            content={"error": "Too Many Requests", "detail": f"Rate limit {RATE_LIMIT_TPS} TPS exceeded."},
         )
 
     try:
@@ -159,11 +196,16 @@ async def prometheus_webhook(request: Request) -> JSONResponse:
         assert _redis is not None
         cb_flag = await _redis.get(CB_KEY)
         if str(cb_flag).strip() == "1":
-            logger.warning("[GATEWAY] Circuit Breaker ACTIVE. Rejecting inbound alert.")
+            logger.warning("[GATEWAY][%s] Circuit Breaker ACTIVE. Rejecting inbound alert.", trace_id)
             gw_requests.labels(status="503_circuit_breaker").inc()
-            return JSONResponse(
+            return _json_with_trace(
+                {
+                    "error": "Service Unavailable",
+                    "detail": "Worker circuit breaker is active. Retry later.",
+                    "trace_id": trace_id,
+                },
+                trace_id=trace_id,
                 status_code=503,
-                content={"error": "Service Unavailable", "detail": "Worker circuit breaker is active. Retry later."},
             )
 
         # ── 3. Parse & Enqueue ───────────────────────────────────────────────
@@ -173,14 +215,14 @@ async def prometheus_webhook(request: Request) -> JSONResponse:
             body = {}
 
         if SILENCE_CHAOS_LAB and _is_chaos_lab_prometheus_webhook(body):
-            logger.info("[GATEWAY] Dropped chaos-lab webhook (OMNI_GATEWAY_SILENCE_CHAOS_LAB=1)")
+            logger.info("[GATEWAY][%s] Dropped chaos-lab webhook (OMNI_GATEWAY_SILENCE_CHAOS_LAB=1)", trace_id)
             gw_requests.labels(status="200_dropped_chaos_lab").inc()
-            return JSONResponse(
+            return _json_with_trace(
+                {"status": "dropped", "reason": "chaos_lab_silenced", "trace_id": trace_id},
+                trace_id=trace_id,
                 status_code=200,
-                content={"status": "dropped", "reason": "chaos_lab_silenced"},
             )
 
-        trace_id = f"gw-prom-{uuid.uuid4().hex[:12]}"
         payload = {
             "source": "prometheus",
             "trace_id": trace_id,
@@ -191,13 +233,13 @@ async def prometheus_webhook(request: Request) -> JSONResponse:
         assert _kafka is not None
         env = json.dumps({"data": json.dumps(payload, ensure_ascii=False)}, ensure_ascii=False).encode("utf-8")
         await _kafka.send_and_wait(KAFKA_TOPIC_ALERTS, value=env)
-        logger.info("[GATEWAY] Enqueued alert trace_id=%s", trace_id)
+        logger.info("[GATEWAY][%s] kafka_enqueued topic=%s", trace_id, KAFKA_TOPIC_ALERTS)
         gw_requests.labels(status="200_ok").inc()
-        return JSONResponse(status_code=200, content={"status": "queued", "trace_id": trace_id})
+        return _json_with_trace({"status": "queued", "trace_id": trace_id}, trace_id=trace_id, status_code=200)
 
     except Exception as e:
-        logger.error("[GATEWAY] Internal error: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("[GATEWAY][%s] Internal error: %s", trace_id, e)
+        raise HTTPException(status_code=500, detail={"message": str(e), "trace_id": trace_id}) from e
     finally:
         # Token đã dùng — KHÔNG release lại (bucket refill sẽ tự làm mỗi giây)
         pass

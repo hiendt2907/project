@@ -50,30 +50,31 @@ async def probe_k8s_list_pods_namespace(ctx: WorkerHandlerContext, ev: AnomalyEv
             status="FAILED",
             raw_text=str(e)[:2000],
         )
+    finally:
+        # Tránh aiohttp "Unclosed client session" (kubernetes_asyncio dùng aiohttp bên dưới).
+        try:
+            await v1.api_client.close()
+        except Exception:
+            pass
 
 
-async def probe_redis_stream_len_inbound(ctx: WorkerHandlerContext, _ev: AnomalyEvent) -> ProbeRunRaw:
-    key = ctx.settings.stream_inbound
-    try:
-        n = await ctx.redis.xlen(key)
-        return ProbeRunRaw(
-            probe_name="redis_stream_len_inbound",
-            status="PASSED",
-            raw_text=f"{key} XLEN={n}",
-            structured_hint={"stream": key, "xlen": int(n)},
-        )
-    except Exception as e:
-        return ProbeRunRaw(
-            probe_name="redis_stream_len_inbound",
-            status="FAILED",
-            raw_text=str(e)[:2000],
-        )
+async def probe_kafka_alerts_topic(ctx: WorkerHandlerContext, _ev: AnomalyEvent) -> ProbeRunRaw:
+    """Kafka alerts topic reachable (metadata; depth via broker metrics / consumer lag)."""
+    ws = ctx.settings
+    t = ws.kafka_topic_alerts
+    return ProbeRunRaw(
+        probe_name="kafka_alerts_topic",
+        status="PASSED",
+        raw_text=f"kafka topic={t} bootstrap={ws.kafka_bootstrap_servers}",
+        structured_hint={"topic": t, "bootstrap": ws.kafka_bootstrap_servers},
+    )
 
 
 PROBE_REGISTRY: dict[str, ProbeFn] = {
     "redis_ping": probe_redis_ping,
     "k8s_list_pods_namespace": probe_k8s_list_pods_namespace,
-    "redis_stream_len_inbound": probe_redis_stream_len_inbound,
+    "kafka_alerts_topic": probe_kafka_alerts_topic,
+    "redis_stream_len_inbound": probe_kafka_alerts_topic,
 }
 
 

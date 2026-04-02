@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Trace `gw-prom-*` có trong `request_trace` nhưng **không** xuyên suốt: access log Uvicorn không có trace; log **asyncio** `Unclosed client session` (aiohttp) không gắn trace — khó debug.  
+**Fix:** Gateway: **`trace_id` sinh ngay đầu** `POST /webhook/prometheus`, `request.state.trace_id`, log `[GATEWAY][trace] …`, header **`X-Omni-Trace-Id`**, middleware `http_done` có trace. Worker: **`probe_k8s_list_pods_namespace`** `await v1.api_client.close()` trong `finally` (kubernetes_asyncio / aiohttp). Verify: grep cùng trace trên gateway + prober; không còn unclosed session sau probe.
+
 ### Verify scripts vs MPV3 split topology (tránh tham chiếu Pod sai / nhiễu RAG)
 
 **Chuẩn lab hiện tại:** `omni-prober` / `omni-analyst` / `omni-core` / `omni-executor` + `omni-gateway`; `omni-worker` thường **replicas=0** (không dùng làm mặc định cho `kubectl exec`).
