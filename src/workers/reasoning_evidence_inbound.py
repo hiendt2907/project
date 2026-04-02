@@ -50,7 +50,11 @@ async def reason_diagnostic_evidence_only(
             logger.debug("[%s] enrich skip: %s", trace, e)
             working_text = raw_user_text
 
-        baseline = await fetch_baseline_system_prompt(ctx)
+        baseline = ""
+        if ctx.settings.baseline_snapshot_enabled:
+            baseline = await fetch_baseline_system_prompt(
+                ctx.redis, ctx.settings.baseline_system_prompt_max_chars
+            )
         system = (
             (baseline or "").strip()
             + "\n\n[MODE: DIAGNOSTIC_EVIDENCE — read-only analyst]\n"

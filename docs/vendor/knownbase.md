@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** `omni-analyst` log `kafka_evidence_loop message error: fetch_baseline_system_prompt() missing 1 required positional argument: 'max_chars'` — evidence path hỏng sau đổi signature baseline.  
+**Fix:** `reasoning_evidence_inbound.reason_diagnostic_evidence_only`: gọi `fetch_baseline_system_prompt(ctx.redis, ctx.settings.baseline_system_prompt_max_chars)` khi `baseline_snapshot_enabled` (cùng pattern `handlers.py`). Verify: log analyst không còn TypeError; `pytest tests/test_proactive_react_evidence.py`.
+
 **Symptom:** Gateway dùng chung image worker `multi-agent-system:latest` + `hostPath` mount source — stack nặng, không tách bạch ingress.  
 **Fix:** Image riêng **`omni-gateway:latest`** — `Dockerfile.gateway`, `requirements-gateway.txt`, `src/gateway/` baked in. Manifest `k8s/deployments/omni-gateway.yaml` (không hostPath). `make docker-gateway` rồi `make deploy-gateway`. `scripts/proactive_e2e.sh` build cả worker + gateway và apply/rollout `omni-gateway`.
 
