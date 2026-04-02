@@ -55,6 +55,16 @@ if [[ "${SKIP_RESTART}" -eq 0 ]]; then
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-worker.yaml"
   "${KUBE}" rollout restart deployment/omni-worker -n multi-agent
   "${KUBE}" rollout status deployment/omni-worker -n multi-agent --timeout=180s
+  # Tránh race: full_system_audit exec + curl :9090/metrics ngay sau rollout → Connection refused
+  echo "[proactive_e2e] waiting for worker metrics (:9090) ..."
+  for _ in $(seq 1 30); do
+    if code="$("${KUBE}" exec -n multi-agent deploy/omni-worker -- sh -lc \
+      'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9090/metrics' 2>/dev/null)" && [[ "${code}" == "200" ]]; then
+      echo "[proactive_e2e] worker metrics OK"
+      break
+    fi
+    sleep 2
+  done
 fi
 
 echo "[proactive_e2e] full_system_audit (${DURATION_SEC}s, interval ${INTERVAL_SEC}s) ..."

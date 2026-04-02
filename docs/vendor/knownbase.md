@@ -37,6 +37,9 @@ _(none else yet)_
 
 ## Infrastructure (K8s, Redis, deploy, observability)
 
+**Symptom:** `make e2e-proactive` / `full_system_audit` fail ngay sau rollout worker — `Connection refused` khi exec `python -c` gọi `http://127.0.0.1:9090/metrics` (metrics chưa bind).  
+**Fix:** `scripts/proactive_e2e.sh` chờ vòng lặp `curl` :9090 trả 200 (tối đa ~60s) sau `rollout status` rồi mới chạy audit. Verify: `bash scripts/proactive_e2e.sh --skip-build`.
+
 **Symptom:** Redis Cluster 6 node + `OMNI_REDIS_CLUSTER=true` / `OMNI_REDIS_CLUSTER_NODES` — vận hành nặng; app dùng `RedisCluster`.  
 **Fix:** `k8s/deployments/redis-standalone.yaml` (Service `redis`, StatefulSet + PVC, AOF `appendfsync everysec`, rewrite, preamble). ConfigMap: chỉ `OMNI_REDIS_URL=redis://redis:6379/0`, không cluster. Code: `redis_client.py` / gateway `Redis.from_url`. Monitor: `OmniRedisStandaloneDown`; redis-exporter standalone. `scripts/deploy_v6.sh` apply standalone. Verify: rollout `omni-worker` + `omni-gateway`, pytest.
 
