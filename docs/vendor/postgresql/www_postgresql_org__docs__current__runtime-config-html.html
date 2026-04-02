@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <title>PostgreSQL: Documentation: 18: Chapter 19. Server Configuration</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta http-equiv="Content-Type" content="text/xhtml; charset=utf-8" />
+   
+  <meta name="theme-color" content="#336791"/>
+  <meta name="copyright" content="The PostgreSQL Global Development Group" />
+  <meta property="og:url" content="https://www.postgresql.org/docs/18/runtime-config.html" />
+  <meta property="og:type" content="article" />
+
+  <meta property="article:published_time" content="2026-02-26T14:07:09" />
+  <meta property="og:image" content="https://www.postgresql.org/media/img/about/press/elephant.png" />
+  <meta property="og:title" content="Chapter 19. Server Configuration" />
+  <meta property="og:description" content="Chapter&amp;nbsp;19.&amp;nbsp;Server Configuration Table of Contents 19.1. Setting Parameters 19.1.1. Parameter Names and Values 19.1.2. Parameter Interaction via the Configuration File …" />
+  <meta property="og:site_name" content="PostgreSQL Documentation" />
+  <link href="/media/css/fontawesome.css?a9fcb4a2" rel="stylesheet">
+  <link rel="stylesheet" href="/media/css/bootstrap-4.4.1.min.css">
+  <link rel="shortcut icon" href="/favicon.ico" />
+  
+  <link rel="stylesheet" type="text/css" href="/dyncss/base.css?a9fcb4a2">
+
+  <script src="/media/js/theme.js?a9fcb4a2"></script>
+
+  
+
+
+  <link rel="canonical" href="https://www.postgresql.org/docs/current/runtime-config.html" />
+
+
+  </head>
+  <body>
+    <div class="container-fluid">
+      <div class="row justify-content-md-center">
+        <div class="col">
+          <!-- Header -->
+          <nav class="navbar navbar-expand-lg navbar-light bg-light">
+            <a class="navbar-brand p-0" href="/">
+              <img class="logo" src="/media/img/about/press/elephant.png" alt="PostgreSQL Elephant Logo">
+            </a>
+            <input type="checkbox" id="navbar-toggler" aria-controls="pgNavbar" aria-expanded="false" aria-label="Toggle navigation">
+            <label for="navbar-toggler" id="navbar-toggler-label" class="navbar-toggler" tabindex="0"><span class="navbar-toggler-icon"></span></label>
+            <div class="navbar-collapse" id="pgNavbar">
+              <ul class="navbar-nav mr-auto">
+                <li class="nav-item p-2"><a href="/" title="Home">Home</a></li>
+                <li class="nav-item p-2"><a href="/about/" title="About">About</a></li>
+                <li class="nav-item p-2"><a href="/download/" title="Download">Download</a></li>
+                <li class="nav-item p-2"><a href="/docs/" title="Documentation">Documentation</a></li>
+                <li class="nav-item p-2"><a href="/community/" title="Community">Community</a></li>
+                <li class="nav-item p-2"><a href="/developer/" title="Developers">Developers</a></li>
+                <li class="nav-item p-2"><a href="/support/" title="Support">Support</a></li>
+                <li class="nav-item p-2"><a href="/about/donate/" title="Donate">Donate</a></li>
+                <li class="nav-item p-2"><a href="/account/" title="Your account">Your account</a></li>
+              </ul>
+              <form role="search" method="get" action="/search/">
+                <div class="input-group">
+                  <input id="q" name="q" type="text" size="20" maxlength="255" accesskey="s"  class="form-control" placeholder="Search for...">
+                  <span class="input-group-btn">
+                    <button class="btn btn-default" type="submit"><i class="fas fa-search"></i></button>
+                  </span>
+                </div><!-- /input-group -->
+              </form>
+              <form id="form-theme" class="form-inline d-none">
+                <button id="btn-theme" class="btn btn-default ml-1" type="button"></button>
+              </form>
+            </div>
+          </nav>
+        </div>
+      </div>
+      <div class="row justify-content-center pg-shout-box">
+        <div class="col text-white text-center">February 26, 2026: <a href="/about/news/postgresql-183-179-1613-1517-and-1422-released-3246/">
+  PostgreSQL 18.3, 17.9, 16.13, 15.17, and 14.22 Released!
+</a>
+</div>
+      </div>
+    </div>
+    
+    <div class="container-fluid margin">
+      <div class="row">
+        <div id="pgContentWrap" class="col-11">
+          <div class="row">
+            <div class="col-md-6 mb-2">
+              <div class="row">
+                <div class="col">
+                  <div>
+                    <a href="/docs/" title="Documentation">Documentation</a> &rarr; <a href="/docs/18/index.html">PostgreSQL 18</a>
+                  </div>
+                </div>
+              </div>
+              
+                <div class="row">
+                  <div class="col">
+                    Supported Versions:
+                      
+                        
+                        
+                          <a href="/docs/current/runtime-config.html" title="PostgreSQL 18 - Chapter 19. Server Configuration" class="docs-version-selected">Current</a>
+                          (<a href="/docs/18/runtime-config.html" title="PostgreSQL 18 - Chapter 19. Server Configuration" class="docs-version-selected">18</a>)
+                        
+                      
+                         / 
+                        
+                          <a href="/docs/17/runtime-config.html" title="PostgreSQL 17 - Chapter 19. Server Configuration" >17</a>
+                        
+                      
+                         / 
+                        
+                          <a href="/docs/16/runtime-config.html" title="PostgreSQL 16 - Chapter 19. Server Configuration" >16</a>
+                        
+                      
+                         / 
+                        
+                          <a href="/docs/15/runtime-config.html" title="PostgreSQL 15 - Chapter 19. Server Configuration" >15</a>
+                        
+                      
+                         / 
+                        
+                          <a href="/docs/14/runtime-config.html" title="PostgreSQL 14 - Chapter 19. Server Configuration" >14</a>
+                        
+                      
+                  </div>
+                </div>
+              
+              
+                <div class="row">
+                  <div class="col">
+                    Development Versions:
+                    
+                      
+                      <a href="/docs/devel/runtime-config.html" title="PostgreSQL devel - Chapter 19. Server Configuration"  rel="nofollow">devel</a>
+                    
+                  </div>
+                </div>
+              
+              
+                <div class="row">
+                  <div class="col-12">
+                    Unsupported versions:
+                    
+                      
+                      <a href="/docs/13/runtime-config.html" title="PostgreSQL 13 - Chapter 19. Server Configuration"  rel="nofollow">13</a>
+                    
+                       / 
+                      <a href="/docs/12/runtime-config.html" title="PostgreSQL 12 - Chapter 19. Server Configuration"  rel="nofollow">12</a>
+                    
+                       / 
+                      <a href="/docs/11/runtime-config.html" title="PostgreSQL 11 - Chapter 19. Server Configuration"  rel="nofollow">11</a>
+                    
+                       / 
+                      <a href="/docs/10/runtime-config.html" title="PostgreSQL 10 - Chapter 19. Server Configuration"  rel="nofollow">10</a>
+                    
+                       / 
+                      <a href="/docs/9.6/runtime-config.html" title="PostgreSQL 9.6 - Chapter 19. Server Configuration"  rel="nofollow">9.6</a>
+                    
+                       / 
+                      <a href="/docs/9.5/runtime-config.html" title="PostgreSQL 9.5 - Chapter 19. Server Configuration"  rel="nofollow">9.5</a>
+                    
+                       / 
+                      <a href="/docs/9.4/runtime-config.html" title="PostgreSQL 9.4 - Chapter 19. Server Configuration"  rel="nofollow">9.4</a>
+                    
+                       / 
+                      <a href="/docs/9.3/runtime-config.html" title="PostgreSQL 9.3 - Chapter 19. Server Configuration"  rel="nofollow">9.3</a>
+                    
+                       / 
+                      <a href="/docs/9.2/runtime-config.html" title="PostgreSQL 9.2 - Chapter 19. Server Configuration"  rel="nofollow">9.2</a>
+                    
+                       / 
+                      <a href="/docs/9.1/runtime-config.html" title="PostgreSQL 9.1 - Chapter 19. Server Configuration"  rel="nofollow">9.1</a>
+                    
+                       / 
+                      <a href="/docs/9.0/runtime-config.html" title="PostgreSQL 9.0 - Chapter 19. Server Configuration"  rel="nofollow">9.0</a>
+                    
+                       / 
+                      <a href="/docs/8.4/runtime-config.html" title="PostgreSQL 8.4 - Chapter 19. Server Configuration"  rel="nofollow">8.4</a>
+                    
+                       / 
+                      <a href="/docs/8.3/runtime-config.html" title="PostgreSQL 8.3 - Chapter 19. Server Configuration"  rel="nofollow">8.3</a>
+                    
+                       / 
+                      <a href="/docs/8.2/runtime-config.html" title="PostgreSQL 8.2 - Chapter 19. Server Configuration"  rel="nofollow">8.2</a>
+                    
+                       / 
+                      <a href="/docs/8.1/runtime-config.html" title="PostgreSQL 8.1 - Chapter 19. Server Configuration"  rel="nofollow">8.1</a>
+                    
+                       / 
+                      <a href="/docs/8.0/runtime-config.html" title="PostgreSQL 8.0 - Chapter 19. Server Configuration"  rel="nofollow">8.0</a>
+                    
+                       / 
+                      <a href="/docs/7.4/runtime-config.html" title="PostgreSQL 7.4 - Chapter 19. Server Configuration"  rel="nofollow">7.4</a>
+                    
+                       / 
+                      <a href="/docs/7.3/runtime-config.html" title="PostgreSQL 7.3 - Chapter 19. Server Configuration"  rel="nofollow">7.3</a>
+                    
+                       / 
+                      <a href="/docs/7.2/runtime-config.html" title="PostgreSQL 7.2 - Chapter 19. Server Configuration"  rel="nofollow">7.2</a>
+                    
+                       / 
+                      <a href="/docs/7.1/runtime-config.html" title="PostgreSQL 7.1 - Chapter 19. Server Configuration"  rel="nofollow">7.1</a>
+                    
+                  </div>
+                </div>
+              
+            </div>
+            <div class="col-md-6 col-lg-5 offset-lg-1">
+              <form id="docSearchForm" role="search" method="get" action="/search/">
+                <input type="hidden" name="u" value="/docs/18/" />
+                <div class="input-group">
+                  <input type="text" id="q" name="q" class="form-control" placeholder="Search the documentation for..."/>
+                  <span class="input-group-btn">
+                    <button class="btn btn-default" type="submit"><i class="fas fa-search"></i></button>
+                  </span>
+                </div><!-- /input-group -->
+              </form>
+            </div>
+          </div>
+
+          <div id="docContent">
+            <div class="navheader">
+  <table width="100%" summary="Navigation header">
+    <tr>
+      <th colspan="5" align="center">Chapter&nbsp;19.&nbsp;Server Configuration</th>
+    </tr>
+    <tr>
+      <td width="10%" align="left"><a accesskey="p" href="event-log-registration.html" title="18.12.&nbsp;Registering Event Log on Windows">Prev</a>&nbsp;</td>
+      <td width="10%" align="left"><a accesskey="u" href="admin.html" title="Part&nbsp;III.&nbsp;Server Administration">Up</a></td>
+      <th width="60%" align="center">Part&nbsp;III.&nbsp;Server Administration</th>
+      <td width="10%" align="right"><a accesskey="h" href="index.html" title="PostgreSQL 18.3 Documentation">Home</a></td>
+      <td width="10%" align="right">&nbsp;<a accesskey="n" href="config-setting.html" title="19.1.&nbsp;Setting Parameters">Next</a></td>
+    </tr>
+  </table>
+  <hr />
+</div>
+<div class="chapter" id="RUNTIME-CONFIG">
+  <div class="titlepage">
+    <div>
+      <div>
+        <h2 class="title">Chapter&nbsp;19.&nbsp;Server Configuration</h2>
+      </div>
+    </div>
+  </div>
+  <div class="toc">
+    <p><strong>Table of Contents</strong></p>
+    <dl class="toc">
+      <dt><span class="sect1"><a href="config-setting.html">19.1. Setting Parameters</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="config-setting.html#CONFIG-SETTING-NAMES-VALUES">19.1.1. Parameter Names and Values</a></span></dt>
+          <dt><span class="sect2"><a href="config-setting.html#CONFIG-SETTING-CONFIGURATION-FILE">19.1.2. Parameter Interaction via the Configuration File</a></span></dt>
+          <dt><span class="sect2"><a href="config-setting.html#CONFIG-SETTING-SQL">19.1.3. Parameter Interaction via SQL</a></span></dt>
+          <dt><span class="sect2"><a href="config-setting.html#CONFIG-SETTING-SHELL">19.1.4. Parameter Interaction via the Shell</a></span></dt>
+          <dt><span class="sect2"><a href="config-setting.html#CONFIG-INCLUDES">19.1.5. Managing Configuration File Contents</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-file-locations.html">19.2. File Locations</a></span></dt>
+      <dt><span class="sect1"><a href="runtime-config-connection.html">19.3. Connections and Authentication</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="runtime-config-connection.html#RUNTIME-CONFIG-CONNECTION-SETTINGS">19.3.1. Connection Settings</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-connection.html#RUNTIME-CONFIG-TCP-SETTINGS">19.3.2. TCP Settings</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-connection.html#RUNTIME-CONFIG-CONNECTION-AUTHENTICATION">19.3.3. Authentication</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-connection.html#RUNTIME-CONFIG-CONNECTION-SSL">19.3.4. SSL</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-resource.html">19.4. Resource Consumption</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-MEMORY">19.4.1. Memory</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-DISK">19.4.2. Disk</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-KERNEL">19.4.3. Kernel Resource Usage</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-BACKGROUND-WRITER">19.4.4. Background Writer</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-IO">19.4.5. I/O</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-WORKER-PROCESSES">19.4.6. Worker Processes</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-wal.html">19.5. Write Ahead Log</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="runtime-config-wal.html#RUNTIME-CONFIG-WAL-SETTINGS">19.5.1. Settings</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-wal.html#RUNTIME-CONFIG-WAL-CHECKPOINTS">19.5.2. Checkpoints</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-wal.html#RUNTIME-CONFIG-WAL-ARCHIVING">19.5.3. Archiving</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-wal.html#RUNTIME-CONFIG-WAL-RECOVERY">19.5.4. Recovery</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-wal.html#RUNTIME-CONFIG-WAL-ARCHIVE-RECOVERY">19.5.5. Archive Recovery</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-wal.html#RUNTIME-CONFIG-WAL-RECOVERY-TARGET">19.5.6. Recovery Target</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-wal.html#RUNTIME-CONFIG-WAL-SUMMARIZATION">19.5.7. WAL Summarization</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-replication.html">19.6. Replication</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="runtime-config-replication.html#RUNTIME-CONFIG-REPLICATION-SENDER">19.6.1. Sending Servers</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-replication.html#RUNTIME-CONFIG-REPLICATION-PRIMARY">19.6.2. Primary Server</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-replication.html#RUNTIME-CONFIG-REPLICATION-STANDBY">19.6.3. Standby Servers</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-replication.html#RUNTIME-CONFIG-REPLICATION-SUBSCRIBER">19.6.4. Subscribers</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-query.html">19.7. Query Planning</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="runtime-config-query.html#RUNTIME-CONFIG-QUERY-ENABLE">19.7.1. Planner Method Configuration</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-query.html#RUNTIME-CONFIG-QUERY-CONSTANTS">19.7.2. Planner Cost Constants</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-query.html#RUNTIME-CONFIG-QUERY-GEQO">19.7.3. Genetic Query Optimizer</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-query.html#RUNTIME-CONFIG-QUERY-OTHER">19.7.4. Other Planner Options</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-logging.html">19.8. Error Reporting and Logging</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-WHERE">19.8.1. Where to Log</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-WHEN">19.8.2. When to Log</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-WHAT">19.8.3. What to Log</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-CSVLOG">19.8.4. Using CSV-Format Log Output</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-JSONLOG">19.8.5. Using JSON-Format Log Output</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-PROC-TITLE">19.8.6. Process Title</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-statistics.html">19.9. Run-time Statistics</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="runtime-config-statistics.html#RUNTIME-CONFIG-CUMULATIVE-STATISTICS">19.9.1. Cumulative Query and Index Statistics</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-statistics.html#RUNTIME-CONFIG-STATISTICS-MONITOR">19.9.2. Statistics Monitoring</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-vacuum.html">19.10. Vacuuming</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="runtime-config-vacuum.html#RUNTIME-CONFIG-AUTOVACUUM">19.10.1. Automatic Vacuuming</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-vacuum.html#RUNTIME-CONFIG-RESOURCE-VACUUM-COST">19.10.2. Cost-based Vacuum Delay</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-vacuum.html#RUNTIME-CONFIG-VACUUM-DEFAULT">19.10.3. Default Behavior</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-vacuum.html#RUNTIME-CONFIG-VACUUM-FREEZING">19.10.4. Freezing</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-client.html">19.11. Client Connection Defaults</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="runtime-config-client.html#RUNTIME-CONFIG-CLIENT-STATEMENT">19.11.1. Statement Behavior</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-client.html#RUNTIME-CONFIG-CLIENT-FORMAT">19.11.2. Locale and Formatting</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-client.html#RUNTIME-CONFIG-CLIENT-PRELOAD">19.11.3. Shared Library Preloading</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-client.html#RUNTIME-CONFIG-CLIENT-OTHER">19.11.4. Other Defaults</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-locks.html">19.12. Lock Management</a></span></dt>
+      <dt><span class="sect1"><a href="runtime-config-compatible.html">19.13. Version and Platform Compatibility</a></span></dt>
+      <dd>
+        <dl>
+          <dt><span class="sect2"><a href="runtime-config-compatible.html#RUNTIME-CONFIG-COMPATIBLE-VERSION">19.13.1. Previous PostgreSQL Versions</a></span></dt>
+          <dt><span class="sect2"><a href="runtime-config-compatible.html#RUNTIME-CONFIG-COMPATIBLE-CLIENTS">19.13.2. Platform and Client Compatibility</a></span></dt>
+        </dl>
+      </dd>
+      <dt><span class="sect1"><a href="runtime-config-error-handling.html">19.14. Error Handling</a></span></dt>
+      <dt><span class="sect1"><a href="runtime-config-preset.html">19.15. Preset Options</a></span></dt>
+      <dt><span class="sect1"><a href="runtime-config-custom.html">19.16. Customized Options</a></span></dt>
+      <dt><span class="sect1"><a href="runtime-config-developer.html">19.17. Developer Options</a></span></dt>
+      <dt><span class="sect1"><a href="runtime-config-short.html">19.18. Short Options</a></span></dt>
+    </dl>
+  </div><a id="id-1.6.6.2" class="indexterm" name="id-1.6.6.2"></a>
+  <p>There are many configuration parameters that affect the behavior of the database system. In the first section of this chapter we describe how to interact with configuration parameters. The subsequent sections discuss each parameter in detail.</p>
+</div>
+<div class="navfooter">
+  <hr />
+  <table width="100%" summary="Navigation footer">
+    <tr>
+      <td width="40%" align="left"><a accesskey="p" href="event-log-registration.html" title="18.12.&nbsp;Registering Event Log on Windows">Prev</a>&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="u" href="admin.html" title="Part&nbsp;III.&nbsp;Server Administration">Up</a></td>
+      <td width="40%" align="right">&nbsp;<a accesskey="n" href="config-setting.html" title="19.1.&nbsp;Setting Parameters">Next</a></td>
+    </tr>
+    <tr>
+      <td width="40%" align="left" valign="top">18.12.&nbsp;Registering <span class="application">Event Log</span> on <span class="systemitem">Windows</span>&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="h" href="index.html" title="PostgreSQL 18.3 Documentation">Home</a></td>
+      <td width="40%" align="right" valign="top">&nbsp;19.1.&nbsp;Setting Parameters</td>
+    </tr>
+  </table>
+</div>
+
+          </div>
+          
+            <div id="docComments">
+              <h2>Submit correction</h2>
+              <p>
+              If you see anything in the documentation that is not correct, does not match
+              your experience with the particular feature or requires further clarification,
+              please use
+              <a href="/account/comments/new/18/runtime-config.html/" rel="nofollow">this form</a>
+              to report a documentation issue.
+              </p>
+            </div>
+          
+        </div> <!-- pgContentWrap -->
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer id="footer">
+      <!-- Copyright -->
+      <div class="container">
+        <a href="/about/policies/">Policies</a> |
+        <a href="/about/policies/coc/">Code of Conduct</a> |
+        <a href="/about/">About PostgreSQL</a> |
+        <a href="/about/contact/">Contact</a><br/>
+        <p>Copyright &copy; 1996-2026 The PostgreSQL Global Development Group</p>
+      </div>
+    </footer>
+    <script src="/media/js/main.js?a9fcb4a2"></script>
+
+  </body>
+</html>

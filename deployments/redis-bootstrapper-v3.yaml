@@ -1,0 +1,36 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-cluster-bootstrapper
+  namespace: multi-agent
+spec:
+  template:
+    spec:
+      containers:
+      - name: bootstrapper
+        image: redis:7.4-alpine
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Bypassing DNS check. Direct Join with deterministic hostnames..."
+          
+          # 1. Thử Reset từng node cho chắc cú
+          for i in 0 1 2 3 4 5; do
+            redis-cli -h redis-cluster-$i.redis-cluster-headless cluster reset hard || true
+          done
+          
+          # 2. Join bằng tên vĩnh viễn (DNS name nội bộ)
+          NODES="redis-cluster-0.redis-cluster-headless:6379 \
+                 redis-cluster-1.redis-cluster-headless:6379 \
+                 redis-cluster-2.redis-cluster-headless:6379 \
+                 redis-cluster-3.redis-cluster-headless:6379 \
+                 redis-cluster-4.redis-cluster-headless:6379 \
+                 redis-cluster-5.redis-cluster-headless:6379"
+          
+          echo "Executing Join: redis-cli --cluster create $NODES --cluster-replicas 1 --cluster-yes"
+          redis-cli --cluster create $NODES --cluster-replicas 1 --cluster-yes
+          
+          echo "Verifying..."
+          redis-cli -h redis-cluster-0.redis-cluster-headless cluster info
+      restartPolicy: OnFailure

@@ -1,0 +1,47 @@
+---
+description: Sau khi đổi worker/gateway — tự build, deploy rollout, test e2e (OrbStack K8s)
+alwaysApply: true
+---
+
+# CI/CD lab (Omni worker + gateway)
+
+Khi sửa **`src/workers/**`**, **`src/gateway/**`**, **`Dockerfile`**, hoặc **`requirements.txt`** (ảnh hưởng runtime), agent **phải tự** chạy pipeline xác minh — **không** chỉ gợi ý lệnh cho sếp trừ khi cluster không có hoặc lệnh fail (ghi rõ lỗi).
+
+## 1. Build image
+
+```bash
+docker build -t multi-agent-system:latest -f Dockerfile .
+```
+
+(hoặc `make docker-worker`)
+
+## 2. Deploy + rollout
+
+```bash
+make deploy-worker
+```
+
+Tương đương: `kubectl apply` `k8s/deployments/omni-worker-configmap.yaml`, `omni-worker-rbac.yaml`, `omni-worker.yaml` + `kubectl rollout restart deployment/omni-worker -n multi-agent` + `rollout status`. Gateway đổi code: áp `k8s/deployments/omni-gateway.yaml` + rollout tương tự.
+
+Dùng `./scripts/with_working_kube.sh` làm prefix `kubectl` khi nhiều kubeconfig (OrbStack).
+
+## 3. Unit tests
+
+```bash
+.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
+```
+
+(tối thiểu: module đã sửa)
+
+## 4. E2E (chọn một tùy mục tiêu)
+
+| Mục tiêu | Lệnh |
+|----------|------|
+| Proactive stream + audit + build/deploy gói | `make e2e-proactive` → `scripts/proactive_e2e.sh` |
+| Alert gateway + logs + Loki + nghiệp vụ business | `bash scripts/gateway_alert_loki_verify.sh` |
+
+**Không** coi `pytest` thuần là đủ cho thay đổi hành vi worker trên cluster; cần ít nhất rollout + một trong hai e2e trên khi cluster sống.
+
+## 5. Khi không chạy được
+
+- Ghi trong reply: kubectl/docker lỗi gì, context nào — không kết luận "đã verify runtime".

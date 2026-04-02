@@ -1,0 +1,53 @@
+# Omni Ingress Gateway — Standard FastAPI Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-gateway
+  namespace: multi-agent
+  labels:
+    app: omni-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: omni-gateway
+  template:
+    metadata:
+      labels:
+        app: omni-gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+        - name: gateway
+          image: multi-agent-system:v6-chaos
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "gateway.api:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: omni-worker-config
+          volumeMounts:
+            - name: source-code
+              mountPath: /app/src
+      volumes:
+        - name: source-code
+          hostPath:
+            path: /Users/hiendang/project/src
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omni-gateway
+  namespace: multi-agent
+spec:
+  selector:
+    app: omni-gateway
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

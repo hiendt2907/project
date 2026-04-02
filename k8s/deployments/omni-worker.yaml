@@ -1,0 +1,76 @@
+# Omni-Worker — cùng namespace multi-agent với Redis + Postgres RAG
+# Yêu cầu: image multi-agent-system:latest (docker build -t multi-agent-system:latest -f Dockerfile .)
+# Ollama: áp k8s/deployments/ollama-service-external.yaml (host Mac) hoặc Service thật.
+# Model: trùng `ollama list` — mặc định qwen2.5:7b + nomic-embed-text:latest.
+# Telegram: Secret `telegram-bot` (keys `bot-token`, `chat-id`) — tạo bằng kubectl, không commit token.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-worker
+  namespace: multi-agent
+  labels:
+    app: omni-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omni-worker
+  template:
+    metadata:
+      labels:
+        app: omni-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: omni-worker
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: omni-worker
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: omni-worker-config
+          # Chỉ Secret / nhạy cảm — mọi giá trị khác nằm trong omni-worker-config
+          env:
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: bot-token
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+            - name: OMNI_TELEGRAM_ADMIN_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: source-code
+              mountPath: /app/src
+      volumes:
+        - name: source-code
+          hostPath:
+            path: /Users/hiendang/project/src
+            type: Directory

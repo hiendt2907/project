@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-cluster-config
+  namespace: multi-agent
+data:
+  redis.conf: |
+    port 6379
+    cluster-enabled yes
+    cluster-config-file /data/nodes.conf
+    cluster-node-timeout 5000
+    appendonly yes
+    protected-mode no
+    dir /data
+    # Kích hoạt Hostname endpoint (Yêu cầu Redis 7+)
+    cluster-preferred-endpoint-type hostname
+    cluster-require-full-coverage no
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-cluster-bootstrapper
+  namespace: multi-agent
+spec:
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      containers:
+      - name: bootstrapper
+        image: redis:7.4-alpine
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # 1. Quét DNS của 6 node
+          NODES="redis-cluster-0.redis-cluster-headless redis-cluster-1.redis-cluster-headless redis-cluster-2.redis-cluster-headless redis-cluster-3.redis-cluster-headless redis-cluster-4.redis-cluster-headless redis-cluster-5.redis-cluster-headless"
+          
+          echo "Nuclear Cleaning and Resetting all nodes..."
+          for node in $NODES; do
+            redis-cli -h $node flushall || true
+            redis-cli -h $node cluster reset || true
+          done
+
+          # 2. Tạo cluster dùng Hostname (Nghĩa là DNS name vĩnh viễn)
+          CLUSTER_CMD_NODES=""
+          for node in $NODES; do
+            CLUSTER_CMD_NODES="$CLUSTER_CMD_NODES $node:6379"
+          done
+          
+          echo "Bootstrapping with permanent hostnames: $CLUSTER_CMD_NODES"
+          redis-cli --cluster create $CLUSTER_CMD_NODES --cluster-replicas 1 --cluster-yes
+
+          echo "Final Cluster Verification:"
+          redis-cli -h redis-cluster-0.redis-cluster-headless cluster info
+      restartPolicy: OnFailure

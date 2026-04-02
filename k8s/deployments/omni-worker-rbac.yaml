@@ -1,0 +1,87 @@
+# Omni-worker SA: quyền cluster-admin (yêu cầu vận hành: rollout/restart toàn cluster).
+# God-Mode V3 k8s_cluster_tools (scale/patch/describe/logs/endpoints): cluster-admin đã bao phủ;
+# RoleBinding pod-reader bổ sung đọc pods/log/events trong multi-agent (không thay thế cluster-admin).
+# Cảnh báo: ServiceAccount này có quyền tương đương admin — chỉ dùng trong môi tin cậy.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: omni-worker-cluster-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: omni-worker
+    namespace: multi-agent
+---
+# RBAC đọc Pod trong namespace multi-agent (omni-worker tool k8s_list_pods) — bổ sung; cluster-admin đã bao phủ.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omni-worker
+  namespace: multi-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: omni-worker-pod-reader
+  namespace: multi-agent
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # read_namespaced_pod_log — thiếu quyền này → 403 Forbidden
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omni-worker-pod-reader
+  namespace: multi-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: omni-worker-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: omni-worker
+    namespace: multi-agent
+---
+# metrics.k8s.io/nodes là cluster-scoped — cần ClusterRole (OrbStack/metrics-server).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-worker-metrics-nodes-reader
+rules:
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: omni-worker-metrics-nodes-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-worker-metrics-nodes-reader
+subjects:
+  - kind: ServiceAccount
+    name: omni-worker
+    namespace: multi-agent

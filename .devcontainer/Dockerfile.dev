@@ -1,0 +1,23 @@
+FROM mcr.microsoft.com/devcontainers/python:3.11
+
+# docker-ce-cli: client chính thức (repo Docker). Không tồn tại gói tên docker-ce-ci.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && . /etc/os-release \
+    && curl -fsSL "https://download.docker.com/linux/${ID}/gpg" -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl" \
+    && install -m 0755 /tmp/kubectl /usr/local/bin/kubectl \
+    && rm -f /tmp/kubectl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Cài đặt các thư viện Python cần thiết cho LLM & Auto Tool
+COPY ../requirements.txt /tmp/
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt

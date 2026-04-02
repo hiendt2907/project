@@ -1,0 +1,416 @@
+# 10 templates × 10³ = 1000 biến thể/template → round-robin đủ 10.000 điểm tại cap mặc định.
+version: 1
+templates:
+  - template_id: k8s_list_ns_trip
+    allow_auto_execute: true
+    tool: k8s_list_pods
+    args:
+      namespace: "{namespace}"
+    match_text_template: >-
+      {cluster}: namespace `{namespace}` — {symptom}. Liệt kê pod/workload (SDK) để chẩn đoán.
+    slots:
+      cluster:
+        - OrbStack K8s Mac M4
+        - cụm dev nội bộ
+        - môi trường staging
+        - production-lite
+        - lab multi-agent
+        - cluster monitor stack
+        - homelab ARM64
+        - CI ephemeral cluster
+        - edge profile OrbStack
+        - namespace-isolated test
+      namespace:
+        - multi-agent
+        - monitor
+        - default
+        - kube-system
+        - opensandbox
+        - tempo
+        - loki
+        - grafana
+        - prometheus
+        - redis
+      symptom:
+        - CPU spike bất thường
+        - RAM pressure / OOM risk
+        - pod Pending / Scheduling
+        - CrashLoopBackOff
+        - ImagePullBackOff
+        - high restart count
+        - network timeout giữa pod
+        - PVC không mount được
+        - probe fail liên tục
+        - latency tăng đột biến
+
+  - template_id: metrics_top_trip
+    allow_auto_execute: true
+    tool: namespace_pods_top
+    args:
+      namespace: "{namespace}"
+    match_text_template: >-
+      {cluster}: `{namespace}` — {symptom}. Cần top CPU/RAM pod (metrics-server).
+    slots:
+      cluster:
+        - OrbStack
+        - cụm nội bộ
+        - monitor plane
+        - app plane
+        - data plane
+        - staging
+        - lab
+        - homelab
+        - edge
+        - dev
+      namespace:
+        - multi-agent
+        - monitor
+        - default
+        - kube-system
+        - opensandbox
+        - tempo
+        - loki
+        - grafana
+        - prometheus
+        - redis
+      symptom:
+        - nghi ngờ thiếu CPU
+        - RAM usage cao
+        - một pod ăn hết quota
+        - HPA chưa scale kịp
+        - node pressure
+        - noisy neighbor
+        - throttling
+        - memory leak nghi ngờ
+        - spike sau deploy
+        - baseline drift
+
+  - template_id: psutil_trip
+    allow_auto_execute: true
+    tool: system_psutil
+    args: {}
+    match_text_template: >-
+      {cluster}: {symptom} — {context}. Snapshot CPU/RAM/disk/net (psutil).
+    slots:
+      cluster:
+        - Worker pod OS
+        - Omni-worker host view
+        - Sidecar node
+        - Metrics collector host
+        - Lab runner
+        - CI runner
+        - Dev laptop bridge
+        - OrbStack VM
+        - Sandbox shim host
+        - App container OS
+      symptom:
+        - tải hệ thống cao
+        - disk gần đầy
+        - swap pressure
+        - IO wait
+        - packet drop
+        - load average tăng
+        - inode risk
+        - temp disk spike
+        - network errors
+        - context switch cao
+      context:
+        - baseline trước incident
+        - sau khi deploy
+        - hourly health
+        - user complaint
+        - alert correlation
+        - capacity review
+        - post-mortem data
+        - drift detection
+        - freeze investigation
+        - perf regression
+
+  - template_id: vm_promql_trip
+    allow_auto_execute: true
+    tool: vm_promql_instant
+    args:
+      query: "{query}"
+    match_text_template: >-
+      {cluster}: {symptom} — query `{query}` (Prometheus instant).
+    slots:
+      cluster:
+        - Monitor namespace
+        - Metrics plane
+        - Observability stack
+        - Prometheus TSDB
+        - Scrape pipeline
+        - Prometheus scrape
+        - SRE workspace
+        - On-call toolkit
+        - Lab metrics
+        - PromQL console
+      symptom:
+        - scrape fail doubt
+        - series missing
+        - query timeout
+        - rate() empty
+        - histogram gap
+        - alert dry-run
+        - cardinality doubt
+        - sample gap
+        - recording rule lag
+        - remote_write backlog
+      query:
+        - up
+        - sum(rate(container_cpu_usage_seconds_total[5m]))
+        - node_memory_MemAvailable_bytes
+        - kube_pod_status_phase
+        - container_memory_working_set_bytes
+        - process_resident_memory_bytes
+        - scrape_duration_seconds
+        - vm_cache_entries
+        - rate(http_requests_total[5m])
+        - count({__name__=~".+"})
+
+  - template_id: redis_health_trip
+    allow_auto_execute: true
+    tool: redis_health
+    args: {}
+    match_text_template: >-
+      {cluster}: {symptom} — {context}. Kiểm tra Redis health/latency.
+    slots:
+      cluster:
+        - multi-agent Redis
+        - cache tier
+        - session store
+        - queue backend
+        - rate-limit store
+        - pubsub plane
+        - feature flag store
+        - lab Redis
+        - staging Redis
+        - sidecar Redis
+      symptom:
+        - client timeout
+        - high latency
+        - evictions tăng
+        - memory max
+        - blocked clients
+        - replication lag
+        - connection flapping
+        - OOM command reject
+        - AOF doubt
+        - RDB slow
+      context:
+        - triage nhanh
+        - sau đổi config
+        - incident
+        - synthetic fail
+        - canary
+        - load test
+        - nightly audit
+        - handoff shift
+        - failover drill
+        - maintenance
+
+  - template_id: pgvector_health_trip
+    allow_auto_execute: true
+    tool: pgvector_health
+    args: {}
+    match_text_template: >-
+      {cluster}: {symptom} — {context}. Health Postgres/pgvector collections.
+    slots:
+      cluster:
+        - RAG PVC
+        - vector DB service
+        - RAG backend
+        - multi-agent RAG
+        - sop ledger host
+        - error ledger host
+        - infra topology store
+        - action experience store
+        - lab collection
+        - embedding index
+      symptom:
+        - search latency
+        - collection missing doubt
+        - disk pressure
+        - gRPC timeout
+        - upsert fail
+        - query 4xx
+        - shard doubt
+        - snapshot stale
+        - index doubt
+        - memory limit
+      context:
+        - trước bulk ingest
+        - sau rollout
+        - fast-path miss
+        - nightly check
+        - user escalated
+        - capacity review
+        - migration prep
+        - DR drill
+        - perf regression
+        - demo prep
+
+  - template_id: pgvector_audit_trip
+    allow_auto_execute: true
+    tool: pgvector_health_audit
+    args: {}
+    match_text_template: >-
+      {cluster}: {symptom} — {context}. Audit Postgres/pgvector (ledger/collections).
+    slots:
+      cluster:
+        - SRE audit
+        - compliance pass
+        - weekly review
+        - pre-release gate
+        - post-incident
+        - onboarding checklist
+        - security review
+        - performance audit
+        - chaos aftermath
+        - data review
+      symptom:
+        - ledger drift doubt
+        - point count anomaly
+        - collection growth
+        - orphan payload doubt
+        - schema doubt
+        - backup gap doubt
+        - replication doubt
+        - ACL doubt
+        - TLS doubt
+        - SLI breach context
+      context:
+        - read-only sweep
+        - formal report
+        - engineer self-check
+        - manager ask
+        - customer evidence
+        - internal ticket
+        - retro action
+        - quick sweep
+        - deep audit
+        - stakeholder pack
+
+  - template_id: promql_hints_trip
+    allow_auto_execute: true
+    tool: metrics_promql_hints
+    args:
+      topic: "{topic}"
+    match_text_template: >-
+      {cluster}: chủ đề `{topic}` — {symptom}. Gợi ý PromQL (hints).
+    slots:
+      cluster:
+        - Observability
+        - SRE playbook
+        - On-call sheet
+        - Grafana user
+        - VM explorer
+        - Loki pivot
+        - Tempo pivot
+        - Redis ops
+        - Node disk ops
+        - K8s metrics
+      topic:
+        - redis
+        - memory
+        - disk
+        - iops
+        - node
+        - cpu
+        - network
+        - kubelet
+        - cAdvisor
+        - all
+      symptom:
+        - tránh sai metric
+        - cần template nhanh
+        - học PromQL
+        - đồng bộ series
+        - giảm cardinality
+        - chọn histogram
+        - rate vs irate
+        - recording rules
+        - alert thresholds
+        - SLO mapping
+
+  - template_id: redis_info_trip
+    allow_auto_execute: true
+    tool: redis_info
+    args: {}
+    match_text_template: >-
+      {cluster}: {symptom} — {context}. Đọc Redis INFO chi tiết.
+    slots:
+      cluster:
+        - Redis primary
+        - Redis replica
+        - Sentinel-backed
+        - Cluster node
+        - TLS Redis
+        - sidecar Redis
+        - shared cache
+        - session Redis
+        - lab Redis
+        - staging Redis
+      symptom:
+        - memory RSS high
+        - clients blocked
+        - slowlog spike
+        - ops/sec drop
+        - hit ratio drop
+        - fragmentation
+        - persistence lag
+        - maxclients near
+        - denyoom events
+        - fork latency
+      context:
+        - triage
+        - deep dive
+        - hourly
+        - post-change
+        - incident
+        - capacity
+        - benchmark
+        - regression
+        - audit
+        - handoff
+
+  - template_id: pgvector_status_trip
+    allow_auto_execute: true
+    tool: pgvector_status
+    args: {}
+    match_text_template: >-
+      {cluster}: {symptom} — {context}. Gọi pgvector_status nhanh.
+    slots:
+      cluster:
+        - Postgres RAG service
+        - multi-agent data plane
+        - vector tier
+        - RAG dependency
+        - ledger storage
+        - topology storage
+        - error storage
+        - experience storage
+        - monitor sidecar
+        - lab instance
+      symptom:
+        - API flapping
+        - collection list doubt
+        - version skew
+        - timeout
+        - 503 bursts
+        - storage path doubt
+        - HNSW doubt
+        - quantization doubt
+        - multi-tenant doubt
+        - backup verify
+      context:
+        - quick check
+        - before demo
+        - before ingest
+        - after upgrade
+        - SRE routine
+        - on-call
+        - post-fix
+        - pre-chaos
+        - weekly
+        - user escalated

@@ -1,0 +1,326 @@
+# Grafana + provisioning (Loki, Prometheus, Tempo) + dashboard Omni Pipeline
+# Truy cập: kubectl port-forward -n monitor svc/grafana 3000:3000 — user admin / đọc Secret grafana-admin
+# Telegram alerting: Secret grafana-telegram-alerting + k8s/monitor/GRAFANA_ALERTING.md
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin
+  namespace: monitor
+  labels:
+    app: grafana
+type: Opaque
+stringData:
+  # Đổi sau deploy: kubectl create secret generic grafana-admin --from-literal=password='...' -n monitor --dry-run=client -o yaml | kubectl apply -f -
+  password: changeme
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: monitor
+  labels:
+    app: grafana
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitor
+  labels:
+    app: grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    # Tránh lỗi "data source with the same uid already exists" khi PVC đã có DB cũ (đổi URL VM→Prometheus).
+    deleteDatasources:
+      - name: Loki
+        orgId: 1
+      - name: Prometheus
+        orgId: 1
+      - name: Mimir
+        orgId: 1
+      - name: VictoriaMetrics
+        orgId: 1
+      - name: Tempo
+        orgId: 1
+    datasources:
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+        isDefault: true
+      # uid=prometheus: Prometheus local (scrape + rule eval) — dùng cho Grafana Alerting (không qua remote_write).
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: false
+        jsonData:
+          httpMethod: POST
+      # Long retention / remote_write sink — dashboards; không dùng cho alert rules.
+      - name: Mimir
+        uid: mimir
+        type: prometheus
+        access: proxy
+        url: http://mimir:9009/prometheus
+        isDefault: false
+        jsonData:
+          httpMethod: POST
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        access: proxy
+        url: http://tempo:3200
+        jsonData:
+          httpMethod: GET
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: monitor
+  labels:
+    app: grafana
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: omni
+        orgId: 1
+        folder: Omni
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /etc/grafana/dashboards/omni
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana
+  namespace: monitor
+  labels:
+    app: grafana
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: grafana-dashboard-sidecar
+  namespace: monitor
+  labels:
+    app: grafana
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: grafana-dashboard-sidecar
+  namespace: monitor
+  labels:
+    app: grafana
+subjects:
+  - kind: ServiceAccount
+    name: grafana
+    namespace: monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: grafana-dashboard-sidecar
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitor
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: grafana
+      securityContext:
+        fsGroup: 472
+        runAsNonRoot: true
+        runAsUser: 472
+      initContainers:
+        # Read token/chat from Secret files (same bytes as omni-worker telegram-bot); avoids env/mangling issues.
+        - name: render-alerting-contact
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 472
+            runAsGroup: 472
+            allowPrivilegeEscalation: false
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              BOT=$(tr -d '\r\n' < /var/secrets/telegram/bot-token)
+              CHAT=$(tr -d '\r\n' < /var/secrets/telegram/chat-id)
+              BOT=$(printf '%s' "$BOT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+              CHAT=$(printf '%s' "$CHAT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+              # Double-quoted YAML values — escape \ and " for Telegram token/chat
+              esc_bot=$(printf '%s' "$BOT" | sed 's/\\/\\\\/g;s/"/\\"/g')
+              esc_chat=$(printf '%s' "$CHAT" | sed 's/\\/\\\\/g;s/"/\\"/g')
+              cat > /work/contact_points.yaml <<EOF
+              apiVersion: 1
+              contactPoints:
+                - orgId: 1
+                  name: omni-telegram
+                  receivers:
+                    - uid: omni_telegram_cp
+                      type: telegram
+                      disableResolveMessage: false
+                      settings:
+                        bottoken: "${esc_bot}"
+                        chatid: "${esc_chat}"
+              EOF
+          volumeMounts:
+            - name: alerting-contact-rendered
+              mountPath: /work
+            - name: telegram-alerting-secret
+              mountPath: /var/secrets/telegram
+              readOnly: true
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.3.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: password
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            - name: GF_SERVER_ROOT_URL
+              value: "%(protocol)s://%(domain)s:%(http_port)s/"
+          volumeMounts:
+            - name: storage
+              mountPath: /var/lib/grafana
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards-shared
+              mountPath: /etc/grafana/dashboards/omni
+            - name: alerting-contact-rendered
+              mountPath: /etc/grafana/provisioning/alerting/contact_points.yaml
+              subPath: contact_points.yaml
+            - name: alerting-policies
+              mountPath: /etc/grafana/provisioning/alerting/notification_policies.yaml
+              subPath: notification_policies.yaml
+            - name: alerting-policies
+              mountPath: /etc/grafana/provisioning/alerting/alert_rules.yaml
+              subPath: alert_rules.yaml
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+        - name: dashboard-sidecar
+          image: quay.io/kiwigrid/k8s-sidecar:1.27.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LABEL
+              value: grafana_dashboard
+            - name: LABEL_VALUE
+              value: "1"
+            - name: FOLDER
+              value: /tmp/dashboards
+            - name: RESOURCE
+              value: configmap
+            - name: NAMESPACE
+              value: monitor
+            - name: METHOD
+              value: WATCH
+          volumeMounts:
+            - name: dashboards-shared
+              mountPath: /tmp/dashboards
+          resources:
+            requests:
+              cpu: "20m"
+              memory: 64Mi
+            limits:
+              cpu: "200m"
+              memory: 256Mi
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: grafana-data
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboards-shared
+          emptyDir: {}
+        - name: alerting-contact-rendered
+          emptyDir: {}
+        - name: telegram-alerting-secret
+          secret:
+            secretName: grafana-telegram-alerting
+        - name: alerting-policies
+          configMap:
+            name: grafana-alerting-provisioning
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitor
+  labels:
+    app: grafana
+spec:
+  type: ClusterIP
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitor
+  labels:
+    app: grafana
+    grafana_dashboard: "1"
+    grafana_folder: omni
+data:
+  L0_control_tower.json: |
+    {
+      "title": "L0 Control Tower",
+      "uid": "l0-control-tower",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "tags": ["omni", "l0", "control-tower"],
+      "time": { "from": "now-6h", "to": "now" },
+      "templating": { "list": [ { "name": "namespace", "label": "namespace", "type": "query", "datasource": { "type": "prometheus", "uid": "mimir" }, "query": "label_values(up, kubernetes_namespace)", "current": { "selected": true, "text": "multi-agent", "value": "multi-agent" }, "includeAll": false, "multi": false }, { "name": "trace_id", "label": "trace_id", "type": "textbox", "query": "", "current": { "selected": true, "text": "", "value": "" } } ] },
+      "panels": [
+        { "id": 1, "type": "stat", "title": "Auto-remediation success ratio (5m)", "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "100 * (sum(increase(omni_proactive_verify_total{outcome=\"success\"}[5m])) / clamp_min(sum(increase(omni_proactive_verify_total[5m])), 1))" } ], "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] }, "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center" } },
+        { "id": 2, "type": "stat", "title": "Active firing alerts", "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "sum(ALERTS{alertstate=\"firing\"})" } ], "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] }, "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center" } },
+        { "id": 3, "type": "stat", "title": "Worker health", "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "max(up{job=\"kubernetes-pods\",kubernetes_namespace=\"$namespace\",kubernetes_pod_name=~\"omni-worker.*\"})" } ], "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center" } },
+        { "id": 4, "type": "stat", "title": "Ollama up", "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "max(omni_ollama_up)" } ], "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center" } },
+        { "id": 5, "type": "table", "title": "Top Alerts", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "topk(10, sum by (alertname, namespace, severity) (ALERTS{alertstate=\"firing\"}))", "format": "table", "instant": true } ], "fieldConfig": { "defaults": {}, "overrides": [ { "matcher": { "id": "byName", "options": "namespace" }, "properties": [ { "id": "links", "value": [ { "title": "Open L3 by namespace", "url": "/d/l3-dataflow-traces/l3-dataflow-traces?orgId=1&var-namespace=${__value.text}&var-trace_id=${trace_id}" } ] } ] } ] }, "options": { "showHeader": true } },
+        { "id": 6, "type": "table", "title": "Recent trace IDs (from logs)", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "{namespace=\"$namespace\", pod_name=~\"omni-worker.*|omni-gateway.*\"} | json | trace_id != \"\" | line_format \"{{.trace_id}} {{.namespace}}\"", "queryType": "range" } ], "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns" } } ], "fieldConfig": { "defaults": {}, "overrides": [ { "matcher": { "id": "byName", "options": "trace_id" }, "properties": [ { "id": "links", "value": [ { "title": "Open L3 by trace_id", "url": "/d/l3-dataflow-traces/l3-dataflow-traces?orgId=1&var-trace_id=${__value.text}&var-namespace=${namespace}" } ] } ] } ] }, "options": { "showHeader": true } }
+      ]
+    }
+  L1_ai_reasoning.json: |
+    {
+      "title": "L1 AI Reasoning",
+      "uid": "l1-ai-reasoning",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "tags": ["omni", "l1", "reasoning"],
+      "time": { "from": "now-6h", "to": "now" },
+      "templating": { "list": [ { "name": "namespace", "label": "namespace", "type": "query", "datasource": { "type": "prometheus", "uid": "mimir" }, "query": "label_values(up, kubernetes_namespace)", "current": { "selected": true, "text": "multi-agent", "value": "multi-agent" } }, { "name": "trace_id", "label": "trace_id", "type": "textbox", "query": "", "current": { "selected": true, "text": "", "value": "" } } ] },
+      "panels": [
+        { "id": 1, "type": "timeseries", "title": "ReAct loop activity", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "sum(rate(omni_agent_sessions_total[5m]))", "legendFormat": "sessions/s" }, { "refId": "B", "expr": "sum(rate(omni_llm_requests_total[5m]))", "legendFormat": "llm_calls/s" }, { "refId": "C", "expr": "sum(rate(omni_slow_path_exhausted_total[5m]))", "legendFormat": "slow_path_exhausted/s" } ] },
+        { "id": 2, "type": "timeseries", "title": "Ollama latency (p95 proxy from worker latency)", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(omni_worker_latency_seconds_bucket[5m])))", "legendFormat": "p95_latency_s" } ] },
+        { "id": 3, "type": "stat", "title": "RAG Vector Hit-rate (5m)", "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "100 * (sum(rate(omni_fastpath_hits_total[5m])) / clamp_min(sum(rate(omni_fastpath_hits_total[5m])) + sum(rate(omni_llm_requests_total[5m])), 1e-9))" } ], "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] } },
+        { "id": 4, "type": "stat", "title": "Wilson Confidence Score (lower bound)", "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "max(omni_wilson_confidence_score)" } ], "fieldConfig": { "defaults": { "min": 0, "max": 1, "decimals": 3 }, "overrides": [] } },
+        { "id": 5, "type": "table", "title": "Reasoning traces (trace_id / namespace)", "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "{namespace=\"$namespace\", pod_name=~\"omni-worker.*\"} | json | trace_id != \"\" | line_format \"{{.trace_id}} {{.namespace}} {{.event}}\"" } ], "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns" } } ], "fieldConfig": { "defaults": {}, "overrides": [ { "matcher": { "id": "byName", "options": "trace_id" }, "properties": [ { "id": "links", "value": [ { "title": "Open L3 for trace", "url": "/d/l3-dataflow-traces/l3-dataflow-traces?orgId=1&var-trace_id=${__value.text}&var-namespace=${namespace}" } ] } ] }, { "matcher": { "id": "byName", "options": "namespace" }, "properties": [ { "id": "links", "value": [ { "title": "Open L3 for namespace", "url": "/d/l3-dataflow-traces/l3-dataflow-traces?orgId=1&var-namespace=${__value.text}&var-trace_id=${trace_id}" } ] } ] } ] }, "options": { "showHeader": true } }
+      ]
+    }
+  L2_infra_3sigma.json: |
+    {
+      "title": "L2 Infra 3-Sigma",
+      "uid": "l2-infra-3sigma",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "tags": ["omni", "l2", "infra", "3sigma"],
+      "time": { "from": "now-24h", "to": "now" },
+      "templating": { "list": [ { "name": "namespace", "label": "namespace", "type": "query", "datasource": { "type": "prometheus", "uid": "mimir" }, "query": "label_values(up, kubernetes_namespace)", "current": { "selected": true, "text": "multi-agent", "value": "multi-agent" } } ] },
+      "panels": [
+        { "id": 1, "type": "timeseries", "title": "CPU Z-Score", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "omni:node_cpu:z", "legendFormat": "cpu_z" }, { "refId": "B", "expr": "((omni:cpu_busy:instant - omni:node_cpu:avg_24h) / clamp_min(omni:node_cpu:stddev_24h, 1e-9))", "legendFormat": "cpu_formula_z" } ] },
+        { "id": 2, "type": "timeseries", "title": "RAM Z-Score", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "omni:mem:z", "legendFormat": "mem_z" }, { "refId": "B", "expr": "((omni:mem_avail_ratio:instant - omni:node_mem:avg_24h) / clamp_min(omni:node_mem:stddev_24h, 1e-9))", "legendFormat": "mem_formula_z" } ] },
+        { "id": 3, "type": "timeseries", "title": "Disk IOPS Z-Score", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "omni:node_iops:z", "legendFormat": "iops_z" }, { "refId": "B", "expr": "((omni:iops_total:instant - omni:node_iops:avg_24h) / clamp_min(omni:node_iops:stddev_24h, 1e-9))", "legendFormat": "iops_formula_z" } ] },
+        { "id": 4, "type": "timeseries", "title": "Disk usage Z-Score", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "omni:node_disk:z", "legendFormat": "disk_z" }, { "refId": "B", "expr": "((omni:disk_used_ratio:instant - omni:node_disk:avg_24h) / clamp_min(omni:node_disk:stddev_24h, 1e-9))", "legendFormat": "disk_formula_z" } ] },
+        { "id": 5, "type": "table", "title": "3-sigma anomalies (abs(Z) > 3)", "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "abs(((omni:cpu_busy:instant - omni:node_cpu:avg_24h) / clamp_min(omni:node_cpu:stddev_24h, 1e-9))) > 3", "format": "table", "instant": true }, { "refId": "B", "expr": "abs(((omni:mem_avail_ratio:instant - omni:node_mem:avg_24h) / clamp_min(omni:node_mem:stddev_24h, 1e-9))) > 3", "format": "table", "instant": true }, { "refId": "C", "expr": "abs(((omni:disk_used_ratio:instant - omni:node_disk:avg_24h) / clamp_min(omni:node_disk:stddev_24h, 1e-9))) > 3", "format": "table", "instant": true }, { "refId": "D", "expr": "abs(((omni:iops_total:instant - omni:node_iops:avg_24h) / clamp_min(omni:node_iops:stddev_24h, 1e-9))) > 3", "format": "table", "instant": true } ], "options": { "showHeader": true } }
+      ]
+    }
+  L3_dataflow_traces.json: |
+    {
+      "title": "L3 Dataflow Traces",
+      "uid": "l3-dataflow-traces",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "tags": ["omni", "l3", "traces", "dataflow"],
+      "time": { "from": "now-6h", "to": "now" },
+      "templating": { "list": [ { "name": "namespace", "label": "namespace", "type": "query", "datasource": { "type": "prometheus", "uid": "mimir" }, "query": "label_values(up, kubernetes_namespace)", "current": { "selected": true, "text": "multi-agent", "value": "multi-agent" } }, { "name": "trace_id", "label": "trace_id", "type": "textbox", "query": "", "current": { "selected": true, "text": "", "value": "" } } ] },
+      "links": [ { "title": "Open Tempo Explore with trace_id", "type": "link", "url": "/explore?orgId=1&left=%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22queryType%22:%22traceqlSearch%22,%22query%22:%22.trace_id%20%3D%20%5C%22${trace_id}%5C%22%22%7D%5D,%22range%22:%7B%22from%22:%22now-1h%22,%22to%22:%22now%22%7D%7D" } ],
+      "panels": [
+        { "id": 1, "type": "timeseries", "title": "Redis Streams backlog", "gridPos": { "h": 7, "w": 8, "x": 0, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "omni_worker_lag_size", "legendFormat": "omni_worker_lag_size" }, { "refId": "B", "expr": "sum(redis_stream_length)", "legendFormat": "redis_stream_length_total" } ] },
+        { "id": 2, "type": "timeseries", "title": "Tempo query throughput", "gridPos": { "h": 7, "w": 8, "x": 8, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "sum(rate(tempo_request_duration_seconds_count[5m]))", "legendFormat": "tempo_req_rate" } ] },
+        { "id": 3, "type": "timeseries", "title": "Loki query throughput", "gridPos": { "h": 7, "w": 8, "x": 16, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "sum(rate(loki_request_duration_seconds_count[5m]))", "legendFormat": "loki_req_rate" } ] },
+        { "id": 4, "type": "logs", "title": "Loki logs correlated by trace_id", "gridPos": { "h": 10, "w": 14, "x": 0, "y": 7 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "{namespace=\"$namespace\", pod_name=~\"omni-worker.*|omni-gateway.*\"} |= \"$trace_id\"" } ] },
+        { "id": 5, "type": "table", "title": "Tempo trace search (trace_id link)", "gridPos": { "h": 10, "w": 10, "x": 14, "y": 7 }, "datasource": { "type": "tempo", "uid": "tempo" }, "targets": [ { "refId": "A", "queryType": "traceqlSearch", "query": ".trace_id = \"${trace_id}\"", "limit": 20 } ], "fieldConfig": { "defaults": {}, "overrides": [ { "matcher": { "id": "byName", "options": "trace_id" }, "properties": [ { "id": "links", "value": [ { "title": "Open same trace in Explore", "url": "/explore?orgId=1&left=%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22queryType%22:%22traceqlSearch%22,%22query%22:%22.trace_id%20%3D%20%5C%22${__value.text}%5C%22%22%7D%5D%7D" } ] } ] } ] }, "options": { "showHeader": true } }
+      ]
+    }

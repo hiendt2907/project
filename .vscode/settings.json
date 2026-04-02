@@ -1,0 +1,8 @@
+{
+  "terminal.integrated.env.osx": {
+    "KUBECONFIG": "${env:HOME}/.kube/config"
+  },
+  "terminal.integrated.env.linux": {
+    "KUBECONFIG": "${env:HOME}/.kube/config"
+  }
+}

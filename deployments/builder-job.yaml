@@ -1,0 +1,37 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: omni-image-builder
+  namespace: multi-agent
+spec:
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      containers:
+      - name: builder
+        image: docker:cli
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Bypassing MAC Sandbox: Building Docker Image directly via OrbStack daemon..."
+          cd /project
+          docker build -t multi-agent-system:v6.4-chaos -f Dockerfile .
+          echo "Build Complete! Displaying image:"
+          docker images | grep multi-agent-system
+        volumeMounts:
+        - name: project-dir
+          mountPath: /project
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+      volumes:
+      - name: project-dir
+        hostPath:
+          # Vẫn cần dùng hostPath nhưng chỉ cho MỘT LẦN build (Bên trong Job)
+          path: /Users/hiendang/project
+          type: Directory
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock
+      restartPolicy: Never
+  backoffLimit: 0

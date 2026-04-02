@@ -1,0 +1,28 @@
+version: 1
+templates:
+  - template_id: mini_a
+    allow_auto_execute: true
+    tool: echo
+    args:
+      msg: "{x}-{y}"
+    match_text_template: "Test {x} và {y} cho echo."
+    slots:
+      x: [a1, a2]
+      y: [b1, b2]
+
+  - template_id: mini_b
+    allow_auto_execute: true
+    tool: reply
+    args:
+      text: "{u}"
+    match_text_template: "Hỏi {u} trả lời nhanh."
+    slots:
+      u: [c1, c2, c3]
+
+  - template_id: mini_mutating
+    allow_auto_execute: true
+    tool: k8s_rollout_restart
+    args: {}
+    match_text_template: "Restart {n} — không auto."
+    slots:
+      n: [x1, x2]

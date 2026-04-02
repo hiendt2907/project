@@ -1,0 +1,405 @@
+{
+  "vendors": [
+    {
+      "id": "python",
+      "name": "Python",
+      "base_dir": "docs/vendor/python",
+      "pages": [
+        "https://docs.python.org/3/",
+        "https://docs.python.org/3/library/asyncio.html",
+        "https://docs.python.org/3/library/asyncio-task.html",
+        "https://docs.python.org/3/library/asyncio-queue.html",
+        "https://docs.python.org/3/library/logging.html",
+        "https://docs.python.org/3/library/json.html"
+      ]
+    },
+    {
+      "id": "postgresql",
+      "name": "PostgreSQL",
+      "base_dir": "docs/vendor/postgresql",
+      "pages": [
+        "https://www.postgresql.org/docs/current/",
+        "https://www.postgresql.org/docs/current/sql.html",
+        "https://www.postgresql.org/docs/current/datatype.html",
+        "https://www.postgresql.org/docs/current/functions.html",
+        "https://www.postgresql.org/docs/current/indexes.html",
+        "https://www.postgresql.org/docs/current/runtime-config.html"
+      ]
+    },
+    {
+      "id": "kubernetes",
+      "name": "Kubernetes",
+      "base_dir": "docs/vendor/kubernetes",
+      "pages": [
+        "https://kubernetes.io/docs/concepts/overview/",
+        "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/",
+        "https://kubernetes.io/docs/concepts/configuration/configmap/",
+        "https://kubernetes.io/docs/concepts/configuration/secret/",
+        "https://kubernetes.io/docs/concepts/services-networking/service/",
+        "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/",
+        "https://kubernetes.io/docs/concepts/cluster-administration/kube-state-metrics/"
+      ]
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "base_dir": "docs/vendor/ollama",
+      "pages": [
+        "https://docs.ollama.com/api",
+        "https://docs.ollama.com/modelfile"
+      ]
+    },
+    {
+      "id": "redis",
+      "name": "Redis",
+      "base_dir": "docs/vendor/redis",
+      "pages": [
+        "https://redis.io/docs/latest/",
+        "https://redis.io/docs/latest/develop/data-types/streams/",
+        "https://redis.io/docs/latest/commands/xreadgroup/",
+        "https://redis.io/docs/latest/commands/xack/",
+        "https://redis.io/docs/latest/commands/xadd/",
+        "https://redis.io/docs/latest/commands/xpending/"
+      ]
+    },
+    {
+      "id": "prometheus",
+      "name": "Prometheus",
+      "base_dir": "docs/vendor/prometheus",
+      "pages": [
+        "https://prometheus.io/docs/introduction/overview/",
+        "https://prometheus.io/docs/prometheus/latest/configuration/configuration/",
+        "https://prometheus.io/docs/prometheus/latest/querying/basics/",
+        "https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/"
+      ]
+    },
+    {
+      "id": "grafana",
+      "name": "Grafana",
+      "base_dir": "docs/vendor/grafana",
+      "pages": [
+        "https://grafana.com/docs/grafana/latest/",
+        "https://grafana.com/docs/grafana/latest/datasources/",
+        "https://grafana.com/docs/grafana/latest/alerting/"
+      ]
+    },
+    {
+      "id": "fastapi",
+      "name": "FastAPI",
+      "base_dir": "docs/vendor/fastapi",
+      "pages": [
+        "https://fastapi.tiangolo.com/",
+        "https://fastapi.tiangolo.com/tutorial/",
+        "https://fastapi.tiangolo.com/advanced/",
+        "https://fastapi.tiangolo.com/deployment/"
+      ]
+    },
+    {
+      "id": "httpx",
+      "name": "HTTPX",
+      "base_dir": "docs/vendor/httpx",
+      "pages": [
+        "https://www.python-httpx.org/",
+        "https://www.python-httpx.org/async/",
+        "https://www.python-httpx.org/quickstart/"
+      ]
+    },
+    {
+      "id": "pydantic",
+      "name": "Pydantic",
+      "base_dir": "docs/vendor/pydantic",
+      "pages": [
+        "https://docs.pydantic.dev/latest/",
+        "https://docs.pydantic.dev/latest/concepts/models/",
+        "https://docs.pydantic.dev/latest/concepts/validators/",
+        "https://docs.pydantic.dev/latest/concepts/serialization/",
+        "https://docs.pydantic.dev/latest/api/pydantic_settings/"
+      ]
+    },
+    {
+      "id": "kubernetes-asyncio",
+      "name": "Kubernetes Asyncio SDK",
+      "base_dir": "docs/vendor/kubernetes_asyncio",
+      "pages": [
+        "https://kubernetes-asyncio.readthedocs.io/en/latest/",
+        "https://kubernetes-asyncio.readthedocs.io/en/latest/kubernetes_asyncio.client.html",
+        "https://kubernetes-asyncio.readthedocs.io/en/latest/kubernetes_asyncio.watch.html"
+      ]
+    },
+    {
+      "id": "qdrant",
+      "name": "Qdrant",
+      "base_dir": "docs/vendor/qdrant",
+      "pages": [
+        "https://qdrant.tech/documentation/",
+        "https://qdrant.tech/documentation/concepts/collections/",
+        "https://qdrant.tech/documentation/concepts/payload/"
+      ]
+    },
+    {
+      "id": "pytest",
+      "name": "Pytest",
+      "base_dir": "docs/vendor/pytest",
+      "pages": [
+        "https://docs.pytest.org/en/stable/",
+        "https://docs.pytest.org/en/stable/how-to/fixtures.html",
+        "https://docs.pytest.org/en/stable/how-to/mark.html"
+      ]
+    },
+    {
+      "id": "pytest-asyncio",
+      "name": "Pytest Asyncio",
+      "base_dir": "docs/vendor/pytest_asyncio",
+      "pages": [
+        "https://pytest-asyncio.readthedocs.io/en/stable/",
+        "https://pytest-asyncio.readthedocs.io/en/stable/reference/fixtures/index.html"
+      ]
+    },
+    {
+      "id": "uvicorn",
+      "name": "Uvicorn",
+      "base_dir": "docs/vendor/uvicorn",
+      "pages": [
+        "https://www.uvicorn.org/",
+        "https://www.uvicorn.org/deployment/",
+        "https://www.uvicorn.org/settings/"
+      ]
+    },
+    {
+      "id": "aiohttp",
+      "name": "aiohttp",
+      "base_dir": "docs/vendor/aiohttp",
+      "pages": [
+        "https://docs.aiohttp.org/en/stable/",
+        "https://docs.aiohttp.org/en/stable/client_quickstart.html",
+        "https://docs.aiohttp.org/en/stable/web_quickstart.html"
+      ]
+    },
+    {
+      "id": "asyncpg",
+      "name": "asyncpg",
+      "base_dir": "docs/vendor/asyncpg",
+      "pages": [
+        "https://magicstack.github.io/asyncpg/current/",
+        "https://magicstack.github.io/asyncpg/current/api/index.html",
+        "https://magicstack.github.io/asyncpg/current/usage.html"
+      ]
+    },
+    {
+      "id": "pgvector",
+      "name": "pgvector",
+      "base_dir": "docs/vendor/pgvector",
+      "pages": [
+        "https://github.com/pgvector/pgvector",
+        "https://github.com/pgvector/pgvector/blob/master/README.md"
+      ]
+    },
+    {
+      "id": "opentelemetry",
+      "name": "OpenTelemetry",
+      "base_dir": "docs/vendor/opentelemetry",
+      "pages": [
+        "https://opentelemetry.io/docs/",
+        "https://opentelemetry.io/docs/languages/python/",
+        "https://opentelemetry.io/docs/specs/otlp/"
+      ]
+    },
+    {
+      "id": "google-gemini-api",
+      "name": "Google Gemini API (google-genai)",
+      "base_dir": "docs/vendor/google_gemini",
+      "pages": [
+        "https://ai.google.dev/gemini-api/docs",
+        "https://ai.google.dev/gemini-api/docs/quickstart"
+      ]
+    },
+    {
+      "id": "telegram-bot-api",
+      "name": "Telegram Bot API",
+      "base_dir": "docs/vendor/telegram_bot_api",
+      "pages": [
+        "https://core.telegram.org/bots/api"
+      ]
+    },
+    {
+      "id": "matplotlib",
+      "name": "Matplotlib",
+      "base_dir": "docs/vendor/matplotlib",
+      "pages": [
+        "https://matplotlib.org/stable/users/index.html",
+        "https://matplotlib.org/stable/api/pyplot_summary.html"
+      ]
+    },
+    {
+      "id": "numpy",
+      "name": "NumPy",
+      "base_dir": "docs/vendor/numpy",
+      "pages": [
+        "https://numpy.org/doc/stable/",
+        "https://numpy.org/doc/stable/user/index.html"
+      ]
+    },
+    {
+      "id": "pandas",
+      "name": "pandas",
+      "base_dir": "docs/vendor/pandas",
+      "pages": [
+        "https://pandas.pydata.org/docs/",
+        "https://pandas.pydata.org/docs/user_guide/index.html"
+      ]
+    },
+    {
+      "id": "scipy",
+      "name": "SciPy",
+      "base_dir": "docs/vendor/scipy",
+      "pages": [
+        "https://docs.scipy.org/doc/scipy/",
+        "https://docs.scipy.org/doc/scipy/tutorial/index.html"
+      ]
+    },
+    {
+      "id": "prophet",
+      "name": "Prophet",
+      "base_dir": "docs/vendor/prophet",
+      "pages": [
+        "https://facebook.github.io/prophet/",
+        "https://facebook.github.io/prophet/docs/quick_start.html"
+      ]
+    },
+    {
+      "id": "scapy",
+      "name": "Scapy",
+      "base_dir": "docs/vendor/scapy",
+      "pages": [
+        "https://scapy.readthedocs.io/en/latest/",
+        "https://scapy.readthedocs.io/en/latest/usage.html"
+      ]
+    },
+    {
+      "id": "psutil",
+      "name": "psutil",
+      "base_dir": "docs/vendor/psutil",
+      "pages": [
+        "https://psutil.readthedocs.io/en/latest/",
+        "https://psutil.readthedocs.io/en/latest/index.html#system-related-functions"
+      ]
+    },
+    {
+      "id": "tenacity",
+      "name": "Tenacity",
+      "base_dir": "docs/vendor/tenacity",
+      "pages": [
+        "https://tenacity.readthedocs.io/en/latest/"
+      ]
+    },
+    {
+      "id": "pyyaml",
+      "name": "PyYAML",
+      "base_dir": "docs/vendor/pyyaml",
+      "pages": [
+        "https://pyyaml.org/wiki/PyYAMLDocumentation"
+      ]
+    },
+    {
+      "id": "python-json-logger",
+      "name": "python-json-logger",
+      "base_dir": "docs/vendor/python_json_logger",
+      "pages": [
+        "https://pypi.org/project/python-json-logger/"
+      ]
+    },
+    {
+      "id": "fakeredis",
+      "name": "fakeredis",
+      "base_dir": "docs/vendor/fakeredis",
+      "pages": [
+        "https://fakeredis.readthedocs.io/en/latest/intro.html"
+      ]
+    },
+    {
+      "id": "vulture",
+      "name": "vulture",
+      "base_dir": "docs/vendor/vulture",
+      "pages": [
+        "https://github.com/jendrikseipp/vulture"
+      ]
+    },
+    {
+      "id": "prometheus-client-python",
+      "name": "prometheus-client (Python)",
+      "base_dir": "docs/vendor/prometheus_client_python",
+      "pages": [
+        "https://prometheus.github.io/client_python/",
+        "https://github.com/prometheus/client_python"
+      ]
+    },
+    {
+      "id": "victoriametrics",
+      "name": "VictoriaMetrics",
+      "base_dir": "docs/vendor/victoriametrics",
+      "pages": [
+        "https://docs.victoriametrics.com/",
+        "https://docs.victoriametrics.com/victoriametrics/url-examples/"
+      ]
+    },
+    {
+      "id": "grafana-loki",
+      "name": "Grafana Loki",
+      "base_dir": "docs/vendor/grafana_loki",
+      "pages": [
+        "https://grafana.com/docs/loki/latest/get-started/",
+        "https://grafana.com/docs/loki/latest/send-data/promtail/"
+      ]
+    },
+    {
+      "id": "grafana-tempo",
+      "name": "Grafana Tempo",
+      "base_dir": "docs/vendor/grafana_tempo",
+      "pages": [
+        "https://grafana.com/docs/tempo/latest/getting-started/",
+        "https://grafana.com/docs/tempo/latest/configuration/"
+      ]
+    },
+    {
+      "id": "grafana-mimir",
+      "name": "Grafana Mimir",
+      "base_dir": "docs/vendor/grafana_mimir",
+      "pages": [
+        "https://grafana.com/docs/mimir/latest/operators-guide/getting-started/",
+        "https://grafana.com/docs/mimir/latest/references/architecture/"
+      ]
+    },
+    {
+      "id": "docker-distribution",
+      "name": "Docker Distribution (registry:2)",
+      "base_dir": "docs/vendor/docker_distribution",
+      "pages": [
+        "https://distribution.github.io/distribution/about/overview/"
+      ]
+    },
+    {
+      "id": "redis-exporter",
+      "name": "redis_exporter",
+      "base_dir": "docs/vendor/redis_exporter",
+      "pages": [
+        "https://github.com/oliver006/redis_exporter"
+      ]
+    },
+    {
+      "id": "node-exporter",
+      "name": "node_exporter",
+      "base_dir": "docs/vendor/node_exporter",
+      "pages": [
+        "https://github.com/prometheus/node_exporter"
+      ]
+    },
+    {
+      "id": "kiwigrid-k8s-sidecar",
+      "name": "Kiwigrid k8s-sidecar",
+      "base_dir": "docs/vendor/kiwigrid_k8s_sidecar",
+      "pages": [
+        "https://github.com/kiwigrid/k8s-sidecar"
+      ]
+    }
+  ]
+}

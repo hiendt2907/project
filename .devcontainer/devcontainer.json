@@ -1,0 +1,23 @@
+{
+    "name": "M4 Python LLM Tool",
+    "build": {
+        "dockerfile": "Dockerfile.dev",
+        "context": ".."
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-kubernetes-tools.vscode-kubernetes-tools",
+                "ms-azuretools.vscode-docker"
+            ]
+        }
+    },
+    "mounts": [
+        "source=${localEnv:HOME}/.kube,target=/home/vscode/.kube,type=bind,consistency=cached",
+        "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+    ],
+    "remoteUser": "vscode",
+    "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.kube && sudo chmod 666 /var/run/docker.sock",
+    "postStartCommand": "bash scripts/kubectl_orbstack_bootstrap.sh get ns || true"
+}

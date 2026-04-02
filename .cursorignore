@@ -1,0 +1,83 @@
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+*.crt
+secrets/
+k8s/secrets/
+
+# Python env and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Logs and runtime dumps
+*.log
+logs/
+agent_logs/
+metrics_dump/
+*.out
+*.err
+
+# Local state and databases
+qdrant_storage/
+redis_data/
+*.db
+*.sqlite
+*.sqlite3
+*.rdb
+*.aof
+
+# Frontend artifacts (if present)
+node_modules/
+.next/
+.nuxt/
+coverage/
+
+# IDE and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Bulky media/docs usually not needed for coding context
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.mov
+*.pdf
+
+# VCS metadata
+.git/
+.svn/
+
+# Extra IDE/tool noise
+.windsurf/
+.system/
+.cursor/debug-*.log
+
+# Extra heavy binary types
+*.webp
+*.zip
+*.tar
+*.gz

@@ -1,0 +1,35 @@
+# One-shot: seed SOP → Ollama embed → Postgres itops_sop_ledger (tới 10k điểm).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sop-ingest
+  namespace: multi-agent
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 1
+  activeDeadlineSeconds: 21600
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: omni-worker
+      containers:
+        - name: sop-ingest
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "training.sop_ingest"]
+          env:
+            - name: PYTHONPATH
+              value: /app/src
+            - name: OMNI_SOP_SEED_PATH
+              value: /app/data/sop/sop_templates.yaml
+            - name: OMNI_MAX_SOP_CONTEXTS
+              value: "10000"
+            - name: OMNI_OLLAMA_BASE_URL
+              value: http://ollama-service:11434
+          resources:
+            requests:
+              cpu: "250m"
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi

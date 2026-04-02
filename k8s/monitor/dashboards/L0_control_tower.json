@@ -1,0 +1,161 @@
+{
+  "title": "L0 Control Tower",
+  "uid": "l0-control-tower",
+  "schemaVersion": 39,
+  "version": 2,
+  "editable": true,
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "label": "namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "mimir" },
+        "query": "label_values(up, kubernetes_namespace)",
+        "current": { "selected": true, "text": "multi-agent", "value": "multi-agent" }
+      },
+      {
+        "name": "trace_id",
+        "label": "trace_id",
+        "type": "textbox",
+        "query": "",
+        "current": { "selected": true, "text": "", "value": "" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "text",
+      "title": "Cach doc nhanh",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "**B1:** chon `namespace`. **B2:** neu co su co cu the, dan `trace_id`. **B3:** xem 4 KPI o hang dau. **B4:** click vao bang `Top Alerts` hoac `Trace gan day` de nhay xuong L3."
+      }
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Ty le Auto-remediation thanh cong (5m)",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "100 * (sum(increase(omni_proactive_verify_total{outcome=\"success\"}[5m])) / clamp_min(sum(increase(omni_proactive_verify_total[5m])), 1))" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center" }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "So alert dang firing",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "sum(ALERTS{alertstate=\"firing\"})" }],
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center" }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Omni worker song?",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "max(up{job=\"kubernetes-pods\",kubernetes_namespace=\"$namespace\",kubernetes_pod_name=~\"omni-worker.*\"})" }],
+      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center" }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Ollama song?",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "max(omni_ollama_up)" }],
+      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center" }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Top Alerts (click namespace de mo L3)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "topk(10, sum by (alertname, namespace, severity) (ALERTS{alertstate=\"firing\"}))", "format": "table", "instant": true }],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "namespace" },
+            "properties": [{ "id": "links", "value": [{ "title": "Drill-down L3 theo namespace", "url": "/d/l3-dataflow-traces/l3-dataflow-traces?orgId=1&var-namespace=${__value.text}&var-trace_id=${trace_id}" }] }]
+          }
+        ]
+      },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Trace gan day (click trace_id de mo L3)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [{ "refId": "A", "expr": "{namespace=\"$namespace\", pod_name=~\"omni-worker.*|omni-gateway.*\"} | json | trace_id != \"\" | line_format \"{{.trace_id}} {{.namespace}}\"" }],
+      "transformations": [{ "id": "labelsToFields", "options": { "mode": "columns" } }],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "trace_id" },
+            "properties": [{ "id": "links", "value": [{ "title": "Drill-down L3 theo trace", "url": "/d/l3-dataflow-traces/l3-dataflow-traces?orgId=1&var-trace_id=${__value.text}&var-namespace=${namespace}" }] }]
+          }
+        ]
+      },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Proactive incident p95 (5m)",
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum(rate(omni_proactive_incident_duration_seconds_bucket[5m])) by (le))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 2 }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center" }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "ReAct escalated share (1h)",
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (sum(increase(omni_proactive_outcome_total{outcome=\"react_escalated\"}[1h])) / clamp_min(sum(increase(omni_proactive_outcome_total{outcome=~\"react_escalated|react_resolved\"}[1h])), 1))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1 }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center" }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Proactive incident p99 (10m)",
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum(rate(omni_proactive_incident_duration_seconds_bucket[10m])) by (le))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 2 }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center" }
+    }
+  ]
+}

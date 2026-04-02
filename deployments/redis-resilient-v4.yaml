@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-cluster
+  namespace: multi-agent
+spec:
+  serviceName: redis-cluster-headless
+  replicas: 6
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-cluster
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-cluster
+    spec:
+      initContainers:
+      - name: config-init
+        image: redis:7.4-alpine
+        command:
+        - sh
+        - -c
+        - |
+          # 1. Copy config mẫu
+          cp /conf/redis.conf /data/redis-generated.conf
+          # 2. Append hostname động cho từng Pod
+          echo "cluster-announce-hostname $(hostname).redis-cluster-headless.multi-agent.svc.cluster.local" >> /data/redis-generated.conf
+          echo "cluster-announce-ip $(hostname -i)" >> /data/redis-generated.conf
+          echo "Generated config for $(hostname)"
+        volumeMounts:
+        - name: redis-config
+          mountPath: /conf
+        - name: redis-data
+          mountPath: /data
+      containers:
+      - name: redis
+        image: redis:7.4-alpine
+        command: ["redis-server", "/data/redis-generated.conf"]
+        ports:
+          - containerPort: 6379
+            name: redis
+          - containerPort: 16379
+            name: cluster
+        volumeMounts:
+          - name: redis-data
+            mountPath: /data
+      volumes:
+        - name: redis-config
+          configMap:
+            name: redis-cluster-config
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

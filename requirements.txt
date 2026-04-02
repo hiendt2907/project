@@ -1,0 +1,58 @@
+# HTTP / API (VictoriaMetrics, Telegram, webhooks, Ingress Gateway)
+httpx>=0.27.0
+aiohttp>=3.9.0
+fastapi>=0.110.0
+uvicorn>=0.27.0
+
+# Redis Streams + async
+redis[hiredis]>=5.0.0
+
+# Vector DB (Postgres HA)
+pgvector>=0.2.1
+tenacity>=8.3.0
+
+# Postgres (async)
+asyncpg>=0.29.0
+
+# Kubernetes — 100% async SDK (không subprocess)
+kubernetes-asyncio>=30.0.0
+
+# Hardware / OS (CPU, RAM, disk, net IO — không shell)
+psutil>=6.0.0
+
+# Gói tin / iface (không nmap shell); có thể cần cap trên một số thao tác
+scapy>=2.5.0
+
+# Data
+pydantic>=2.0.0
+pyyaml>=6.0.0
+pydantic-settings>=2.0.0
+numpy>=1.26.0
+pandas>=2.0.0
+scipy>=1.11.0
+
+# Viz → BytesIO → Telegram
+matplotlib>=3.8.0
+
+# Time-series forecast (optional heavy deps; ARM64 có thể build lâu — fallback tuyến tính trong code)
+prophet>=1.1.0
+
+# Prometheus /metrics (omni-worker)
+prometheus-client>=0.21.0
+
+# Structured JSON logging (trace_id xuyên suốt request lifecycle)
+python-json-logger>=2.0.0
+
+# OpenTelemetry → Tempo (BatchSpanProcessor in code; không dùng SimpleSpanProcessor)
+opentelemetry-api>=1.28.0
+opentelemetry-sdk>=1.28.0
+opentelemetry-exporter-otlp-proto-grpc>=1.28.0
+
+# Gemini Developer API (LAB / agent reasoning — GEMINI_API_KEY from Secret)
+google-genai>=1.0.0
+
+# Test
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+fakeredis>=2.23.0
+vulture>=2.11

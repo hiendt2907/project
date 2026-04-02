@@ -1,0 +1,463 @@
+# Grafana Unified Alerting — default notification policy (contact point is rendered by initContainer in grafana.yaml).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-alerting-provisioning
+  namespace: monitor
+  labels:
+    app: grafana
+data:
+  notification_policies.yaml: |
+    apiVersion: 1
+    policies:
+      - orgId: 1
+        receiver: omni-telegram
+        group_by: ["alertname", "grafana_folder"]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 1h
+  alert_rules.yaml: |
+    apiVersion: 1
+    # Bắt buộc với Grafana file provisioning: gỡ rule khỏi `groups` KHÔNG xóa khỏi DB — cần deleteRules + restart.
+    deleteRules:
+      - orgId: 1
+        uid: omni_worker_no_processing
+    groups:
+      - orgId: 1
+        name: omni-core-k8s-db-redis-dataflow
+        folder: Omni
+        interval: 1m
+        rules:
+          - uid: omni_gateway_down
+            title: Omni Gateway Down
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 300
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: max(up{job="kubernetes-pods", kubernetes_namespace="multi-agent", kubernetes_pod_name=~"omni-gateway.*"})
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A < 1
+                  refId: C
+            noDataState: Alerting
+            execErrState: Error
+            for: 2m
+            annotations:
+              summary: "Gateway scrape down > 2m"
+            labels:
+              severity: critical
+              domain: dataflow
+            isPaused: false
+          - uid: omni_redis_cluster_nodes_lost
+            title: Redis Cluster Nodes Lost
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 300
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: count((kube_pod_status_ready{namespace="multi-agent", pod=~"redis-cluster-[0-9]+", condition="true"} == 1)) or vector(0)
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A < 6
+                  refId: C
+            noDataState: OK
+            execErrState: Error
+            for: 2m
+            annotations:
+              summary: "Redis cluster healthy nodes < 6"
+            labels:
+              severity: critical
+              domain: redis
+            isPaused: false
+          - uid: omni_pgpool_unavailable
+            title: PGPool Unavailable
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 300
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: max(kube_deployment_status_replicas_available{namespace="multi-agent", deployment="pgpool-gateway"})
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A < 1
+                  refId: C
+            noDataState: Alerting
+            execErrState: Error
+            for: 2m
+            annotations:
+              summary: "PGPool has no available replicas"
+            labels:
+              severity: critical
+              domain: db
+            isPaused: false
+          - uid: omni_postgres_nodes_lost
+            title: PostgreSQL Cluster Nodes Lost
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 300
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: count((kube_pod_status_ready{namespace="multi-agent", pod=~"omni-postgres-[0-9]+", condition="true"} == 1)) or vector(0)
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A < 3
+                  refId: C
+            noDataState: OK
+            execErrState: Error
+            for: 2m
+            annotations:
+              summary: "PostgreSQL healthy pod count < 3"
+            labels:
+              severity: critical
+              domain: db
+            isPaused: false
+          - uid: omni_postgres_not_ready
+            title: PostgreSQL Pod Not Ready
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 300
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: sum(kube_pod_status_ready{namespace="multi-agent", pod=~"omni-postgres-[0-9]+", condition="false"})
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A > 0
+                  refId: C
+            noDataState: NoData
+            execErrState: Error
+            for: 3m
+            annotations:
+              summary: "One or more PostgreSQL pods are NotReady"
+            labels:
+              severity: warning
+              domain: db
+            isPaused: false
+          - uid: omni_postgres_restart_spike
+            title: PostgreSQL Restart Spike
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 900
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: sum(increase(kube_pod_container_status_restarts_total{namespace="multi-agent", pod=~"omni-postgres-[0-9]+"}[15m]))
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A >= 2
+                  refId: C
+            noDataState: NoData
+            execErrState: Error
+            for: 5m
+            annotations:
+              summary: "PostgreSQL restart count increased in last 15m"
+            labels:
+              severity: warning
+              domain: db
+            isPaused: false
+          - uid: omni_learning_write_fail
+            title: Action Experience Write Fail
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 900
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: sum(increase(omni_learning_upserts_total{outcome="fail"}[15m])) or vector(0)
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A >= 2
+                  refId: C
+            noDataState: OK
+            execErrState: Error
+            for: 15m
+            annotations:
+              summary: "Sustained learning write failures (>=2 fails in 15m, 15m pending)"
+            labels:
+              severity: warning
+              domain: business
+            isPaused: false
+          - uid: omni_network_packet_drop
+            title: Node Network Packet Drop Elevated
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 600
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: sum(rate(node_network_receive_drop_total[5m]) + rate(node_network_transmit_drop_total[5m]))
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A > 5
+                  refId: C
+            noDataState: NoData
+            execErrState: Error
+            for: 10m
+            annotations:
+              summary: "Network packet drop rate elevated"
+            labels:
+              severity: warning
+              domain: network
+            isPaused: false
+          - uid: omni_node_not_ready
+            title: Kubernetes Node Not Ready
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 300
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: sum(kube_node_status_condition{condition="Ready",status="false"})
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A > 0
+                  refId: C
+            noDataState: NoData
+            execErrState: Error
+            for: 2m
+            annotations:
+              summary: "One or more nodes are NotReady"
+            labels:
+              severity: critical
+              domain: k8s
+            isPaused: false
+          - uid: omni_node_cpu_busy_high
+            title: Node CPU Busy High
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 600
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: 100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])))
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A > 85
+                  refId: C
+            noDataState: NoData
+            execErrState: Error
+            for: 10m
+            annotations:
+              summary: "Average node CPU busy > 85% for 10m"
+            labels:
+              severity: warning
+              domain: system
+            isPaused: false
+          - uid: omni_node_mem_avail_low
+            title: Node Memory Available Low
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 600
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: 100 * (avg(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A < 15
+                  refId: C
+            noDataState: NoData
+            execErrState: Error
+            for: 10m
+            annotations:
+              summary: "Average node memory available < 15% for 10m"
+            labels:
+              severity: warning
+              domain: system
+            isPaused: false
+          - uid: omni_node_disk_pressure
+            title: Node Disk Pressure Detected
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 300
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  datasource:
+                    type: prometheus
+                    uid: prometheus
+                  expr: sum(kube_node_status_condition{condition="DiskPressure",status="true"})
+                  instant: true
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+                  refId: A
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  type: math
+                  expression: $A > 0
+                  refId: C
+            noDataState: NoData
+            execErrState: Error
+            for: 3m
+            annotations:
+              summary: "Node DiskPressure condition detected"
+            labels:
+              severity: warning
+              domain: system
+            isPaused: false

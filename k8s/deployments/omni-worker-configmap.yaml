@@ -1,0 +1,85 @@
+# URL Prometheus + proactive + autonomous forecast + baseline snapshot (Omni móc TSDB).
+# Chỉnh rồi rollout: ./scripts/with_working_kube.sh apply -f k8s/deployments/omni-worker-configmap.yaml
+#
+# M4 nhẹ tạm thời: giữ `OMNI_OLLAMA_NUM_PARALLEL` khớp Ollama host (`OLLAMA_NUM_PARALLEL` trong
+# ~/.ollama/env hoặc launchctl) — lệch slot Redis ↔ Ollama → treo/timeout. Muốn “full speed”
+# đặt lại parallel=2, interval ngắn hơn, bật lại OTEL.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: omni-worker-config
+  namespace: multi-agent
+  labels:
+    app: omni-worker
+data:
+  OMNI_PROMETHEUS_URL: "prometheus.monitor.svc.cluster.local:9090"
+  OMNI_VMAGENT_URL: "prometheus.monitor.svc.cluster.local:9090"
+  # Autonomous forecast (Prophet / fallback → Telegram khi vượt ngưỡng). 1h/lần để nhẹ M4.
+  OMNI_AUTONOMOUS_FORECAST_ENABLED: "true"
+  OMNI_AUTONOMOUS_FORECAST_INTERVAL_SEC: "3600"
+  # Trend node: CPU busy (0–1). Muốn memory trend riêng cần bản mở rộng multi-series forecast.
+  OMNI_AUTONOMOUS_FORECAST_PROMQL: 'avg(rate(node_cpu_seconds_total{mode!="idle"}[5m]))'
+  OMNI_AUTONOMOUS_FORECAST_THRESHOLD: "0.95"
+  OMNI_AUTONOMOUS_FORECAST_DURATION: "24h"
+  OMNI_AUTONOMOUS_FORECAST_ALERT_COOLDOWN_SEC: "3600"
+  # Proactive: instant scalar > threshold → incidents:proactive (điều chỉnh theo lab)
+  OMNI_PROACTIVE_PROMQL: 'sum(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"})'
+  OMNI_PROACTIVE_TRIGGER_THRESHOLD: "0"
+  OMNI_PROACTIVE_EVAL_INTERVAL_SEC: "300"
+  # Baseline: multi instant query → Redis omni:baseline:snapshot (interval bên dưới; TTL 10 phút)
+  OMNI_BASELINE_SNAPSHOT_ENABLED: "true"
+  OMNI_BASELINE_SNAPSHOT_INTERVAL_SEC: "600"
+  OMNI_BASELINE_SNAPSHOT_REDIS_TTL_SEC: "600"
+  # Manifest đa chiều (cpu/mem/net/dsk/rp/evt/dr) — built-in PromQL; tuỳ chọn thêm q qua OMNI_BASELINE_PROMQL
+  OMNI_BASELINE_MANIFEST_MAX_CHARS: "1400"
+  OMNI_BASELINE_SYSTEM_PROMPT_MAX_CHARS: "1600"
+  # 3-Sigma dr: |z_cpu| hoặc |z_mem| > ngưỡng (recording rules trong Prometheus)
+  OMNI_BASELINE_DR_Z_THRESHOLD: "3.0"
+  OMNI_BASELINE_PROMQL_Z_CPU: "omni:node_cpu:z"
+  OMNI_BASELINE_PROMQL_Z_MEM: "omni:mem:z"
+  OMNI_BASELINE_PROMQL_Z_DISK: "omni:node_disk:z"
+  OMNI_BASELINE_PROMQL_Z_NET: ""
+  OMNI_BASELINE_PROMQL_SEASONAL_CPU: "omni:health:cpu_seasonal_drift_z"
+  OMNI_CHS_WEIGHTS: '{"cpu":0.25,"mem":0.25,"disk":0.25,"net":0.25}'
+  OMNI_CHS_THRESHOLD: "10"
+  OMNI_GOLDEN_LATENCY_PROMQL: ""
+  OMNI_LATENCY_THRESHOLD_MS: ""
+  OMNI_BASELINE_LEGACY_CPU_DRIFT_FOR_DR: "false"
+  OMNI_BASELINE_CPU_DRIFT_THRESHOLD: "0.15"
+  # Thêm name|instant_promql (tối đa vài dòng) → key q trong JSON; để trống = chỉ built-in
+  OMNI_BASELINE_PROMQL: ""
+  OMNI_BASELINE_SNAPSHOT_MAX_CHARS: "1800"
+  # Lab / God (mặc định tắt; chaos script --god bật tạm OMNI_GOD_MODE=true)
+  OMNI_GOD_MODE: "true"
+  # Autonomous Decider (tắt mặc định — bật khi đã có Prometheus + baseline ổn)
+  OMNI_AUTONOMOUS_DECIDER_ENABLED: "false"
+  OMNI_AUTONOMOUS_DECIDER_INTERVAL_SEC: "300"
+  OMNI_AUTONOMOUS_FIX_COOLDOWN_SEC: "600"
+  OMNI_AUTONOMOUS_SAFE_TOOLS: "k8s_rollout_restart,redis_health,redis_expert_check,sandbox_cleanup"
+  OMNI_AUTONOMOUS_ALLOWED_NAMESPACES: "multi-agent"
+  # In-cluster service URLs & worker runtime (non-secret — override per lab via ConfigMap)
+  OMNI_REDIS_URL: "redis://redis:6379/0"
+  OMNI_REDIS_CLUSTER: "true"
+  OMNI_REDIS_CLUSTER_NODES: "redis-cluster-0.redis-cluster-headless.multi-agent.svc.cluster.local:6379,redis-cluster-1.redis-cluster-headless.multi-agent.svc.cluster.local:6379,redis-cluster-2.redis-cluster-headless.multi-agent.svc.cluster.local:6379,redis-cluster-3.redis-cluster-headless.multi-agent.svc.cluster.local:6379,redis-cluster-4.redis-cluster-headless.multi-agent.svc.cluster.local:6379,redis-cluster-5.redis-cluster-headless.multi-agent.svc.cluster.local:6379"
+  OMNI_OLLAMA_BASE_URL: "http://ollama-service:11434"
+  OMNI_OLLAMA_NUM_PARALLEL: "1"
+  OMNI_OLLAMA_HTTP_TIMEOUT_SEC: "600"
+  OMNI_OLLAMA_HTTP_CONNECT_TIMEOUT_SEC: "15"
+  OMNI_TELEGRAM_ENABLED: "true"
+  OMNI_CHAT_MODEL: "qwen2.5:7b"
+  OMNI_EMBED_MODEL: "nomic-embed-text:latest"
+  OMNI_DEEP_SCOUT_INTERVAL_SEC: "1800"
+  OMNI_METRICS_LISTEN_PORT: "9090"
+  OMNI_OPENSANDBOX_ENABLED: "true"
+  OMNI_OPENSANDBOX_BASE_URL: "http://opensandbox-shim.opensandbox.svc.cluster.local:8888"
+  OMNI_OPENSANDBOX_EXEC_PATH: "/api/v1/execute"
+  OMNI_K8S_DEFAULT_NAMESPACE: "multi-agent"
+  OMNI_MONITOR_STACK_NAMESPACE: "monitor"
+  # Agentic ReAct slow-path + OTLP → Tempo (BatchSpanProcessor trong code)
+  OMNI_AGENTIC_SLOW_PATH_ENABLED: "true"
+  OMNI_AGENTIC_MAX_LLM_ITERATIONS: "5"
+  OMNI_OTEL_TRACING_ENABLED: "false"
+  OMNI_OTEL_EXPORTER_OTLP_ENDPOINT: "http://tempo.monitor.svc.cluster.local:4317"
+  OMNI_OTEL_SERVICE_NAME: "omni-worker"
+  # Gateway (cùng ConfigMap): chặn flood chaos lab → không XADD events:inbound (agentic_chaos_validation)
+  OMNI_GATEWAY_SILENCE_CHAOS_LAB: "true"

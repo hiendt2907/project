@@ -1,0 +1,16 @@
+# opensandbox-shim:latest — Job runner API (non-root)
+FROM python:3.13-slim-bookworm
+
+RUN useradd -m -u 10001 --shell /bin/bash appuser
+
+WORKDIR /app
+COPY requirements-opensandbox-shim.txt .
+RUN pip install --no-cache-dir -r requirements-opensandbox-shim.txt
+
+COPY src/opensandbox_shim/ /app/opensandbox_shim/
+
+ENV PYTHONPATH=/app
+USER appuser
+
+EXPOSE 8888
+CMD ["python", "-m", "opensandbox_shim.main"]

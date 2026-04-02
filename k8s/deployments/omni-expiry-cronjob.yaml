@@ -1,0 +1,50 @@
+# Phase 3 — dead man's switch (TTL labels): placeholder CronJob, suspended by default.
+# Replace the container with a small controller that:
+# - Lists only resources labeled app.kubernetes.io/managed-by=omni-agent AND omni/expiry (RFC3339 or unix).
+# - Deletes only "temporary" kinds (e.g. NetworkPolicy, Job) — never blanket-delete Deployments.
+# Banking-grade: omni-worker does not run kubectl; this runs as a separate Job identity with scoped RBAC.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omni-expiry
+  namespace: multi-agent
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: omni-ttl-label-expiry
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/name: omni-expiry
+    app.kubernetes.io/component: ttl-sweep
+spec:
+  suspend: true
+  schedule: "0 */6 * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: omni-expiry
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+          containers:
+            - name: noop
+              image: busybox:1.36
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "omni-ttl-label-expiry: suspended placeholder — enable spec.suspend=false and swap image when operator is ready"
+                  exit 0
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi

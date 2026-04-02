@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgpool-config
+  namespace: multi-agent
+data:
+  pgpool.conf: |
+    listen_addresses = '*'
+    port = 5432
+    pcp_port = 9898
+    socket_dir = '/tmp'
+    pcp_socket_dir = '/tmp'
+    log_destination = 'stderr'
+
+    # Password file for backend authentication (Pgpool -> PostgreSQL)
+    pool_passwd = '/etc/pgpool2/pool_passwd'
+
+    # Client -> Pgpool: trust (pod trong cluster, kiểm soát qua NetworkPolicy)
+    enable_pool_hba = off
+
+    # Read-Write Splitting & Load Balance
+    load_balance_mode = on
+    master_slave_mode = on
+    sr_check_period = 10
+    relcache_expire = 0
+
+    # Backend mapping to CNPG services
+    backend_hostname0 = 'omni-postgres-rw'
+    backend_port0 = 5432
+    backend_weight0 = 0
+    backend_flag0 = 'ALWAYS_PRIMARY|DISALLOW_TO_FAILOVER'
+
+    backend_hostname1 = 'omni-postgres-r'
+    backend_port1 = 5432
+    backend_weight1 = 1
+    backend_flag1 = 'DISALLOW_TO_FAILOVER'
+
+    sr_check_user = 'appuser'
+    sr_check_password = 'GD3fjTJJxfzi0bau6TSaoWV9Q8TeuEYxahQrFDh6DCnMRjgFdEQ1q7Hf3FKFbxD8'
+    sr_check_database = 'ragdb'
+
+    health_check_period = 10
+    health_check_user = 'appuser'
+    health_check_password = 'GD3fjTJJxfzi0bau6TSaoWV9Q8TeuEYxahQrFDh6DCnMRjgFdEQ1q7Hf3FKFbxD8'
+    health_check_database = 'ragdb'
+
+    num_init_children = 24
+    max_pool = 4
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgpool-gateway
+  namespace: multi-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pgpool-gateway
+  template:
+    metadata:
+      labels:
+        app: pgpool-gateway
+    spec:
+      containers:
+        - name: pgpool
+          image: pgpool-custom:16
+          imagePullPolicy: Never
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pgpool2/pgpool.conf
+              subPath: pgpool.conf
+      volumes:
+        - name: config
+          configMap:
+            name: pgpool-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgpool-gateway
+  namespace: multi-agent
+spec:
+  selector:
+    app: pgpool-gateway
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432

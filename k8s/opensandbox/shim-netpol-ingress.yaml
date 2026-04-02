@@ -1,0 +1,21 @@
+# Chỉ cho phép omni-worker (namespace multi-agent) gọi API shim :8888
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensandbox-shim-ingress
+  namespace: opensandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: opensandbox-shim
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: multi-agent
+      ports:
+        - protocol: TCP
+          port: 8888

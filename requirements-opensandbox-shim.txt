@@ -1,0 +1,3 @@
+# Minimal deps — opensandbox-shim Pod (Job runner)
+kubernetes>=30.0.0
+aiohttp>=3.9.0

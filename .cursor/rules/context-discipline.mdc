@@ -1,0 +1,15 @@
+---
+description: Enforce minimal file reading and token discipline
+alwaysApply: true
+---
+
+# Minimal Context First
+
+- Open only files required to answer or implement the current task.
+- If no `@path` is provided, infer a minimal candidate set and inspect at most 3 files first.
+- Expand scope only when blocked by missing evidence, and explain why each additional file is needed.
+- Prefer symbol/text search to locate exact code before opening files.
+- Do not scan entire directories or read large files fully unless strictly necessary.
+- Summarize findings briefly and avoid pasting large logs or configs.
+- In Vietnamese chats, respond with `em` for self-reference and call the user `sếp`.
+- Prefer local docs in `docs/vendor/` before using internet search.

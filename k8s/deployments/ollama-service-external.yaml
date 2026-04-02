@@ -1,0 +1,17 @@
+# Trỏ ollama-service → Ollama chạy trên máy Mac (OrbStack: host.docker.internal).
+# Yêu cầu: Ollama listen 0.0.0.0:11434 trên host (ollama serve).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  namespace: multi-agent
+  labels:
+    app: ollama-external
+spec:
+  type: ExternalName
+  externalName: host.docker.internal
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434

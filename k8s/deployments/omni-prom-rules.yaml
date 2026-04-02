@@ -1,0 +1,68 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: omni-worker-resilience-alerts
+  namespace: monitor
+  labels:
+    app: omni-worker
+    role: alert-rules
+    prometheus: kube-prometheus
+spec:
+  groups:
+    - name: omni.resilience
+      interval: 30s
+      rules:
+        # Alert 1: Circuit Breaker ngắt mạch > 1 phút
+        - alert: OmniCircuitBreakerTripped
+          expr: omni_circuit_breaker_active == 1
+          for: 1m
+          labels:
+            severity: critical
+            team: sre
+          annotations:
+            summary: "🚨 Omni Circuit Breaker đang NGẮT MẠCH!"
+            description: |
+              omni_circuit_breaker_active = 1 trong hơn 1 phút.
+              Delayed Queue đã vượt ngưỡng cb_max_delayed_queue.
+              Gateway đang từ chối nhận Alert mới (HTTP 503).
+              Hành động: Kiểm tra `omni:delayed_queue` ZSET và DLQ `events:dlq`.
+
+        # Alert 2: Delayed Queue sắp ngưỡng (Warning tier) > 4000
+        - alert: OmniDelayedQueueOverflow
+          expr: omni_worker_lag_size > 4000
+          for: 2m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "⚠️ Omni Delayed Queue đang TẮC NGHẼN!"
+            description: |
+              omni_worker_lag_size = {{ $value }} (ngưỡng Warning 4000 / Hard Limit 5000).
+              Nếu đạt 5000, Circuit Breaker sẽ ngắt. 
+              Hành động: Xem `dlq_replay.py` để dọn rác hoặc tăng Worker replicas.
+
+        # Alert 3: Error Rate cao bất thường
+        - alert: OmniHighErrorRate
+          expr: rate(omni_worker_error_rate_total[5m]) > 5
+          for: 3m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "⚠️ Omni Worker tỷ lệ lỗi tăng cao!"
+            description: |
+              omni_worker_error_rate > 5 lỗi/giây trong 3 phút liên tiếp.
+              Component: {{ $labels.component }} | Error: {{ $labels.error_type }}.
+
+        # Alert 4: Latency P99 vượt ngưỡng 30 giây
+        - alert: OmniHighLatency
+          expr: histogram_quantile(0.99, rate(omni_worker_latency_seconds_bucket[5m])) > 30
+          for: 2m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "⚠️ Omni Worker latency P99 > 30s!"
+            description: |
+              P99 latency = {{ $value | humanizeDuration }}.
+              Kiểm tra Ollama load hoặc K8s resource contention.
