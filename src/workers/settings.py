@@ -55,8 +55,6 @@ class WorkerSettings(BaseSettings):
         return self.prometheus_url
 
     redis_url: str = Field(default="redis://redis:6379/0")
-    redis_cluster: bool = Field(default=False)
-    redis_cluster_nodes: str = Field(default="")
     stream_inbound: str = Field(default="events:inbound")
     stream_dlq: str = Field(default="events:dlq")
     consumer_group: str = Field(default="omni")
@@ -354,6 +352,17 @@ class WorkerSettings(BaseSettings):
     audit_proactive_stream: str = Field(default="audit:proactive", description="Redis Stream — proactive daemon outcomes.")
     audit_proactive_maxlen: int = Field(default=1000, ge=100, le=50_000)
 
+    diagnostic_dictionary_enabled: bool = Field(
+        default=False,
+        description="SRE Diagnostic Dictionary: deterministic probes + Redis evidence stream.",
+    )
+    diagnostic_matrix_path: str = Field(
+        default="/app/config/diagnostic_matrix.yaml",
+        validation_alias=AliasChoices("OMNI_DIAGNOSTIC_MATRIX_PATH"),
+    )
+    diagnostic_evidence_stream: str = Field(default="diagnostic:evidence")
+    diagnostic_evidence_maxlen: int = Field(default=2000, ge=100, le=50_000)
+
     proactive_enabled: bool = Field(default=True, description="Prometheus evaluate + incidents:proactive consumer.")
     proactive_kill_switch_key: str = Field(default="omni:proactive:kill_switch")
     proactive_eval_interval_sec: int = Field(default=120, ge=15, le=86400)
@@ -405,7 +414,7 @@ class WorkerSettings(BaseSettings):
             "list_namespace_pods,list_all_pods_sdk,resolve_pod_identity,resolve_deployment_identity,"
             "redis_health,redis_info,k8s_rollout_restart,k8s_scale_deployment,k8s_patch_resource,"
             "k8s_describe_resource,k8s_tail_logs,k8s_check_endpoints,kubectl_cluster,"
-            "k8s_list_nodes,k8s_list_services"
+            "k8s_list_nodes,k8s_list_services,vendor_knowledge_search"
         ),
         description="CSV tool allowlist khi OMNI_CLUSTER_FULL_ACCESS=false (mặc định true dùng full TOOL_REGISTRY).",
     )
@@ -630,3 +639,12 @@ class WorkerSettings(BaseSettings):
     sop_ingest_upsert_batch: int = Field(default=128, ge=8, le=512)
     sop_ingest_embed_batch: int = Field(default=32, ge=1, le=128)
     sop_ingest_log_every: int = Field(default=500, ge=1, le=50_000)
+
+    # Vendor knowledge (`python -m knowledge.ingest_main`) — clean → chunk → embed → vendor_knowledge
+    knowledge_sources_path: str = Field(
+        default="/app/config/knowledge_sources.yaml",
+        validation_alias=AliasChoices("OMNI_KNOWLEDGE_SOURCES"),
+    )
+    knowledge_enrich_enabled: bool = Field(default=False)
+    knowledge_ingest_embed_batch: int = Field(default=16, ge=1, le=128)
+    knowledge_ingest_concurrency: int = Field(default=2, ge=1, le=8)

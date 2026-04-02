@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
-import uuid
 import logging
+import math
+import re
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,6 +28,7 @@ COLLECTION_ERRORS = "itops_error_ledger"
 COLLECTION_INFRA_TOPOLOGY = "infra_topology"
 COLLECTION_ACTION_EXPERIENCE = "action_experience"
 COLLECTION_CLI_HIL_CONTEXT = "cli_hil_context"
+COLLECTION_VENDOR_KNOWLEDGE = "vendor_knowledge"
 
 
 class PostgresRAGSettings(BaseSettings):
@@ -110,21 +112,33 @@ class PGVectorStore:
         limit: int = 1,
         score_threshold: float | None = None,
         with_payload: bool = True,
+        payload_filters: dict[str, str] | None = None,
     ) -> QueryResponse:
-        sql = f"""
+        sql = """
         SELECT id, payload, 1 - (embedding <=> $1::vector) AS score
         FROM rag_documents
         WHERE collection_name = $2
         """
+        params: list[Any] = [query, collection_name]
+        param_idx = 3
+        if payload_filters:
+            for key, val in payload_filters.items():
+                if val is None or not isinstance(val, str):
+                    continue
+                if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", str(key)):
+                    continue
+                sql += f" AND payload->>'{key}' = ${param_idx}"
+                params.append(val)
+                param_idx += 1
         # score_threshold: cosine similarity
         if score_threshold is not None:
             sql += f" AND 1 - (embedding <=> $1::vector) >= {float(score_threshold)}"
-            
+
         sql += f" ORDER BY embedding <=> $1::vector LIMIT {int(limit)}"
 
         async with self._pool.acquire() as conn:
             # asyncpg + pgvector: bind Python list[float], not JSON string (breaks vector codec).
-            rows = await conn.fetch(sql, query, collection_name)
+            rows = await conn.fetch(sql, *params)
 
         pts = []
         for r in rows:
@@ -186,10 +200,12 @@ class PGVectorStore:
         CREATE TABLE IF NOT EXISTS doc_infra PARTITION OF rag_documents FOR VALUES IN ('infra_topology');
         CREATE TABLE IF NOT EXISTS doc_action PARTITION OF rag_documents FOR VALUES IN ('action_experience');
         CREATE TABLE IF NOT EXISTS doc_cli PARTITION OF rag_documents FOR VALUES IN ('cli_hil_context');
+        CREATE TABLE IF NOT EXISTS doc_vendor PARTITION OF rag_documents FOR VALUES IN ('vendor_knowledge');
         
         CREATE INDEX IF NOT EXISTS doc_sop_embedding_idx ON doc_sop USING hnsw (embedding vector_cosine_ops);
         CREATE INDEX IF NOT EXISTS doc_sop_v2_embedding_idx ON doc_sop_v2 USING hnsw (embedding vector_cosine_ops);
         CREATE INDEX IF NOT EXISTS doc_errors_embedding_idx ON doc_errors USING hnsw (embedding vector_cosine_ops);
+        CREATE INDEX IF NOT EXISTS doc_vendor_embedding_idx ON doc_vendor USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
         """
         async with self._pool.acquire() as conn:
             await conn.execute(sql)

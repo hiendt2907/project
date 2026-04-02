@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS doc_errors PARTITION OF rag_documents FOR VALUES IN (
 CREATE TABLE IF NOT EXISTS doc_infra PARTITION OF rag_documents FOR VALUES IN ('infra_topology');
 CREATE TABLE IF NOT EXISTS doc_action PARTITION OF rag_documents FOR VALUES IN ('action_experience');
 CREATE TABLE IF NOT EXISTS doc_cli PARTITION OF rag_documents FOR VALUES IN ('cli_hil_context');
+CREATE TABLE IF NOT EXISTS doc_vendor PARTITION OF rag_documents FOR VALUES IN ('vendor_knowledge');
 
 CREATE INDEX IF NOT EXISTS doc_sop_embedding_idx ON doc_sop USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 CREATE INDEX IF NOT EXISTS doc_sop_v2_embedding_idx ON doc_sop_v2 USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
@@ -21,3 +22,4 @@ CREATE INDEX IF NOT EXISTS doc_errors_embedding_idx ON doc_errors USING hnsw (em
 CREATE INDEX IF NOT EXISTS doc_infra_embedding_idx ON doc_infra USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 CREATE INDEX IF NOT EXISTS doc_action_embedding_idx ON doc_action USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 CREATE INDEX IF NOT EXISTS doc_cli_embedding_idx ON doc_cli USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+CREATE INDEX IF NOT EXISTS doc_vendor_embedding_idx ON doc_vendor USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);

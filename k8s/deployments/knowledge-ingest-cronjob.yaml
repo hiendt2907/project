@@ -1,0 +1,48 @@
+# Weekly vendor knowledge ingest — image must include src/knowledge + config/
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: knowledge-ingest
+  namespace: multi-agent
+spec:
+  schedule: "0 3 * * 0"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400
+      backoffLimit: 1
+      activeDeadlineSeconds: 21600
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: omni-worker
+          containers:
+            - name: knowledge-ingest
+              image: multi-agent-system:latest
+              imagePullPolicy: IfNotPresent
+              command: ["python", "-m", "knowledge.ingest_main"]
+              env:
+                - name: PYTHONPATH
+                  value: /app/src
+                - name: OMNI_KNOWLEDGE_SOURCES
+                  value: /app/config/knowledge_sources.yaml
+                - name: OMNI_OLLAMA_BASE_URL
+                  value: http://ollama-service:11434
+              volumeMounts:
+                - name: knowledge-sources
+                  mountPath: /app/config/knowledge_sources.yaml
+                  subPath: knowledge_sources.yaml
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: "250m"
+                  memory: 512Mi
+                limits:
+                  cpu: "2"
+                  memory: 2Gi
+          volumes:
+            - name: knowledge-sources
+              configMap:
+                name: knowledge-sources

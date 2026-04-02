@@ -78,7 +78,7 @@ data:
                   datasource:
                     type: prometheus
                     uid: prometheus
-                  expr: count((kube_pod_status_ready{namespace="multi-agent", pod=~"redis-cluster-[0-9]+", condition="true"} == 1)) or vector(0)
+                  expr: count((kube_pod_status_ready{namespace="multi-agent", pod=~"redis-[0-9]+", condition="true"} == 1)) or vector(0)
                   instant: true
                   intervalMs: 1000
                   maxDataPoints: 43200
@@ -90,13 +90,13 @@ data:
                 datasourceUid: __expr__
                 model:
                   type: math
-                  expression: $A < 6
+                  expression: $A < 1
                   refId: C
             noDataState: OK
             execErrState: Error
             for: 2m
             annotations:
-              summary: "Redis cluster healthy nodes < 6"
+              summary: "Redis standalone pod not ready"
             labels:
               severity: critical
               domain: redis

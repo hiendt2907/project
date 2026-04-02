@@ -85,7 +85,7 @@ def get_gateway_metrics() -> dict[str, float]:
 
 
 def xlen(key: str) -> int:
-    rc, out = k("exec", "-n", "multi-agent", "redis-cluster-0", "--", "redis-cli", "-c", "XLEN", key)
+    rc, out = k("exec", "-n", "multi-agent", "redis-0", "--", "redis-cli", "XLEN", key)
     if rc != 0:
         raise RuntimeError(out)
     return int(out.splitlines()[-1])
@@ -138,10 +138,9 @@ def get_recent_audit_outcomes(start_ts: int, count: int = 300) -> Counter:
         "exec",
         "-n",
         "multi-agent",
-        "redis-cluster-0",
+        "redis-0",
         "--",
         "redis-cli",
-        "-c",
         "XREVRANGE",
         "audit:proactive",
         "+",
@@ -224,10 +223,9 @@ def simulate(duration_sec: int, interval_sec: int) -> dict[str, int]:
             "exec",
             "-n",
             "multi-agent",
-            "redis-cluster-0",
+            "redis-0",
             "--",
             "redis-cli",
-            "-c",
             "XADD",
             "incidents:proactive",
             "*",

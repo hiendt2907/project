@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knowledge-sources
+  namespace: multi-agent
+  labels:
+    app: omni-knowledge-ingest
+data:
+  knowledge_sources.yaml: |
+    version: 1
+    sources:
+      - id: local_vendor
+        backend: local
+        local_dir: /app/data/knowledge_local
+        layer: misc
+        version: "0"

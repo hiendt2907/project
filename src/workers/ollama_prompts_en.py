@@ -25,6 +25,12 @@ FINAL_FORMAT_EN = (
     f"Any non-JSON natural-language summary must be at most {OLLAMA_MAX_OUTPUT_WORDS} words (English; whitespace-separated)."
 )
 
+VENDOR_KNOWLEDGE_GUIDANCE_EN = (
+    "\n[VENDOR DOCS — RAG]\n"
+    "- Ingested vendor/offline docs: `vendor_knowledge_search` — pass search text and optional taxonomy layer (k8s, db, obs, misc). "
+    "Does not replace kubectl / SDK tools.\n"
+)
+
 K8S_TOOL_GUIDANCE_EN = (
     "\n[K8S — short routing]\n"
     "- Unknown pod namespace: `resolve_pod_identity` (pod_name/hint, namespace?) or `list_all_pods_sdk` / `k8s_list_pods`.\n"
@@ -107,6 +113,7 @@ SLOW_SYSTEM_EN = (
     "[RULES] Named Pod/DB/Service → no list tools; use `inspect_*` / `*_expert_check`. "
     "Time-series → `query_prometheus_metrics` or `viz_vm_range_chart`. "
     "Do not ask users for PromQL. "
+    + VENDOR_KNOWLEDGE_GUIDANCE_EN
     + K8S_TOOL_GUIDANCE_EN
     + f"Tools (from TOOL_REGISTRY): {TOOL_CATALOG_PLACEHOLDER}. "
     "`[CONTEXT: infra_topology` / `topology_cache` / `learned_infra` — do not re-ask. "
@@ -133,6 +140,7 @@ SLOW_SYSTEM_GOD_EN = (
     "`k8s_rollout_restart` may need Telegram [CONFIRM_REQUIRED] unless user confirmed. "
     "[RULES] Named workload → no list; use inspect/expert. "
     "Time-series → `query_prometheus_metrics` / `viz_vm_range_chart`. "
+    + VENDOR_KNOWLEDGE_GUIDANCE_EN
     + K8S_TOOL_GUIDANCE_EN
     + f"Tools (from TOOL_REGISTRY): {TOOL_CATALOG_PLACEHOLDER}. "
     "Follow `[CONTEXT: ...]`. Tool names ASCII only. "

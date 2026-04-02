@@ -614,7 +614,7 @@ def _k8s_smart_target_hint(user_text: str) -> str | None:
 @dataclass
 class WorkerHandlerContext:
     settings: WorkerSettings
-    redis: redis.Redis | redis.RedisCluster
+    redis: redis.Redis
     ollama: OllamaClient
     vector_store: PGVectorStore
     ledger: ErrorLedger

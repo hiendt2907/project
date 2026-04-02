@@ -14,8 +14,6 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import redis.asyncio as aioredis
-from redis.asyncio.cluster import RedisCluster
-from redis.cluster import ClusterNode
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
@@ -24,8 +22,6 @@ logger = logging.getLogger(__name__)
 # ─── Config from env ──────────────────────────────────────────────────────────
 import os
 REDIS_URL = os.getenv("OMNI_REDIS_URL", "redis://redis:6379/0")
-REDIS_CLUSTER = os.getenv("OMNI_REDIS_CLUSTER", "false").strip().lower() == "true"
-REDIS_CLUSTER_NODES = os.getenv("OMNI_REDIS_CLUSTER_NODES", "")
 STREAM_INBOUND = os.getenv("OMNI_STREAM_INBOUND", "events:inbound")
 RATE_LIMIT_TPS = int(os.getenv("OMNI_GATEWAY_RATE_LIMIT_TPS", "1000"))
 CB_KEY = "omni:circuit_breaker:active"
@@ -51,7 +47,7 @@ def _is_chaos_lab_prometheus_webhook(body: Any) -> bool:
     return False
 
 # ─── State ────────────────────────────────────────────────────────────────────
-_redis: aioredis.Redis | RedisCluster | None = None
+_redis: aioredis.Redis | None = None
 # Token Bucket (asyncio): giới hạn N concurrent request mỗi giây
 _rate_semaphore: asyncio.Semaphore | None = None
 _token_refill_task: asyncio.Task | None = None
@@ -74,25 +70,7 @@ async def _refill_tokens() -> None:
                 break
 
 
-def _build_redis_client() -> aioredis.Redis | RedisCluster:
-    if REDIS_CLUSTER:
-        nodes: list[ClusterNode] = []
-        for raw in REDIS_CLUSTER_NODES.split(","):
-            raw = raw.strip()
-            if not raw:
-                continue
-            host, _, port_s = raw.partition(":")
-            port = int(port_s) if port_s else 6379
-            nodes.append(ClusterNode(host, port))
-        if nodes:
-            logger.info("omni-gateway using RedisCluster (nodes=%d)", len(nodes))
-            return RedisCluster(
-                startup_nodes=nodes,
-                decode_responses=True,
-                dynamic_startup_nodes=False,
-                require_full_coverage=False,
-            )
-        logger.warning("OMNI_REDIS_CLUSTER=true but OMNI_REDIS_CLUSTER_NODES is empty, fallback REDIS_URL")
+def _build_redis_client() -> aioredis.Redis:
     logger.info("omni-gateway using Redis standalone URL")
     return aioredis.Redis.from_url(REDIS_URL, decode_responses=True)
 

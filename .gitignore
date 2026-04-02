@@ -1,2 +1,5 @@
 .env
 evidence/
+__pycache__/
+*.pyc
+.cursor/debug*.log

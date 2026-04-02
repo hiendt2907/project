@@ -20,6 +20,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ /app/src/
+COPY config/ /app/config/
 COPY data/ /app/data/
 COPY scripts/ /app/scripts/
 RUN chown -R appuser:appuser /app/scripts

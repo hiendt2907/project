@@ -18,6 +18,7 @@ _NOT_TOOLS = frozenset(
         "text",
         "tool",
         "command",
+        "layer",
     }
 )
 _ALIAS_OK = frozenset({"query_victoria_metrics"})

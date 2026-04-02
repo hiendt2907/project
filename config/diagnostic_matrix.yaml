@@ -1,0 +1,39 @@
+# SRE Diagnostic Dictionary — symptom → ordered probes (deterministic; no LLM).
+# Rows seeded from docs/vendor/knownbase.md (abbreviated patterns).
+version: 1
+rows:
+  - symptom_group: crash_loop_backoff
+    layer: infrastructure
+    error_hint_pattern: "(?i)crash|backoff|waiting"
+    canonical_query_pattern: "(?i)CrashLoop|kube_pod_container_status_waiting"
+    probe_ids:
+      - redis_ping
+      - k8s_list_pods_namespace
+    stop_on_first_failure: false
+
+  - symptom_group: ollama_500_context
+    layer: application
+    error_hint_pattern: "(?i)ollama|500|context"
+    canonical_query_pattern: "(?i)topology_cache|infra_topology"
+    probe_ids:
+      - redis_ping
+      - k8s_list_pods_namespace
+    stop_on_first_failure: false
+
+  - symptom_group: redis_streams_stuck
+    layer: infrastructure
+    error_hint_pattern: "(?i)redis|pel|lock|delayed"
+    canonical_query_pattern: "(?i)events:inbound|omni:delayed"
+    probe_ids:
+      - redis_ping
+      - redis_stream_len_inbound
+    stop_on_first_failure: false
+
+  - symptom_group: prometheus_escalate_premature
+    layer: application
+    error_hint_pattern: "(?i)escalat|identifiers"
+    canonical_query_pattern: "(?i)unspecified|insufficient"
+    probe_ids:
+      - redis_ping
+      - k8s_list_pods_namespace
+    stop_on_first_failure: false

@@ -170,7 +170,7 @@ spec:
 
 
 def _build_redis_settings_for_chaos(args: argparse.Namespace) -> Any:
-    """WorkerSettings từ env; override cho chạy chaos trên host (standalone hoặc cluster)."""
+    """WorkerSettings từ env; override cho chạy chaos trên host (standalone URL)."""
     from workers.settings import WorkerSettings
 
     settings = WorkerSettings()
@@ -181,14 +181,13 @@ def _build_redis_settings_for_chaos(args: argparse.Namespace) -> Any:
     updates: dict[str, Any] = {}
     if url:
         updates["redis_url"] = url
-    if want_cluster:
-        updates["redis_cluster"] = True
-        if nodes_csv:
-            updates["redis_cluster_nodes"] = nodes_csv
-        # không ghi đè redis_cluster_nodes nếu trống — lấy từ OMNI_REDIS_CLUSTER_NODES
-    elif url:
-        # Chỉ --redis-url, không --redis-cluster → một node (port-forward đơn)
-        updates["redis_cluster"] = False
+    elif want_cluster and nodes_csv:
+        first = nodes_csv.split(",")[0].strip()
+        if first:
+            if "://" in first:
+                updates["redis_url"] = first
+            else:
+                updates["redis_url"] = f"redis://{first}/0"
 
     if updates:
         settings = settings.model_copy(update=updates)
@@ -469,8 +468,6 @@ async def _run(args: argparse.Namespace) -> int:
         trace_id=run_id,
         chaos_level=chaos_level,
         redis_url_hint=_redis_url_safe(settings.redis_url),
-        redis_cluster=bool(settings.redis_cluster),
-        redis_cluster_nodes_snip=(settings.redis_cluster_nodes or "")[:200],
     )
     redis_client = None
     try:
@@ -485,9 +482,8 @@ async def _run(args: argparse.Namespace) -> int:
             err=repr(e),
             hint=(
                 "Host: (1) standalone — port-forward một cổng + --redis-url redis://127.0.0.1:6379/0. "
-                "(2) Redis Cluster — --redis-cluster --redis-cluster-nodes 127.0.0.1:6379,... "
-                "(PF đủ node) hoặc OMNI_REDIS_CLUSTER_NODES trỏ localhost. "
-                "DNS redis/redis-cluster-*.svc chỉ resolve trong cluster."
+                "(2) Nhiều node — dùng --redis-cluster-nodes host:6379,... (đầu tiên được dùng làm URL). "
+                "DNS redis.* chỉ resolve trong cluster."
             ),
         )
         raise SystemExit(2) from e
@@ -617,7 +613,7 @@ def main() -> None:
         "--redis-cluster",
         action="store_true",
         dest="redis_cluster",
-        help="Dùng RedisCluster giống worker (cần OMNI_REDIS_CLUSTER_NODES hoặc --redis-cluster-nodes).",
+        help="Dùng node đầu tiên trong --redis-cluster-nodes làm redis:// (standalone client).",
     )
     p.add_argument(
         "--redis-cluster-nodes",

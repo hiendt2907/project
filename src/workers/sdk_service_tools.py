@@ -1271,3 +1271,44 @@ async def tool_postgres_ping(ctx: Any, args: dict[str, Any]) -> str:
             await conn.close()
     except Exception as e:
         return f"Lỗi asyncpg: {e!s}"
+
+
+async def tool_vendor_knowledge_search(ctx: Any, args: dict[str, Any]) -> str:
+    """RAG trên ``vendor_knowledge`` (docs đã ingest). Không thay kubectl/SDK."""
+    from workers.handlers import _embedding_from_ollama
+    from rag.pgvector_store import COLLECTION_VENDOR_KNOWLEDGE
+
+    q = str(args.get("query") or "").strip()
+    if not q:
+        return "[ERROR] query required"
+    layer = args.get("layer")
+    limit = int(args.get("limit") or 5)
+    st = args.get("score_threshold")
+    score_threshold = float(st) if st is not None else None
+    emb_resp = await ctx.ollama.embed(
+        model=ctx.settings.embed_model,
+        input=q[:8000],
+        keep_alive=ctx.settings.ollama_keep_alive,
+    )
+    vec = _embedding_from_ollama(emb_resp)
+    pf = None
+    if isinstance(layer, str) and layer.strip():
+        pf = {"layer": layer.strip()}
+    resp = await ctx.vector_store.query_points(
+        collection_name=COLLECTION_VENDOR_KNOWLEDGE,
+        query=vec,
+        limit=limit,
+        score_threshold=score_threshold,
+        payload_filters=pf,
+    )
+    lines: list[str] = []
+    for p in resp.points or []:
+        pay = p.payload or {}
+        score = getattr(p, "score", None)
+        src = pay.get("source_url") or pay.get("source_path") or ""
+        cite = (pay.get("citation_text") or pay.get("embed_text") or "")[:500]
+        sc = f"{float(score):.4f}" if score is not None else "?"
+        lines.append(f"score={sc} src={src}\n{cite}\n---")
+    if not lines:
+        return "[DATA] no vendor knowledge hits"
+    return "[DATA] vendor_knowledge_search\n" + "\n".join(lines)

@@ -1,0 +1,137 @@
+# Redis standalone (lab) — Service DNS `redis.multi-agent.svc.cluster.local:6379`
+# khớp OMNI_REDIS_URL=redis://redis:6379/0. Không dùng Redis Cluster.
+#
+# AOF: bền dữ liệu queue/streams trên PVC; everysec = cân durability/latency (mất tối đa ~1s ghi cuối khi crash).
+# protected-mode no: chỉ an toàn khi Service ClusterIP nội bộ — không expose Redis ra ngoài cluster.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-standalone-config
+  namespace: multi-agent
+  labels:
+    app: redis
+data:
+  redis.conf: |
+    # Working dir — AOF + RDB preamble files live here (PVC)
+    dir /data
+
+    # --- Append Only File (AOF) ---
+    appendonly yes
+    appendfilename "appendonly.aof"
+    appenddirname "appendonlydir"
+    appendfsync everysec
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    aof-load-truncated yes
+    aof-use-rdb-preamble yes
+
+    # Memory — lab; tune theo workload
+    maxmemory 512mb
+    maxmemory-policy allkeys-lru
+
+    # In-cluster only (ClusterIP). Do not expose Redis publicly with protected-mode no.
+    protected-mode no
+---
+# Headless — bắt buộc cho StatefulSet (stable pod DNS: redis-0.redis-hls.multi-agent.svc.cluster.local)
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-hls
+  namespace: multi-agent
+  labels:
+    app: redis
+spec:
+  clusterIP: None
+  ports:
+    - port: 6379
+      targetPort: 6379
+      name: redis
+  selector:
+    app.kubernetes.io/name: redis
+---
+# ClusterIP — app kết nối `redis:6379` (khớp OMNI_REDIS_URL)
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: multi-agent
+  labels:
+    app: redis
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: 6379
+      name: redis
+  selector:
+    app.kubernetes.io/name: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: multi-agent
+  labels:
+    app: redis
+spec:
+  serviceName: redis-hls
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        app.kubernetes.io/name: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-server
+            - /etc/redis/redis.conf
+          ports:
+            - containerPort: 6379
+              name: redis
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/redis
+              readOnly: true
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "25m"
+            limits:
+              memory: "768Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: redis-standalone-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

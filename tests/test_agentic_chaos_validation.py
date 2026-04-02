@@ -19,4 +19,4 @@ def test_agentic_chaos_validation_help() -> None:
     assert r.returncode == 0
     assert "intensity" in r.stdout
     assert "--skip-kubectl" in r.stdout
-    assert "--redis-cluster" in r.stdout
+    assert "--redis-url" in r.stdout

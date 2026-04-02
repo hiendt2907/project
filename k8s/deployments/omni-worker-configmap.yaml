@@ -59,8 +59,7 @@ data:
   OMNI_AUTONOMOUS_ALLOWED_NAMESPACES: "multi-agent"
   # In-cluster service URLs & worker runtime (non-secret — override per lab via ConfigMap)
   OMNI_REDIS_URL: "redis://redis:6379/0"
-  OMNI_REDIS_CLUSTER: "true"
-  OMNI_REDIS_CLUSTER_NODES: "redis-cluster-0.redis-cluster-headless.multi-agent.svc.cluster.local:6379,redis-cluster-1.redis-cluster-headless.multi-agent.svc.cluster.local:6379,redis-cluster-2.redis-cluster-headless.multi-agent.svc.cluster.local:6379,redis-cluster-3.redis-cluster-headless.multi-agent.svc.cluster.local:6379,redis-cluster-4.redis-cluster-headless.multi-agent.svc.cluster.local:6379,redis-cluster-5.redis-cluster-headless.multi-agent.svc.cluster.local:6379"
+  OMNI_REDIS_CLUSTER: "false"
   OMNI_OLLAMA_BASE_URL: "http://ollama-service:11434"
   OMNI_OLLAMA_NUM_PARALLEL: "1"
   OMNI_OLLAMA_HTTP_TIMEOUT_SEC: "600"

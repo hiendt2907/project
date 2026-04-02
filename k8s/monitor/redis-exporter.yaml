@@ -26,8 +26,7 @@ spec:
           image: oliver006/redis_exporter:v1.62.0
           imagePullPolicy: IfNotPresent
           args:
-            - --redis.addr=redis://redis-cluster-0.redis-cluster-headless.multi-agent.svc.cluster.local:6379
-            - --is-cluster=true
+            - --redis.addr=redis://redis.multi-agent.svc.cluster.local:6379
           ports:
             - name: metrics
               containerPort: 9121

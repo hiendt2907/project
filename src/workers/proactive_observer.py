@@ -865,6 +865,13 @@ async def _proactive_event_pipeline(
                     logger.warning("[%s] proactive telegram deny: %s", trace, e)
             return
         if ws.proactive_fallback_enabled:
+            if ws.diagnostic_dictionary_enabled:
+                try:
+                    from workers.diagnostic_dispatcher import run_diagnostic_pipeline
+
+                    await run_diagnostic_pipeline(ctx, ev)
+                except Exception:
+                    logger.exception("[%s] diagnostic pipeline failed", trace)
             await run_proactive_react_fallback(
                 ctx, ev, trace=trace, pattern_key=pattern_key, msg_id=msg_id
             )

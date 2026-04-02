@@ -1,0 +1,9 @@
+# Vendor / offline docs — local paths first (no secrets here).
+# Crawl backends read FIRECRAWL_API_KEY / JINA_API_KEY from env (Secret).
+version: 1
+sources:
+  - id: local_vendor_stub
+    backend: local
+    local_dir: /app/data/knowledge_local
+    layer: misc
+    version: "0"

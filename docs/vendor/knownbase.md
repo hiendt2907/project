@@ -37,6 +37,9 @@ _(none else yet)_
 
 ## Infrastructure (K8s, Redis, deploy, observability)
 
+**Symptom:** Redis Cluster 6 node + `OMNI_REDIS_CLUSTER=true` / `OMNI_REDIS_CLUSTER_NODES` — vận hành nặng; app dùng `RedisCluster`.  
+**Fix:** `k8s/deployments/redis-standalone.yaml` (Service `redis`, StatefulSet + PVC, AOF `appendfsync everysec`, rewrite, preamble). ConfigMap: chỉ `OMNI_REDIS_URL=redis://redis:6379/0`, không cluster. Code: `redis_client.py` / gateway `Redis.from_url`. Monitor: `OmniRedisStandaloneDown`; redis-exporter standalone. `scripts/deploy_v6.sh` apply standalone. Verify: rollout `omni-worker` + `omni-gateway`, pytest.
+
 **Symptom:** Cần dọn backlog `events:inbound` / `incidents:proactive` trước khi test E2E alert; queue dài làm trễ xử lý.  
 **Fix:** `kubectl exec -n multi-agent deploy/omni-worker -- env PYTHONPATH=/app/src python -m devtools.redis_cleanup_stuck` — XACK pending + XTRIM flush cả hai stream + DEL delayed/lock như script. Verify: POST webhook rồi grep `trace_id` trong log worker.
 

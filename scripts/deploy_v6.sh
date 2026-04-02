@@ -12,13 +12,11 @@ echo "🔐 2/4 Đang cập nhật K8s ConfigMap và nâng cấp quyền RBAC rea
 kubectl apply -f k8s/deployments/omni-worker-configmap.yaml
 kubectl apply -f k8s/deployments/omni-worker-rbac.yaml
 
-# 3. Triển khai Redis Cluster (Phase 1)
-echo "💎 3/4 Đang triển khai StatefulSet Redis Cluster (6 nodes) & Chạy Job Init..."
-kubectl apply -f k8s/deployments/redis-cluster.yaml
-
-# Đợi Job khởi tạo chạy xong (nếu có)
-echo "⏳ Đang chờ Job redis-cluster-init..."
-kubectl wait --for=condition=complete job/redis-cluster-init -n multi-agent --timeout=60s || echo "Job có thể đã chạy thành công trước đó."
+# 3. Redis standalone (AOF + PVC) — Service DNS `redis:6379`
+echo "💎 3/4 Đang triển khai Redis standalone..."
+kubectl apply -f k8s/deployments/redis-standalone.yaml
+echo "⏳ Đang chờ StatefulSet redis Ready..."
+kubectl rollout status statefulset/redis -n multi-agent --timeout=120s || true
 
 # 4. Rollout app
 echo "🔄 4/4 Khởi động lại Omni Worker để tiếp nhận Hybrid Cache V6 (Phase 2)..."

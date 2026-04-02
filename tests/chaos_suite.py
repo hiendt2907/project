@@ -10,16 +10,15 @@ DLQ = "events:dlq"
 DELAYED_QUEUE = "omni:delayed_queue"
 
 async def get_redis_client():
-    env_cluster = os.environ.get("OMNI_REDIS_CLUSTER", "false").lower() == "true"
-    host = os.environ.get("OMNI_REDIS_HOST", "localhost")
-    port = int(os.environ.get("OMNI_REDIS_PORT", "6379"))
-    
-    if env_cluster:
-        from redis.asyncio.cluster import RedisCluster
-        from redis.cluster import ClusterNode
-        return RedisCluster(startup_nodes=[ClusterNode(host, port)], decode_responses=True)
+    url = os.environ.get("OMNI_REDIS_URL", "").strip()
+    if url:
+        client = redis.Redis.from_url(url, decode_responses=False)
     else:
-        return redis.Redis(host=host, port=port, db=0, decode_responses=False)
+        host = os.environ.get("OMNI_REDIS_HOST", "localhost")
+        port = int(os.environ.get("OMNI_REDIS_PORT", "6379"))
+        client = redis.Redis(host=host, port=port, db=0, decode_responses=False)
+    await client.initialize()
+    return client
 
 async def main():
     r = await get_redis_client()

@@ -28,7 +28,7 @@ class RedisOllamaSemaphore:
 
     def __init__(
         self,
-        r: redis.Redis | redis.RedisCluster,
+        r: redis.Redis,
         *,
         max_slots: int,
         lease_ttl_sec: int = 120,
