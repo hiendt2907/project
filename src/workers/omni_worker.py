@@ -442,6 +442,38 @@ async def _run_autonomous_safe(ctx: WorkerHandlerContext) -> None:
         await ctx.ledger.record_exception(e, phase="4", component="deep_scout_autonomous", swallow_errors=True)
 
 
+def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> list[asyncio.Task[Any]]:
+    """Split Kafka and periodic loops by ``OMNI_WORKER_ROLE`` (Master Plan V3)."""
+    role = ctx.settings.worker_role
+    tasks: list[asyncio.Task[Any]] = []
+    if role in ("full", "prober"):
+        tasks.extend(
+            [
+                asyncio.create_task(kafka_alerts_loop(ctx, stop), name="kafka_alerts_loop"),
+                asyncio.create_task(delayed_queue_loop(ctx, stop), name="delayed_queue_loop"),
+                asyncio.create_task(circuit_breaker_loop(ctx, stop), name="circuit_breaker"),
+            ]
+        )
+        if ctx.telegram is not None:
+            tasks.append(asyncio.create_task(telegram_loop(ctx, stop), name="telegram_loop"))
+    if role in ("full", "analyst"):
+        tasks.append(asyncio.create_task(kafka_evidence_loop(ctx, stop), name="kafka_evidence_loop"))
+    if role in ("full", "core"):
+        tasks.extend(
+            [
+                asyncio.create_task(deep_scout_periodic_loop(ctx, stop), name="deep_scout_periodic"),
+                asyncio.create_task(autonomous_forecast_loop(ctx, stop), name="autonomous_forecast"),
+                asyncio.create_task(baseline_snapshot_loop(ctx, stop), name="baseline_snapshot"),
+            ]
+        )
+        if ctx.settings.autonomous_decider_enabled:
+            tasks.append(asyncio.create_task(autonomous_decider_loop(ctx, stop), name="autonomous_decider"))
+        if ctx.settings.proactive_enabled:
+            tasks.append(asyncio.create_task(proactive_evaluate_loop(ctx, stop), name="proactive_evaluate"))
+            tasks.append(asyncio.create_task(kafka_proactive_incidents_loop(ctx, stop), name="kafka_proactive_incidents"))
+    return tasks
+
+
 async def run_worker() -> None:
     # V6.3: JSON Structured Logging (The Chief Architect's Order)
     from pythonjsonlogger import jsonlogger
@@ -469,6 +501,7 @@ async def run_worker() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     stop = asyncio.Event()
     ctx = await build_context()
+    logger.info("omni_worker starting worker_role=%s", ctx.settings.worker_role)
     setup_otel_tracing(
         service_name=ctx.settings.otel_service_name,
         otlp_endpoint=ctx.settings.otel_exporter_otlp_endpoint,
@@ -488,16 +521,25 @@ async def run_worker() -> None:
     )
 
     summary = DeepScoutSummary()
-    try:
-        summary = await run_deep_scout(ctx)
-        set_last_scout_timestamp()
-    except Exception as e:
-        logger.exception("deep_scout startup failed: %s", e)
-        await ctx.ledger.record_exception(e, phase="4", component="deep_scout", swallow_errors=True)
-    ctx.scout_ready.set()
-    asyncio.create_task(_run_autonomous_safe(ctx), name="deep_scout_autonomous_startup")
+    role = ctx.settings.worker_role
+    if role == "analyst":
+        ctx.scout_ready.set()
+    else:
+        try:
+            summary = await run_deep_scout(ctx)
+            set_last_scout_timestamp()
+        except Exception as e:
+            logger.exception("deep_scout startup failed: %s", e)
+            await ctx.ledger.record_exception(e, phase="4", component="deep_scout", swallow_errors=True)
+        ctx.scout_ready.set()
+        if role in ("full", "core"):
+            asyncio.create_task(_run_autonomous_safe(ctx), name="deep_scout_autonomous_startup")
 
-    if ctx.telegram is not None and ctx.settings.telegram_admin_chat_id is not None:
+    if (
+        role != "analyst"
+        and ctx.telegram is not None
+        and ctx.settings.telegram_admin_chat_id is not None
+    ):
         try:
             cid = int(ctx.settings.telegram_admin_chat_id)
             msg = (
@@ -517,24 +559,7 @@ async def run_worker() -> None:
         except NotImplementedError:
             pass
 
-    tasks = [
-        asyncio.create_task(kafka_alerts_loop(ctx, stop), name="kafka_alerts_loop"),
-        asyncio.create_task(kafka_evidence_loop(ctx, stop), name="kafka_evidence_loop"),
-        asyncio.create_task(circuit_breaker_loop(ctx, stop), name="circuit_breaker"),
-        asyncio.create_task(delayed_queue_loop(ctx, stop), name="delayed_queue_loop"),
-        asyncio.create_task(deep_scout_periodic_loop(ctx, stop), name="deep_scout_periodic"),
-        asyncio.create_task(autonomous_forecast_loop(ctx, stop), name="autonomous_forecast"),
-        asyncio.create_task(baseline_snapshot_loop(ctx, stop), name="baseline_snapshot"),
-    ]
-    if ctx.settings.autonomous_decider_enabled:
-        tasks.append(
-            asyncio.create_task(autonomous_decider_loop(ctx, stop), name="autonomous_decider"),
-        )
-    if ctx.settings.proactive_enabled:
-        tasks.append(asyncio.create_task(proactive_evaluate_loop(ctx, stop), name="proactive_evaluate"))
-        tasks.append(asyncio.create_task(kafka_proactive_incidents_loop(ctx, stop), name="kafka_proactive_incidents"))
-    if ctx.telegram is not None:
-        tasks.append(asyncio.create_task(telegram_loop(ctx, stop), name="telegram_loop"))
+    tasks = _worker_background_tasks(ctx, stop)
 
     try:
         await asyncio.gather(*tasks, return_exceptions=True)

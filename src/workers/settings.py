@@ -7,6 +7,7 @@ Defaults below are fallbacks when unset — override via env, not by editing lit
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -136,6 +137,23 @@ class WorkerSettings(BaseSettings):
         description="Kafka group for svc-analyst — consumes omni-diagnostic-evidence only.",
     )
     consumer_name_analyst: str = Field(default="omni-analyst-1")
+    worker_role: Literal["full", "prober", "analyst", "core"] = Field(
+        default="full",
+        description=(
+            "Master Plan V3 process split: prober=omni-alerts+diagnostic; analyst=evidence only; "
+            "core=periodic/proactive without Kafka ingress; full=legacy single process."
+        ),
+    )
+
+    @field_validator("worker_role", mode="before")
+    @classmethod
+    def _normalize_worker_role(cls, v: object) -> object:
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("full", "prober", "analyst", "core"):
+                return s
+        return v
+
     block_ms: int = Field(default=5000, ge=500)
     
     # Banking-Grade Resilience Limits

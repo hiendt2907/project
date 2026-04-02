@@ -1,0 +1,76 @@
+# Prober: consumes omni-alerts, runs diagnostic pipeline → omni-diagnostic-evidence (SA omni-prober).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-prober
+  namespace: multi-agent
+  labels:
+    app: omni-prober
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omni-prober
+  template:
+    metadata:
+      labels:
+        app: omni-prober
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: omni-prober
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: omni-prober
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: omni-worker-config
+          env:
+            - name: OMNI_WORKER_ROLE
+              value: "prober"
+            - name: OMNI_CONSUMER_GROUP
+              value: "omni-prober-alerts"
+            - name: OMNI_CONSUMER_NAME
+              value: "omni-prober-1"
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: bot-token
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+            - name: OMNI_TELEGRAM_ADMIN_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: source-code
+              mountPath: /app/src
+      volumes:
+        - name: source-code
+          hostPath:
+            path: /Users/hiendang/project/src
+            type: Directory

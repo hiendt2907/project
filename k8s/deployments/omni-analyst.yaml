@@ -1,0 +1,72 @@
+# Analyst: consumes omni-diagnostic-evidence only (Master Plan V3).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-analyst
+  namespace: multi-agent
+  labels:
+    app: omni-analyst
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omni-analyst
+  template:
+    metadata:
+      labels:
+        app: omni-analyst
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: omni-analyst
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: omni-analyst
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: omni-worker-config
+          env:
+            - name: OMNI_WORKER_ROLE
+              value: "analyst"
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: bot-token
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+            - name: OMNI_TELEGRAM_ADMIN_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: source-code
+              mountPath: /app/src
+      volumes:
+        - name: source-code
+          hostPath:
+            path: /Users/hiendang/project/src
+            type: Directory

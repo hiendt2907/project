@@ -21,7 +21,7 @@ docker build -t multi-agent-system:latest -f Dockerfile .
 make deploy-worker
 ```
 
-Tương đương: `kubectl apply` `k8s/deployments/omni-worker-configmap.yaml`, `omni-worker-rbac.yaml`, `omni-worker.yaml` + `kubectl rollout restart deployment/omni-worker -n multi-agent` + `rollout status`. Gateway đổi code: áp `k8s/deployments/omni-gateway.yaml` + rollout tương tự.
+Mặc định Master Plan V3: `omni-worker-configmap`, `omni-worker-rbac`, `prober-rbac`, `analyst-rbac`, `omni-prober` + `omni-analyst` + `omni-core` + rollout ba deployment. Monolith một Pod: `make deploy-worker-legacy` (`omni-worker.yaml`). Gateway đổi code: áp `k8s/deployments/omni-gateway.yaml` + rollout tương tự.
 
 Dùng `./scripts/with_working_kube.sh` làm prefix `kubectl` khi nhiều kubeconfig (OrbStack).
 

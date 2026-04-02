@@ -1,0 +1,6 @@
+# Analyst: reasoning/evidence consumer — no cluster-admin (kubectl from pod is unprivileged).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omni-analyst
+  namespace: multi-agent

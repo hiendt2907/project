@@ -1,0 +1,72 @@
+# Core: periodic DeepScout, proactive, baseline/forecast — no Kafka ingress consumers.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-core
+  namespace: multi-agent
+  labels:
+    app: omni-core
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omni-core
+  template:
+    metadata:
+      labels:
+        app: omni-core
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: omni-worker
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: omni-core
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: omni-worker-config
+          env:
+            - name: OMNI_WORKER_ROLE
+              value: "core"
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: bot-token
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+            - name: OMNI_TELEGRAM_ADMIN_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: source-code
+              mountPath: /app/src
+      volumes:
+        - name: source-code
+          hostPath:
+            path: /Users/hiendang/project/src
+            type: Directory

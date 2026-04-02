@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Chạy song song `deployment/omni-worker` (legacy full) với `omni-prober` — cả hai consume `omni-alerts` / xử lý trùng.  
+**Fix:** Chọn một topology: `make deploy-worker` (ba Pod: prober + analyst + core, `OMNI_WORKER_ROLE` tương ứng) **hoặc** `make deploy-worker-legacy` (một Pod). Scale deployment không dùng về 0.
+
 **Symptom:** Lab `k8s/kafka/kafka-single.yaml` dùng `bitnami/kafka:…` — sau `docker system prune` / registry Bitnami tag không pull được (`manifest unknown`).  
 **Fix:** Chuyển image sang `apache/kafka:3.8.0` + env KRaft (`CLUSTER_ID`, `KAFKA_*` theo image `/etc/kafka/docker/run`). `kubectl apply -f k8s/kafka/kafka-single.yaml`; `make deploy-kafka`.
 
