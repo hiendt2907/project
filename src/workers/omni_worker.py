@@ -1,9 +1,8 @@
-"""Omni-Worker: XREADGROUP + (tuỳ chọn) telegram_polling → cùng stream; SIGTERM an toàn."""
+"""Omni-Worker: Kafka consumers (alerts + proactive) + (tuỳ chọn) telegram_polling; SIGTERM an toàn."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import signal
@@ -11,8 +10,6 @@ import time
 from typing import Any
 
 import redis.asyncio as redis
-from redis.exceptions import ResponseError
-
 from init.deep_scout import DeepScoutSummary, deep_scout_periodic_loop, run_deep_scout
 from init.deep_scout_autonomous import run_deep_scout_autonomous
 from ingest.telegram import TelegramBotSettings, TelegramClient, summarize_message_update
@@ -26,8 +23,12 @@ from rag.pgvector_store import (
 from workers.autonomous_decider import autonomous_decider_loop
 from workers.baseline_snapshot import baseline_snapshot_loop
 from workers.forecast_autonomous_loop import autonomous_forecast_loop
+from workers.alert_to_event import build_anomaly_event_from_alert_payload
+from workers.diagnostic_dispatcher import run_diagnostic_pipeline
+from workers.evidence_consumer import reason_from_diagnostic_evidence
 from workers.handlers import WorkerHandlerContext, handle_inbound_payload
-from workers.proactive_observer import proactive_control_loop, proactive_evaluate_loop
+from messaging.kafka_bus import KafkaBus, create_producer, decode_kafka_value_to_fields, kafka_msg_id
+from workers.proactive_observer import kafka_proactive_incidents_loop, proactive_evaluate_loop
 from workers.request_trace import log_end_request, log_start_request
 from workers.metrics_exporter import (
     observability_metrics_loop,
@@ -38,44 +39,11 @@ from workers.otel_tracing import setup_otel_tracing, shutdown_otel_tracing
 from workers.ollama_semaphore import RedisOllamaSemaphore
 from workers.settings import WorkerSettings
 from workers.redis_client import connect_redis
+from workers.telegram_outbound import send_telegram_out_for_inbound
 
 logger = logging.getLogger(__name__)
 
-
-async def _send_telegram_out(
-    ctx: WorkerHandlerContext,
-    payload: dict[str, Any],
-    trace: str,
-    out: str,
-) -> None:
-    if not ctx.telegram or payload.get("chat_id") is None:
-        return
-    cid = int(payload["chat_id"])
-    if ctx.settings.reply_append_trace_id:
-        tid = str(payload.get("trace_id") or trace or "").strip()
-        if tid:
-            out = f"{out.rstrip()}\n\ntrace_id={tid}"[:4000]
-    fb = getattr(ctx, "fallback_inline_commands", None)
-    if (
-        fb
-        and len(fb) == 3
-        and ctx.settings.fallback_inline_buttons_enabled
-    ):
-        h = hashlib.sha256(trace.encode()).hexdigest()[:16]
-        await ctx.redis.setex(f"omni:fb_h:{h}", 86400, trace)
-        await ctx.redis.setex(
-            f"omni:fb_suggest:{trace}",
-            86400,
-            json.dumps(fb, ensure_ascii=False),
-        )
-        rows: list[list[dict[str, str]]] = []
-        for i, cmd in enumerate(fb):
-            label = cmd if len(cmd) <= 64 else (cmd[:61] + "…")
-            rows.append([{"text": label, "callback_data": f"ofs:{h}:{i}"}])
-        await ctx.telegram.send_message(cid, out[:4000], reply_markup={"inline_keyboard": rows})
-    else:
-        await ctx.telegram.send_message(cid, out[:4000])
-    ctx.fallback_inline_commands = None
+_send_telegram_out = send_telegram_out_for_inbound
 
 
 def _redis_str(v: Any) -> str:
@@ -132,11 +100,9 @@ async def _handle_telegram_fallback_callback(ctx: WorkerHandlerContext, u: dict[
             "message_id": msg.get("message_id"),
             "trace_id": trace_id,
         }
-        await ctx.redis.xadd(
-            ctx.settings.stream_inbound,
-            {"data": json.dumps(payload, ensure_ascii=False)},
-        )
-        logger.info("[%s] telegram_callback_in -> XADD stream=%s", trace_id, ctx.settings.stream_inbound)
+        assert ctx.kafka is not None
+        await ctx.kafka.send_envelope_inner(ctx.settings.kafka_topic_alerts, payload)
+        logger.info("[%s] telegram_callback_in -> kafka topic=%s", trace_id, ctx.settings.kafka_topic_alerts)
     except Exception:
         logger.exception("telegram_fallback_callback")
         if ctx.telegram and cq_id:
@@ -145,15 +111,6 @@ async def _handle_telegram_fallback_callback(ctx: WorkerHandlerContext, u: dict[
             except Exception:
                 pass
     return True
-
-
-async def ensure_consumer_group(r: redis.Redis, stream: str, group: str) -> None:
-    try:
-        await r.xgroup_create(stream, group, id="0", mkstream=True)
-        logger.info("created consumer group %s on %s", group, stream)
-    except ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise
 
 
 async def _lock_heartbeat(redis_cli: redis.Redis, lock_key: str, stop_event: asyncio.Event) -> None:
@@ -192,7 +149,7 @@ async def _process_stream_entry(
     # Banking-grade Idempotency: Chỉ xử lý nếu lấy được Khóa cứng (TTL 15s)
     acquired = await ctx.redis.set(lock_key, "locked", nx=True, ex=15)
     if not acquired:
-        logger.info("[XAUTOCLAIM Guard] Lock %s is active. Skipping message %s.", lock_key, msg_id)
+        logger.info("[Kafka Guard] Lock %s is active. Skipping message %s.", lock_key, msg_id)
         return
 
     hb_stop = asyncio.Event()
@@ -214,21 +171,27 @@ async def _process_stream_entry(
         )
         stream_started = True
         logger.info("[%s] stream_read redis_msg_id=%s", trace, msg_id)
-        out = await handle_inbound_payload(ctx, payload)
+        # Master Plan V3: omni-alerts → prober only (diagnostic pipeline → evidence topic); reasoning in kafka_evidence_loop.
+        if payload.get("chat_id") is not None:
+            try:
+                await ctx.redis.setex(
+                    f"omni:evidence_reply:{trace}",
+                    900,
+                    json.dumps({"chat_id": int(payload["chat_id"])}),
+                )
+            except Exception:
+                logger.warning("[%s] evidence_reply context not stored", trace)
+        ev = build_anomaly_event_from_alert_payload(payload)
+        await run_diagnostic_pipeline(ctx, ev)
         dur_ms = (time.perf_counter() - t0) * 1000.0
         log_end_request(
             trace,
             phase="stream_consumer",
             status="ok",
             duration_ms=dur_ms,
-            out_len=len(out),
+            out_len=0,
         )
-        if ctx.telegram and payload.get("chat_id") is not None:
-            logger.info("[%s] telegram_out chat_id=%s out_len=%s", trace, int(payload["chat_id"]), len(out))
-            await _send_telegram_out(ctx, payload, trace, out)
-        
-        # Xử lý xong, dọn dẹp sạch sẽ
-        await ctx.redis.xack(ctx.settings.stream_inbound, ctx.settings.consumer_group, msg_id)
+
         await ctx.redis.delete(retry_key)
 
     except Exception as e:
@@ -264,8 +227,6 @@ async def _process_stream_entry(
                 "_stable_id": _stable_id
             })
             await ctx.redis.zadd("omni:delayed_queue", {zset_payload: retry_at})
-            # Giải thoát PEL + Lock để tin nhắn mới không bị chặn bởi lock cũ
-            await ctx.redis.xack(ctx.settings.stream_inbound, ctx.settings.consumer_group, msg_id)
         else:
             logger.error("[%s] Fatal Retry >=3. Sending to DLQ.", trace)
             error_ctx = {
@@ -275,8 +236,8 @@ async def _process_stream_entry(
                 "trace_id": dlq_trace
             }
             dlq_payload = {"error_context": json.dumps(error_ctx), "trace_id": dlq_trace, "data": raw}
-            await ctx.redis.xadd(ctx.settings.stream_dlq, dlq_payload)
-            await ctx.redis.xack(ctx.settings.stream_inbound, ctx.settings.consumer_group, msg_id)
+            assert ctx.kafka is not None
+            await ctx.kafka.send_dict(ctx.settings.kafka_topic_dlq, dlq_payload)
             await ctx.redis.delete(retry_key)
 
     finally:
@@ -297,10 +258,14 @@ async def delayed_queue_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
                 removed = await ctx.redis.zrem("omni:delayed_queue", item)
                 if removed == 1:
                     wrapped = json.loads(item)
-                    await ctx.redis.xadd(ctx.settings.stream_inbound, {
-                        "data": wrapped["data"],
-                        "_stable_id": wrapped.get("_stable_id", wrapped["msg_id"])
-                    })
+                    assert ctx.kafka is not None
+                    await ctx.kafka.send_dict(
+                        ctx.settings.kafka_topic_alerts,
+                        {
+                            "data": wrapped["data"],
+                            "_stable_id": wrapped.get("_stable_id", wrapped["msg_id"]),
+                        },
+                    )
         except Exception as e:
             logger.error("delayed_queue_loop error: %s", e)
         # Nếu Circuit Breaker đang hoạt động, chạy nhanh hơn (0.2s) để giải phóng rác
@@ -335,72 +300,64 @@ async def circuit_breaker_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -
         await asyncio.sleep(2.0)
 
 
-async def stream_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
-    import random
+async def kafka_alerts_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+    from aiokafka import AIOKafkaConsumer
+
+    ws = ctx.settings
     await ctx.scout_ready.wait()
-    await ensure_consumer_group(ctx.redis, ctx.settings.stream_inbound, ctx.settings.consumer_group)
-    xautoclaim_start = "0-0"
-    # Jitter: mỗi pod sẽ XAUTOCLAIM theo chu kỳ ngẫu nhiên 15-30s để chống Thundering Herd
-    _xautoclaim_interval = random.uniform(15.0, 30.0)
-    _xautoclaim_last = 0.0
+    consumer = AIOKafkaConsumer(
+        ws.kafka_topic_alerts,
+        bootstrap_servers=ws.kafka_bootstrap_servers,
+        group_id=ws.consumer_group,
+        enable_auto_commit=False,
+        client_id=ws.consumer_name,
+    )
+    await consumer.start()
+    try:
+        async for msg in consumer:
+            if stop.is_set():
+                break
+            try:
+                fields = decode_kafka_value_to_fields(msg.value)
+                mid = kafka_msg_id(msg.topic, msg.partition, msg.offset)
+                await _process_stream_entry(ctx, mid, fields)
+                await consumer.commit()
+            except Exception as e:
+                await ctx.ledger.record_exception(e, phase="4", component="kafka_alerts_loop", swallow_errors=True)
+                logger.exception("kafka_alerts_loop message error: %s", e)
+                await asyncio.sleep(0.5)
+    finally:
+        await consumer.stop()
 
-    while not stop.is_set():
-        try:
-            # 1. Cơ Chế XAUTOCLAIM (The Healer) - Chỉ chạy theo Jitter interval
-            _now = time.time()
-            if _now - _xautoclaim_last >= _xautoclaim_interval:
-                _xautoclaim_last = _now
-                _xautoclaim_interval = random.uniform(15.0, 30.0)  # reset jitter
-                try:
-                    # XAUTOCLAIM trả về (next_start_id, list_of_messages) trong redis-py async
-                    ack_res = await ctx.redis.xautoclaim(
-                        ctx.settings.stream_inbound,
-                        ctx.settings.consumer_group,
-                        ctx.settings.consumer_name,
-                        min_idle_time=60000,
-                        start_id=xautoclaim_start,
-                        count=10
-                    )
-                    if isinstance(ack_res, tuple) and len(ack_res) >= 2:
-                        xautoclaim_start = ack_res[0]
-                        stuck_messages = ack_res[1]
-                        if stuck_messages:
-                            for stuck_msg in stuck_messages:
-                                # stuck_msg usually format: [msg_id, {fields}]
-                                if len(stuck_msg) >= 2:
-                                    s_msg_id = stuck_msg[0]
-                                    s_fields = stuck_msg[1]
-                                    if isinstance(s_msg_id, bytes):
-                                        s_msg_id = s_msg_id.decode()
-                                    # Chỉ Xử lý nếu Heartbeat Lock của Worker cũ ĐÃ CHÊT
-                                    s_lock = await ctx.redis.get(f"omni:lock:{s_msg_id}")
-                                    if not s_lock:
-                                        logger.info("[XAUTOCLAIM] Resurrecting dead message %s", s_msg_id)
-                                        await _process_stream_entry(ctx, s_msg_id, s_fields)
-                except Exception as e:
-                    logger.error("xautoclaim failed: %s", e)
 
-            # 2. Cơ Chế XREADGROUP - Đọc luồng Realtime
-            streams = await ctx.redis.xreadgroup(
-                ctx.settings.consumer_group,
-                ctx.settings.consumer_name,
-                streams={ctx.settings.stream_inbound: ">"},
-                count=10,
-                block=ctx.settings.block_ms,
-            )
-        except Exception as e:
-            await ctx.ledger.record_exception(e, phase="4", component="stream_loop", swallow_errors=True)
-            await asyncio.sleep(1)
-            continue
-        if not streams:
-            continue
-        for _sname, entries in streams:
-            for msg_id, fields in entries:
-                if stop.is_set():
-                    return
-                if isinstance(msg_id, bytes):
-                    msg_id = msg_id.decode()
-                await _process_stream_entry(ctx, msg_id, fields)
+async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+    """Analyst path: consume ``omni-diagnostic-evidence`` only (Master Plan V3)."""
+    from aiokafka import AIOKafkaConsumer
+
+    ws = ctx.settings
+    await ctx.scout_ready.wait()
+    consumer = AIOKafkaConsumer(
+        ws.kafka_topic_diagnostic_evidence,
+        bootstrap_servers=ws.kafka_bootstrap_servers,
+        group_id=ws.consumer_group_analyst,
+        enable_auto_commit=False,
+        client_id=ws.consumer_name_analyst,
+    )
+    await consumer.start()
+    try:
+        async for msg in consumer:
+            if stop.is_set():
+                break
+            try:
+                fields = decode_kafka_value_to_fields(msg.value)
+                await reason_from_diagnostic_evidence(ctx, fields)
+                await consumer.commit()
+            except Exception as e:
+                await ctx.ledger.record_exception(e, phase="4", component="kafka_evidence_loop", swallow_errors=True)
+                logger.exception("kafka_evidence_loop message error: %s", e)
+                await asyncio.sleep(0.5)
+    finally:
+        await consumer.stop()
 
 
 async def telegram_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
@@ -431,11 +388,9 @@ async def telegram_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
                 "message_id": s.message_id,
                 "trace_id": trace_id,
             }
-            logger.info("[%s] telegram_in -> XADD stream=%s", trace_id, ctx.settings.stream_inbound)
-            await ctx.redis.xadd(
-                ctx.settings.stream_inbound,
-                {"data": json.dumps(payload, ensure_ascii=False)},
-            )
+            assert ctx.kafka is not None
+            logger.info("[%s] telegram_in -> kafka topic=%s", trace_id, ctx.settings.kafka_topic_alerts)
+            await ctx.kafka.send_envelope_inner(ctx.settings.kafka_topic_alerts, payload)
 
 
 async def build_context() -> WorkerHandlerContext:
@@ -463,6 +418,9 @@ async def build_context() -> WorkerHandlerContext:
         except Exception as e:
             logger.warning("telegram disabled: %s", e)
 
+    producer = await create_producer(ws.kafka_bootstrap_servers)
+    kafka_bus = KafkaBus(producer)
+
     return WorkerHandlerContext(
         settings=ws,
         redis=r,
@@ -472,6 +430,7 @@ async def build_context() -> WorkerHandlerContext:
         semaphore=sem,
         telegram=tg,
         telegram_chat_id=None,
+        kafka=kafka_bus,
     )
 
 
@@ -522,11 +481,7 @@ async def run_worker() -> None:
             kill_switch_key=ctx.settings.proactive_kill_switch_key,
             ollama_base_url=ctx.settings.ollama_base_url,
             stop=stop,
-            stream_keys=(
-                ctx.settings.stream_inbound,
-                ctx.settings.stream_dlq,
-                ctx.settings.stream_incidents_proactive,
-            ),
+            stream_keys=(),
             interval_sec=15.0,
         ),
         name="observability_metrics",
@@ -563,7 +518,8 @@ async def run_worker() -> None:
             pass
 
     tasks = [
-        asyncio.create_task(stream_loop(ctx, stop), name="stream_loop"),
+        asyncio.create_task(kafka_alerts_loop(ctx, stop), name="kafka_alerts_loop"),
+        asyncio.create_task(kafka_evidence_loop(ctx, stop), name="kafka_evidence_loop"),
         asyncio.create_task(circuit_breaker_loop(ctx, stop), name="circuit_breaker"),
         asyncio.create_task(delayed_queue_loop(ctx, stop), name="delayed_queue_loop"),
         asyncio.create_task(deep_scout_periodic_loop(ctx, stop), name="deep_scout_periodic"),
@@ -576,7 +532,7 @@ async def run_worker() -> None:
         )
     if ctx.settings.proactive_enabled:
         tasks.append(asyncio.create_task(proactive_evaluate_loop(ctx, stop), name="proactive_evaluate"))
-        tasks.append(asyncio.create_task(proactive_control_loop(ctx, stop), name="proactive_control"))
+        tasks.append(asyncio.create_task(kafka_proactive_incidents_loop(ctx, stop), name="kafka_proactive_incidents"))
     if ctx.telegram is not None:
         tasks.append(asyncio.create_task(telegram_loop(ctx, stop), name="telegram_loop"))
 
@@ -588,6 +544,8 @@ async def run_worker() -> None:
         await ctx.ollama.aclose()
         if ctx.telegram:
             await ctx.telegram.aclose()
+        if ctx.kafka:
+            await ctx.kafka.close()
         await ctx.vector_store.close()
         await ctx.redis.aclose()
 

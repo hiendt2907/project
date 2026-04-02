@@ -6,7 +6,9 @@ Defaults below are fallbacks when unset — override via env, not by editing lit
 
 from __future__ import annotations
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+import re
+
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,10 +57,85 @@ class WorkerSettings(BaseSettings):
         return self.prometheus_url
 
     redis_url: str = Field(default="redis://redis:6379/0")
-    stream_inbound: str = Field(default="events:inbound")
-    stream_dlq: str = Field(default="events:dlq")
-    consumer_group: str = Field(default="omni")
+
+    kafka_bootstrap_servers: str = Field(
+        default="kafka:9092",
+        description="Kafka bootstrap (PLAINTEXT in-cluster).",
+    )
+    kafka_topic_alerts: str = Field(
+        default="omni-alerts",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_ALERTS", "OMNI_STREAM_INBOUND"),
+        description="Ingress alerts + telegram callback (former events:inbound).",
+    )
+    kafka_topic_dlq: str = Field(
+        default="omni-dlq",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_DLQ", "OMNI_STREAM_DLQ"),
+    )
+    kafka_topic_proactive_incidents: str = Field(
+        default="omni-proactive-incidents",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_PROACTIVE_INCIDENTS", "OMNI_STREAM_INCIDENTS_PROACTIVE"),
+    )
+    kafka_topic_audit_sandbox: str = Field(
+        default="omni-audit-sandbox",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_AUDIT_SANDBOX", "OMNI_AUDIT_SANDBOX_STREAM"),
+    )
+    kafka_topic_audit_proactive: str = Field(
+        default="omni-audit-proactive",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_AUDIT_PROACTIVE", "OMNI_AUDIT_PROACTIVE_STREAM"),
+    )
+    kafka_topic_audit_agent: str = Field(
+        default="omni-audit-agent",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_AUDIT_AGENT", "OMNI_AUDIT_AGENT_STREAM"),
+    )
+    kafka_topic_diagnostic_evidence: str = Field(
+        default="omni-diagnostic-evidence",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_DIAGNOSTIC_EVIDENCE", "OMNI_DIAGNOSTIC_EVIDENCE_STREAM"),
+    )
+    kafka_topic_tool_audit: str = Field(
+        default="omni-tool-audit",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_TOOL_AUDIT"),
+        description="Mutating tool audit (former events:audit).",
+    )
+
+    @field_validator(
+        "kafka_topic_alerts",
+        "kafka_topic_dlq",
+        "kafka_topic_proactive_incidents",
+        "kafka_topic_audit_sandbox",
+        "kafka_topic_audit_proactive",
+        "kafka_topic_audit_agent",
+        "kafka_topic_diagnostic_evidence",
+        "kafka_topic_tool_audit",
+        mode="after",
+    )
+    @classmethod
+    def _sanitize_kafka_topic_names(cls, v: str, info: ValidationInfo) -> str:
+        """Legacy Redis stream keys (e.g. ``events:inbound``) are invalid Kafka topic names — fall back."""
+        defaults: dict[str, str] = {
+            "kafka_topic_alerts": "omni-alerts",
+            "kafka_topic_dlq": "omni-dlq",
+            "kafka_topic_proactive_incidents": "omni-proactive-incidents",
+            "kafka_topic_audit_sandbox": "omni-audit-sandbox",
+            "kafka_topic_audit_proactive": "omni-audit-proactive",
+            "kafka_topic_audit_agent": "omni-audit-agent",
+            "kafka_topic_diagnostic_evidence": "omni-diagnostic-evidence",
+            "kafka_topic_tool_audit": "omni-tool-audit",
+        }
+        fb = defaults.get(info.field_name or "", "omni-alerts")
+        if not isinstance(v, str) or not v.strip():
+            return fb
+        s = v.strip()
+        if not re.match(r"^[a-zA-Z0-9._-]+$", s):
+            return fb
+        return s
+
+    consumer_group: str = Field(default="omni-worker-alerts")
     consumer_name: str = Field(default="omni-worker-1")
+    consumer_group_analyst: str = Field(
+        default="omni-analyst-evidence",
+        description="Kafka group for svc-analyst — consumes omni-diagnostic-evidence only.",
+    )
+    consumer_name_analyst: str = Field(default="omni-analyst-1")
     block_ms: int = Field(default=5000, ge=500)
     
     # Banking-Grade Resilience Limits
@@ -347,23 +424,30 @@ class WorkerSettings(BaseSettings):
         description="Optional MCP server base URL when mcp_enabled (placeholder until client ships).",
     )
 
-    audit_sandbox_stream: str = Field(default="audit:sandbox", description="Redis Stream forensics sandbox.")
-    audit_sandbox_maxlen: int = Field(default=10_000, ge=1000, le=500_000)
-    audit_proactive_stream: str = Field(default="audit:proactive", description="Redis Stream — proactive daemon outcomes.")
-    audit_proactive_maxlen: int = Field(default=1000, ge=100, le=50_000)
+    audit_sandbox_maxlen: int = Field(
+        default=10_000,
+        ge=1000,
+        le=500_000,
+        description="Retention hint (Kafka broker/topic policy; not enforced in app).",
+    )
+    audit_proactive_maxlen: int = Field(
+        default=1000,
+        ge=100,
+        le=50_000,
+        description="Retention hint for proactive audit topic.",
+    )
 
     diagnostic_dictionary_enabled: bool = Field(
-        default=False,
-        description="SRE Diagnostic Dictionary: deterministic probes + Redis evidence stream.",
+        default=True,
+        description="SRE Diagnostic Dictionary: deterministic probes + Kafka evidence topic.",
     )
     diagnostic_matrix_path: str = Field(
         default="/app/config/diagnostic_matrix.yaml",
         validation_alias=AliasChoices("OMNI_DIAGNOSTIC_MATRIX_PATH"),
     )
-    diagnostic_evidence_stream: str = Field(default="diagnostic:evidence")
     diagnostic_evidence_maxlen: int = Field(default=2000, ge=100, le=50_000)
 
-    proactive_enabled: bool = Field(default=True, description="Prometheus evaluate + incidents:proactive consumer.")
+    proactive_enabled: bool = Field(default=True, description="Prometheus evaluate + proactive incidents Kafka consumer.")
     proactive_kill_switch_key: str = Field(default="omni:proactive:kill_switch")
     proactive_eval_interval_sec: int = Field(default=120, ge=15, le=86400)
     proactive_promql: str = Field(
@@ -372,8 +456,7 @@ class WorkerSettings(BaseSettings):
     )
     proactive_trigger_threshold: float = Field(default=0.0, ge=0.0, description="Fire when instant query value > threshold.")
     proactive_cooldown_sec: int = Field(default=3600, ge=60, le=86400 * 7)
-    stream_incidents_proactive: str = Field(default="incidents:proactive")
-    consumer_group_proactive: str = Field(default="incidents:proactive")
+    consumer_group_proactive: str = Field(default="omni-worker-proactive")
     consumer_name_proactive: str = Field(default="omni-proactive-1")
     proactive_block_ms: int = Field(default=5000, ge=500)
     proactive_sop_collection: str = Field(default="itops_sop_ledger_v2")
@@ -529,11 +612,12 @@ class WorkerSettings(BaseSettings):
         description="ReAct multi-step slow-path; học chỉ khi omni_mark_resolved.",
     )
     agentic_max_llm_iterations: int = Field(default=8, ge=1, le=48)
-    audit_agent_stream: str = Field(
-        default="audit:agent",
-        description="Redis stream cho audit phiên agentic (XADD).",
+    audit_agent_maxlen: int = Field(
+        default=8000,
+        ge=500,
+        le=50_000,
+        description="Retention hint for agentic audit topic.",
     )
-    audit_agent_maxlen: int = Field(default=8000, ge=500, le=50_000)
     agentic_debug_io: bool = Field(
         default=False,
         description="Bật log JSON từng vòng agentic: llm_request (messages gửi Ollama) + llm_response (raw model output). Lab only.",

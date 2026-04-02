@@ -1,0 +1,38 @@
+# Master Plan V3 — ServiceAccount omni-prober: read-only Pods + pods/log (no delete/patch).
+# Verify: kubectl --as=system:serviceaccount:multi-agent:omni-prober delete pod -n multi-agent --all → Forbidden
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omni-prober
+  namespace: multi-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: omni-prober-read
+  namespace: multi-agent
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omni-prober-read
+  namespace: multi-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: omni-prober-read
+subjects:
+  - kind: ServiceAccount
+    name: omni-prober
+    namespace: multi-agent

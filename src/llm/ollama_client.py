@@ -26,7 +26,7 @@ class OllamaClient(BaseModel):
 
     _client: httpx.AsyncClient = PrivateAttr()
 
-    def model_post_init(self, __context: Any) -> None:
+    def model_post_init(self, _context: Any) -> None:
         base = self.base_url.rstrip("/")
         self._client = httpx.AsyncClient(base_url=base, timeout=self.timeout_s)
 

@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Lab `k8s/kafka/kafka-single.yaml` dùng `bitnami/kafka:…` — sau `docker system prune` / registry Bitnami tag không pull được (`manifest unknown`).  
+**Fix:** Chuyển image sang `apache/kafka:3.8.0` + env KRaft (`CLUSTER_ID`, `KAFKA_*` theo image `/etc/kafka/docker/run`). `kubectl apply -f k8s/kafka/kafka-single.yaml`; `make deploy-kafka`.
+
 **Symptom:** `OMNI_GOD_MODE` / `OMNI_LAB_UNCHAINED` bật — unattended Prometheus vẫn nhận system `SLOW_SYSTEM_GOD_UNATTENDED_EN` (few-shot `kubectl top` → `execute_shell_command`), mâu thuẫn `[PRIORITY]` / SDK-first và dễ chọn shell thay vì `namespace_pods_top` / `kubectl_cluster`.  
 **Fix:** `handlers.build_agentic_system_messages`: unattended luôn dùng `SLOW_SYSTEM_UNATTENDED_EN`; nếu lab/god thì nối `AGENTIC_LAB_SHELL_SUPPLEMENT_UNATTENDED_EN` (shell last resort). `ollama_prompts_en`: `SRE_JSON_GENERATOR_UNATTENDED_EN` làm rõ khi đã có pod+ns thì không áp rule “identifiers missing”. Verify: `pytest tests/test_handlers_inbound_preview.py`.
 
@@ -30,8 +33,11 @@ Short entries only. **Newest first** within each section. If the same symptom al
 **Symptom:** Proactive ReAct chỉ diagnose (CSV default không có mutate tools), scale deployment giới hạn 0–10, gated promotion chỉ thực thi `k8s_rollout_restart` — incident đơn giản không tự rollout/scale/patch/kubectl.  
 **Fix:** `OMNI_CLUSTER_FULL_ACCESS` (default true) bật full toolbelt + bỏ gate confidence trong proactive; tool `kubectl_cluster` (argv list, audit); `execution/promotion.py` dispatch mọi tool trong `PROMOTION_CLUSTER_TOOLS` qua registry; scale không cap trên (chỉ `ge=0`). Tắt: `OMNI_CLUSTER_FULL_ACCESS=false`. Verify: `pytest tests/test_policy_denylist.py tests/test_v3_tools.py`.
 
-**Symptom:** Sau lỗi Ollama / restart worker, `events:inbound` còn PEL pending, `omni:delayed_queue` / `omni:lock:*` / `omni:retry:*` kẹt — alert không xử lý sạch.  
-**Fix:** Trong pod worker: `PYTHONPATH=/app/src python -m devtools.redis_cleanup_stuck` (XACK PEL, xóa delayed ZSET nếu có, SCAN xóa lock/retry, DEL circuit breaker flag). Sau đó `kubectl rollout restart deployment/omni-worker -n multi-agent`.
+**Symptom:** Sau lỗi Ollama / restart worker, `omni:delayed_queue` / `omni:lock:*` / `omni:retry:*` kẹt — alert không xử lý sạch (bus là Kafka, không còn Redis Streams PEL).  
+**Fix:** Trong pod worker: `PYTHONPATH=/app/src python -m devtools.redis_cleanup_stuck` (xóa delayed ZSET, SCAN lock/retry, DEL circuit breaker). Kafka lag/stuck consumer: reset group hoặc `k8s/kafka` tooling. Sau đó `kubectl rollout restart deployment/omni-worker -n multi-agent`.
+
+**Symptom:** Lab chưa deploy Kafka — worker/gateway lỗi kết nối `kafka:9092`, không consume/produce.  
+**Fix:** `kubectl apply -f k8s/kafka/kafka-single.yaml`, Service `kafka:9092`, ConfigMap `OMNI_KAFKA_BOOTSTRAP_SERVERS`. Topics mặc định `omni-*` (auto-create). Verify: rollout worker + gateway sau khi broker Ready.
 
 _(none else yet)_
 

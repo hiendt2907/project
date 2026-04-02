@@ -39,7 +39,7 @@ class TelegramClient(BaseModel):
 
     _http: httpx.AsyncClient = PrivateAttr()
 
-    def model_post_init(self, __context: Any) -> None:
+    def model_post_init(self, _context: Any) -> None:
         base = f"{self.api_base.rstrip('/')}/bot{self.bot_token}"
         self._http = httpx.AsyncClient(base_url=base, timeout=httpx.Timeout(120.0))
 

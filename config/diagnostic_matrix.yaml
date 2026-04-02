@@ -37,3 +37,13 @@ rows:
       - redis_ping
       - k8s_list_pods_namespace
     stop_on_first_failure: false
+
+  # Catch-all (last): any alert text matches — Master Plan V3 prober-before-analyst
+  - symptom_group: generic_unclassified
+    layer: unknown
+    error_hint_pattern: ".*"
+    canonical_query_pattern: ".*"
+    probe_ids:
+      - redis_ping
+      - kafka_alerts_topic
+    stop_on_first_failure: false

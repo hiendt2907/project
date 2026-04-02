@@ -41,9 +41,9 @@ from execution.experience import (
     record_routing_exhausted_no_data,
     record_routing_from_success,
 )
-from execution.promotion import execute_write_pending_from_redis
-from workers.k8s_tools import (
+from pkg.executor import (
     execute_rollout_restart_from_pending,
+    execute_write_pending_from_redis,
     redis_key_rollout_pending,
     redis_key_write_pending,
 )
@@ -70,6 +70,7 @@ from workers.slow_path_trace import (
     slow_path_error_signature,
     truncate_for_prompt,
 )
+from messaging.kafka_bus import KafkaBus
 from workers.settings import WorkerSettings
 from workers.tool_observation import prepare_tool_return_for_llm
 from workers.tool_registry import get_tool_registry
@@ -620,6 +621,7 @@ class WorkerHandlerContext:
     ledger: ErrorLedger
     semaphore: RedisOllamaSemaphore
     telegram: TelegramClient | None
+    kafka: KafkaBus | None = None
     # Gán mỗi request (Telegram): tool tự dùng để gửi chart nếu LLM không truyền chat_id
     telegram_chat_id: int | None = None
     inbound_source: str = ""

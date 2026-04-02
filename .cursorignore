@@ -81,3 +81,5 @@ coverage/
 *.zip
 *.tar
 *.gz
+# Legacy deployments (canonical: k8s/deployments/)
+deployments/

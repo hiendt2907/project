@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from workers import k8s_cluster_tools as _k8s_cluster_tools  # noqa: F401 — @register_tool side effects
 from workers import kubectl_cluster as _kubectl_cluster  # noqa: F401
-from workers import k8s_readonly_tools as _k8s_readonly_tools
+from workers import k8s_readonly_tools as _k8s_readonly_tools  # noqa: F401 — register_tool side effects
 from workers.tool_registry import get_tool_registry
 
 from workers.k8s_tools import (
