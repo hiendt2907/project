@@ -12,7 +12,8 @@ metadata:
   labels:
     app: omni-worker
 spec:
-  replicas: 1
+  # Master Plan V3: dùng omni-prober+analyst+core; legacy full — scale 1 hoặc deploy-worker-legacy
+  replicas: 0
   selector:
     matchLabels:
       app: omni-worker
@@ -44,6 +45,11 @@ spec:
                 name: omni-worker-config
           # Chỉ Secret / nhạy cảm — mọi giá trị khác nằm trong omni-worker-config
           env:
+            - name: POSTGRES_RAG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: omni-postgres-app
+                  key: uri
             - name: TELEGRAM_BOT_TOKEN
               valueFrom:
                 secretKeyRef:

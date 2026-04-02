@@ -38,6 +38,11 @@ spec:
             - configMapRef:
                 name: omni-worker-config
           env:
+            - name: POSTGRES_RAG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: omni-postgres-app
+                  key: uri
             - name: OMNI_WORKER_ROLE
               value: "prober"
             - name: OMNI_CONSUMER_GROUP

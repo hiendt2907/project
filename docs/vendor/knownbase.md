@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Worker Pod CrashLoop — `socket.gaierror` / `Name or service not known` khi `init_pg_pool`; DSN mặc định code trỏ `pgpool-gateway` (không có Service trong namespace lab).  
+**Fix:** Set `POSTGRES_RAG_DSN` từ Secret CNPG `omni-postgres-app` key `uri` (env trong Deployment, không hardcode password vào ConfigMap). `kubectl rollout restart deployment/omni-prober …` sau khi áp manifest.
+
 **Symptom:** Chạy song song `deployment/omni-worker` (legacy full) với `omni-prober` — cả hai consume `omni-alerts` / xử lý trùng.  
 **Fix:** Chọn một topology: `make deploy-worker` (ba Pod: prober + analyst + core, `OMNI_WORKER_ROLE` tương ứng) **hoặc** `make deploy-worker-legacy` (một Pod). Scale deployment không dùng về 0.
 
