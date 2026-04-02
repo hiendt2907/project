@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: test-evidence docker-worker deploy-worker deploy-worker-legacy deploy-kafka deploy-prober-rbac e2e-proactive
+.PHONY: test-evidence docker-worker deploy-worker deploy-worker-legacy deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive
 
 test-evidence:
 	bash scripts/run_test_evidence.sh
@@ -34,6 +34,9 @@ deploy-kafka:
 
 deploy-prober-rbac:
 	./scripts/with_working_kube.sh apply -f k8s/deployments/prober-rbac.yaml
+
+ensure-kafka-topics:
+	bash scripts/kafka_ensure_omni_topics.sh
 
 e2e-proactive:
 	bash scripts/proactive_e2e.sh

@@ -19,6 +19,7 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: gateway
           image: multi-agent-system:v6-chaos

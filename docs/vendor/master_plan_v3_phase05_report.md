@@ -38,3 +38,11 @@ Generated: 2026-04-02 (implement step).
 
 - This report + code changes ready for review. Apply worker/gateway images after rebuild.
 
+## 2026-04-02 follow-up (automated)
+
+- **Redis:** `FLUSHALL` on `redis-0` (lab) — OK.
+- **Vulture:** `docs/vendor/vulture_mp3_src.txt` (clean run, `--min-confidence 80`).
+- **K8s inventory:** `kubectl get all,cm,secret,pvc -n multi-agent` — Postgres + Kafka + Redis + split worker deployments; `omni-worker` replicas 0.
+- **Kafka topics:** `make ensure-kafka-topics` / `scripts/kafka_ensure_omni_topics.sh`.
+- **E2E:** `DURATION_SEC=20 INTERVAL_SEC=5 bash scripts/proactive_e2e.sh --skip-build` — `summary.pass: true` (split topology + optional gateway).
+

@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from pkg.reasoning import coerce_evidence_dict
 from workers.handlers import WorkerHandlerContext, handle_inbound_payload
 from workers.telegram_outbound import send_telegram_out_for_inbound
 
@@ -19,6 +20,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         ev_doc = json.loads(raw)
     except Exception:
         ev_doc = {"kind": "parse_error", "raw": raw[:8000]}
+    ev_doc = coerce_evidence_dict(ev_doc)
     trace = str(ev_doc.get("trace_id") or "evidence-unknown")
     text = json.dumps(ev_doc, ensure_ascii=False, indent=2)[:12000]
     chat_id: int | None = None

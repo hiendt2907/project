@@ -1,0 +1,2 @@
+# vulture src/ --min-confidence 80
+# Exit 0 — no unused symbols at >=80% confidence (2026-04-02).

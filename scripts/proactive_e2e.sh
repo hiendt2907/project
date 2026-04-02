@@ -49,18 +49,29 @@ if [[ "${SKIP_BUILD}" -eq 0 ]]; then
 fi
 
 if [[ "${SKIP_RESTART}" -eq 0 ]]; then
-  echo "[proactive_e2e] kubectl apply + rollout restart omni-worker ..."
+  echo "[proactive_e2e] kubectl apply + rollout (legacy omni-worker and/or Master Plan V3 split) ..."
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-worker-configmap.yaml"
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-worker-rbac.yaml"
+  "${KUBE}" apply -f "${ROOT}/k8s/deployments/prober-rbac.yaml"
+  "${KUBE}" apply -f "${ROOT}/k8s/deployments/analyst-rbac.yaml"
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-worker.yaml"
-  "${KUBE}" rollout restart deployment/omni-worker -n multi-agent
-  "${KUBE}" rollout status deployment/omni-worker -n multi-agent --timeout=180s
-  # Tránh race: full_system_audit exec + curl :9090/metrics ngay sau rollout → Connection refused
-  echo "[proactive_e2e] waiting for worker metrics (:9090) ..."
+  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-prober.yaml"
+  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-analyst.yaml"
+  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-core.yaml"
+  "${KUBE}" rollout restart deployment/omni-worker deployment/omni-prober deployment/omni-analyst deployment/omni-core -n multi-agent
+  "${KUBE}" rollout status deployment/omni-prober -n multi-agent --timeout=180s || true
+  "${KUBE}" rollout status deployment/omni-analyst -n multi-agent --timeout=180s || true
+  "${KUBE}" rollout status deployment/omni-core -n multi-agent --timeout=180s || true
+  "${KUBE}" rollout status deployment/omni-worker -n multi-agent --timeout=60s || true
+  METRICS_DEPLOY="omni-prober"
+  if replicas="$("${KUBE}" get deploy omni-worker -n multi-agent -o jsonpath='{.spec.replicas}' 2>/dev/null)" && [[ "${replicas:-0}" != "0" ]]; then
+    METRICS_DEPLOY="omni-worker"
+  fi
+  echo "[proactive_e2e] waiting for metrics on deploy/${METRICS_DEPLOY} (:9090) ..."
   for _ in $(seq 1 30); do
-    if code="$("${KUBE}" exec -n multi-agent deploy/omni-worker -- sh -lc \
+    if code="$("${KUBE}" exec -n multi-agent "deploy/${METRICS_DEPLOY}" -- sh -lc \
       'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9090/metrics' 2>/dev/null)" && [[ "${code}" == "200" ]]; then
-      echo "[proactive_e2e] worker metrics OK"
+      echo "[proactive_e2e] metrics OK (${METRICS_DEPLOY})"
       break
     fi
     sleep 2

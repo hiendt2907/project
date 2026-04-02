@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import pkg.reasoning
+from pkg import reasoning
 
 
 def main() -> None:
-    print("pkg.reasoning OK — use `python -m workers` for kafka_evidence_loop.")
+    print(
+        f"pkg.reasoning OK ({reasoning.__name__}) — use `python -m workers` for kafka_evidence_loop."
+    )
 
 
 if __name__ == "__main__":

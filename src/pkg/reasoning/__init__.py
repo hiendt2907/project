@@ -3,4 +3,6 @@
 Runtime wiring: ``workers.evidence_consumer.reason_from_diagnostic_evidence`` (invoked from ``kafka_evidence_loop``).
 """
 
-__all__: list[str] = []
+from pkg.reasoning.schema import DiagnosticEvidenceDict, coerce_evidence_dict
+
+__all__ = ["DiagnosticEvidenceDict", "coerce_evidence_dict"]

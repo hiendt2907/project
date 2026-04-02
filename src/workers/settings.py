@@ -58,6 +58,10 @@ class WorkerSettings(BaseSettings):
         return self.prometheus_url
 
     redis_url: str = Field(default="redis://redis:6379/0")
+    redis_sentinel_hosts: str = Field(
+        default="",
+        description="Future: comma-separated host:port for Redis Sentinel; empty = single redis_url only.",
+    )
 
     kafka_bootstrap_servers: str = Field(
         default="kafka:9092",
