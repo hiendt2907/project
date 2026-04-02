@@ -1,8 +1,10 @@
-# Master Plan V3 — Báo cáo chi tiết (theo plan)
+# Master Plan V3 — Báo cáo tổng hợp (single source of truth)
 
-**Tham chiếu plan:** `kafka_v3_event_sre_bc3d0f10.plan.md` (Cursor plans — **file plan gốc không bị sửa**; bảng Status trong plan vẫn do sếp/công cụ mirror — bảng dưới đây là **mirror trong repo**).  
+**File này** gom **toàn bộ** nội dung review MPV3: báo cáo theo plan (§0–§13), **Phase 0.5 DEEP PURGE** (§14), **Sổ đen nợ** (§15), **Redis Sentinel lab** (§16). Các file `master_plan_v3_phase05_report.md`, `technical_debt_blackbook.md`, `redis_sentinel_lab.md` chỉ còn vai trò **trỏ về đây** (tránh lệch bản).
+
+**Tham chiếu plan:** `kafka_v3_event_sre_bc3d0f10.plan.md` (Cursor plans — **không sửa file plan gốc**).  
 **Repo:** `/Users/hiendang/project`, nhánh **`main`**, remote `git@github.com:hiendt2907/project.git`.  
-**Cập nhật:** 2026-04-02 (lần tổng hợp lại toàn plan + trạng thái post-executor/Sentinel).
+**Cập nhật:** 2026-04-02.
 
 ---
 
@@ -26,7 +28,7 @@
 | 6 | Dockerfile / Makefile / deploy targets (Grafana: không bắt buộc đổi lớn) | **[x]** * |
 | 7 | pytest + e2e + acceptance Đòn 1–3 | **[x]** * |
 
-\* *Chi tiết nợ còn lại:* `docs/vendor/technical_debt_blackbook.md` (mirror §13; **không** scope Rook/Ceph trong repo).
+\* *Chi tiết nợ còn lại:* §15 trong **file này** (trước đây mirror trong `technical_debt_blackbook.md`). **Không** scope Rook/Ceph trong repo.
 
 ---
 
@@ -46,6 +48,9 @@
 11. [Danh sách file / artifact chính](#11-danh-sách-file--artifact-chính)
 12. [Lịch sử commit `[x]` liên quan MPV3](#12-lịch-sử-commit-x-liên-quan-mpv3)
 13. [Hạn chế & nợ kỹ thuật (minh bạch)](#13-hạn-chế--nợ-kỹ-thuật-minh-bạch)
+14. [Phụ lục — Phase 0.5 DEEP PURGE (log vận hành đầy đủ)](#14-phụ-lục--phase-05-deep-purge-log-vận-hành-đầy-đủ)
+15. [Phụ lục — Sổ đen nợ kỹ thuật (bảng chi tiết)](#15-phụ-lục--sổ-đen-nợ-kỹ-thuật-bảng-chi-tiết)
+16. [Phụ lục — Redis Sentinel (lab)](#16-phụ-lục--redis-sentinel-lab)
 
 ---
 
@@ -53,7 +58,7 @@
 
 | ID todo (plan) | Nội dung plan | Việc đã thực hiện (chi tiết) |
 |----------------|---------------|------------------------------|
-| `phase-05-deep-purge-disk` | Ghi SSD trước/sau purge | `df -h /`: trước ~**193 Gi** avail; sau Docker prune ~**207 Gi**; hiện tại ~**206 Gi** (log trong `master_plan_v3_phase05_report.md` + mục §3 dưới). |
+| `phase-05-deep-purge-disk` | Ghi SSD trước/sau purge | `df -h /`: trước ~**193 Gi** avail; sau Docker prune ~**207 Gi**; chi tiết **§14**. |
 | `phase-05-deep-purge-docker` | Docker prune; giữ Kafka/Postgres | `docker system prune -af`; image Kafka chuyển **`apache/kafka:3.8.0`** (Bitnami tag lỗi sau prune — `knownbase.md`). |
 | `phase-05-deep-purge-k8s` | Delete all `multi-agent`; CRDs cẩn trọng | Namespace dọn + apply lại Postgres (CNPG), Kafka, Redis standalone; CRD scan không xóa tự động cluster-wide (an toàn). |
 | `phase-05-deep-purge-venv` | Xóa `.venv`, cài lại `requirements.txt` | Đã recreate `.venv` + `pip install -r requirements.txt`. |
@@ -101,7 +106,7 @@ Quy ước: mỗi phase hoàn tất → **commit + push** + prefix **`[x]`**; c�
 ### 3.2 Kubernetes — namespace `multi-agent` (plan 0.5.2)
 
 - **Mục tiêu plan:** “chỉ giữ Postgres và Kafka” — trên lab thực tế **đã thêm Redis + worker split** vì worker/gateway phụ thuộc Redis và không thể chạy pipeline không có consumer.
-- **Quy trình:** snapshot trước/sau (tóm tắt trong `master_plan_v3_phase05_report.md`); delete có kiểm soát; apply lại CNPG `omni-postgres`, `k8s/kafka/kafka-single.yaml`, `redis-standalone.yaml`, manifest worker split.
+- **Quy trình:** snapshot trước/sau (**§14**); delete có kiểm soát; apply lại CNPG `omni-postgres`, `k8s/kafka/kafka-single.yaml`, `redis-standalone.yaml`, manifest worker split.
 - **Postgres DSN:** default code (`pgpool-gateway`) không resolve trong cluster → **fix:** env `POSTGRES_RAG_DSN` từ Secret `omni-postgres-app` key `uri` trên Deployment (`omni-prober`, `omni-analyst`, `omni-core`, `omni-worker`).
 
 ### 3.3 `.cursorignore` (plan 0.5.3)
@@ -111,7 +116,7 @@ Quy ước: mỗi phase hoàn tất → **commit + push** + prefix **`[x]`**; c�
 
 ### 3.4 Gate (plan)
 
-- **Nộp:** (1) vulture + diff code (2) log K8s (3) `.cursorignore` — **đã gom** vào `master_plan_v3_phase05_report.md` + mục §1–§3 file này.
+- **Nộp:** (1) vulture + diff code (2) log K8s (3) `.cursorignore` — **đã gom** vào §1–§3 + **§14** file này.
 - **Mở Phase 1 / `services/`:** theo plan **chỉ sau khi sếp OK** — mặc định coi Gate **đã đủ điều kiện kỹ thuật**; quyết định **OK** vẫn là sếp.
 
 ---
@@ -164,7 +169,7 @@ Quy ước: mỗi phase hoàn tất → **commit + push** + prefix **`[x]`**; c�
 | Monolith `omni_worker.py`: bỏ `gather` mọi loop | `OMNI_WORKER_ROLE` + `_worker_background_tasks()` — prober alerts; analyst evidence; **executor** `omni-actions`; core periodic/proactive; analyst+executor **bỏ** Deep Scout blocking (`scout_ready` set sớm). |
 | Gateway chỉ produce `omni-alerts` | Giữ contract gateway produce alerts (`.cursorrules`). |
 | Redis không làm bus | Kafka bus; Redis lock/state (Streams idempotency giữ nguyên quy ước repo). |
-| Redis Sentinel | **Client:** `OMNI_REDIS_SENTINEL_HOSTS` + `OMNI_REDIS_SENTINEL_MASTER_NAME` → `redis.asyncio.sentinel`. **Cluster Sentinel:** tự triển khai theo cluster — `docs/vendor/redis_sentinel_lab.md`. |
+| Redis Sentinel | **Client:** `OMNI_REDIS_SENTINEL_HOSTS` + `OMNI_REDIS_SENTINEL_MASTER_NAME` → `redis.asyncio.sentinel`. **Cluster Sentinel:** tự triển khai theo cluster — **§16**. |
 
 ---
 
@@ -213,8 +218,7 @@ Quy ước: mỗi phase hoàn tất → **commit + push** + prefix **`[x]`**; c�
 
 ## 11. Danh sách file / artifact chính
 
-- Báo cáo purge ngắn: `docs/vendor/master_plan_v3_phase05_report.md`
-- Báo cáo này: `docs/vendor/master_plan_v3_review_report.md`
+- **Báo cáo tổng hợp duy nhất (review):** `docs/vendor/master_plan_v3_review_report.md` (file này — gồm Phase 0.5 log §14, Sổ đen §15, Sentinel §16)
 - Vulture: `docs/vendor/vulture_mp3_src.txt`
 - Known issues: `docs/vendor/knownbase.md`
 - Worker: `src/workers/omni_worker.py`, `src/workers/settings.py`, `src/workers/evidence_consumer.py`, `src/workers/reasoning_evidence_inbound.py`, `src/workers/kafka_actions_consumer.py`, `src/workers/handler_context.py`, `src/workers/handlers.py` (executor cho inbound Telegram/full)
@@ -224,14 +228,12 @@ Quy ước: mỗi phase hoàn tất → **commit + push** + prefix **`[x]`**; c�
 - Scripts: `scripts/kafka_ensure_omni_topics.sh`, `scripts/proactive_e2e.sh`, `scripts/full_system_audit.py`
 - Makefile: `Makefile`
 - Gateway: `k8s/deployments/omni-gateway.yaml` (automount off)
-- **Sổ đen nợ:** `docs/vendor/technical_debt_blackbook.md`
-- **Sentinel (lab):** `docs/vendor/redis_sentinel_lab.md`
-
 ---
 
 ## 12. Lịch sử commit `[x]` liên quan MPV3
 
 ```
+df3aabc [x] docs: refresh Master Plan V3 full report (executor, Sentinel, §0 summary)
 0ffb447 [x] MPV3: omni-actions executor, Redis Sentinel client, Sổ đen §13; no Ceph
 98bf0ab [x] docs: Master Plan V3 full review report (master_plan_v3_review_report.md)
 158575b [x] MPV3: Phase 0.5 gate artifacts, pkg/reasoning schema, Kafka topics+proactive inject, e2e split (prober/core), gateway automount off
@@ -247,9 +249,9 @@ ee95e57 [x] MPV3: OMNI_WORKER_ROLE split (prober/analyst/core), K8s deployments 
 
 ## 13. Hạn chế & nợ kỹ thuật (minh bạch)
 
-**Bảng chi tiết + trạng thái xử lý:** `docs/vendor/technical_debt_blackbook.md`.
+**Bảng đầy đủ:** §15 (Phụ lục — Sổ đen).
 
-Tóm tắt còn lại:
+Tóm tắt nhanh:
 
 1. **`omni-results` + Reporter** — chưa có consumer/service.
 2. **`omni-core` / `omni-executor` + SA `omni-worker`:** vẫn **cluster-admin** trong lab — thu hẹp RBAC là follow-up.
@@ -260,4 +262,96 @@ Tóm tắt còn lại:
 
 ---
 
-*Hết báo cáo chi tiết theo plan. Đối chiếu plan gốc: `.cursor/plans/kafka_v3_event_sre_bc3d0f10.plan.md`.*
+## 14. Phụ lục — Phase 0.5 DEEP PURGE (log vận hành đầy đủ)
+
+*Nội dung gốc từ `master_plan_v3_phase05_report.md` — gộp vào đây để sếp chỉ mở một file.*
+
+**Generated:** 2026-04-02 (implement step).
+
+### SSD / disk (`df -h /`)
+
+| Thời điểm | Ghi chú |
+|-----------|---------|
+| **Before** (pre-Docker prune) | Avail ~**193 Gi** trên `/` |
+| **After** `docker system prune -af` | Thu ~**13.2 GB** Docker data; Avail ~**207 Gi** trên `/` |
+
+### Docker
+
+- `docker system prune -af` — reclaimed ~13.2GB (images/containers/build cache).
+
+### Kubernetes `multi-agent`
+
+- Deleted CNPG `Cluster/omni-postgres`, `kubectl delete all --all`, PVCs, jobs.
+- Re-applied: `deployments/postgres-cluster.yaml`, `k8s/kafka/kafka-single.yaml` (image **`apache/kafka:3.8.0`**), `k8s/deployments/redis-standalone.yaml` (worker dependency).
+- **Kafka manifest** chuyển từ Bitnami tag không pull được → **`apache/kafka:3.8.0`** (KRaft env).
+
+### Redis
+
+- `FLUSHALL` trên `redis-0` trước khi xóa workload (lab, destructive).
+
+### Python `.venv`
+
+- Removed and recreated; `pip install -r requirements.txt` + `vulture`.
+
+### Vulture
+
+- Ran `vulture src/ --min-confidence 80`; fixed unused imports / `model_post_init` params in telegram, ollama_client, watchdog, tools. Log: `docs/vendor/vulture_mp3_src.txt`.
+
+### `.cursorignore`
+
+- Appended `deployments/` (legacy; canonical under `k8s/deployments/`).
+
+### Gate
+
+- Báo cáo + code changes ready for review. Apply worker/gateway images after rebuild.
+
+### Follow-up 2026-04-02 (automated)
+
+- **Redis:** `FLUSHALL` on `redis-0` (lab) — OK.
+- **Vulture:** `docs/vendor/vulture_mp3_src.txt` (clean run, `--min-confidence 80`).
+- **K8s inventory:** `kubectl get all,cm,secret,pvc -n multi-agent` — Postgres + Kafka + Redis + split worker deployments; `omni-worker` replicas 0.
+- **Kafka topics:** `make ensure-kafka-topics` / `scripts/kafka_ensure_omni_topics.sh`.
+- **E2E:** `DURATION_SEC=20 INTERVAL_SEC=5 bash scripts/proactive_e2e.sh --skip-build` — `summary.pass: true` (split topology + optional gateway).
+
+---
+
+## 15. Phụ lục — Sổ đen nợ kỹ thuật (bảng chi tiết)
+
+*Nội dung gốc từ `technical_debt_blackbook.md` — mirror §13 + trạng thái xử lý.*
+
+**Mục đích:** Ghi nhận nợ đã liệt kê tại §13 + cập nhật sau các sprint (executor, Sentinel, v.v.). **Không** triển khai Rook/Ceph trong repo.
+
+| # | Nợ | Trạng thái / ghi chú |
+|---|-----|----------------------|
+| 1 | `omni-actions` / `omni-results` service | **omni-actions:** consumer `kafka_actions_loop`, Deployment `omni-executor`, topic trong `kafka_ensure_omni_topics.sh`. **omni-results** (reporter): chưa có. |
+| 2 | `omni-core` + SA `cluster-admin` | Chưa thu hẹp — lab vận hành mutate. |
+| 3 | Analyst runtime vs executor | **Đã tách:** `evidence_consumer` → `reason_diagnostic_evidence_only` (không `handle_inbound` / không `pkg.executor`). |
+| 4 | Ollama Service DNS | Cảnh báo embed nếu không có `ollama-service` — chưa đổi. |
+| 5 | Redis Sentinel | **Client:** `OMNI_REDIS_SENTINEL_HOSTS` + `OMNI_REDIS_SENTINEL_MASTER_NAME` → `redis.asyncio.sentinel`. **Cluster:** operator tự dựng Sentinel (chi tiết §16). |
+| 6 | Grafana/Prometheus stack | Chưa mở rộng manifest monitor — tách khỏi MPV3 worker split. |
+
+---
+
+## 16. Phụ lục — Redis Sentinel (lab)
+
+*Nội dung gốc từ `redis_sentinel_lab.md`.*
+
+**Tài liệu tham chiếu nhà cung cấp:** [Redis Sentinel](https://redis.io/docs/management/sentinel/) (high availability, monitoring, failover).
+
+### Worker / Gateway
+
+- **`OMNI_REDIS_SENTINEL_HOSTS`** — CSV `host:port`, ví dụ `redis-sentinel-0.redis-sentinel:26379,redis-sentinel-1.redis-sentinel:26379,redis-sentinel-2.redis-sentinel:26379`.
+- **`OMNI_REDIS_SENTINEL_MASTER_NAME`** — tên master trong cấu hình Sentinel (mặc định `mymaster`).
+- Khi `OMNI_REDIS_SENTINEL_HOSTS` **rỗng**, code dùng **`OMNI_REDIS_URL`** (standalone) như cũ.
+
+### Triển khai K8s
+
+Manifest Sentinel **không** cố định trong repo (tùy cluster — số node, storage). Áp operator/Helm hoặc StatefulSet theo doc Redis; sau đó set hai biến trên trong ConfigMap `omni-worker-config` / env gateway.
+
+---
+
+*Hết báo cáo tổng hợp.*
+
+Plan gốc: `.cursor/plans/kafka_v3_event_sre_bc3d0f10.plan.md`.
+
+Các file `master_plan_v3_phase05_report.md`, `technical_debt_blackbook.md`, `redis_sentinel_lab.md` chỉ còn stub trỏ về **file này** (§14–§16).
