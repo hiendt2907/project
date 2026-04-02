@@ -19,7 +19,7 @@ Environment:
   INTERVAL_SEC   Seconds between gateway + XADD ticks (default 10)
 
 Steps:
-  1. docker build -t multi-agent-system:latest
+  1. docker build worker + gateway (`multi-agent-system:latest`, `omni-gateway:latest`)
   2. kubectl apply omni-worker ConfigMap / RBAC / Deployment
   3. kubectl rollout restart deployment/omni-worker -n multi-agent
   4. python scripts/full_system_audit.py --strict --min-action-experience 0
@@ -44,8 +44,9 @@ while (($#)); do
 done
 
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
-  echo "[proactive_e2e] docker build ..."
+  echo "[proactive_e2e] docker build (worker + gateway) ..."
   docker build -t multi-agent-system:latest -f "${ROOT}/Dockerfile" "${ROOT}"
+  docker build -t omni-gateway:latest -f "${ROOT}/Dockerfile.gateway" "${ROOT}"
 fi
 
 if [[ "${SKIP_RESTART}" -eq 0 ]]; then
@@ -59,11 +60,13 @@ if [[ "${SKIP_RESTART}" -eq 0 ]]; then
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-analyst.yaml"
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-core.yaml"
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-executor.yaml"
-  "${KUBE}" rollout restart deployment/omni-worker deployment/omni-prober deployment/omni-analyst deployment/omni-core deployment/omni-executor -n multi-agent
+  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-gateway.yaml"
+  "${KUBE}" rollout restart deployment/omni-worker deployment/omni-prober deployment/omni-analyst deployment/omni-core deployment/omni-executor deployment/omni-gateway -n multi-agent
   "${KUBE}" rollout status deployment/omni-prober -n multi-agent --timeout=180s || true
   "${KUBE}" rollout status deployment/omni-analyst -n multi-agent --timeout=180s || true
   "${KUBE}" rollout status deployment/omni-core -n multi-agent --timeout=180s || true
   "${KUBE}" rollout status deployment/omni-executor -n multi-agent --timeout=180s || true
+  "${KUBE}" rollout status deployment/omni-gateway -n multi-agent --timeout=180s || true
   "${KUBE}" rollout status deployment/omni-worker -n multi-agent --timeout=60s || true
   METRICS_DEPLOY="omni-prober"
   if replicas="$("${KUBE}" get deploy omni-worker -n multi-agent -o jsonpath='{.spec.replicas}' 2>/dev/null)" && [[ "${replicas:-0}" != "0" ]]; then

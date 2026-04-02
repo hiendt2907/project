@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Gateway dùng chung image worker `multi-agent-system:latest` + `hostPath` mount source — stack nặng, không tách bạch ingress.  
+**Fix:** Image riêng **`omni-gateway:latest`** — `Dockerfile.gateway`, `requirements-gateway.txt`, `src/gateway/` baked in. Manifest `k8s/deployments/omni-gateway.yaml` (không hostPath). `make docker-gateway` rồi `make deploy-gateway`. `scripts/proactive_e2e.sh` build cả worker + gateway và apply/rollout `omni-gateway`.
+
 **Symptom:** Muốn dùng Ollama chạy sẵn trên Mac (M4), không deploy `ollama/ollama` trong K8s.  
 **Fix:** Service **`ExternalName`** `ollama-service` → `host.docker.internal` — `k8s/deployments/ollama-service.yaml`; `make deploy-ollama`. Pod gọi `http://ollama-service:11434` → host Ollama. Nếu **connection refused**: trên Mac bật bind `0.0.0.0:11434` (ví dụ `OLLAMA_HOST=0.0.0.0:11434`). Verify: `kubectl exec deploy/omni-prober -n multi-agent -- curl -s -o /dev/null -w "%{http_code}" http://ollama-service:11434/api/tags` → **200**.
 

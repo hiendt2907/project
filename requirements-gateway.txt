@@ -1,0 +1,6 @@
+# Omni Gateway only — FastAPI ingress (Kafka + Redis). Không dùng chung requirements.txt với worker.
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+redis[hiredis]>=5.0.0
+aiokafka>=0.11.0
+prometheus-client>=0.21.0

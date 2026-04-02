@@ -1,4 +1,4 @@
-# Omni Ingress Gateway — Standard FastAPI Deployment
+# Omni Ingress Gateway — image riêng `omni-gateway:latest` (không dùng multi-agent-system).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,9 +20,13 @@ spec:
         prometheus.io/port: "8000"
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
       containers:
         - name: gateway
-          image: multi-agent-system:v6-chaos
+          image: omni-gateway:latest
           imagePullPolicy: IfNotPresent
           command: ["uvicorn", "gateway.api:app", "--host", "0.0.0.0", "--port", "8000"]
           ports:
@@ -30,14 +34,6 @@ spec:
           envFrom:
             - configMapRef:
                 name: omni-worker-config
-          volumeMounts:
-            - name: source-code
-              mountPath: /app/src
-      volumes:
-        - name: source-code
-          hostPath:
-            path: /Users/hiendang/project/src
-            type: Directory
 ---
 apiVersion: v1
 kind: Service

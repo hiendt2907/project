@@ -5,9 +5,11 @@ alwaysApply: true
 
 # CI/CD lab (Omni worker + gateway)
 
-Khi sửa **`src/workers/**`**, **`src/gateway/**`**, **`Dockerfile`**, hoặc **`requirements.txt`** (ảnh hưởng runtime), agent **phải tự** chạy pipeline xác minh — **không** chỉ gợi ý lệnh cho sếp trừ khi cluster không có hoặc lệnh fail (ghi rõ lỗi).
+Khi sửa **`src/workers/**`**, **`src/gateway/**`**, **`Dockerfile`**, **`Dockerfile.gateway`**, **`requirements.txt`**, hoặc **`requirements-gateway.txt`** (ảnh hưởng runtime), agent **phải tự** chạy pipeline xác minh — **không** chỉ gợi ý lệnh cho sếp trừ khi cluster không có hoặc lệnh fail (ghi rõ lỗi).
 
 ## 1. Build image
+
+Worker:
 
 ```bash
 docker build -t multi-agent-system:latest -f Dockerfile .
@@ -15,13 +17,21 @@ docker build -t multi-agent-system:latest -f Dockerfile .
 
 (hoặc `make docker-worker`)
 
+Gateway (image riêng, **không** dùng `multi-agent-system:latest`):
+
+```bash
+docker build -t omni-gateway:latest -f Dockerfile.gateway .
+```
+
+(hoặc `make docker-gateway`)
+
 ## 2. Deploy + rollout
 
 ```bash
 make deploy-worker
 ```
 
-Mặc định Master Plan V3: `omni-worker-configmap`, `omni-worker-rbac`, `prober-rbac`, `analyst-rbac`, `omni-prober` + `omni-analyst` + `omni-core` + `omni-executor` + rollout bốn deployment. Monolith một Pod: `make deploy-worker-legacy` (`omni-worker.yaml`). Gateway đổi code: áp `k8s/deployments/omni-gateway.yaml` + rollout tương tự.
+Mặc định Master Plan V3: `omni-worker-configmap`, `omni-worker-rbac`, `prober-rbac`, `analyst-rbac`, `omni-prober` + `omni-analyst` + `omni-core` + `omni-executor` + rollout bốn deployment. Monolith một Pod: `make deploy-worker-legacy` (`omni-worker.yaml`). Gateway: **`make docker-gateway`** rồi `make deploy-gateway` (manifest `omni-gateway.yaml` dùng image `omni-gateway:latest`).
 
 Dùng `./scripts/with_working_kube.sh` làm prefix `kubectl` khi nhiều kubeconfig (OrbStack).
 
