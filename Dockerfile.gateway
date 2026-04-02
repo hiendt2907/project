@@ -1,4 +1,4 @@
-# omni-gateway:latest — image riêng cho Ingress Gateway (không worker, không kubectl, không ML stack).
+# omni-gateway:latest — Ingress only: COPY chỉ src/gateway + requirements-gateway.txt (không workers/LLM/executor).
 FROM python:3.13-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \

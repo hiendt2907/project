@@ -1,7 +1,10 @@
 """
-Omni Gateway — FastAPI Ingress for Prometheus/Loki Webhooks.
-Rate Limit: 1000 TPS (Token Bucket per worker via asyncio.Semaphore).
-Backpressure: Reads omni:circuit_breaker:active from Redis before XADD.
+Omni Gateway — FastAPI Ingress only (zero-trust vs worker).
+
+Contract: nhận HTTP, produce Kafka topic ``omni-alerts`` (payload JSON bọc ``data``).
+Cấm import ``src/workers/``, ``pkg/reasoning/``, ``pkg/executor/`` — chỉ FastAPI + Redis + aiokafka + metrics.
+
+Rate limit: token bucket; backpressure: Redis ``omni:circuit_breaker:active`` trước khi produce.
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import redis.asyncio as aioredis
+from aiokafka import AIOKafkaProducer
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
@@ -21,8 +25,22 @@ logger = logging.getLogger(__name__)
 
 # ─── Config from env ──────────────────────────────────────────────────────────
 import os
+import re
+
+_RE_TOPIC = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+
+def _kafka_topic_from_env() -> str:
+    raw = os.getenv("OMNI_KAFKA_TOPIC_ALERTS") or os.getenv("OMNI_STREAM_INBOUND") or "omni-alerts"
+    s = (raw or "").strip()
+    if not s or not _RE_TOPIC.match(s):
+        return "omni-alerts"
+    return s
+
+
 REDIS_URL = os.getenv("OMNI_REDIS_URL", "redis://redis:6379/0")
-STREAM_INBOUND = os.getenv("OMNI_STREAM_INBOUND", "events:inbound")
+KAFKA_BOOTSTRAP = os.getenv("OMNI_KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+KAFKA_TOPIC_ALERTS = _kafka_topic_from_env()
 RATE_LIMIT_TPS = int(os.getenv("OMNI_GATEWAY_RATE_LIMIT_TPS", "1000"))
 CB_KEY = "omni:circuit_breaker:active"
 SILENCE_CHAOS_LAB = os.getenv("OMNI_GATEWAY_SILENCE_CHAOS_LAB", "false").strip().lower() in (
@@ -48,6 +66,7 @@ def _is_chaos_lab_prometheus_webhook(body: Any) -> bool:
 
 # ─── State ────────────────────────────────────────────────────────────────────
 _redis: aioredis.Redis | None = None
+_kafka: AIOKafkaProducer | None = None
 # Token Bucket (asyncio): giới hạn N concurrent request mỗi giây
 _rate_semaphore: asyncio.Semaphore | None = None
 _token_refill_task: asyncio.Task | None = None
@@ -77,16 +96,29 @@ def _build_redis_client() -> aioredis.Redis:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _redis, _rate_semaphore, _token_refill_task
+    global _redis, _kafka, _rate_semaphore, _token_refill_task
     _redis = _build_redis_client()
     await _redis.initialize()
+    _kafka = AIOKafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP.strip(),
+        enable_idempotence=True,
+        acks="all",
+    )
+    await _kafka.start()
     # Khởi tạo với đúng RATE_LIMIT_TPS token ban đầu
     _rate_semaphore = asyncio.Semaphore(RATE_LIMIT_TPS)
     _token_refill_task = asyncio.create_task(_refill_tokens())
-    logger.info("omni-gateway started. rate_limit=%d tps stream=%s", RATE_LIMIT_TPS, STREAM_INBOUND)
+    logger.info(
+        "omni-gateway started. rate_limit=%d tps kafka_topic=%s bootstrap=%s",
+        RATE_LIMIT_TPS,
+        KAFKA_TOPIC_ALERTS,
+        KAFKA_BOOTSTRAP,
+    )
     yield
     if _token_refill_task:
         _token_refill_task.cancel()
+    if _kafka:
+        await _kafka.stop()
     if _redis:
         await _redis.aclose()
     logger.info("omni-gateway shutdown.")
@@ -108,7 +140,7 @@ async def health():
 
 @app.post("/webhook/prometheus")
 async def prometheus_webhook(request: Request) -> JSONResponse:
-    """Nhận Alert từ Prometheus/Alertmanager → XADD vào Redis Stream."""
+    """Nhận Alert từ Prometheus/Alertmanager → produce Kafka topic ``OMNI_KAFKA_TOPIC_ALERTS``."""
     # ── 1. Rate Limiting (Token Bucket) ──────────────────────────────────────
     assert _rate_semaphore is not None
     acquired = _rate_semaphore._value > 0
@@ -156,7 +188,9 @@ async def prometheus_webhook(request: Request) -> JSONResponse:
             "data": body,
         }
 
-        await _redis.xadd(STREAM_INBOUND, {"data": json.dumps(payload, ensure_ascii=False)})
+        assert _kafka is not None
+        env = json.dumps({"data": json.dumps(payload, ensure_ascii=False)}, ensure_ascii=False).encode("utf-8")
+        await _kafka.send_and_wait(KAFKA_TOPIC_ALERTS, value=env)
         logger.info("[GATEWAY] Enqueued alert trace_id=%s", trace_id)
         gw_requests.labels(status="200_ok").inc()
         return JSONResponse(status_code=200, content={"status": "queued", "trace_id": trace_id})
