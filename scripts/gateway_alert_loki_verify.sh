@@ -73,6 +73,7 @@ if [[ -z "$TRACE" ]]; then
   echo "FAIL: no trace_id (circuit breaker / redis / gateway error)." >&2
   exit 1
 fi
+echo "gateway_json=$RESP"
 echo "trace_id=$TRACE"
 echo ""
 
