@@ -317,8 +317,8 @@ async def _flood_gateway(
 
 
 async def _flood_proactive(
-    redis: Any,
-    stream: str,
+    producer: Any,
+    topic: str,
     n: int,
     chaos_level: int,
     run_id: str,
@@ -329,13 +329,14 @@ async def _flood_proactive(
         tid = f"{run_id}-pr-{i}-{uuid.uuid4().hex[:8]}"
         try:
             payload = json.dumps(_anomaly_payload(tid, i), ensure_ascii=False)
-            await redis.xadd(stream, {"data": payload})
+            env = json.dumps({"data": payload}, ensure_ascii=False).encode("utf-8")
+            await producer.send_and_wait(topic, value=env)
             ok += 1
         except Exception as e:
             fail += 1
             _log(
                 "flood_proactive",
-                "xadd_fail",
+                "kafka_send_fail",
                 trace_id=tid,
                 chaos_level=chaos_level,
                 err=repr(e),
@@ -344,25 +345,23 @@ async def _flood_proactive(
 
 
 async def _audit_simulation_entries(
-    redis: Any,
-    stream: str,
+    producer: Any,
+    topic: str,
     run_id: str,
     chaos_level: int,
 ) -> None:
     try:
-        await redis.xadd(
-            stream,
-            {
-                "kind": "simulation",
-                "phase": "summary",
-                "run_id": run_id,
-                "chaos_level": str(chaos_level),
-                "ts": str(int(time.time())),
-                "note": "agentic_chaos_validation end-of-run marker",
-            },
-        )
+        body = {
+            "kind": "simulation",
+            "phase": "summary",
+            "run_id": run_id,
+            "chaos_level": str(chaos_level),
+            "ts": str(int(time.time())),
+            "note": "agentic_chaos_validation end-of-run marker",
+        }
+        await producer.send_and_wait(topic, value=json.dumps(body, ensure_ascii=False).encode("utf-8"))
     except Exception as e:
-        _log("audit_sim", "xadd_fail", trace_id=run_id, chaos_level=chaos_level, err=repr(e))
+        _log("audit_sim", "kafka_send_fail", trace_id=run_id, chaos_level=chaos_level, err=repr(e))
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -460,7 +459,7 @@ async def _run(args: argparse.Namespace) -> int:
     from workers.redis_client import connect_redis
 
     settings = _build_redis_settings_for_chaos(args)
-    audit_stream = args.audit_stream or "audit:simulation"
+    audit_stream = args.audit_stream or settings.kafka_topic_audit_proactive
 
     _log(
         "redis",
@@ -487,6 +486,16 @@ async def _run(args: argparse.Namespace) -> int:
             ),
         )
         raise SystemExit(2) from e
+
+    from aiokafka import AIOKafkaProducer
+
+    kafka_bootstrap = os.environ.get("OMNI_KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+    kafka_producer = AIOKafkaProducer(
+        bootstrap_servers=kafka_bootstrap.strip(),
+        enable_idempotence=True,
+        acks="all",
+    )
+    await kafka_producer.start()
 
     try:
         # Circuit breaker trip — gateway trả 503 (rồi gỡ)
@@ -531,7 +540,7 @@ async def _run(args: argparse.Namespace) -> int:
                 fail=g_fail,
             )
 
-        pr_stream = settings.stream_incidents_proactive
+        pr_stream = settings.kafka_topic_proactive_incidents
         _log(
             "flood_proactive",
             "start",
@@ -541,7 +550,7 @@ async def _run(args: argparse.Namespace) -> int:
             stream=pr_stream,
         )
         p_ok, p_fail = await _flood_proactive(
-            redis_client, pr_stream, n_proactive, chaos_level, run_id
+            kafka_producer, pr_stream, n_proactive, chaos_level, run_id
         )
         _log(
             "flood_proactive",
@@ -552,10 +561,11 @@ async def _run(args: argparse.Namespace) -> int:
             fail=p_fail,
         )
 
-        await _audit_simulation_entries(redis_client, audit_stream, run_id, chaos_level)
-        _log("audit_sim", "stream", trace_id=run_id, chaos_level=chaos_level, stream=audit_stream)
+        await _audit_simulation_entries(kafka_producer, audit_stream, run_id, chaos_level)
+        _log("audit_sim", "topic", trace_id=run_id, chaos_level=chaos_level, stream=audit_stream)
 
     finally:
+        await kafka_producer.stop()
         if redis_client is not None:
             await redis_client.aclose()
 

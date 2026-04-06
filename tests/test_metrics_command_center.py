@@ -63,6 +63,7 @@ async def test_evaluate_proactive_triggers_increments_anomaly(fake_redis: FakeAs
     ctx = MagicMock()
     ctx.settings = WorkerSettings()
     ctx.redis = fake_redis
+    ctx.kafka = AsyncMock()
     before = generate_latest(REGISTRY).count(b"omni_anomaly_events_total")
     with patch(
         "workers.proactive_observer._instant_scalar",

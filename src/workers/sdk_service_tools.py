@@ -1312,3 +1312,39 @@ async def tool_vendor_knowledge_search(ctx: Any, args: dict[str, Any]) -> str:
     if not lines:
         return "[DATA] no vendor knowledge hits"
     return "[DATA] vendor_knowledge_search\n" + "\n".join(lines)
+
+
+async def tool_k8s_expert_search(ctx: Any, args: dict[str, Any]) -> str:
+    """Semantic RAG trên collection expert (kubernetes.io ingest + local); ``collection_id`` mặc định từ env."""
+    q = str(args.get("query") or "").strip()
+    if not q:
+        return "[ERROR] query required"
+    coll = str(args.get("collection_id") or ctx.settings.pgvector_collection_k8s_expert).strip()
+    limit = int(args.get("limit") or 8)
+    st = args.get("score_threshold")
+    score_threshold = float(st) if st is not None else 0.45
+    resp = await ctx.vector_store.similarity_search(
+        q,
+        coll,
+        ollama=ctx.ollama,
+        embed_model=ctx.settings.embed_model,
+        keep_alive=ctx.settings.ollama_keep_alive,
+        limit=limit,
+        score_threshold=score_threshold,
+    )
+    lines: list[str] = []
+    for p in resp.points or []:
+        pay = dict(p.payload or {})
+        meta = pay.get("metadata") if isinstance(pay.get("metadata"), dict) else {}
+        url = meta.get("url") or pay.get("url") or ""
+        ver = meta.get("version") or ""
+        src = meta.get("source") or ""
+        typ = meta.get("type") or ""
+        cite = (pay.get("text") or pay.get("summary") or "")[:700]
+        score = getattr(p, "score", None)
+        sc = f"{float(score):.4f}" if score is not None else "?"
+        head = f"score={sc} source={src} type={typ} version={ver} url={url}".strip()
+        lines.append(f"{head}\n{cite}\n---")
+    if not lines:
+        return "[DATA] no k8s_expert hits (ingest: python -m training.k8s_official_ingest)"
+    return "[DATA] k8s_expert_search\n" + "\n".join(lines)

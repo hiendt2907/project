@@ -89,6 +89,23 @@ def _effective_trace_id_for_logs(session_trace: str) -> str:
     return session_trace or "unknown"
 
 
+def _trace_action_json_preview(args: dict[str, Any]) -> str:
+    """Short redacted preview for TRACE_ACTION_JSON (no secrets)."""
+    parts: list[str] = []
+    for k in sorted(args.keys())[:18]:
+        sk = str(k)
+        if any(x in sk.lower() for x in ("token", "password", "secret", "key", "auth", "credential")):
+            parts.append(f"{sk}=[REDACTED]")
+            continue
+        v = args[k]
+        if isinstance(v, (dict, list)):
+            s = json.dumps(v, ensure_ascii=False)[:220]
+        else:
+            s = str(v)[:240]
+        parts.append(f"{sk}={s!r}")
+    return " ".join(parts)[:520]
+
+
 def _structured_agentic_log(payload: dict[str, Any], *, session_trace: str) -> None:
     row = {
         "component": "agentic_slow_path",
@@ -306,6 +323,13 @@ async def agentic_slow_path_with_llm_and_tools(
                     continue
 
                 assert call is not None
+                _ta_args = call.args if isinstance(call.args, dict) else {}
+                logger.info(
+                    "event=TRACE_ACTION_JSON trace_id=%s tool=%s args_preview=%s",
+                    trace,
+                    call.tool,
+                    _trace_action_json_preview(_ta_args),
+                )
                 fn = TOOL_REGISTRY.get(call.tool)
                 if not fn:
                     await append_agent_audit(

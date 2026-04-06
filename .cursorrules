@@ -23,7 +23,7 @@ You are a senior Python/SRE engineer for this repo (OrbStack K8s, async-first, p
 ## ARCHITECTURE GUARDRAILS
 - LLM endpoints must use service names only: `ollama-service:11434` or `host.docker.internal:11434`.
 - Keep worker context at `num_ctx=4096` unless explicitly requested by the user.
-- Use Redis Streams (`XREADGROUP`, `XACK`, DLQ). Do not introduce Redis Lists (`BLPOP`) for worker queues.
+- Use Kafka (consumer groups, topics for alerts/DLQ/audit). Do not introduce Redis Lists (`BLPOP`) for worker queues. Redis: locks, CB, session/trace, delayed ZSET only.
 - Keep persistence on Redis and Qdrant with PVC-backed state.
 
 ## CODE CONSTRAINTS
@@ -59,3 +59,20 @@ You are a senior Python/SRE engineer for this repo (OrbStack K8s, async-first, p
 - Before adding: skim the file for the same symptom; if it already exists, update **Fix** instead of duplicating.
 - Keep ordering consistent (e.g. newest first per subsection, or append-only—pick one and stick to it).
 - Documentation layout: vendor doc mirrors and the known-issue log live under `docs/vendor/` (see `docs/vendor/README.md`). The known-issue file `docs/vendor/knownbase.md` is **not** synced by `sync_vendor_docs.py` (project knowledge only).
+
+## GITHUB ROLE
+- All commits MUST include the [x] prefix. Strictly adhere to the Roadmap defined in docs/vendor/refactor_unified_roadmap.md. After each Phase, you MUST update knownbase.md if any issues or bugs arise. Do NOT mix legacy deployments with new k8s/deployments/ under any circumstances.
+## GITHUB ROLE
+- All commits MUST include the [x] prefix. Strictly adhere to the Roadmap defined in docs/vendor/refactor_unified_roadmap.md. After each Phase, you MUST update knownbase.md if any issues or bugs arise. Do NOT mix legacy deployments with new k8s/deployments/ under any circumstances.
+
+🔴 UNIFIED TRACING ENFORCEMENT (MANDATORY)
+
+Single Source of Truth: Every business flow MUST maintain a unique, unified trace_id across all stages: Ingest (Gateway/Telegram) → Probing (Prober) → Reasoning (Analyst) → Execution (Executor) → Reporting (Results).
+
+Context Propagation: * If an incoming payload lacks a trace_id, the entrypoint service (Gateway or Proactive Scheduler) MUST generate a fresh UUID.
+
+All Kafka schemas (Pydantic models for omni-alerts, omni-evidence, omni-actions, omni-results) MUST include a mandatory trace_id: str field.
+
+Logging Middleware: * Implement contextvars or an async-local logger middleware to automatically inject [traceid:<uuid>] into every log line emitted to Terminal/Loki.
+
+Zero-Trust Validation (The "Grep" Test): * You are strictly prohibited from reporting "Done" until you can prove the same trace_id appears in the logs of at least three separate Pods (e.g., Prober, Analyst, and Executor) for a single transaction.

@@ -21,7 +21,6 @@ from workers.settings import WorkerSettings
 
 logger = logging.getLogger(__name__)
 
-REDIS_KEY_TOPOLOGY = "state:current_topology"
 REDIS_KEY_HOST = "sys:host:specs"
 REDIS_KEY_BASELINE = "metrics:baseline:24h"
 REDIS_TTL_SEC = 3600
@@ -356,7 +355,7 @@ async def run_deep_scout(ctx: Any, *, periodic: bool = False) -> DeepScoutSummar
 
     try:
         await r.set(REDIS_KEY_HOST, json.dumps(host_d, ensure_ascii=False), ex=REDIS_TTL_SEC)
-        await r.set(REDIS_KEY_TOPOLOGY, json.dumps(topo_d, ensure_ascii=False), ex=REDIS_TTL_SEC)
+        # Topology không còn lưu Redis — RAG infra_topology + SRE_KNOWLEDGE (pgvector).
         await r.set(REDIS_KEY_BASELINE, json.dumps(met_d, ensure_ascii=False), ex=REDIS_TTL_SEC)
     except Exception as e:
         summary.errors.append(f"redis:{e!s}")

@@ -228,11 +228,12 @@ def simulate(duration_sec: int, interval_sec: int) -> dict[str, int]:
             "trace_id": trace,
             "rule_name": "PrometheusProactiveThreshold",
             "target": "cluster",
-            "namespace": "",
+            "namespace": "multi-agent",
             "metric_value": 1.0,
             "threshold": 0.0,
             "canonical_query": "sum(up)",
             "timestamp": ts,
+            "trigger_promql": "sum(up)",
         }
         b64 = base64.b64encode(json.dumps(inner, ensure_ascii=False).encode("utf-8")).decode("ascii")
         rc2, out2 = k(

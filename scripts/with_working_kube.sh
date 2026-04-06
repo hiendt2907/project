@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# kubectl với cluster đầu tiên trả lời: OrbStack → ~/.kube mặc định → $KUBECONFIG → merge mặc định.
+# Drop-in thay cho kubectl (KHÔNG gõ thêm "kubectl" phía trước):
+#   ./scripts/with_working_kube.sh get ns
+#   ./scripts/with_working_kube.sh apply -f ...
+# Nếu lỡ gõ kubectl, script tự bỏ token thừa:
+#   ./scripts/with_working_kube.sh kubectl get ns  →  kubectl … get ns
+# Probe: OrbStack → ~/.kube mặc định → $KUBECONFIG → merge mặc định.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/lib/kube_resolve.sh"
+
+if [[ "${1:-}" == "kubectl" ]]; then
+  shift
+fi
 
 if ! line="$(kube_resolve_probe)"; then
   echo "FAIL: không có cluster kubectl nào trả lời (OrbStack, ~/.kube, \$KUBECONFIG, default)." >&2

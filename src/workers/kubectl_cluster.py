@@ -66,12 +66,9 @@ async def _audit_kubectl(
         "stderr_preview": stderr[:4000],
     }
     try:
-        await ctx.redis.xadd(
-            ws.audit_sandbox_stream,
-            {"data": json.dumps(body, ensure_ascii=False)},
-            maxlen=ws.audit_sandbox_maxlen,
-            approximate=True,
-        )
+        k = getattr(ctx, "kafka", None)
+        if k is not None:
+            await k.send_dict(ws.kafka_topic_audit_sandbox, {"data": json.dumps(body, ensure_ascii=False)})
     except Exception as e:
         logger.debug("audit kubectl_cluster skip: %s", e)
 

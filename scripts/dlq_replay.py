@@ -1,24 +1,12 @@
 #!/usr/bin/env python3
 """
-DLQ Replay Tool — Phòng Hồi Sức Cấp Cứu cho events:dlq.
+DLQ Replay Tool — Kafka topic ``omni-dlq`` (former Redis Stream events:dlq).
+
+List / replay by decoding JSON message values. Kafka has no per-message delete; replay re-produces
+to the alerts topic without removing DLQ entries (append-only log).
 
 Usage:
-  # Xem toàn bộ DLQ (review mode, không replay)
-  python scripts/dlq_replay.py --list
-
-  # Xem và lọc theo error_type
-  python scripts/dlq_replay.py --list --error-type HTTPStatusError
-
-  # Replay TẤT CẢ tin nhắn lỗi mạng (HTTPStatusError, ConnectionError, TimeoutError)
-  python scripts/dlq_replay.py --replay-network
-
-  # Replay tin nhắn cụ thể theo message ID
-  python scripts/dlq_replay.py --replay-id 1774853037116-0
-
-  # Replay theo error_type tùy chỉnh
-  python scripts/dlq_replay.py --replay --error-type ConnectionError
-
-  # Dry-run (không xóa khỏi DLQ, chỉ in ra sẽ replay gì)
+  OMNI_KAFKA_BOOTSTRAP_SERVERS=kafka:9090 python scripts/dlq_replay.py --list
   python scripts/dlq_replay.py --replay-network --dry-run
 """
 from __future__ import annotations
@@ -29,8 +17,12 @@ import json
 import os
 import sys
 import time
+from typing import Any
 
-# Network errors that are safe to replay (infrastructure errors, not logic errors)
+KAFKA_BOOTSTRAP = os.getenv("OMNI_KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+DLQ_TOPIC = os.getenv("OMNI_KAFKA_TOPIC_DLQ", os.getenv("OMNI_STREAM_DLQ", "omni-dlq"))
+ALERTS_TOPIC = os.getenv("OMNI_KAFKA_TOPIC_ALERTS", os.getenv("OMNI_STREAM_INBOUND", "omni-alerts"))
+
 NETWORK_ERROR_TYPES = {
     "HTTPStatusError",
     "ConnectionError",
@@ -42,7 +34,6 @@ NETWORK_ERROR_TYPES = {
     "NetworkError",
 }
 
-# Fatal logic errors — NEVER replay these
 FATAL_ERROR_TYPES = {
     "JSONDecodeError",
     "ValueError",
@@ -51,55 +42,62 @@ FATAL_ERROR_TYPES = {
     "ValidationError",
 }
 
-REDIS_URL = os.getenv("OMNI_REDIS_URL", "redis://redis:6379/0")
-DLQ_STREAM = os.getenv("OMNI_STREAM_DLQ", "events:dlq")
-INBOUND_STREAM = os.getenv("OMNI_STREAM_INBOUND", "events:inbound")
+
+def _decode_record(val: bytes) -> dict[str, Any]:
+    try:
+        d = json.loads(val.decode("utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _consumer_from_earliest(topic: str, max_messages: int) -> list[tuple[str, dict[str, Any]]]:
+    from aiokafka import AIOKafkaConsumer
+
+    out: list[tuple[str, dict[str, Any]]] = []
+    c = AIOKafkaConsumer(
+        topic,
+        bootstrap_servers=KAFKA_BOOTSTRAP.strip(),
+        group_id=f"dlq-replay-tool-{int(time.time())}",
+        enable_auto_commit=False,
+        auto_offset_reset="earliest",
+    )
+    await c.start()
+    try:
+        while len(out) < max_messages:
+            pack = await c.getmany(timeout_ms=3000, max_records=50)
+            if not pack:
+                break
+            for _tp, batch in pack.items():
+                for msg in batch:
+                    out.append((f"kafka-{msg.partition}-{msg.offset}", _decode_record(msg.value)))
+                    if len(out) >= max_messages:
+                        return out
+    finally:
+        await c.stop()
+    return out
 
 
 async def list_dlq(error_type_filter: str | None = None) -> None:
-    """Liệt kê tin nhắn trong DLQ, tùy chọn lọc theo error_type."""
-    import redis.asyncio as aioredis
-    r = aioredis.from_url(REDIS_URL, decode_responses=True)
-    try:
-        messages = await r.xrange(DLQ_STREAM, count=500)
-        if not messages:
-            print(f"[EMPTY] DLQ stream '{DLQ_STREAM}' is empty. Nothing to review.")
-            return
-
-        print(f"\n{'─'*80}")
-        print(f"  DLQ Review — {DLQ_STREAM} ({len(messages)} entries)")
-        print(f"{'─'*80}")
-
-        shown = 0
-        for msg_id, fields in messages:
-            try:
-                error_ctx = json.loads(fields.get("error_context", "{}"))
-            except Exception:
-                error_ctx = {}
-
-            etype = error_ctx.get("error_type", "UNKNOWN")
-            component = error_ctx.get("component", "?")
-            trace_id = fields.get("trace_id") or error_ctx.get("trace_id", "?")
-            msg_preview = str(error_ctx.get("message", ""))[:80]
-            is_network = etype in NETWORK_ERROR_TYPES
-            is_fatal = etype in FATAL_ERROR_TYPES
-            replayable = "✅ REPLAYABLE" if is_network else ("🚫 FATAL/LOGIC" if is_fatal else "⚠️  UNKNOWN")
-
-            if error_type_filter and error_type_filter.lower() not in etype.lower():
-                continue
-
-            shown += 1
-            print(f"\n  [{shown}] ID: {msg_id}")
-            print(f"       trace_id  : {trace_id}")
-            print(f"       error_type: {etype}  ({replayable})")
-            print(f"       component : {component}")
-            print(f"       message   : {msg_preview}")
-
-        if shown == 0:
-            print(f"\n  No messages matching filter: error_type='{error_type_filter}'")
-        print(f"\n{'─'*80}\n")
-    finally:
-        await r.aclose()
+    rows = await _consumer_from_earliest(DLQ_TOPIC, 500)
+    if not rows:
+        print(f"[EMPTY] DLQ topic '{DLQ_TOPIC}' has no readable messages (or timeout).")
+        return
+    print(f"\n{'─' * 80}\n  DLQ Review — {DLQ_TOPIC} (up to {len(rows)})\n{'─' * 80}")
+    shown = 0
+    for mid, fields in rows:
+        try:
+            error_ctx = json.loads(fields.get("error_context", "{}"))
+        except Exception:
+            error_ctx = {}
+        etype = error_ctx.get("error_type", "UNKNOWN")
+        trace_id = fields.get("trace_id") or error_ctx.get("trace_id", "?")
+        if error_type_filter and error_type_filter.lower() not in str(etype).lower():
+            continue
+        shown += 1
+        print(f"\n  [{shown}] offset_id={mid} trace_id={trace_id} error_type={etype}")
+    if shown == 0:
+        print(f"\n  No messages matching filter: error_type='{error_type_filter}'")
 
 
 async def replay_messages(
@@ -108,93 +106,71 @@ async def replay_messages(
     msg_id_filter: str | None = None,
     dry_run: bool = False,
 ) -> None:
-    """Replay tin nhắn từ DLQ về Inbound stream."""
-    import redis.asyncio as aioredis
-    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    from aiokafka import AIOKafkaProducer
+
+    rows = await _consumer_from_earliest(DLQ_TOPIC, 1000)
+    if not rows:
+        print("[INFO] DLQ is empty.")
+        return
+    p = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP.strip(), enable_idempotence=True, acks="all")
+    await p.start()
+    replayed = 0
+    skipped_fatal = 0
+    skipped_filter = 0
     try:
-        messages = await r.xrange(DLQ_STREAM, count=1000)
-        if not messages:
-            print(f"[INFO] DLQ is empty.")
-            return
-
-        replayed = 0
-        skipped_fatal = 0
-        skipped_filter = 0
-
-        for msg_id, fields in messages:
-            # Lọc theo msg_id cụ thể nếu có
-            if msg_id_filter and msg_id != msg_id_filter:
+        for mid, fields in rows:
+            if msg_id_filter and mid != msg_id_filter:
                 continue
-
             try:
                 error_ctx = json.loads(fields.get("error_context", "{}"))
             except Exception:
                 error_ctx = {}
-
             etype = error_ctx.get("error_type", "UNKNOWN")
-
-            # CHẶN: Không bao giờ replay lỗi logic/JSON
             if etype in FATAL_ERROR_TYPES:
-                print(f"  [SKIP-FATAL] {msg_id} error_type={etype} — logical error, not replayable.")
                 skipped_fatal += 1
                 continue
-
-            # Lọc theo --error-type
-            if error_type_filter and error_type_filter.lower() not in etype.lower():
+            if error_type_filter and error_type_filter.lower() not in str(etype).lower():
                 skipped_filter += 1
                 continue
-
-            # Lọc chỉ network errors nếu --replay-network
             if network_only and etype not in NETWORK_ERROR_TYPES:
-                print(f"  [SKIP-NON-NET] {msg_id} error_type={etype} — skipping (not a network error).")
                 skipped_filter += 1
                 continue
-
             raw_data = fields.get("data", "{}")
             trace_id = fields.get("trace_id") or error_ctx.get("trace_id", f"dlq-replay-{int(time.time())}")
-
             if dry_run:
-                print(f"  [DRY-RUN] Would replay {msg_id} (error_type={etype}, trace_id={trace_id})")
+                print(f"  [DRY-RUN] Would replay {mid} error_type={etype} trace_id={trace_id}")
                 replayed += 1
                 continue
-
-            # XADD về Inbound
-            await r.xadd(INBOUND_STREAM, {"data": raw_data, "_stable_id": trace_id})
-            # Xóa khỏi DLQ sau khi đã đẩy thành công
-            await r.xdel(DLQ_STREAM, msg_id)
-            print(f"  [REPLAYED] {msg_id} → {INBOUND_STREAM} (error_type={etype}, trace_id={trace_id})")
+            env = json.dumps({"data": raw_data, "_stable_id": trace_id}, ensure_ascii=False).encode("utf-8")
+            await p.send_and_wait(ALERTS_TOPIC, value=env)
+            print(f"  [REPLAYED] {mid} → {ALERTS_TOPIC}")
             replayed += 1
-
-        print(f"\n  Summary: replayed={replayed} | skipped_fatal={skipped_fatal} | skipped_filter={skipped_filter}")
-        if dry_run:
-            print("  ⚠️  Dry-run mode — no changes made.")
     finally:
-        await r.aclose()
+        await p.stop()
+    print(f"\n  Summary: replayed={replayed} skipped_fatal={skipped_fatal} skipped_filter={skipped_filter}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="DLQ Replay Tool — Phòng Hồi Sức Cấp Cứu",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    parser.add_argument("--list", action="store_true", help="Liệt kê tin nhắn trong DLQ")
-    parser.add_argument("--replay", action="store_true", help="Replay tin nhắn theo --error-type")
-    parser.add_argument("--replay-network", action="store_true", help="Replay chỉ các lỗi mạng (safe)")
-    parser.add_argument("--replay-id", metavar="MSG_ID", help="Replay tin nhắn cụ thể theo Stream ID")
-    parser.add_argument("--error-type", metavar="TYPE", help="Lọc theo loại lỗi (vd: HTTPStatusError)")
-    parser.add_argument("--dry-run", action="store_true", help="Chỉ in ra, không thực sự replay")
+    parser = argparse.ArgumentParser(description="DLQ replay — Kafka")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--replay", action="store_true")
+    parser.add_argument("--replay-network", action="store_true")
+    parser.add_argument("--replay-id", metavar="MSG_ID")
+    parser.add_argument("--error-type", metavar="TYPE")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     if args.list:
         asyncio.run(list_dlq(error_type_filter=args.error_type))
     elif args.replay or args.replay_network or args.replay_id:
-        asyncio.run(replay_messages(
-            error_type_filter=args.error_type,
-            network_only=args.replay_network,
-            msg_id_filter=args.replay_id,
-            dry_run=args.dry_run,
-        ))
+        asyncio.run(
+            replay_messages(
+                error_type_filter=args.error_type,
+                network_only=args.replay_network,
+                msg_id_filter=args.replay_id,
+                dry_run=args.dry_run,
+            )
+        )
     else:
         parser.print_help()
         sys.exit(1)

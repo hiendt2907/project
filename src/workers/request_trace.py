@@ -8,6 +8,37 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+class OmniWorkerTraceFilter(logging.Filter):
+    """Prefix every log line with ``[traceid:…]`` from :func:`current_trace_id` (async-local)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 — logging API
+        if getattr(record, "_omni_worker_trace_done", False):
+            return True
+        tid = current_trace_id()
+        mark = tid if tid != "unknown" else "-"
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        if "[traceid:" in msg:
+            record._omni_worker_trace_done = True  # type: ignore[attr-defined]
+            return True
+        # Already includes the active trace (e.g. "[%s] event=start_request", trace_id, ...).
+        if tid != "unknown" and tid in msg:
+            record._omni_worker_trace_done = True  # type: ignore[attr-defined]
+            return True
+        record.msg = f"[traceid:{mark}] {msg}"
+        record.args = ()
+        record._omni_worker_trace_done = True  # type: ignore[attr-defined]
+        return True
+
+
+def install_worker_trace_logging(root: logging.Logger | None = None) -> None:
+    """Attach :class:`OmniWorkerTraceFilter` to the root logger (call once from ``run_worker``)."""
+    filt = OmniWorkerTraceFilter()
+    (root or logging.getLogger()).addFilter(filt)
+
 _trace_id_var: ContextVar[str] = ContextVar("inbound_trace_id", default="")
 
 
@@ -43,6 +74,22 @@ def log_start_request(trace_id: str, *, phase: str, **fields: Any) -> None:
         logger.info("[%s] event=start_request phase=%s %s", trace_id, phase, extra)
     else:
         logger.info("[%s] event=start_request phase=%s", trace_id, phase)
+
+
+def log_start_request_ctx(*, phase: str, **fields: Any) -> None:
+    """Giống :func:`log_start_request` nhưng lấy trace từ ContextVar (sau ``push_trace_id`` / decorator)."""
+    log_start_request(current_trace_id(), phase=phase, **fields)
+
+
+def log_end_request_ctx(
+    *,
+    phase: str,
+    status: str,
+    duration_ms: float,
+    **fields: Any,
+) -> None:
+    """Giống :func:`log_end_request` nhưng lấy trace từ ContextVar."""
+    log_end_request(current_trace_id(), phase=phase, status=status, duration_ms=duration_ms, **fields)
 
 
 def log_end_request(

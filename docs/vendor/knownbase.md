@@ -4,8 +4,23 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Lab nginx-test stress **busy loop** trong container `nginx` → pod không ổn / CPU cAdvisor không phản ánh đúng (kìm master/worker).  
+**Fix:** **kubectl port-forward** từ laptop là nút thắt (thường chỉ ~30–40% so với CPU limit pod). **`rakyll/hey:latest`** trên Docker Hub hay **ImagePullBackOff** (repo/deny). Lab: **Service** `nginx-test` + Pod **`curlimages/curl`** — N vòng `curl` song song tới `http://nginx-test.<ns>.svc.cluster.local/` (`STRESS_MODE=curl` mặc định, `LOAD_CONCURRENCY=1000`). Legacy: `STRESS_MODE=portforward`.
+
+**Symptom:** `k8s_clinical_pod_metrics` log **404** `podmetrics.metrics.k8s.io "ns/pod" not found` — probe bị coi FAILED.  
+**Fix:** 404 là **APIServer/Metrics API** khi **chưa có** CR `PodMetrics`. Nếu metrics-server đã chạy mà **mọi** namespace trống: xem **Infrastructure** — kubelet `/stats/summary` có thể trả `pods: []` (OrbStack/k3s). Không phải bug Python. `diagnostic_k8s_clinical.probe_k8s_clinical_pod_metrics`: **404 → INCONCLUSIVE** + `omit_reason=podmetrics_not_found_404`. Chẩn đoán: `bash scripts/diagnose_kubelet_pod_metrics.sh`. Verify: `pytest tests/test_diagnostic_k8s_clinical.py`.
+
+**Symptom:** Log prober chỉ thấy **2** probe `prom_pod_*`, không có `k8s_clinical_*` / `diagnostic_dispatcher_plan kind=resource` — hoặc alert thiếu **label `pod`** (chỉ mô tả trong annotations), hoặc image/`resource_probe_ids` cũ chỉ còn Prom.  
+**Fix:** `pod_identity_from_event`: fallback tên pod từ text `… in pod <name>` / `pod/<name>` (annotations + `error_hint`). `resource_probe_ids` luôn SDK trước rồi Prom. Verify: `pytest tests/test_diagnostic_resource.py`; `bash scripts/nginx_test_cpu_alert_lab.sh` (port-forward + curl host + POST gateway) — expect `probes=['k8s_clinical_…', 'prom_…']` trong log prober. Lab CPU thật: `scripts/nginx-test-deployment.yaml` limit **50m**; rule **NginxTestHighCpuLab** `> 0.04` **for 60s** trong `k8s/monitor/prometheus.yaml` (group `omni_lab_nginx`); `kubectl apply` ConfigMap monitor + rollout Prometheus; firing → gateway cần **Alertmanager** (repo không ship) — script vẫn POST synthetic để chứng pipeline.
+
+**Symptom:** Lab nginx-test CPU ~90% nhưng Prometheus không firing / expr không match.  
+**Fix:** Kiểm tra label cAdvisor (`namespace` vs `kubernetes_namespace` tùy cluster); đồng bộ limit pod với ngưỡng rule (0.04 cores ≈ ~80% của **50m**). `STRESS_SEC` ≥ 75s; `curl` instant query trong script để xem rate.
+
+**Symptom:** Proactive ReAct / Telegram báo **ESCALATED** / `k8s_rollout_restart` lung tung khi payload Kafka chỉ có `canonical_query` stub, **không** namespace **không** `trigger_promql` — GIGO (garbage in → garbage out). MPV3 có **coerce GIGO-safe** cho **evidence** (`pkg/reasoning/schema.py`) nhưng **không** tự áp cho incident proactive.  
+**Fix:** `proactive_gigo_cluster_identity_ok`: bỏ qua sớm với audit **`SKIPPED_GIGO`** nếu thiếu **cả** `namespace` **và** `trigger_promql` (bật `OMNI_PROACTIVE_GIGO_REQUIRE_CLUSTER_IDENTITY`, mặc định true). `evaluate_proactive_triggers` vẫn pass vì luôn set `trigger_promql`. `full_system_audit` inject thêm `namespace` + `trigger_promql`. Verify: `pytest tests/test_proactive_guardrails.py`.
+
 **Symptom:** Trace `gw-prom-*` có trong `request_trace` nhưng **không** xuyên suốt: access log Uvicorn không có trace; log **asyncio** `Unclosed client session` (aiohttp) không gắn trace — khó debug.  
-**Fix:** Gateway: **`trace_id` sinh ngay đầu** `POST /webhook/prometheus`, `request.state.trace_id`, log `[GATEWAY][trace] …`, header **`X-Omni-Trace-Id`**, middleware `http_done` có trace. Worker: **`probe_k8s_list_pods_namespace`** `await v1.api_client.close()` trong `finally` (kubernetes_asyncio / aiohttp). Verify: grep cùng trace trên gateway + prober; không còn unclosed session sau probe.
+**Fix:** Gateway: **`trace_id` sinh ngay đầu** `POST /webhook/prometheus`, `request.state.trace_id`, `push_gateway_trace_id`/`pop` bọc handler, **`install_gateway_trace_logging()`** (filter inject `[trace_id=…]` cho root/uvicorn/asyncio/aiohttp; bỏ qua nếu chuỗi đã chứa id), header **`X-Omni-Trace-Id`**, middleware `http_done`. Worker stream/proactive: **`push_trace_id`/`pop`** trong `_process_stream_entry` + `_process_proactive_message`; JSON log thêm field **`trace_id`** từ `current_trace_id()`. Probe: **`probe_k8s_list_pods_namespace`** `await v1.api_client.close()` trong `finally`. Verify: `bash scripts/gateway_alert_loki_verify.sh` (grep cùng trace gateway + split workers); `make e2e-proactive` (gateway POST + proactive inject). Build: `make docker-gateway` + `make docker-worker` trước rollout.
 
 ### Verify scripts vs MPV3 split topology (tránh tham chiếu Pod sai / nhiễu RAG)
 
@@ -54,7 +69,7 @@ Short entries only. **Newest first** within each section. If the same symptom al
 **Fix:** `handlers.build_agentic_system_messages`: unattended luôn dùng `SLOW_SYSTEM_UNATTENDED_EN`; nếu lab/god thì nối `AGENTIC_LAB_SHELL_SUPPLEMENT_UNATTENDED_EN` (shell last resort). `ollama_prompts_en`: `SRE_JSON_GENERATOR_UNATTENDED_EN` làm rõ khi đã có pod+ns thì không áp rule “identifiers missing”. Verify: `pytest tests/test_handlers_inbound_preview.py`.
 
 **Symptom:** Agentic Prometheus (multi-turn) kết thúc `HTTPStatusError: 500` từ Ollama `/api/chat` (~100s+); log có `llm_request` với user message chứa `[CONTEXT: topology_cache]` + nhiều chunk `infra_topology` (hàng chục nghìn ký tự) cộng dồn system messages — vượt ngưỡng context / làm Ollama lỗi.  
-**Fix:** `handlers.py` — với `source=prometheus` bỏ `preflight_infra_kb` + `enrich_working_text_with_infra` (anchor `[OLLAMA_ANCHOR_EN]` đã có FACTS). Verify: `pytest tests/test_prometheus_infra_skip.py`.
+**Fix:** `handlers.py` — RagGate (`pkg.rag.gate`) trước preflight; **sau MISS** mọi source (kể cả prometheus) dùng `preflight_infra_kb` + `enrich_working_text_with_infra` với trần `OMNI_INFRA_ENRICH_MAX_TOTAL_CHARS` (`infra_context._apply_infra_enrich_cap`, log `event=infra_enrich_capped`). Verify: `pytest tests/test_prometheus_rag_gate.py`.
 
 **Symptom:** E2E Prometheus chỉ thấy `handler_done autonomous_sdk`, không có agentic/Ollama — không kiểm chứng suy luận/resolved. Nguyên nhân: `_vietnamese_logs_intent` dùng `if "log" in text` → chuỗi **topology** trong `[OLLAMA_ANCHOR_EN]` chứa substring `log` → khớp nhầm → `inspect_pod_deep` trước LLM.  
 **Fix:** `workers/autonomous_route.py` — nhận diện logs bằng `\blogs?\b` / `\btail\b` (word boundary), không substring. Test: `pytest tests/test_autonomous_route.py`.
@@ -85,6 +100,11 @@ Short entries only. **Newest first** within each section. If the same symptom al
 _(none else yet)_
 
 ## Infrastructure (K8s, Redis, deploy, observability)
+
+**Symptom:** `kubectl top node` có số liệu, `kubectl get --raw /apis/metrics.k8s.io/v1beta1/pods` → `items: []`, `kubectl top pod` “No resources”, probe `k8s_clinical_pod_metrics` 404/INCONCLUSIVE — **metrics-server Deployment vẫn Running**.  
+**Fix:** Không phải thiếu metrics-server. **metrics-server** lấy PodMetrics từ kubelet **`/stats/summary`**; nếu **`pods` trong summary = rỗng** thì không có PodMetrics. Triệu chứng: `kubectl top node` OK nhưng `kubectl top pod` trống / `PodMetricsList` rỗng. Chẩn đoán: `bash scripts/diagnose_kubelet_pod_metrics.sh` (đếm `pods` trong summary).  
+**OrbStack (đã verify lab):** trong **Settings → Kubernetes → Kubelet Configuration** merge nội dung **`k8s/lab/kubelet-configuration-orbstack.yaml`** (feature gate `PodAndContainerStatsFromCRI: true`) — kubelet điền pod trong `/stats/summary` → PodMetrics / `kubectl top pod` hoạt động. Không đổi args `metrics-server` một mình nếu summary vẫn `pods: []`.  
+**Ghi chú:** Checklist “cài metrics-server + `--kubelet-insecure-tls`” đúng khi chưa cài hoặc APIService lỗi; nếu APIService Available mà vẫn trống → kiểm **`stats/summary`**, không chỉ TLS.
 
 **Symptom:** `make e2e-proactive` / `full_system_audit` fail ngay sau rollout worker — `Connection refused` khi exec `python -c` gọi `http://127.0.0.1:9090/metrics` (metrics chưa bind).  
 **Fix:** `scripts/proactive_e2e.sh` chờ vòng lặp `curl` :9090 trả 200 (tối đa ~60s) sau `rollout status` rồi mới chạy audit. Verify: `bash scripts/proactive_e2e.sh --skip-build`.

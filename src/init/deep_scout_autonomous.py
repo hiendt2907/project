@@ -1,4 +1,4 @@
-"""Deep Scout tự học — ingest K8s+VM, tóm tắt Qwen 1.5B, Postgres RAG + Redis (không subprocess)."""
+"""Deep Scout tự học — ingest K8s+VM, tóm tắt Qwen 1.5B, Postgres RAG (không subprocess)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import hashlib
 import json
 import logging
 import re
-import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,10 +22,6 @@ from rag.pgvector_store import (
 from workers.settings import WorkerSettings
 
 logger = logging.getLogger(__name__)
-
-REDIS_LEARNED_BYNAME = "infra:learned:byname"
-REDIS_LEARNED_MAP = "infra:learned:map"
-REDIS_LEARNED_META = "infra:learned:meta"
 
 SYNTH_SYSTEM_VI = (
     "Mày là một Senior SRE. Hãy đọc JSON này và viết một đoạn tóm tắt kỹ thuật dài 3 câu. "
@@ -308,14 +303,13 @@ async def _run_bigbang_cluster_ingest(
 async def run_deep_scout_autonomous(ctx: Any, *, periodic: bool = False) -> AutonomousScoutSummary:
     summary = AutonomousScoutSummary()
     ws: WorkerSettings = ctx.settings
-    r = ctx.redis
     vector_store = ctx.vector_store
 
     local_ollama = OllamaClient(base_url=ws.ollama_base_url)
     try:
         ollama = local_ollama
         return await _run_deep_scout_autonomous_body(
-            periodic=periodic, summary=summary, ws=ws, r=r, vector_store=vector_store, ollama=ollama
+            periodic=periodic, summary=summary, ws=ws, vector_store=vector_store, ollama=ollama
         )
     finally:
         await local_ollama.aclose()
@@ -326,7 +320,6 @@ async def _run_deep_scout_autonomous_body(
     periodic: bool,
     summary: AutonomousScoutSummary,
     ws: WorkerSettings,
-    r: Any,
     vector_store: Any,
     ollama: OllamaClient,
 ) -> AutonomousScoutSummary:
@@ -371,32 +364,6 @@ async def _run_deep_scout_autonomous_body(
         if not ns or not name:
             continue
         svc_by_ns.setdefault(ns, []).append(name)
-
-    learned_map: dict[str, str] = {}
-    learned_byname: dict[str, str] = {}
-
-    def _remember_pod(ns: str, name: str) -> None:
-        learned_map[f"pod/{ns}/{name}"] = ns
-        learned_byname[name] = ns
-        for part in re.split(r"[\-_.]+", name):
-            if len(part) >= 3 and part not in ("pod", "svc", "v1", "v2"):
-                learned_byname.setdefault(part, ns)
-
-    def _remember_svc(ns: str, name: str) -> None:
-        learned_map[f"svc/{ns}/{name}"] = ns
-        learned_byname.setdefault(name, ns)
-
-    for p in pods_raw:
-        ns = p.metadata.namespace or ""
-        pn = p.metadata.name or ""
-        if ns and pn:
-            _remember_pod(ns, pn)
-
-    for s in svcs_raw:
-        ns = s.metadata.namespace or ""
-        sn = s.metadata.name or ""
-        if ns and sn:
-            _remember_svc(ns, sn)
 
     cluster_digest = {
         "nodes": len(nodes_raw),
@@ -487,32 +454,6 @@ async def _run_deep_scout_autonomous_body(
         await _embed_upsert_one(ollama, ws, vector_store, point_id=pid, summary=text, payload=pay)
         summary.services_processed += 1
 
-    ttl = int(ws.learned_map_ttl_sec)
-    try:
-        if learned_byname:
-            await r.delete(REDIS_LEARNED_BYNAME)
-            await r.hset(REDIS_LEARNED_BYNAME, mapping=learned_byname)
-            await r.expire(REDIS_LEARNED_BYNAME, ttl)
-        if learned_map:
-            await r.delete(REDIS_LEARNED_MAP)
-            await r.hset(REDIS_LEARNED_MAP, mapping=learned_map)
-            await r.expire(REDIS_LEARNED_MAP, ttl)
-        await r.set(
-            REDIS_LEARNED_META,
-            json.dumps(
-                {
-                    "ts": time.time(),
-                    "pods": summary.pods_processed,
-                    "services": summary.services_processed,
-                    "periodic": periodic,
-                },
-                ensure_ascii=False,
-            ),
-            ex=ttl,
-        )
-    except Exception as e:
-        summary.errors.append(f"redis_learned:{e!s}")
-
     if ws.autonomous_probe_enabled and ws.opensandbox_enabled:
         try:
             from execution.manager import SandboxManager
@@ -521,7 +462,7 @@ async def _run_deep_scout_autonomous_body(
             ok, msg = await m.health_check()
             if ok:
                 await m.execute_shell(
-                    redis=r,
+                    kafka=getattr(ctx, "kafka", None),
                     command="echo autonomous_scout_probe_ok",
                     session_id="autonomous_scout",
                     trace_id="autonomous_scout",

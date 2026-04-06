@@ -70,10 +70,40 @@ data:
         static_configs:
           - targets: ["localhost:9090"]
 
+      # cAdvisor (kubelet): container_cpu_*, container_memory_* cho mọi container trên node.
+      # Không scrape trực tiếp từng pod app — probe diagnostic dùng chính các series này.
+      - job_name: kubernetes-nodes-cadvisor
+        honor_labels: true
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+          - source_labels: [__meta_kubernetes_node_name]
+            action: replace
+            target_label: kubernetes_node
+        metric_relabel_configs:
+          - source_labels: [namespace]
+            regex: kube-system
+            action: drop
+
       - job_name: kubernetes-pods
         kubernetes_sd_configs:
           - role: pod
         relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace]
+            regex: kube-system
+            action: drop
           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
             action: keep
             regex: true
@@ -323,6 +353,130 @@ data:
             annotations:
               summary: "Network packet drops elevated"
               description: "Node packet drop rate is above threshold over 10m."
+      # Lab: nginx-test CPU — cAdvisor rate vs 50m limit (see scripts/nginx-test-deployment.yaml).
+      - name: omni_lab_nginx
+        rules:
+          - alert: NginxTestHighCpuLab
+            expr: |
+              sum by (namespace, pod) (
+                rate(container_cpu_usage_seconds_total{
+                  namespace="multi-agent",
+                  pod=~"nginx-test-.*",
+                  container="nginx"
+                }[3m])
+              ) > 0.04
+            for: 60s
+            labels:
+              severity: warning
+              domain: lab
+              workload: nginx-test
+            annotations:
+              summary: "nginx-test pod CPU sustained high (cAdvisor lab rule)"
+              description: "nginx container CPU rate > 0.04 cores (~80% of 50m limit). Pod {{ $labels.pod }}."
+      # Pod resource pressure — cAdvisor + kube_pod_container_resource_limits (kube-state-metrics).
+      # Scope: namespace multi-agent; tune thresholds via annotations / replays.
+      - name: omni_pod_resource_alerts
+        rules:
+          - alert: PodCpuUtilizationVsLimitHigh
+            expr: |
+              (
+                sum by (namespace, pod, container) (
+                  rate(container_cpu_usage_seconds_total{
+                    namespace="multi-agent",
+                    container!="POD",
+                    container!=""
+                  }[5m])
+                )
+                /
+                clamp_min(
+                  sum by (namespace, pod, container) (
+                    kube_pod_container_resource_limits{namespace="multi-agent", resource="cpu"}
+                  ),
+                  1e-9
+                )
+              ) > 0.85
+            for: 5m
+            labels:
+              severity: warning
+              domain: pod
+              signal: cpu
+            annotations:
+              summary: "Pod container CPU usage high vs limit (multi-agent)"
+              description: "CPU rate / limit > 85% for 5m. namespace={{ $labels.namespace }} pod={{ $labels.pod }} container={{ $labels.container }}."
+          - alert: PodMemoryWorkingSetVsLimitHigh
+            expr: |
+              (
+                sum by (namespace, pod, container) (
+                  container_memory_working_set_bytes{
+                    namespace="multi-agent",
+                    container!="POD",
+                    container!=""
+                  }
+                )
+                /
+                clamp_min(
+                  sum by (namespace, pod, container) (
+                    kube_pod_container_resource_limits{namespace="multi-agent", resource="memory", unit="byte"}
+                  ),
+                  1
+                )
+              ) > 0.90
+            for: 5m
+            labels:
+              severity: warning
+              domain: pod
+              signal: memory
+            annotations:
+              summary: "Pod container memory working set high vs limit (multi-agent)"
+              description: "working_set_bytes / memory limit > 90% for 5m. namespace={{ $labels.namespace }} pod={{ $labels.pod }} container={{ $labels.container }}."
+          - alert: PodNetworkThroughputHigh
+            expr: |
+              sum by (namespace, pod) (
+                max by (namespace, pod, interface) (
+                  rate(container_network_receive_bytes_total{
+                    namespace="multi-agent",
+                    interface!="lo"
+                  }[5m])
+                )
+                +
+                max by (namespace, pod, interface) (
+                  rate(container_network_transmit_bytes_total{
+                    namespace="multi-agent",
+                    interface!="lo"
+                  }[5m])
+                )
+              ) > 52428800
+            for: 5m
+            labels:
+              severity: warning
+              domain: pod
+              signal: network
+            annotations:
+              summary: "Pod network throughput high (multi-agent)"
+              description: "Sum rx+tx rate > 50 MiB/s for 5m (cAdvisor). namespace={{ $labels.namespace }} pod={{ $labels.pod }}."
+          - alert: PodFilesystemIOThroughputHigh
+            expr: |
+              sum by (namespace, pod, container) (
+                rate(container_fs_reads_bytes_total{
+                  namespace="multi-agent",
+                  container!="POD",
+                  container!=""
+                }[5m])
+                +
+                rate(container_fs_writes_bytes_total{
+                  namespace="multi-agent",
+                  container!="POD",
+                  container!=""
+                }[5m])
+              ) > 52428800
+            for: 5m
+            labels:
+              severity: warning
+              domain: pod
+              signal: disk_io
+            annotations:
+              summary: "Pod container filesystem read+write throughput high (multi-agent)"
+              description: "read+write bytes/s > 50 MiB/s for 5m (cAdvisor). namespace={{ $labels.namespace }} pod={{ $labels.pod }} container={{ $labels.container }}."
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

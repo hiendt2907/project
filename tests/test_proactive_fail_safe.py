@@ -91,6 +91,7 @@ async def test_process_proactive_message_event_timeout(monkeypatch: pytest.Monke
     ctx.settings.proactive_event_timeout_sec = 0.15
     ctx.settings.proactive_tool_timeout_sec = 0.05
     ctx.settings.proactive_kill_switch_key = "omni:proactive:kill_switch"
+    ctx.settings.proactive_gigo_require_cluster_identity = True
     ctx.redis = AsyncMock()
     sem = MagicMock()
     sem.acquire_proactive = AsyncMock(return_value="tok")
@@ -103,6 +104,8 @@ async def test_process_proactive_message_event_timeout(monkeypatch: pytest.Monke
         canonical_query="cpu high",
         metric_value=9.0,
         threshold=1.0,
+        namespace="lab",
+        trigger_promql="up",
     )
     raw = json.dumps(ev.model_dump())
     await _process_proactive_message(ctx, "redis-msg-1", raw)

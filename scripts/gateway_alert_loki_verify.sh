@@ -6,6 +6,7 @@
 # Gom log: omni-prober / omni-analyst / omni-core / omni-executor (+ omni-worker nếu scale > 0).
 #
 # Usage: scripts/gateway_alert_loki_verify.sh [path/to/alert.json]
+# Default payload: nginx-test HighCPU ~90% (multi-agent) — not redis probe lab.
 # Env:
 #   LOKI_URL=http://loki.monitor.svc.cluster.local:3100
 #   SLEEP_SEC=25
@@ -15,7 +16,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KUBE="${ROOT}/scripts/with_working_kube.sh"
-PAYLOAD="${1:-${ROOT}/scripts/alert_payloads/alertmanager_business_sane.json}"
+PAYLOAD="${1:-${ROOT}/scripts/alert_payloads/alertmanager_nginx_cpu_high.json}"
 GW_INTERNAL="${GW_INTERNAL:-http://omni-gateway.multi-agent.svc.cluster.local}"
 LOKI_URL="${LOKI_URL:-http://loki.monitor.svc.cluster.local:3100}"
 SLEEP_SEC="${SLEEP_SEC:-25}"
@@ -140,6 +141,7 @@ if not lines:
 
 echo ""
 echo "=== 5) Checklist nghiệp vụ ==="
-echo "• Inbound phải có pod= + namespace= trong FACTS (alert JSON có labels)."
+echo "• Default alert: pod nginx-test*, namespace multi-agent, HighCPU / ~90% (see alertmanager_nginx_cpu_high.json)."
 echo "• MPV3 split: trace xuất hiện trước hết ở omni-prober (omni-alerts); analyst = evidence loop."
+echo "• omni-executor: expect event=omni_actions_in action=SUGGEST_REMEDIATION (English diagnosis) — not legacy ping."
 echo "• Dùng trace trong Grafana Explore Loki:  $TRACE"

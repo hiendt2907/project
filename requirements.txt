@@ -4,8 +4,11 @@ aiohttp>=3.9.0
 fastapi>=0.110.0
 uvicorn>=0.27.0
 
-# Redis Streams + async
+# Redis (locks, CB, session — not Streams bus)
 redis[hiredis]>=5.0.0
+
+# Kafka (event bus)
+aiokafka>=0.11.0
 
 # Vector DB (Postgres HA)
 pgvector>=0.2.1

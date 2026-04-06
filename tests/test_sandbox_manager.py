@@ -14,19 +14,19 @@ from workers.settings import WorkerSettings
 async def test_execute_disabled_audits() -> None:
     ws = WorkerSettings(opensandbox_enabled=False)
     m = SandboxManager(ws)
-    r = AsyncMock()
-    out = await m.execute_shell(redis=r, command="echo hi", session_id="s", trace_id="t")
+    k = AsyncMock()
+    out = await m.execute_shell(kafka=k, command="echo hi", session_id="s", trace_id="t")
     assert "tắt" in out.lower() or "disabled" in out.lower()
-    r.xadd.assert_called()
-    assert r.xadd.call_args[0][0] == ws.audit_sandbox_stream
+    k.send_dict.assert_called()
+    assert k.send_dict.call_args[0][0] == ws.kafka_topic_audit_sandbox
 
 
 @pytest.mark.asyncio
 async def test_policy_deny_rm_rf_audits() -> None:
     ws = WorkerSettings(opensandbox_enabled=True)
     m = SandboxManager(ws)
-    r = AsyncMock()
-    out = await m.execute_shell(redis=r, command="rm -rf /tmp/x", session_id="s", trace_id="tr-1")
+    k = AsyncMock()
+    out = await m.execute_shell(kafka=k, command="rm -rf /tmp/x", session_id="s", trace_id="tr-1")
     assert "policy" in out.lower() or "từ chối" in out.lower()
-    assert r.xadd.call_count >= 1
-    assert r.xadd.call_args[0][0] == ws.audit_sandbox_stream
+    assert k.send_dict.call_count >= 1
+    assert k.send_dict.call_args[0][0] == ws.kafka_topic_audit_sandbox

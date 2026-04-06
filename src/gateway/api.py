@@ -24,6 +24,8 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
+from gateway.trace_context import install_gateway_trace_logging, pop_gateway_trace_id, push_gateway_trace_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -109,6 +111,7 @@ def _build_redis_client() -> aioredis.Redis:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _redis, _kafka, _rate_semaphore, _token_refill_task
+    install_gateway_trace_logging()
     _redis = _build_redis_client()
     await _redis.initialize()
     _kafka = AIOKafkaProducer(
@@ -172,9 +175,17 @@ async def health():
 @app.post("/webhook/prometheus")
 async def prometheus_webhook(request: Request) -> JSONResponse:
     """Nhận Alert từ Prometheus/Alertmanager → produce Kafka topic ``OMNI_KAFKA_TOPIC_ALERTS``."""
-    # Trace ngay đầu luồng — mọi nhánh (429/503/200) đều cùng id để grep xuyên suốt.
+    # Trace ngay đầu luồng — ContextVar + filter: asyncio/uvicorn log cùng trace_id.
     trace_id = f"gw-prom-{uuid.uuid4().hex[:12]}"
     request.state.trace_id = trace_id
+    tok_gw = push_gateway_trace_id(trace_id)
+    try:
+        return await _prometheus_webhook_body(request, trace_id)
+    finally:
+        pop_gateway_trace_id(tok_gw)
+
+
+async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONResponse:
     logger.info("[GATEWAY][%s] webhook_prometheus enter", trace_id)
 
     # ── 1. Rate Limiting (Token Bucket) ──────────────────────────────────────
@@ -240,9 +251,6 @@ async def prometheus_webhook(request: Request) -> JSONResponse:
     except Exception as e:
         logger.error("[GATEWAY][%s] Internal error: %s", trace_id, e)
         raise HTTPException(status_code=500, detail={"message": str(e), "trace_id": trace_id}) from e
-    finally:
-        # Token đã dùng — KHÔNG release lại (bucket refill sẽ tự làm mỗi giây)
-        pass
 
 
 @app.get("/metrics/circuit_breaker")

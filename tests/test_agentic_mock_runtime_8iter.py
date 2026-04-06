@@ -23,14 +23,14 @@ async def test_agentic_mock_runtime_full_8_iterations(
     )
     ctx = MagicMock()
     ctx.settings = ws
-    xadd_calls: list[dict] = []
+    audit_calls: list[dict] = []
 
-    async def capture_xadd(_stream: object, fields: dict, **_kw: object) -> bytes:
-        xadd_calls.append({k: (v.decode() if isinstance(v, (bytes, bytearray)) else v) for k, v in fields.items()})
-        return b"0-0"
+    async def capture_send(_topic: object, envelope: dict) -> None:
+        audit_calls.append(dict(envelope))
 
     ctx.redis = MagicMock()
-    ctx.redis.xadd = AsyncMock(side_effect=capture_xadd)
+    ctx.kafka = MagicMock()
+    ctx.kafka.send_dict = AsyncMock(side_effect=capture_send)
     ctx.telegram_chat_id = None
     ctx.semaphore = MagicMock()
     ctx.semaphore.acquire = AsyncMock(return_value="tok")
@@ -77,11 +77,11 @@ async def test_agentic_mock_runtime_full_8_iterations(
     assert "Agentic max iterations" in out
     assert ctx.vector_store.upsert.await_count == 0, "không có playbook success → không upsert RAG playbook"
 
-    events = [c.get("event") for c in xadd_calls]
+    events = [c.get("event") for c in audit_calls]
     assert events.count("tool_ok") == 8
     assert "max_iterations" in events
 
-    max_ev = next(c for c in xadd_calls if c.get("event") == "max_iterations")
+    max_ev = next(c for c in audit_calls if c.get("event") == "max_iterations")
     assert max_ev.get("outcome") == "REQUIRES_HUMAN_INTERVENTION"
     tomb = json.loads(max_ev["tombstone"]) if isinstance(max_ev.get("tombstone"), str) else max_ev.get("tombstone")
     traj = json.loads(tomb["trajectory"])

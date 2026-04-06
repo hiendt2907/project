@@ -110,6 +110,10 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_ACTIONS"),
         description="Executor service: mutation jobs (JSON envelope).",
     )
+    trace_correlation_ping_enabled: bool = Field(
+        default=True,
+        description="After analyst handles diagnostic evidence, emit omni-actions SUGGEST_REMEDIATION with same trace_id (unified tracing).",
+    )
 
     @field_validator(
         "kafka_topic_alerts",
@@ -191,6 +195,74 @@ class WorkerSettings(BaseSettings):
     ollama_keep_alive: str = Field(default="5m")
     embed_model: str = Field(default="nomic-embed-text:latest")
     ollama_lease_ttl_sec: int = Field(default=120, ge=10)
+
+    # --- pgvector: một bảng rag_documents, phân vùng theo collection_name (API gọi là collection_id) ---
+    pgvector_collection_k8s_expert: str = Field(
+        default="k8s_expert",
+        min_length=1,
+        max_length=64,
+        description="Partition LIST trùng tên collection; RAG tri thức K8s/ingest + analyst similarity_search.",
+    )
+    k8s_official_docs_base_url: str = Field(
+        default="https://kubernetes.io",
+        description="Host gốc crawler docs (OMNI_K8S_OFFICIAL_DOCS_BASE_URL).",
+    )
+    k8s_official_docs_seed_urls: str = Field(
+        default="https://kubernetes.io/docs/home/,https://kubernetes.io/docs/concepts/,https://kubernetes.io/docs/tasks/",
+        description="Danh sách URL bắt đầu crawl, phân tách bởi dấu phẩy.",
+    )
+    k8s_official_crawl_max_pages: int = Field(default=48, ge=1, le=5000)
+    k8s_official_crawl_max_depth: int = Field(default=2, ge=0, le=6)
+    k8s_official_chunk_chars: int = Field(default=1400, ge=400, le=12000)
+    k8s_official_chunk_overlap: int = Field(default=140, ge=0, le=2000)
+    k8s_official_crawl_timeout_sec: float = Field(default=25.0, ge=5.0, le=120.0)
+    k8s_official_request_delay_sec: float = Field(default=0.4, ge=0.0, le=10.0)
+    k8s_official_metadata_version: str = Field(
+        default="1.30",
+        min_length=1,
+        max_length=32,
+        description="Ghi vào payload.metadata.version cho chunk kubernetes.io.",
+    )
+    k8s_official_user_agent: str = Field(
+        default="OmniLabK8sOfficialIngest/1.0 (+https://kubernetes.io)",
+        min_length=8,
+        max_length=256,
+    )
+    k8s_official_docs_path_prefix: str = Field(
+        default="/docs/",
+        min_length=1,
+        max_length=128,
+        description="Chỉ enqueue link cùng host và path bắt đầu bằng prefix này.",
+    )
+    k8s_official_sitemap_url: str = Field(
+        default="https://kubernetes.io/sitemap.xml",
+        description="Sitemap XML để seed thêm URL (để trống = không fetch sitemap). OMNI_K8S_OFFICIAL_SITEMAP_URL",
+    )
+    k8s_official_sitemap_max_urls: int = Field(
+        default=120,
+        ge=0,
+        le=2000,
+        description="Tối đa URL lấy từ sitemap mỗi lần ingest (0 = không lấy từ sitemap).",
+    )
+
+    # Unified RagGate (k8s_expert) — trước LLM / fast path.
+    rag_gate_enabled: bool = Field(default=True, description="Bật cổng RAG trước khi preflight/LLM.")
+    rag_gate_score_threshold: float = Field(default=0.42, ge=0.0, le=1.0)
+    rag_gate_limit: int = Field(default=4, ge=1, le=24)
+    rag_gate_query_max_chars: int = Field(default=8000, ge=500, le=24_000)
+    rag_gate_chunk_max_chars: int = Field(default=1200, ge=200, le=4000)
+    omni_summary_max_words: int = Field(
+        default=100,
+        ge=10,
+        le=500,
+        description="Alert summary + analyst + RagGate output — tối đa từ (whitespace).",
+    )
+    infra_enrich_max_total_chars: int = Field(
+        default=6000,
+        ge=2000,
+        le=50_000,
+        description="Trần tổng ký tự sau enrich_working_text_with_infra (mọi source, kể cả prometheus).",
+    )
 
     rag_fast_path_score: float = Field(default=0.9, ge=0.0, le=1.0)
 
@@ -484,8 +556,24 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_DIAGNOSTIC_MATRIX_PATH"),
     )
     diagnostic_evidence_maxlen: int = Field(default=2000, ge=100, le=50_000)
+    # Bách khoa K8s (pgvector k8s_expert) → luồng analyst sanitized (omni-diagnostic-evidence).
+    diag_k8s_expert_rag_enabled: bool = Field(
+        default=True,
+        description="Gắn semantic search kubernetes.io (ingest) vào prompt khám khi evidence đã sanitized.",
+    )
+    diag_k8s_expert_rag_limit: int = Field(default=4, ge=1, le=16)
+    diag_k8s_expert_rag_score_threshold: float = Field(default=0.40, ge=0.0, le=1.0)
+    diag_k8s_expert_rag_max_chars: int = Field(default=3200, ge=400, le=16_000)
+    diag_k8s_expert_rag_query_max_chars: int = Field(default=4000, ge=500, le=24_000)
 
     proactive_enabled: bool = Field(default=True, description="Prometheus evaluate + proactive incidents Kafka consumer.")
+    proactive_gigo_require_cluster_identity: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_PROACTIVE_GIGO_REQUIRE_CLUSTER_IDENTITY"),
+        description=(
+            "GIGO: bỏ qua incident khi thiếu cả namespace và trigger_promql — tránh ReAct/mutate trên input không có định danh cluster."
+        ),
+    )
     proactive_kill_switch_key: str = Field(default="omni:proactive:kill_switch")
     proactive_eval_interval_sec: int = Field(default=120, ge=15, le=86400)
     proactive_promql: str = Field(
@@ -535,7 +623,7 @@ class WorkerSettings(BaseSettings):
             "list_namespace_pods,list_all_pods_sdk,resolve_pod_identity,resolve_deployment_identity,"
             "redis_health,redis_info,k8s_rollout_restart,k8s_scale_deployment,k8s_patch_resource,"
             "k8s_describe_resource,k8s_tail_logs,k8s_check_endpoints,kubectl_cluster,"
-            "k8s_list_nodes,k8s_list_services,vendor_knowledge_search"
+            "k8s_list_nodes,k8s_list_services,vendor_knowledge_search,k8s_expert_search"
         ),
         description="CSV tool allowlist khi OMNI_CLUSTER_FULL_ACCESS=false (mặc định true dùng full TOOL_REGISTRY).",
     )

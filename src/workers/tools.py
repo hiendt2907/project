@@ -33,6 +33,7 @@ from workers.sdk_service_tools import (
     tool_metrics_promql_hints,
     tool_net_scapy_interfaces,
     tool_postgres_ping,
+    tool_k8s_expert_search,
     tool_vendor_knowledge_search,
     tool_predict_resource_exhaustion,
     tool_pgvector_health,
@@ -159,6 +160,7 @@ register_tool("pgvector_status", tool_pgvector_status)
 register_tool("net_scapy_interfaces", tool_net_scapy_interfaces)
 register_tool("postgres_ping", tool_postgres_ping)
 register_tool("vendor_knowledge_search", tool_vendor_knowledge_search)
+register_tool("k8s_expert_search", tool_k8s_expert_search)
 register_tool("audit_observability_stack", tool_audit_observability_stack)
 register_tool("execute_in_sandbox", tool_execute_in_sandbox)
 register_tool("gated_allowlisted_execute", tool_gated_allowlisted_execute)

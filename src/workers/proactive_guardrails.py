@@ -6,7 +6,10 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from workers.proactive_models import AnomalyEvent
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,19 @@ PROACTIVE_MUTATE_TOOLS: frozenset[str] = frozenset(
         "kubectl_cluster",
     }
 )
+
+
+def proactive_gigo_cluster_identity_ok(ev: "AnomalyEvent") -> tuple[bool, str]:
+    """GIGO ingress: cần ít nhất một trong hai — scope K8s (namespace) hoặc ngữ cảnh PromQL (trigger).
+
+    Evidence path có ``coerce_evidence_dict``; proactive Kafka trước đây không có lọc tương đương — input rác → ReAct rác.
+    Luồng ``evaluate_proactive_triggers`` luôn set ``trigger_promql``; stub chỉ ``canonical_query`` thì fail sớm tại đây.
+    """
+    if (ev.namespace or "").strip():
+        return True, ""
+    if (ev.trigger_promql or "").strip():
+        return True, ""
+    return False, "gigo_missing_namespace_and_trigger_promql"
 
 
 def _sanitize_segment(s: str, max_len: int = 120) -> str:

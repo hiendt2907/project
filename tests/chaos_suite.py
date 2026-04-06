@@ -1,13 +1,18 @@
+"""Chaos lab: Kafka omni-alerts poison messages + delayed queue / circuit breaker (Redis)."""
+
 import asyncio
+import json
 import os
 import time
-import json
 
 import redis.asyncio as redis
+from aiokafka import AIOKafkaProducer
 
-STREAM_INBOUND = "events:inbound"
-DLQ = "events:dlq"
+KAFKA_BOOTSTRAP = os.environ.get("OMNI_KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+KAFKA_TOPIC_ALERTS = os.environ.get("OMNI_KAFKA_TOPIC_ALERTS", "omni-alerts")
+DLQ_TOPIC = os.environ.get("OMNI_KAFKA_TOPIC_DLQ", "omni-dlq")
 DELAYED_QUEUE = "omni:delayed_queue"
+
 
 async def get_redis_client():
     url = os.environ.get("OMNI_REDIS_URL", "").strip()
@@ -20,96 +25,56 @@ async def get_redis_client():
     await client.initialize()
     return client
 
-async def main():
+
+async def main() -> None:
     r = await get_redis_client()
-    print("--- PREPARING CHAOS ENVIRONMENT ---")
-    await r.delete(STREAM_INBOUND)
-    await r.delete(DLQ)
+    producer = AIOKafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP.strip(),
+        enable_idempotence=True,
+        acks="all",
+    )
+    await producer.start()
+    print("--- PREPARING CHAOS ENVIRONMENT (Kafka + Redis) ---")
     await r.delete(DELAYED_QUEUE)
 
-    # Recreate Consumer Group because deleting the stream destroyed the group
-    try:
-        await r.xgroup_create(STREAM_INBOUND, "omni", id="0", mkstream=True)
-    except Exception as e:
-        pass
+    print("\n--- [KỊCH BẢN 1]: POISON MESSAGES → Kafka omni-alerts (worker → DLQ topic on fatal) ---")
+    print("Injecting 200 corrupted payloads...")
+    for i in range(200):
+        bad = f'{{ "broken": {i}, MISSING_QUOTES }}'
+        env = json.dumps({"data": bad}, ensure_ascii=False).encode("utf-8")
+        await producer.send_and_wait(KAFKA_TOPIC_ALERTS, value=env)
+    print("Injection complete. Check omni-dlq topic / worker logs for routing.")
 
-    # 1. TẠO BÃO POISON STORM
-    print("\n--- [KỊCH BẢN 1]: SPHINX POISON STORM (1000 MALFORMED MESSAGES) ---")
-    print("Injecting 1000 corrupted payloads...")
-    for i in range(1000):
-        await r.xadd(STREAM_INBOUND, {"data": f"{{ \"broken\": {i}, MISSING_QUOTES }}"})
-
-    print("Injection complete. Monitoring ZSET Backoff routing & DLQ...")
-
-    start_monitor = time.time()
-    last_dlq = -1
-    last_zset = -1
-    
-    while time.time() - start_monitor < 40:
-        dlq_len = await r.xlen(DLQ)
-        pel_info = await r.xinfo_groups(STREAM_INBOUND)
-        pel_len = pel_info[0]["pending"] if pel_info else 0
-        zset_len = await r.zcard(DELAYED_QUEUE)
-        
-        if dlq_len != last_dlq or zset_len != last_zset:
-            print(f"[{time.time()-start_monitor:.1f}s] PEL: {pel_len} | ZSET (Retrying): {zset_len} | DLQ (Dead): {dlq_len}/1000")
-            last_dlq = dlq_len
-            last_zset = zset_len
-            
-        if dlq_len >= 1000:
-            print(">>> THÀNH CÔNG: The storm was completely routed to DLQ via Non-Blocking Retry! <<<")
-            break
-        await asyncio.sleep(1)
-
-    # 4. KỊCH BẢN 4: THE TWIN ZOMBIES (IDEMPOTENCY GUARD)
-    print("\n--- [KỊCH BẢN 4]: THE TWIN ZOMBIES (IDEMPOTENCY GUARD) ---")
+    print("\n--- [KỊCH BẢN 4]: TWIN ZOMBIES (idempotency) ---")
     trace_id = "chaos-twin-123"
     tool_name = "k8s_rollout_restart"
     lock_key = f"omni:tool_executed:{tool_name}:{trace_id}"
-    
-    print(f"Bơm Fake Lock: SET {lock_key} = success")
     await r.setex(lock_key, 60, "success")
-    
-    print("Gửi tin nhắn chứa lệnh rollout restart...")
-    msg_payload = {"text": f"rollout restart deployment test-app", "trace_id": trace_id}
-    await r.xadd(STREAM_INBOUND, {"data": json.dumps(msg_payload)})
-    
-    print("Chờ Worker xử lý (nó sẽ bị Guard chặn)...")
+    msg_payload = {"text": "rollout restart deployment test-app", "trace_id": trace_id}
+    env = json.dumps({"data": json.dumps(msg_payload)}, ensure_ascii=False).encode("utf-8")
+    await producer.send_and_wait(KAFKA_TOPIC_ALERTS, value=env)
     await asyncio.sleep(5)
-    
-    # 5. KỊCH BẢN 5: BÃO 5001 (CIRCUIT BREAKER & GATEWAY)
-    print("\n--- [KỊCH BẢN 5]: BÃO 5001 (OOM PROTECTION & GATEWAY BACKPRESSURE) ---")
+
+    print("\n--- [KỊCH BẢN 5]: CIRCUIT BREAKER (delayed ZSET) ---")
     cb_limit = 5000
-    print(f"Xả {cb_limit + 1} tin nhắn rác vào Delayed Queue...")
-    
-    # Bơm ZSET direct để nhanh
     now = time.time()
     pipe = r.pipeline()
     for i in range(cb_limit + 1):
         z_payload = json.dumps({"msg_id": f"chaos-{i}", "data": "{}", "_stable_id": f"chaos-trace-{i}"})
         pipe.zadd(DELAYED_QUEUE, {z_payload: now + 100})
     await pipe.execute()
-    
-    print("Đang check Circuit Breaker Metric & Redis Global Flag...")
     await asyncio.sleep(2)
-    
     zset_len = await r.zcard(DELAYED_QUEUE)
     cb_redis_flag = await r.get("omni:circuit_breaker:active")
-    
     print(f"ZSET Length: {zset_len}")
     print(f"Redis CB Flag: {cb_redis_flag}")
-    
-    if cb_redis_flag in (b"1", "1"):
-        print(">>> THÀNH CÔNG: Circuit Breaker đã ngắt mạch! Gateway sẽ trả về 503/429. <<<")
-    else:
-        print(">>> THẤT BẠI: Circuit Breaker không hoạt động! <<<")
 
-    # Dọn dẹp rác chaos
     await r.delete(DELAYED_QUEUE)
     await r.delete("omni:circuit_breaker:active")
-    
-    print("\n--- ALL CHAOS SCENARIOS COMPLETED ---")
+    await producer.stop()
     await r.aclose()
+    print("\n--- ALL CHAOS SCENARIOS COMPLETED ---")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

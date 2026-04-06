@@ -1,8 +1,12 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: test-evidence docker-worker docker-gateway deploy-worker deploy-worker-legacy deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive
+.PHONY: test-evidence docker-worker docker-gateway deploy-worker deploy-worker-legacy deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive lab-nginx-cpu
 
 test-evidence:
 	bash scripts/run_test_evidence.sh
+
+# nginx-test CPU lab: deploy + optional stress + POST gateway (see scripts/nginx_test_cpu_alert_lab.sh header).
+lab-nginx-cpu:
+	bash scripts/nginx_test_cpu_alert_lab.sh
 
 docker-worker:
 	docker build -t multi-agent-system:latest -f Dockerfile .

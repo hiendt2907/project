@@ -349,7 +349,7 @@ async def test_list_all_pods_sdk_god_uses_kubectl_subprocess() -> None:
     ctx.settings.lab_unchained = True
     ctx.inbound_trace_id = "t-god"
     ctx.redis = AsyncMock()
-    ctx.redis.xadd = AsyncMock()
+    ctx.kafka = AsyncMock()
 
     mock_proc = MagicMock()
     mock_proc.returncode = 0

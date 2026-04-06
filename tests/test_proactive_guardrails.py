@@ -6,9 +6,11 @@ import pytest
 
 from workers.proactive_guardrails import (
     extract_resource_ref,
+    proactive_gigo_cluster_identity_ok,
     proactive_lease_key,
     resource_freeze_redis_key,
 )
+from workers.proactive_models import AnomalyEvent
 
 
 def test_extract_resource_ref_patch() -> None:
@@ -17,6 +19,20 @@ def test_extract_resource_ref_patch() -> None:
         {"namespace": "prod", "name": "api", "resource_type": "Deployment", "patch_json": "{}"},
     )
     assert r == ("prod", "Deployment", "api")
+
+
+def test_proactive_gigo_requires_namespace_or_trigger_promql() -> None:
+    assert proactive_gigo_cluster_identity_ok(
+        AnomalyEvent(trace_id="trace-1", canonical_query="x", namespace="prod")
+    ) == (True, "")
+    assert proactive_gigo_cluster_identity_ok(
+        AnomalyEvent(trace_id="trace-2", canonical_query="x", namespace="", trigger_promql="sum(up)")
+    ) == (True, "")
+    ok, reason = proactive_gigo_cluster_identity_ok(
+        AnomalyEvent(trace_id="trace-3", canonical_query="sum(up)", namespace="", trigger_promql="")
+    )
+    assert ok is False
+    assert "gigo" in reason
 
 
 def test_extract_resource_ref_rollout() -> None:

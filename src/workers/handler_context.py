@@ -33,6 +33,7 @@ class WorkerHandlerContext:
     restart_rollout_explicit: bool = False
     pod_discovery_pairs: list[tuple[str, str]] = field(default_factory=list)
     scout_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    # Same id as Kafka omni-alerts / evidence / actions when set by consumer loops (ContextVar mirrors this).
     inbound_trace_id: str = "unknown"
     ollama_slot_held: bool = False
     inbound_proactive: bool = False

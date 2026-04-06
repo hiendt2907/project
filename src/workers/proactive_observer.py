@@ -1,4 +1,4 @@
-"""Proactive daemon: Prometheus evaluate → incidents:proactive → SOP tool → audit:proactive."""
+"""Proactive daemon: Prometheus evaluate → Kafka omni-proactive-incidents → SOP tool → audit topic."""
 
 from __future__ import annotations
 
@@ -9,8 +9,6 @@ import logging
 import time
 import uuid
 from typing import Any
-
-from redis.exceptions import ResponseError
 
 from execution.memory_normalize import (
     canonical_symptom_text,
@@ -24,6 +22,7 @@ from observability.normalize import (
 )
 from rag.pgvector_store import COLLECTION_ACTION_EXPERIENCE, EMBED_DIM, PointStruct
 from workers.handlers import WorkerHandlerContext, resolve_remediation_from_memory
+from workers.request_trace import pop_trace_id, push_trace_id
 from workers.metrics_exporter import (
     inc_experience_saved,
     inc_anomaly_events,
@@ -47,6 +46,7 @@ from workers.tools import TOOL_REGISTRY, ToolCallPayload
 from workers.proactive_guardrails import (
     PROACTIVE_MUTATE_TOOLS,
     extract_resource_ref,
+    proactive_gigo_cluster_identity_ok,
     set_namespace_freeze_fallback,
     set_resource_freeze,
 )
@@ -154,14 +154,6 @@ async def _react_mem_recent(ctx: WorkerHandlerContext, trace_id: str, limit: int
     except Exception:
         return []
 
-
-async def ensure_consumer_group(r: Any, stream: str, group: str) -> None:
-    try:
-        await r.xgroup_create(stream, group, id="0", mkstream=True)
-        logger.info("created consumer group %s on %s", group, stream)
-    except ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise
 
 def _stable_args_hash(args: dict[str, Any]) -> str:
     raw = json.dumps(args or {}, sort_keys=True, ensure_ascii=False, default=str)
@@ -454,7 +446,7 @@ async def _instant_scalar(ctx: WorkerHandlerContext, promql: str) -> float | Non
 
 
 async def evaluate_proactive_triggers(ctx: WorkerHandlerContext) -> int:
-    """Một tick: PromQL instant → nếu vượt ngưỡng + hết cooldown → XADD ``incidents:proactive``."""
+    """Một tick: PromQL instant → nếu vượt ngưỡng + hết cooldown → produce ``kafka_topic_proactive_incidents``."""
     ws = ctx.settings
     if await proactive_kill_switch_engaged(ctx.redis, ws.proactive_kill_switch_key):
         logger.info(
@@ -492,10 +484,8 @@ async def evaluate_proactive_triggers(ctx: WorkerHandlerContext) -> int:
         trigger_promql=ws.proactive_promql[:2000],
         error_hint=hint,
     )
-    await ctx.redis.xadd(
-        ws.stream_incidents_proactive,
-        {"data": json.dumps(ev.model_dump(), ensure_ascii=False)},
-    )
+    assert ctx.kafka is not None
+    await ctx.kafka.send_envelope_inner(ws.kafka_topic_proactive_incidents, ev.model_dump())
     inc_proactive_events()
     inc_anomaly_events()
     await ctx.redis.setex(ck, ws.proactive_cooldown_sec, "1")
@@ -519,15 +509,16 @@ async def _append_dlq_proactive(
         "reason": reason,
         "tombstone": tombstone,
     }
-    mid = await ctx.redis.xadd(
-        ctx.settings.stream_dlq,
+    assert ctx.kafka is not None
+    await ctx.kafka.send_dict(
+        ctx.settings.kafka_topic_dlq,
         {
             "data": json.dumps(payload, ensure_ascii=False),
             "trace_id": trace_id,
             "data_event": raw_event[:8000],
         },
     )
-    return mid.decode() if isinstance(mid, bytes) else str(mid)
+    return f"dlq-{trace_id}"
 
 
 async def _fail_safe_after_tool_error(
@@ -664,12 +655,8 @@ async def _append_audit(
     }
     if meta:
         payload["meta"] = meta
-    await ctx.redis.xadd(
-        ws.audit_proactive_stream,
-        {"data": json.dumps(payload, ensure_ascii=False)},
-        maxlen=ws.audit_proactive_maxlen,
-        approximate=True,
-    )
+    assert ctx.kafka is not None
+    await ctx.kafka.send_dict(ws.kafka_topic_audit_proactive, {"data": json.dumps(payload, ensure_ascii=False)})
 
 
 async def _proactive_event_pipeline(
@@ -923,120 +910,149 @@ async def _process_proactive_message(
         return
 
     trace = ev.trace_id
-    pattern_key = _pattern_key_from_event(ev)
-    prev_proactive = getattr(ctx, "inbound_proactive", False)
-    prev_trace = getattr(ctx, "inbound_trace_id", "")
-    ctx.inbound_proactive = True
-    ctx.inbound_trace_id = trace
-    _dbg_log(
-        run_id=f"trace-{trace}",
-        hypothesis_id="H11",
-        location="proactive_observer.py:_process_proactive_message",
-        message="before_acquire_proactive_token",
-        data={"msg_id": msg_id},
-    )
-    token = await ctx.semaphore.acquire_proactive()
-    t0_incident = time.monotonic()
-    _dbg_log(
-        run_id=f"trace-{trace}",
-        hypothesis_id="H11",
-        location="proactive_observer.py:_process_proactive_message",
-        message="acquired_proactive_token",
-        data={"msg_id": msg_id, "token": token},
-    )
+    if ws.proactive_gigo_require_cluster_identity:
+        ok_gigo, gigo_detail = proactive_gigo_cluster_identity_ok(ev)
+        if not ok_gigo:
+            logger.info("[%s] proactive skipped: GIGO %s", trace, gigo_detail)
+            await _append_audit(
+                ctx,
+                trace_id=trace,
+                rule_id=ev.rule_name,
+                outcome="SKIPPED_GIGO",
+                detail=gigo_detail,
+                meta={"msg_id": msg_id, "namespace": ev.namespace, "trigger_len": len(ev.trigger_promql or "")},
+            )
+            return
+
+    tok_trace = push_trace_id(trace)
     try:
-        with proactive_trace_span(trace):
-            try:
-                await asyncio.wait_for(
-                    _proactive_event_pipeline(ctx, ev, msg_id, pattern_key, raw),
-                    timeout=ws.proactive_event_timeout_sec,
-                )
-            except asyncio.TimeoutError:
-                inc_proactive_event_timeout()
-                logger.warning("[%s] proactive_event_timeout_sec exceeded", trace)
-                await _append_audit(
-                    ctx,
-                    trace_id=trace,
-                    rule_id=ev.rule_name,
-                    outcome="EVENT_TIMEOUT",
-                    detail=f"limit_sec={ws.proactive_event_timeout_sec}",
-                    meta={"path": "pipeline", "pattern_key": pattern_key, "msg_id": msg_id},
-                )
+        pattern_key = _pattern_key_from_event(ev)
+        prev_proactive = getattr(ctx, "inbound_proactive", False)
+        prev_trace = getattr(ctx, "inbound_trace_id", "")
+        ctx.inbound_proactive = True
+        ctx.inbound_trace_id = trace
+        _dbg_log(
+            run_id=f"trace-{trace}",
+            hypothesis_id="H11",
+            location="proactive_observer.py:_process_proactive_message",
+            message="before_acquire_proactive_token",
+            data={"msg_id": msg_id},
+        )
+        token = await ctx.semaphore.acquire_proactive()
+        t0_incident = time.monotonic()
+        _dbg_log(
+            run_id=f"trace-{trace}",
+            hypothesis_id="H11",
+            location="proactive_observer.py:_process_proactive_message",
+            message="acquired_proactive_token",
+            data={"msg_id": msg_id, "token": token},
+        )
+        try:
+            with proactive_trace_span(trace):
                 try:
-                    await _append_dlq_proactive(
+                    await asyncio.wait_for(
+                        _proactive_event_pipeline(ctx, ev, msg_id, pattern_key, raw),
+                        timeout=ws.proactive_event_timeout_sec,
+                    )
+                except asyncio.TimeoutError:
+                    inc_proactive_event_timeout()
+                    logger.warning("[%s] proactive_event_timeout_sec exceeded", trace)
+                    await _append_audit(
                         ctx,
                         trace_id=trace,
-                        msg_id=msg_id,
-                        reason="EVENT_TIMEOUT",
-                        tombstone={"event_timeout_sec": ws.proactive_event_timeout_sec},
-                        raw_event=raw[:8000] if isinstance(raw, str) else str(raw),
+                        rule_id=ev.rule_name,
+                        outcome="EVENT_TIMEOUT",
+                        detail=f"limit_sec={ws.proactive_event_timeout_sec}",
+                        meta={"path": "pipeline", "pattern_key": pattern_key, "msg_id": msg_id},
                     )
-                except Exception:
-                    logger.exception("[%s] dlq event timeout", trace)
+                    try:
+                        await _append_dlq_proactive(
+                            ctx,
+                            trace_id=trace,
+                            msg_id=msg_id,
+                            reason="EVENT_TIMEOUT",
+                            tombstone={"event_timeout_sec": ws.proactive_event_timeout_sec},
+                            raw_event=raw[:8000] if isinstance(raw, str) else str(raw),
+                        )
+                    except Exception:
+                        logger.exception("[%s] dlq event timeout", trace)
+        finally:
+            observe_proactive_incident_duration(time.monotonic() - t0_incident)
+            await ctx.semaphore.release(token)
+            ctx.inbound_proactive = prev_proactive
+            ctx.inbound_trace_id = prev_trace
     finally:
-        observe_proactive_incident_duration(time.monotonic() - t0_incident)
-        await ctx.semaphore.release(token)
-        ctx.inbound_proactive = prev_proactive
-        ctx.inbound_trace_id = prev_trace
+        pop_trace_id(tok_trace)
 
 
-async def proactive_control_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+async def kafka_proactive_incidents_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+    from aiokafka import AIOKafkaConsumer
+
+    from messaging.kafka_bus import decode_kafka_value_to_fields, kafka_msg_id
+
     ws = ctx.settings
     await ctx.scout_ready.wait()
-    await ensure_consumer_group(ctx.redis, ws.stream_incidents_proactive, ws.consumer_group_proactive)
-    while not stop.is_set():
-        if not ws.proactive_enabled:
-            await asyncio.sleep(2)
-            continue
-        if await proactive_kill_switch_engaged(ctx.redis, ws.proactive_kill_switch_key):
-            await asyncio.sleep(2)
-            continue
-        try:
-            streams = await ctx.redis.xreadgroup(
-                ws.consumer_group_proactive,
-                ws.consumer_name_proactive,
-                streams={ws.stream_incidents_proactive: ">"},
-                count=5,
-                block=ws.proactive_block_ms,
-            )
-        except Exception as e:
-            logger.exception("proactive xreadgroup: %s", e)
-            await asyncio.sleep(1)
-            continue
-        if not streams:
-            continue
-        for _sname, entries in streams:
-            for msg_id, fields in entries:
-                if stop.is_set():
-                    return
-                raw = fields.get("data") or fields.get("payload") or "{}"
-                _dbg_log(
-                    run_id=f"stream-{msg_id}",
-                    hypothesis_id="H12",
-                    location="proactive_observer.py:proactive_control_loop",
-                    message="stream_message_received",
-                    data={"msg_id": msg_id, "raw_len": len(str(raw))},
-                )
-                try:
-                    await _process_proactive_message(ctx, msg_id, raw)
-                except Exception as e:
-                    logger.exception("[%s] proactive handler error: %s", msg_id, e)
-                    await ctx.ledger.record_exception(
-                        e, phase="4", component="proactive_control", swallow_errors=True
-                    )
-                    await ctx.redis.xadd(
-                        ctx.settings.stream_dlq,
-                        {"error": str(e), "trace_id": msg_id, "data": raw},
-                    )
-                finally:
-                    await ctx.redis.xack(ws.stream_incidents_proactive, ws.consumer_group_proactive, msg_id)
+    consumer = AIOKafkaConsumer(
+        ws.kafka_topic_proactive_incidents,
+        bootstrap_servers=ws.kafka_bootstrap_servers,
+        group_id=ws.consumer_group_proactive,
+        enable_auto_commit=False,
+        client_id=ws.consumer_name_proactive,
+    )
+    await consumer.start()
+    try:
+        while not stop.is_set():
+            if not ws.proactive_enabled:
+                await asyncio.sleep(2)
+                continue
+            if await proactive_kill_switch_engaged(ctx.redis, ws.proactive_kill_switch_key):
+                await asyncio.sleep(2)
+                continue
+            try:
+                records = await consumer.getmany(timeout_ms=ws.proactive_block_ms, max_records=5)
+            except Exception as e:
+                logger.exception("proactive kafka getmany: %s", e)
+                await asyncio.sleep(1)
+                continue
+            if not records:
+                continue
+            for _tp, batch in records.items():
+                for msg in batch:
+                    if stop.is_set():
+                        return
+                    fields = decode_kafka_value_to_fields(msg.value)
+                    raw = fields.get("data") or fields.get("payload") or "{}"
+                    msg_id = kafka_msg_id(msg.topic, msg.partition, msg.offset)
                     _dbg_log(
                         run_id=f"stream-{msg_id}",
                         hypothesis_id="H12",
-                        location="proactive_observer.py:proactive_control_loop",
-                        message="stream_message_acked",
-                        data={"msg_id": msg_id},
+                        location="proactive_observer.py:kafka_proactive_incidents_loop",
+                        message="stream_message_received",
+                        data={"msg_id": msg_id, "raw_len": len(str(raw))},
                     )
+                    try:
+                        await _process_proactive_message(ctx, msg_id, raw)
+                    except Exception as e:
+                        logger.exception("[%s] proactive handler error: %s", msg_id, e)
+                        await ctx.ledger.record_exception(
+                            e, phase="4", component="proactive_control", swallow_errors=True
+                        )
+                        assert ctx.kafka is not None
+                        await ctx.kafka.send_dict(
+                            ctx.settings.kafka_topic_dlq,
+                            {"error": str(e), "trace_id": msg_id, "data": raw},
+                        )
+                    finally:
+                        await consumer.commit()
+                        _dbg_log(
+                            run_id=f"stream-{msg_id}",
+                            hypothesis_id="H12",
+                            location="proactive_observer.py:kafka_proactive_incidents_loop",
+                            message="kafka_message_committed",
+                            data={"msg_id": msg_id},
+                        )
+    finally:
+        await consumer.stop()
 
 
 async def proactive_evaluate_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:

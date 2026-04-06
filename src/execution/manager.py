@@ -1,4 +1,4 @@
-"""OpenSandbox — httpx client + unified Redis audit stream `audit:sandbox`. Policy denylist at gate."""
+"""OpenSandbox — httpx client + unified Kafka audit topic ``kafka_topic_audit_sandbox``. Policy denylist at gate."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ class SandboxExecResult:
 
 
 class SandboxManager:
-    """Gọi HTTP API OpenSandbox — audit mọi lệnh vào một Redis Stream."""
+    """Gọi HTTP API OpenSandbox — audit mọi lệnh vào Kafka topic."""
 
     def __init__(self, settings: WorkerSettings) -> None:
         self._s = settings
@@ -71,7 +71,7 @@ class SandboxManager:
 
     async def _audit_sandbox(
         self,
-        redis: Any,
+        kafka_bus: Any,
         *,
         trace_id: str,
         session_id: str,
@@ -99,11 +99,11 @@ class SandboxManager:
         if extra:
             body.update(extra)
         try:
-            await redis.xadd(
-                self._s.audit_sandbox_stream,
+            if kafka_bus is None:
+                return
+            await kafka_bus.send_dict(
+                self._s.kafka_topic_audit_sandbox,
                 {"data": json.dumps(body, ensure_ascii=False)},
-                maxlen=self._s.audit_sandbox_maxlen,
-                approximate=True,
             )
         except Exception as e:
             logger.debug("audit_sandbox skip: %s", e)
@@ -111,7 +111,7 @@ class SandboxManager:
     async def execute_shell_structured(
         self,
         *,
-        redis: Any,
+        kafka: Any,
         command: str,
         session_id: str,
         trace_id: str,
@@ -126,7 +126,7 @@ class SandboxManager:
 
         if not self.enabled:
             await self._audit_sandbox(
-                redis,
+                kafka,
                 trace_id=tid,
                 session_id=sid,
                 command=cmd,
@@ -151,7 +151,7 @@ class SandboxManager:
 
         if not cmd:
             await self._audit_sandbox(
-                redis,
+                kafka,
                 trace_id=tid,
                 session_id=sid,
                 command=cmd,
@@ -174,7 +174,7 @@ class SandboxManager:
 
         if len(cmd) > 8000:
             await self._audit_sandbox(
-                redis,
+                kafka,
                 trace_id=tid,
                 session_id=sid,
                 command=cmd[:8000],
@@ -197,7 +197,7 @@ class SandboxManager:
 
         pol = check_sandbox_command(cmd, lab_unchained=bool(self._s.lab_unchained))
         await self._audit_sandbox(
-            redis,
+            kafka,
             trace_id=tid,
             session_id=sid,
             command=cmd,
@@ -241,7 +241,7 @@ class SandboxManager:
                 elapsed = time.monotonic() - t0
                 text = (r.text or "")[:12000]
                 await self._audit_sandbox(
-                    redis,
+                    kafka,
                     trace_id=tid,
                     session_id=sid,
                     command=cmd,
@@ -275,7 +275,7 @@ class SandboxManager:
                     err = ""
                     exit_code = 0
                 await self._audit_sandbox(
-                    redis,
+                    kafka,
                     trace_id=tid,
                     session_id=sid,
                     command=cmd,
@@ -300,7 +300,7 @@ class SandboxManager:
                 )
         except httpx.HTTPStatusError as e:
             await self._audit_sandbox(
-                redis,
+                kafka,
                 trace_id=tid,
                 session_id=sid,
                 command=cmd,
@@ -323,7 +323,7 @@ class SandboxManager:
             )
         except Exception as e:
             await self._audit_sandbox(
-                redis,
+                kafka,
                 trace_id=tid,
                 session_id=sid,
                 command=cmd,
@@ -348,7 +348,7 @@ class SandboxManager:
     async def execute_shell(
         self,
         *,
-        redis: Any,
+        kafka: Any,
         command: str,
         session_id: str,
         trace_id: str,
@@ -357,7 +357,7 @@ class SandboxManager:
         pod_labels: dict[str, str] | None = None,
     ) -> str:
         res = await self.execute_shell_structured(
-            redis=redis,
+            kafka=kafka,
             command=command,
             session_id=session_id,
             trace_id=trace_id,

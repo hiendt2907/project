@@ -28,6 +28,7 @@ from workers.entity_extract import extract_entities_llm, merge_llm_entities_into
 from workers.infra_context import enrich_working_text_with_infra, fetch_infra_injection_for_fallback
 from workers.autonomous_route import try_autonomous_sdk_route
 from workers.infra_preflight import LearnedContext, preflight_infra_kb
+from pkg.rag.gate import evaluate_rag_gate
 from workers.metrics_exporter import (
     inc_experience_saved,
     inc_fastpath_hits,
@@ -88,6 +89,24 @@ from workers.vm_slot_accumulation import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _cap_inbound_user_reply(text: str | None, ctx: WorkerHandlerContext) -> str:
+    """Giới hạn từ cho reply user-facing; không cắt JSON object trả về nguyên khối."""
+    s = (text or "").strip()
+    if not s:
+        return ""
+    if s.startswith("{") and s.endswith("}"):
+        try:
+            json.loads(s)
+            return s
+        except Exception:
+            pass
+    return ope.truncate_plain_text_to_max_words(
+        s,
+        max_words=int(getattr(ctx.settings, "omni_summary_max_words", 100)),
+    )
+
 
 # User nhắn rõ restart/rollout → tool không cần hỏi lại Telegram
 RE_RESTART_ROLLOUT_EXPLICIT = re.compile(
@@ -190,6 +209,24 @@ def _parse_alert_pod_namespace_from_preview(text: str) -> tuple[str | None, str 
     if m_pod and m_ns:
         return m_pod.group(1).strip(), m_ns.group(1).strip()
     return None, None
+
+
+def _preflight_hints_from_inbound(
+    payload: dict[str, Any],
+    raw_user_text: str,
+    _src: str,
+) -> dict[str, str] | None:
+    """Namespace/pod từ payload hoặc dòng chuẩn hoá alert — không Redis."""
+    h: dict[str, str] = {}
+    ns_payload = str(payload.get("namespace") or "").strip()
+    if ns_payload:
+        h["namespace"] = ns_payload
+    pod, ns = _parse_alert_pod_namespace_from_preview(raw_user_text)
+    if ns:
+        h["namespace"] = ns
+    if pod:
+        h["pod_name"] = pod
+    return h if h else None
 
 
 def _extract_duration(text: str) -> str:
@@ -1379,14 +1416,27 @@ async def _handle_inbound_payload_impl(
         logger.info("[%s] vm_slots_need_more", trace)
         return nudge
 
-    if src == "prometheus":
-        # Alert text đã có [OLLAMA_ANCHOR_EN] (FACTS/TRIGGER). Preflight + enrich thường nhồi
-        # topology_cache + vài chunk infra_topology (vài nghìn ký tự) — làm phình prompt agentic
-        # và gặp Ollama /api/chat HTTP 500 (giới hạn context / server) trên multi-turn.
-        learned = LearnedContext()
-        logger.info("[%s] prometheus_skip_infra_preflight_enrich", trace)
-    else:
-        learned = await preflight_infra_kb(ctx, raw_user_text)
+    _hints = _preflight_hints_from_inbound(payload, raw_user_text, src)
+    with child_span("rag_gate"):
+        gate_out = await evaluate_rag_gate(ctx, raw_user_text, hints=_hints, trace=trace)
+    if gate_out.hit and (gate_out.formatted or "").strip():
+        out = ope.truncate_plain_text_to_max_words(
+            gate_out.formatted.strip(),
+            max_words=int(getattr(ctx.settings, "omni_summary_max_words", 100)),
+        )
+        if chat_id_int is not None:
+            state.recent_messages.append({"role": "user", "content": raw_user_text})
+            state.recent_messages.append({"role": "assistant", "content": out})
+            state.recent_messages = state.recent_messages[-4:]
+            await save_session(ctx.redis, chat_id_int, state, ttl_sec=ctx.settings.session_ttl_sec)
+        logger.info("[%s] handler_done rag_gate_hit out_len=%s", trace, len(out))
+        return out
+
+    learned = await preflight_infra_kb(
+        ctx,
+        raw_user_text,
+        hints=_hints,
+    )
     ambiguous = (
         is_ambiguous_resource_check(raw_user_text, state, learned=learned)
         and "[CONTEXT:" not in raw_user_text
@@ -1409,11 +1459,8 @@ async def _handle_inbound_payload_impl(
         return nudge
 
     try:
-        if src == "prometheus":
-            working_text = raw_user_text
-        else:
-            with child_span("enrich_working_text_with_infra"):
-                working_text = await enrich_working_text_with_infra(ctx, raw_user_text, learned=learned)
+        with child_span("enrich_working_text_with_infra"):
+            working_text = await enrich_working_text_with_infra(ctx, raw_user_text, learned=learned)
     except Exception as e:
         logger.debug("[%s] infra_context skip: %s", trace, e)
         working_text = raw_user_text
@@ -1423,7 +1470,7 @@ async def _handle_inbound_payload_impl(
     with child_span("fast_path"):
         fast_ok, fast_out = await try_fast_path(ctx, raw_user_text, trace=trace)
     if fast_ok:
-        out = fast_out or "OK (fast-path)."
+        out = _cap_inbound_user_reply(fast_out or "OK (fast-path).", ctx)
         if chat_id_int is not None:
             state.recent_messages.append({"role": "user", "content": raw_user_text})
             state.recent_messages.append({"role": "assistant", "content": out})
@@ -1458,6 +1505,7 @@ async def _handle_inbound_payload_impl(
                 needs_plan=needs_plan,
                 state=state if chat_id_int is not None else None,
             )
+    out = _cap_inbound_user_reply(out, ctx)
     if chat_id_int is not None:
         state.recent_messages.append({"role": "user", "content": raw_user_text})
         state.recent_messages.append({"role": "assistant", "content": out})

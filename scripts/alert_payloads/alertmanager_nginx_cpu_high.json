@@ -13,8 +13,8 @@
         "container": "nginx"
       },
       "annotations": {
-        "summary": "nginx-test pod CPU utilization above 85% for 5m",
-        "description": "Container nginx in pod nginx-test-6d56cf59f6-zzzsg is using high CPU; investigate throttling and load."
+        "summary": "nginx-test pod CPU ~90% saturation for 5m",
+        "description": "Container nginx reports ~90% CPU vs 50m limit (scripts/nginx-test-deployment.yaml); check load and cgroup."
       },
       "startsAt": "2026-04-02T14:00:00Z",
       "endsAt": "0001-01-01T00:00:00Z",

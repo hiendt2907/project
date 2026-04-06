@@ -29,6 +29,10 @@ COLLECTION_INFRA_TOPOLOGY = "infra_topology"
 COLLECTION_ACTION_EXPERIENCE = "action_experience"
 COLLECTION_CLI_HIL_CONTEXT = "cli_hil_context"
 COLLECTION_VENDOR_KNOWLEDGE = "vendor_knowledge"
+# Legacy partition (dữ liệu cũ); RAG “expert” mặc định = ``k8s_expert`` (OMNI_PGVECTOR_COLLECTION_K8S_EXPERT).
+COLLECTION_SRE_KNOWLEDGE = "SRE_KNOWLEDGE"
+# Official / unified expert knowledge (WorkerSettings.pgvector_collection_k8s_expert).
+COLLECTION_K8S_EXPERT = "k8s_expert"
 
 
 class PostgresRAGSettings(BaseSettings):
@@ -79,6 +83,18 @@ class PointStruct(BaseModel):
 
 class QueryResponse(BaseModel):
     points: list[PointStruct]
+
+
+def _embedding_vector_from_ollama_response(resp: dict[str, Any]) -> list[float]:
+    if "embedding" in resp:
+        emb = resp["embedding"]
+        return list(emb) if isinstance(emb, list) else list(emb or [])
+    embs = resp.get("embeddings")
+    if isinstance(embs, list) and embs:
+        e0 = embs[0]
+        return list(e0) if isinstance(e0, list) else list(e0 or [])
+    raise ValueError("embed response missing embedding(s)")
+
 
 def _before_retry_log(retry_state):
     logger.warning(
@@ -152,6 +168,40 @@ class PGVectorStore:
             )
         return QueryResponse(points=pts)
 
+    async def similarity_search(
+        self,
+        query: str,
+        collection_id: str,
+        *,
+        ollama: Any,
+        embed_model: str,
+        keep_alive: str = "5m",
+        limit: int = 8,
+        score_threshold: float | None = None,
+        query_max_chars: int = 8000,
+        payload_filters: dict[str, str] | None = None,
+    ) -> QueryResponse:
+        """
+        Analyst / tools: embed ``query`` rồi cosine search trên ``rag_documents`` (cột ``collection_name`` = ``collection_id``).
+        Không hardcode collection — truyền ``collection_id`` từ WorkerSettings.
+        """
+        if ollama is None:
+            raise TypeError("similarity_search requires ollama client")
+        emb_resp = await ollama.embed(
+            model=embed_model,
+            input=(query or "")[: int(query_max_chars)],
+            keep_alive=keep_alive,
+        )
+        vector = _embedding_vector_from_ollama_response(emb_resp)
+        return await self.query_points(
+            collection_name=collection_id,
+            query=vector,
+            limit=int(limit),
+            score_threshold=score_threshold,
+            with_payload=True,
+            payload_filters=payload_filters,
+        )
+
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=10),
         stop=stop_after_attempt(5),
@@ -201,15 +251,34 @@ class PGVectorStore:
         CREATE TABLE IF NOT EXISTS doc_action PARTITION OF rag_documents FOR VALUES IN ('action_experience');
         CREATE TABLE IF NOT EXISTS doc_cli PARTITION OF rag_documents FOR VALUES IN ('cli_hil_context');
         CREATE TABLE IF NOT EXISTS doc_vendor PARTITION OF rag_documents FOR VALUES IN ('vendor_knowledge');
+        CREATE TABLE IF NOT EXISTS doc_sre_knowledge PARTITION OF rag_documents FOR VALUES IN ('SRE_KNOWLEDGE');
+        CREATE TABLE IF NOT EXISTS doc_k8s_expert PARTITION OF rag_documents FOR VALUES IN ('k8s_expert');
         
         CREATE INDEX IF NOT EXISTS doc_sop_embedding_idx ON doc_sop USING hnsw (embedding vector_cosine_ops);
         CREATE INDEX IF NOT EXISTS doc_sop_v2_embedding_idx ON doc_sop_v2 USING hnsw (embedding vector_cosine_ops);
         CREATE INDEX IF NOT EXISTS doc_errors_embedding_idx ON doc_errors USING hnsw (embedding vector_cosine_ops);
         CREATE INDEX IF NOT EXISTS doc_vendor_embedding_idx ON doc_vendor USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+        CREATE INDEX IF NOT EXISTS doc_sre_knowledge_embedding_idx ON doc_sre_knowledge USING hnsw (embedding vector_cosine_ops);
+        CREATE INDEX IF NOT EXISTS doc_k8s_expert_embedding_idx ON doc_k8s_expert USING hnsw (embedding vector_cosine_ops);
         """
         async with self._pool.acquire() as conn:
             await conn.execute(sql)
             self._initialized = True
+
+    async def ensure_partition_for_collection(self, collection_name: str) -> None:
+        """Tạo LIST partition + HNSW nếu env đổi tên collection (chỉ [a-zA-Z0-9_])."""
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]{0,62}$", str(collection_name)):
+            raise ValueError(f"invalid collection_name for partition: {collection_name!r}")
+        cn = str(collection_name)
+        suffix = re.sub(r"[^a-zA-Z0-9_]", "_", cn).lower()[:48]
+        ident = f"doc_auto_{suffix}"
+        idx = f"{ident}_embedding_idx"
+        sql = f"""
+        CREATE TABLE IF NOT EXISTS {ident} PARTITION OF rag_documents FOR VALUES IN ('{cn.replace("'", "''")}');
+        CREATE INDEX IF NOT EXISTS {idx} ON {ident} USING hnsw (embedding vector_cosine_ops);
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(sql)
 
     async def action_experience_unique_counts(self) -> dict[str, int]:
         """

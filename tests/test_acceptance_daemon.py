@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -55,15 +54,12 @@ async def test_evaluate_proactive_triggers_logs_bypass_when_kill_switch(
 
 
 @pytest.mark.asyncio
-async def test_audit_proactive_stream_maxlen_approx_fifo(fake_redis: FakeAsyncRedis) -> None:
-    stream = "audit:proactive"
-    maxlen = 1000
-    for i in range(1005):
-        await fake_redis.xadd(
-            stream,
-            {"data": json.dumps({"i": i})},
-            maxlen=maxlen,
-            approximate=True,
-        )
-    n = await fake_redis.xlen(stream)
-    assert n <= maxlen + 5, f"expected capped stream length, got {n}"
+async def test_append_audit_proactive_uses_kafka_topic() -> None:
+    from workers.proactive_observer import _append_audit
+
+    ctx = MagicMock()
+    ctx.settings = WorkerSettings()
+    ctx.kafka = AsyncMock()
+    await _append_audit(ctx, trace_id="t-audit", rule_id="r1", outcome="OK", detail="d")
+    ctx.kafka.send_dict.assert_called_once()
+    assert ctx.kafka.send_dict.call_args[0][0] == ctx.settings.kafka_topic_audit_proactive

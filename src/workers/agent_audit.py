@@ -1,4 +1,4 @@
-"""Redis Streams audit for agentic sessions (structured fields)."""
+"""Kafka audit for agentic sessions (structured fields)."""
 
 from __future__ import annotations
 
@@ -29,20 +29,20 @@ async def append_agent_audit(
     event: str,
     **fields: Any,
 ) -> None:
-    """XADD audit stream (default audit:agent); fields are stringified JSON-safe."""
+    """Produce audit topic (default ``kafka_topic_audit_agent``); fields are stringified JSON-safe."""
     ws = getattr(ctx, "settings", None)
     if ws is None:
         return
-    stream = (getattr(ws, "audit_agent_stream", None) or "").strip()
-    if not stream:
+    kafka = getattr(ctx, "kafka", None)
+    if kafka is None:
         return
     maxlen = int(getattr(ws, "audit_agent_maxlen", 8000) or 8000)
-    redis = getattr(ctx, "redis", None)
-    if redis is None:
+    topic = getattr(ws, "kafka_topic_audit_agent", "") or ""
+    if not topic.strip():
         return
     row: dict[str, Any] = {"phase": phase, "event": event, "trace_id": trace_id, **fields}
     try:
         flat = _flatten_fields(row, maxlen=maxlen)
-        await redis.xadd(stream, flat, maxlen=maxlen, approximate=True)
+        await kafka.send_dict(topic, flat)
     except Exception as e:
         logger.debug("[%s] append_agent_audit skip: %s", trace_id, e)

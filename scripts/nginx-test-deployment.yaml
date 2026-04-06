@@ -1,0 +1,55 @@
+# Lab: nginx-test with tight CPU limit so cAdvisor + Prometheus can fire ~90% CPU rule.
+# Apply: kubectl apply -f scripts/nginx-test-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-test
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/name: nginx-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-test
+  template:
+    metadata:
+      labels:
+        app: nginx-test
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 1
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              # 50m → cgroup cap 0.05 core; ~90% ≈ 0.045 in rate(); tune NginxTestHighCpuLab if you change this.
+              cpu: 50m
+              memory: 96Mi
+---
+# Service để load-generator trong cluster gọi thẳng (tránh nút thắt kubectl port-forward trên laptop).
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-test
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/name: nginx-test
+spec:
+  type: ClusterIP
+  selector:
+    app: nginx-test
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

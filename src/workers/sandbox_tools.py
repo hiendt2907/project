@@ -43,7 +43,7 @@ async def tool_execute_in_sandbox(ctx: Any, args: dict[str, Any]) -> str:
             pod_labels[str(k)[:63]] = str(v)[:128]
 
     res = await m.execute_shell_structured(
-        redis=ctx.redis,
+        kafka=ctx.kafka,
         command=cmd,
         session_id=session,
         trace_id=trace,

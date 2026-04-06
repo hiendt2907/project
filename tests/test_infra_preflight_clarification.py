@@ -1,4 +1,4 @@
-"""Preflight learned map → bypass clarification CPU/RAM mơ hồ."""
+"""Preflight: hints (alert labels) + vector RAG — không Redis map."""
 
 from __future__ import annotations
 
@@ -17,25 +17,21 @@ def test_scope_ambiguous_cpu_detected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_preflight_redis_hit_sets_bypass() -> None:
-    r = AsyncMock()
-
-    async def _hget(_key: str, field: str) -> str | None:
-        return "multi-agent" if field == "redis" else None
-
-    r.hget = AsyncMock(side_effect=_hget)
-    r.get = AsyncMock(return_value=None)
+async def test_preflight_hints_namespace_skips_embed() -> None:
     ctx = MagicMock()
-    ctx.redis = r
     ctx.settings = MagicMock()
     ctx.settings.embed_model = "m"
     ctx.settings.ollama_keep_alive = "5m"
     ctx.ollama = MagicMock()
-    out = await preflight_infra_kb(ctx, "check cpu redis ram")
+    out = await preflight_infra_kb(
+        ctx,
+        "check cpu redis ram",
+        hints={"namespace": "multi-agent"},
+    )
     assert out.namespace == "multi-agent"
-    assert out.matched_token == "redis"
-    assert out.clarification_bypass is True
-    r.hget.assert_awaited()
+    assert out.matched_token == "multi-agent"
+    assert "[CONTEXT: alert_or_hints]" in (out.infra_blocks[0] if out.infra_blocks else "")
+    ctx.ollama.embed.assert_not_called()
 
 
 @pytest.mark.asyncio

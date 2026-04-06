@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,7 +18,7 @@ async def test_agentic_resolved_records_playbook(monkeypatch: pytest.MonkeyPatch
     ctx = MagicMock()
     ctx.settings = ws
     ctx.redis = MagicMock()
-    ctx.redis.xadd = AsyncMock()
+    ctx.kafka = AsyncMock()
     ctx.telegram_chat_id = None
     ctx.semaphore = MagicMock()
     ctx.semaphore.acquire = AsyncMock(return_value="tok")
@@ -66,6 +67,52 @@ async def test_agentic_resolved_records_playbook(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
+async def test_trace_action_json_logged_on_tool_parse(caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    ws = WorkerSettings(agentic_slow_path_enabled=True, agentic_max_llm_iterations=4)
+    ctx = MagicMock()
+    ctx.settings = ws
+    ctx.redis = MagicMock()
+    ctx.kafka = AsyncMock()
+    ctx.telegram_chat_id = None
+    ctx.semaphore = MagicMock()
+    ctx.semaphore.acquire = AsyncMock(return_value="tok")
+    ctx.semaphore.release = AsyncMock()
+    ctx.ollama_slot_held = False
+    ctx.ollama = MagicMock()
+    ctx.vector_store = MagicMock()
+    ctx.vector_store.upsert = AsyncMock()
+    ctx.inbound_user_text = "check redis"
+
+    async def fake_chat(*_a: object, **_k: object) -> dict:
+        return {"message": {"content": '{"tool":"redis_health","args":{"token":"secret"}}'}}
+
+    ctx.ollama.chat = AsyncMock(side_effect=fake_chat)
+    ctx.ollama.embed = AsyncMock(return_value={"embedding": [0.01] * 768})
+    ctx.ollama.keep_alive = "5m"
+
+    async def fake_fetch(_ctx: object, _q: str) -> str:
+        return ""
+
+    monkeypatch.setattr(
+        "workers.agentic_slow_path.fetch_action_experience_context",
+        fake_fetch,
+    )
+
+    async def fake_rh(_c: object, _a: dict) -> str:
+        return "[DATA] redis up"
+
+    from workers import tools as tools_mod
+
+    monkeypatch.setitem(tools_mod.TOOL_REGISTRY, "redis_health", fake_rh)
+
+    with caplog.at_level(logging.INFO):
+        await agentic_slow_path_with_llm_and_tools(ctx, "check redis", trace="tr-trace-json")
+    assert any("TRACE_ACTION_JSON" in r.getMessage() for r in caplog.records)
+    assert any("redis_health" in r.getMessage() for r in caplog.records)
+    assert any("REDACTED" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_agentic_max_iterations_emits_human_tombstone_with_trajectory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -73,13 +120,13 @@ async def test_agentic_max_iterations_emits_human_tombstone_with_trajectory(
     ctx = MagicMock()
     ctx.settings = ws
     ctx.redis = MagicMock()
-    xadd_calls: list[dict] = []
+    audit_calls: list[dict] = []
 
-    async def capture_xadd(_stream: object, fields: dict, **_kw: object) -> bytes:
-        xadd_calls.append(dict(fields))
-        return b"0-0"
+    async def capture_send(_topic: object, envelope: dict) -> None:
+        audit_calls.append(dict(envelope))
 
-    ctx.redis.xadd = AsyncMock(side_effect=capture_xadd)
+    ctx.kafka = MagicMock()
+    ctx.kafka.send_dict = AsyncMock(side_effect=capture_send)
     ctx.telegram_chat_id = None
     ctx.semaphore = MagicMock()
     ctx.semaphore.acquire = AsyncMock(return_value="tok")
@@ -110,7 +157,7 @@ async def test_agentic_max_iterations_emits_human_tombstone_with_trajectory(
     out = await agentic_slow_path_with_llm_and_tools(ctx, "check redis", trace="tr-max-1")
     assert "Agentic max iterations" in out or "omni_mark_resolved" in out
     max_ev = next(
-        (c for c in xadd_calls if c.get("event") == "max_iterations"),
+        (c for c in audit_calls if c.get("event") == "max_iterations"),
         None,
     )
     assert max_ev is not None
@@ -136,13 +183,13 @@ async def test_agentic_escalate_to_human_audit_and_telegram(
     ctx = MagicMock()
     ctx.settings = ws
     ctx.redis = MagicMock()
-    xadd_calls: list[dict] = []
+    audit_calls: list[dict] = []
 
-    async def capture_xadd(_stream: object, fields: dict, **_kw: object) -> bytes:
-        xadd_calls.append(dict(fields))
-        return b"0-0"
+    async def capture_send(_topic: object, envelope: dict) -> None:
+        audit_calls.append(dict(envelope))
 
-    ctx.redis.xadd = AsyncMock(side_effect=capture_xadd)
+    ctx.kafka = MagicMock()
+    ctx.kafka.send_dict = AsyncMock(side_effect=capture_send)
     ctx.telegram_chat_id = None
     ctx.telegram = MagicMock()
     ctx.telegram.send_message = AsyncMock()
@@ -175,7 +222,7 @@ async def test_agentic_escalate_to_human_audit_and_telegram(
     )
     assert "[REQUIRES_HUMAN]" in out
     assert "security_policy" in out
-    esc_ev = next((c for c in xadd_calls if c.get("event") == "escalate_to_human"), None)
+    esc_ev = next((c for c in audit_calls if c.get("event") == "escalate_to_human"), None)
     assert esc_ev is not None
     assert esc_ev.get("outcome") == "REQUIRES_HUMAN_INTERVENTION"
     ctx.telegram.send_message.assert_awaited()
@@ -190,13 +237,13 @@ async def test_unattended_premature_escalate_blocked_then_discovery(
     ctx = MagicMock()
     ctx.settings = ws
     ctx.redis = MagicMock()
-    xadd_calls: list[dict] = []
+    audit_calls: list[dict] = []
 
-    async def capture_xadd(_stream: object, fields: dict, **_kw: object) -> bytes:
-        xadd_calls.append(dict(fields))
-        return b"0-0"
+    async def capture_send(_topic: object, envelope: dict) -> None:
+        audit_calls.append(dict(envelope))
 
-    ctx.redis.xadd = AsyncMock(side_effect=capture_xadd)
+    ctx.kafka = MagicMock()
+    ctx.kafka.send_dict = AsyncMock(side_effect=capture_send)
     ctx.telegram_chat_id = None
     ctx.telegram = None
     ctx.semaphore = MagicMock()
@@ -240,7 +287,7 @@ async def test_unattended_premature_escalate_blocked_then_discovery(
         ctx, "Alert: FullAudit", trace="tr-prem-esc", unattended_alert=True
     )
 
-    blocked = next((c for c in xadd_calls if c.get("event") == "escalate_blocked_discovery_required"), None)
+    blocked = next((c for c in audit_calls if c.get("event") == "escalate_blocked_discovery_required"), None)
     assert blocked is not None
     assert blocked.get("business_outcome") == "premature_escalate_blocked"
     assert len(chat_calls) >= 2

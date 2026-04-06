@@ -75,7 +75,7 @@ async def test_deep_scout_periodic_cancels_on_stop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_deep_scout_sets_redis_keys() -> None:
+async def test_run_deep_scout_sets_redis_keys_host_baseline_only() -> None:
     r = AsyncMock()
     r.set = AsyncMock()
     ollama = MagicMock()
@@ -100,4 +100,5 @@ async def test_run_deep_scout_sets_redis_keys() -> None:
                 with patch("init.deep_scout._layer_cluster_state", new_callable=AsyncMock, return_value=({"pod_count": 0}, "c")):
                     s = await run_deep_scout(ctx, periodic=False)
     assert isinstance(s, DeepScoutSummary)
-    assert r.set.await_count >= 3
+    # Topology no longer persisted to Redis (pgvector only).
+    assert r.set.await_count >= 2

@@ -112,7 +112,12 @@ class ToolRegistry:
                         "timestamp": time.time(),
                         "status": "success"
                     }
-                    await r_client.xadd("events:audit", {"data": json.dumps(audit_payload, ensure_ascii=False)})
+                    kbus = getattr(ctx, "kafka", None)
+                    if kbus is not None:
+                        await kbus.send_dict(
+                            getattr(ctx.settings, "kafka_topic_tool_audit", "omni-tool-audit"),
+                            {"data": json.dumps(audit_payload, ensure_ascii=False)},
+                        )
                 except Exception as e:
                     logger.error("[AUDIT] Failed to write ledger or update idempotency lock: %s", e)
 

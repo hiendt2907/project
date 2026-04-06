@@ -68,14 +68,14 @@ async def test_proactive_react_prepares_registered_tool_output(monkeypatch: pyte
     ws.proactive_resource_freeze_enabled = False
     ws.proactive_freeze_key_prefix = "omni:proactive:freeze:res"
     ws.proactive_freeze_namespace_fallback_allowed = False
-    ws.audit_proactive_stream = "audit:proactive"
+    ws.kafka_topic_audit_proactive = "omni-audit-proactive"
     ws.audit_proactive_maxlen = 1000
     ws.telegram_admin_chat_id = None
     ctx.telegram = None
     ctx.redis = AsyncMock()
     ctx.redis.rpush = AsyncMock()
     ctx.redis.expire = AsyncMock()
-    ctx.redis.xadd = AsyncMock()
+    ctx.kafka = AsyncMock()
 
     ev = AnomalyEvent(
         trace_id="trace-ev-1",
@@ -131,14 +131,14 @@ async def test_proactive_react_custom_output_cap(monkeypatch: pytest.MonkeyPatch
     ws.proactive_resource_freeze_enabled = False
     ws.proactive_freeze_key_prefix = "omni:proactive:freeze:res"
     ws.proactive_freeze_namespace_fallback_allowed = False
-    ws.audit_proactive_stream = "audit:proactive"
+    ws.kafka_topic_audit_proactive = "omni-audit-proactive"
     ws.audit_proactive_maxlen = 1000
     ws.telegram_admin_chat_id = None
     ctx.telegram = None
     ctx.redis = AsyncMock()
     ctx.redis.rpush = AsyncMock()
     ctx.redis.expire = AsyncMock()
-    ctx.redis.xadd = AsyncMock()
+    ctx.kafka = AsyncMock()
 
     ev = AnomalyEvent(
         trace_id="trace-ev-2",
@@ -216,14 +216,14 @@ async def test_phase_policy_deny_increments_fallback(monkeypatch: pytest.MonkeyP
     ws.proactive_resource_freeze_enabled = False
     ws.proactive_freeze_key_prefix = "omni:proactive:freeze:res"
     ws.proactive_freeze_namespace_fallback_allowed = False
-    ws.audit_proactive_stream = "audit:proactive"
+    ws.kafka_topic_audit_proactive = "omni-audit-proactive"
     ws.audit_proactive_maxlen = 1000
     ws.telegram_admin_chat_id = None
     ctx.telegram = None
     ctx.redis = AsyncMock()
     ctx.redis.rpush = AsyncMock()
     ctx.redis.expire = AsyncMock()
-    ctx.redis.xadd = AsyncMock()
+    ctx.kafka = AsyncMock()
 
     ev = AnomalyEvent(
         trace_id="trace-pd-1",

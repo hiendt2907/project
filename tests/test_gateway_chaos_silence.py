@@ -49,6 +49,7 @@ async def test_prometheus_webhook_drops_when_silence_enabled() -> None:
     req.json = AsyncMock(return_value=body)
 
     mock_redis = AsyncMock()
+    mock_kafka = AsyncMock()
     sem = MagicMock()
     sem._value = 10
     sem.acquire = AsyncMock()
@@ -57,6 +58,7 @@ async def test_prometheus_webhook_drops_when_silence_enabled() -> None:
         patch.object(_mod, "SILENCE_CHAOS_LAB", True),
         patch.object(_mod, "_rate_semaphore", sem),
         patch.object(_mod, "_redis", mock_redis),
+        patch.object(_mod, "_kafka", mock_kafka),
     ):
         resp = await _mod.prometheus_webhook(req)
 
@@ -65,4 +67,4 @@ async def test_prometheus_webhook_drops_when_silence_enabled() -> None:
     import json
 
     assert json.loads(resp.body.decode())["status"] == "dropped"
-    mock_redis.xadd.assert_not_called()
+    mock_kafka.send_and_wait.assert_not_called()

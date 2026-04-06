@@ -1,19 +1,35 @@
 import asyncio
-import sys
 import json
-from workers.settings import WorkerSettings
-from workers.redis_client import connect_redis
+import sys
+from pathlib import Path
 
-async def main():
+_ROOT = Path(__file__).resolve().parents[1]
+_SRC = _ROOT / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from aiokafka import AIOKafkaProducer
+
+from workers.settings import WorkerSettings
+
+
+async def main() -> None:
     settings = WorkerSettings()
-    client = await connect_redis(settings)
+    p = AIOKafkaProducer(
+        bootstrap_servers=settings.kafka_bootstrap_servers.strip(),
+        enable_idempotence=True,
+        acks="all",
+    )
+    await p.start()
     try:
         msg = {"text": "Kiem tra Full System Recovery", "chat_id": 12345, "source": "chaos:sys"}
         msg2 = {"text": "Bot con thuc hay da xiu?", "chat_id": 12345, "source": "chaos:sys"}
-        await client.xadd("events:inbound", {"data": json.dumps(msg)})
-        await client.xadd("events:inbound", {"data": json.dumps(msg2)})
-        print("Injected test messages to Redis Stream!")
+        for m in (msg, msg2):
+            env = json.dumps({"data": json.dumps(m, ensure_ascii=False)}, ensure_ascii=False).encode("utf-8")
+            await p.send_and_wait(settings.kafka_topic_alerts, value=env)
+        print(f"Injected test messages to Kafka topic {settings.kafka_topic_alerts}!")
     finally:
-        await client.aclose()
+        await p.stop()
+
 
 asyncio.run(main())

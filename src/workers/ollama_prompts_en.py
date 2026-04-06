@@ -29,6 +29,8 @@ VENDOR_KNOWLEDGE_GUIDANCE_EN = (
     "\n[VENDOR DOCS — RAG]\n"
     "- Ingested vendor/offline docs: `vendor_knowledge_search` — pass search text and optional taxonomy layer (k8s, db, obs, misc). "
     "Does not replace kubectl / SDK tools.\n"
+    "- Unified expert corpus (kubernetes.io crawl + optional local MD): `k8s_expert_search` — semantic query; "
+    "target collection defaults from env (`OMNI_PGVECTOR_COLLECTION_K8S_EXPERT`).\n"
 )
 
 K8S_TOOL_GUIDANCE_EN = (

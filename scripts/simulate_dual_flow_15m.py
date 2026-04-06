@@ -2,11 +2,11 @@
 """
 Simulation 15 phút — 2 luồng bám code thật:
 
-  Luồng 1 (gateway): POST /webhook/prometheus giống Alertmanager → XADD events:inbound
+  Luồng 1 (gateway): POST /webhook/prometheus giống Alertmanager → Kafka omni-alerts
   (src/gateway/api.py + handlers xử lý payload.data.alerts).
 
-  Luồng 2 (proactive consumer): XADD incidents:proactive với JSON AnomalyEvent
-  (workers/proactive_observer.py — consumer đọc stream và resolve_remediation_from_memory).
+  Luồng 2 (proactive consumer): produce omni-proactive-incidents với JSON AnomalyEvent
+  (workers/proactive_observer.py — Kafka consumer và resolve_remediation_from_memory).
 
 Không bật “fake” Prometheus evaluate trừ khi dùng --patch-proactive-eval (kubectl patch ConfigMap).
 
@@ -31,6 +31,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 _SRC = _ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
+
+from aiokafka import AIOKafkaProducer
 
 from workers.redis_client import connect_redis
 from workers.settings import WorkerSettings
@@ -87,9 +89,12 @@ async def _run(args: argparse.Namespace) -> None:
     next_pr = time.monotonic()
 
     redis_client = None
+    kafka_p: AIOKafkaProducer | None = None
     started_epoch = int(time.time())
     if not args.gateway_only:
         redis_client = await connect_redis(settings)
+        kafka_p = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap_servers.strip())
+        await kafka_p.start()
     n_gw_ok = 0
     n_gw_try = 0
     n_pr_ok = 0
@@ -108,43 +113,29 @@ async def _run(args: argparse.Namespace) -> None:
                         print(f"[gateway] POST fail #{n_gw_try}: {e!r}")
                     next_gw = now + interval_gw
 
-                if redis_client is not None and now >= next_pr:
+                if kafka_p is not None and now >= next_pr:
                     n_pr_try += 1
                     try:
-                        stream = settings.stream_incidents_proactive
+                        topic = settings.kafka_topic_proactive_incidents
                         payload = json.dumps(_anomaly_event_payload(), ensure_ascii=False)
-                        await redis_client.xadd(stream, {"data": payload})
+                        env = json.dumps({"data": payload}, ensure_ascii=False).encode("utf-8")
+                        await kafka_p.send_and_wait(topic, value=env)
                         n_pr_ok += 1
-                        print(f"[proactive] XADD ok #{n_pr_ok}/{n_pr_try} stream={stream}")
+                        print(f"[proactive] Kafka ok #{n_pr_ok}/{n_pr_try} topic={topic}")
                     except Exception as e:
-                        print(f"[proactive] XADD fail #{n_pr_try}: {e!r}")
+                        print(f"[proactive] Kafka fail #{n_pr_try}: {e!r}")
                     next_pr = now + interval_pr
 
                 await asyncio.sleep(1.0)
     finally:
+        if kafka_p is not None:
+            await kafka_p.stop()
         if redis_client is not None:
-            try:
-                entries = await redis_client.xrevrange(
-                    settings.audit_proactive_stream,
-                    count=2000,
-                )
-                outcomes: dict[str, int] = {}
-                for _msg_id, fields in entries:
-                    raw = fields.get("data") or "{}"
-                    try:
-                        payload = json.loads(raw)
-                    except Exception:
-                        continue
-                    ts = int(payload.get("ts") or 0)
-                    if ts < started_epoch:
-                        continue
-                    outcome = str(payload.get("outcome") or "unknown")
-                    outcomes[outcome] = outcomes.get(outcome, 0) + 1
-                if outcomes:
-                    print(f"[audit] proactive_outcomes_since_start={json.dumps(outcomes, ensure_ascii=False)}")
-            except Exception as e:
-                print(f"[audit] summarize fail: {e!r}")
             await redis_client.aclose()
+        print(
+            f"[audit] Kafka audit topic {settings.kafka_topic_audit_proactive} — "
+            f"consume via tooling; started_epoch={started_epoch}"
+        )
 
     print(
         f"Done: gateway_ok={n_gw_ok}/{n_gw_try} proactive_ok={n_pr_ok}/{n_pr_try} duration_sec={args.duration_sec}"

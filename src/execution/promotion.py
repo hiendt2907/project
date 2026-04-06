@@ -57,7 +57,7 @@ async def run_gated_allowlisted_execute(ctx: Any, args: dict[str, Any]) -> str:
 
     mgr = SandboxManager(ws)
     res = await mgr.execute_shell_structured(
-        redis=ctx.redis,
+        kafka=ctx.kafka,
         command=sandbox_command,
         session_id=str(args.get("session_id") or trace)[:200],
         trace_id=trace,

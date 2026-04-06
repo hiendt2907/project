@@ -27,11 +27,19 @@ from workers.alert_to_event import build_anomaly_event_from_alert_payload
 from workers.diagnostic_dispatcher import run_diagnostic_pipeline
 from workers.evidence_consumer import reason_from_diagnostic_evidence
 from workers.handler_context import WorkerHandlerContext
+from workers.log_preview import alert_payload_summary, log_preview
 from workers.handlers import handle_inbound_payload
 from workers.kafka_actions_consumer import kafka_actions_loop
 from messaging.kafka_bus import KafkaBus, create_producer, decode_kafka_value_to_fields, kafka_msg_id
 from workers.proactive_observer import kafka_proactive_incidents_loop, proactive_evaluate_loop
-from workers.request_trace import log_end_request, log_start_request
+from workers.request_trace import (
+    current_trace_id,
+    install_worker_trace_logging,
+    log_end_request,
+    log_start_request,
+    pop_trace_id,
+    push_trace_id,
+)
 from workers.metrics_exporter import (
     observability_metrics_loop,
     set_last_scout_timestamp,
@@ -159,19 +167,28 @@ async def _process_stream_entry(
     t0 = time.perf_counter()
     trace = f"stream-{msg_id}"
     stream_started = False
-    
+    tok_trace = None
+
     try:
         payload: dict[str, Any] = json.loads(raw)
         payload.setdefault("trace_id", trace)
         trace = str(payload.get("trace_id"))
+        tok_trace = push_trace_id(trace)
         log_start_request(
             trace,
             phase="stream_consumer",
             redis_msg_id=msg_id,
             source=payload.get("source"),
             chat_id=payload.get("chat_id"),
+            alert_preview=alert_payload_summary(payload),
         )
         stream_started = True
+        logger.info(
+            "[%s] event=alert_kafka_in redis_msg_id=%s envelope_preview=%s",
+            trace,
+            msg_id,
+            log_preview(raw, max_chars=1600),
+        )
         logger.info("[%s] stream_read redis_msg_id=%s", trace, msg_id)
         # Master Plan V3: omni-alerts → prober only (diagnostic pipeline → evidence topic); reasoning in kafka_evidence_loop.
         if payload.get("chat_id") is not None:
@@ -192,6 +209,8 @@ async def _process_stream_entry(
             status="ok",
             duration_ms=dur_ms,
             out_len=0,
+            alert_preview=alert_payload_summary(payload),
+            step="diagnostic_pipeline_completed",
         )
 
         await ctx.redis.delete(retry_key)
@@ -243,6 +262,8 @@ async def _process_stream_entry(
             await ctx.redis.delete(retry_key)
 
     finally:
+        if tok_trace is not None:
+            pop_trace_id(tok_trace)
         hb_stop.set()
         hb_task.cancel()
         await ctx.redis.delete(lock_key)
@@ -495,11 +516,15 @@ async def run_worker() -> None:
                 log_record['level'] = record.levelname
             if not log_record.get('logger'):
                 log_record['logger'] = record.name
+            tid = current_trace_id()
+            # Không ghi chuỗi "unknown" — chỉ null khi không có ContextVar (grep / audit sạch).
+            log_record["trace_id"] = tid if tid != "unknown" else None
 
     formatter = CustomJsonFormatter('%(timestamp)s %(level)s %(logger)s %(message)s')
     log_handler.setFormatter(formatter)
     root_logger.handlers = [log_handler]
     root_logger.setLevel(logging.INFO)
+    install_worker_trace_logging(root_logger)
     
     # httpx INFO logs full request URL — Telegram base_url embeds bot token; never log that.
     logging.getLogger("httpx").setLevel(logging.WARNING)

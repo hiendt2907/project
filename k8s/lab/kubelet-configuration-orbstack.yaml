@@ -1,0 +1,10 @@
+# KubeletConfiguration — OrbStack / lab (PodMetrics / kubectl top pod).
+#
+# OrbStack: Settings → Kubernetes → Kubelet Configuration — merge nội dung này
+# (hoặc chỉ thêm khối featureGates) rồi áp dụng / restart cluster nếu cần.
+# Không phải manifest `kubectl apply`; kubelet đọc config qua OrbStack/k3s.
+#
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+featureGates:
+  PodAndContainerStatsFromCRI: true

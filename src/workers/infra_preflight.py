@@ -1,18 +1,15 @@
-"""Preflight: Redis learned map + có điều kiện vector infra_topology — trước clarification."""
+"""Preflight: gợi ý namespace/pod từ **labels/alert text** + semantic search (pgvector) — không Redis map/topology."""
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from rag.pgvector_store import COLLECTION_INFRA_TOPOLOGY
+from rag.pgvector_store import COLLECTION_INFRA_TOPOLOGY, COLLECTION_K8S_EXPERT
 from workers.clarification import is_scope_ambiguous_cpu_ram
 
 logger = logging.getLogger(__name__)
-
-REDIS_LEARNED_BYNAME = "infra:learned:byname"
 
 
 def _embedding_from_ollama(resp: dict[str, Any]) -> list[float]:
@@ -34,11 +31,7 @@ class LearnedContext:
     infra_blocks: list[str] = field(default_factory=list)
     had_vector_search: bool = False
     clarification_bypass: bool = False
-    embed_vector: list[float] | None = None  # tái dùng cho enrich (tránh embed 2 lần)
-
-
-def _tokens(text: str) -> list[str]:
-    return re.findall(r"[\w.\-]+", (text or "").lower())
+    embed_vector: list[float] | None = None
 
 
 def _apply_bypass_heuristic(text: str, learned: LearnedContext) -> None:
@@ -53,44 +46,56 @@ def _apply_bypass_heuristic(text: str, learned: LearnedContext) -> None:
         learned.clarification_bypass = True
 
 
-async def preflight_infra_kb(ctx: Any, user_text: str) -> LearnedContext:
+def _merge_hints(learned: LearnedContext, hints: dict[str, str] | None) -> None:
+    if not hints:
+        return
+    ns = (hints.get("namespace") or "").strip()
+    pod = (hints.get("pod_name") or hints.get("pod") or "").strip()
+    svc = (hints.get("service_name") or "").strip()
+    if ns and not learned.namespace:
+        learned.namespace = ns
+        learned.matched_token = learned.matched_token or ns
+    if pod and not learned.pod_name:
+        learned.pod_name = pod
+    if svc and not learned.service_name:
+        learned.service_name = svc
+
+
+async def preflight_infra_kb(
+    ctx: Any,
+    user_text: str,
+    *,
+    hints: dict[str, str] | None = None,
+) -> LearnedContext:
+    """
+    State machine / alert labels (``hints``) trước; sau đó semantic search (expert collection + ``infra_topology``).
+    Không còn ``infra:learned:byname`` hay ``state:current_topology`` trên Redis.
+    """
     learned = LearnedContext()
     raw = (user_text or "").strip()
     if not raw:
         return learned
 
-    toks = _tokens(raw)
-    toks_sorted = sorted(set(toks), key=len, reverse=True)
-    try:
-        for tok in toks_sorted:
-            if len(tok) < 2:
-                continue
-            raw_ns = await ctx.redis.hget(REDIS_LEARNED_BYNAME, tok)
-            if isinstance(raw_ns, str) and raw_ns.strip():
-                learned.namespace = raw_ns.strip()
-                learned.matched_token = tok
-                break
-    except Exception as e:
-        logger.debug("preflight redis learned: %s", e)
+    _merge_hints(learned, hints)
 
-    if learned.namespace and learned.matched_token:
+    if learned.namespace:
         learned.infra_blocks.append(
-            f"[CONTEXT: learned_infra]\nentity_token={learned.matched_token} namespace={learned.namespace}"
+            f"[CONTEXT: alert_or_hints]\nnamespace={learned.namespace} pod={learned.pod_name or '-'} service={learned.service_name or '-'}"
         )
 
-    # Tránh embed trước clarification cho "check CPU/RAM" mơ hồ (chưa có namespace từ map).
+    _raw_ex = getattr(getattr(ctx, "settings", None), "pgvector_collection_k8s_expert", None)
+    expert_coll = (
+        _raw_ex.strip()
+        if isinstance(_raw_ex, str) and _raw_ex.strip()
+        else COLLECTION_K8S_EXPERT
+    )
+
     skip_vector_early = is_scope_ambiguous_cpu_ram(raw) and not learned.namespace
     if skip_vector_early:
         _apply_bypass_heuristic(raw, learned)
         return learned
 
     if learned.namespace:
-        try:
-            topo = await ctx.redis.get("state:current_topology")
-            if topo:
-                learned.infra_blocks.append(f"[CONTEXT: topology_cache]\n{topo[:2400]}")
-        except Exception as e:
-            logger.debug("preflight topology_cache: %s", e)
         _apply_bypass_heuristic(raw, learned)
         return learned
 
@@ -106,28 +111,40 @@ async def preflight_infra_kb(ctx: Any, user_text: str) -> LearnedContext:
         )
         vector = _embedding_from_ollama(emb_resp)
         learned.embed_vector = vector
-        resp = await ctx.vector_store.query_points(
-            collection_name=COLLECTION_INFRA_TOPOLOGY,
-            query=vector,
-            limit=3,
-            score_threshold=0.52,
-            with_payload=True,
-        )
         learned.had_vector_search = True
-        for i, pt in enumerate(resp.points or []):
-            pl = dict(pt.payload or {})
-            chunk = pl.get("text") or pl.get("summary") or ""
-            if chunk:
-                learned.infra_blocks.append(f"[CONTEXT: infra_topology score={pt.score:.3f}]\n{chunk[:1800]}")
-            if i == 0 and pt.score >= 0.58:
-                if pl.get("namespace"):
-                    learned.namespace = str(pl.get("namespace"))
-                if pl.get("pod_name"):
-                    learned.pod_name = str(pl.get("pod_name"))
-                if pl.get("service_name"):
-                    learned.service_name = str(pl.get("service_name"))
+
+        for coll, label, lim, thresh in (
+            (expert_coll, "k8s_expert", 3, 0.48),
+            (COLLECTION_INFRA_TOPOLOGY, "infra_topology", 2, 0.52),
+        ):
+            try:
+                resp = await ctx.vector_store.query_points(
+                    collection_name=coll,
+                    query=vector,
+                    limit=lim,
+                    score_threshold=thresh,
+                    with_payload=True,
+                )
+            except Exception as e:
+                logger.debug("preflight vector %s: %s", coll, e)
+                continue
+            for i, pt in enumerate(resp.points or []):
+                pl = dict(pt.payload or {})
+                chunk = pl.get("text") or pl.get("summary") or ""
+                if not chunk:
+                    continue
+                learned.infra_blocks.append(
+                    f"[CONTEXT: {label} score={pt.score:.3f}]\n{chunk[:1800]}"
+                )
+                if coll == COLLECTION_INFRA_TOPOLOGY and i == 0 and pt.score >= 0.58:
+                    if pl.get("namespace"):
+                        learned.namespace = str(pl.get("namespace"))
+                    if pl.get("pod_name"):
+                        learned.pod_name = str(pl.get("pod_name"))
+                    if pl.get("service_name"):
+                        learned.service_name = str(pl.get("service_name"))
     except Exception as e:
-        logger.debug("preflight vector: %s", e)
+        logger.debug("preflight embed/query: %s", e)
 
     _apply_bypass_heuristic(raw, learned)
     return learned
