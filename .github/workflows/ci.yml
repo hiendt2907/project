@@ -18,13 +18,25 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-agent.txt
+          cache-dependency-path: requirements.txt
 
       - name: Install deps
-        run: pip install -r requirements-agent.txt
+        run: pip install -r requirements.txt
 
-      - name: Pytest
-        run: pytest -q --tb=short
+      - name: Env mode gate
+        run: python scripts/validate_env_mode_gate.py
+
+      - name: Mutate-only gate
+        run: python scripts/validate_mutate_only_gate.py
+
+      - name: Classifier regression gate
+        run: python scripts/validate_classifier_regression_gate.py
+
+      - name: Phase docs gate
+        run: python scripts/validate_phase_docs_gate.py
+
+      - name: Contract pytest
+        run: pytest -q --tb=short tests/test_autonomous_contract.py tests/test_analyst_agentic_loop.py tests/test_diagnostic_mapping.py tests/test_evidence_proof_gate.py tests/test_proactive_guardrails.py tests/integration/test_autonomy_loop_transitions.py tests/integration/test_autonomy_transition_contract_strict.py
 
   docker-image:
     runs-on: ubuntu-latest
@@ -41,5 +53,15 @@ jobs:
           file: ./Dockerfile
           push: false
           tags: multi-agent:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.gateway
+          push: false
+          tags: omni-gateway:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -2,18 +2,29 @@
 # Rows seeded from docs/vendor/knownbase.md (abbreviated patterns).
 version: 1
 rows:
+  # Nếu alert có labels.reason + pod + namespace → dispatcher dùng nhánh pod_container_state (SDK), không qua dòng này.
   - symptom_group: crash_loop_backoff
     layer: infrastructure
+    priority: 10
+    labels_alertname: "ProbeFailureLab"
+    labels_domain: "lab"
+    labels_reason_pattern: "(?i)waiting|backoff|crash|createcontainer|failedmount|readiness|liveness"
     error_hint_pattern: "(?i)crash|backoff|waiting"
     canonical_query_pattern: "(?i)CrashLoop|kube_pod_container_status_waiting"
     probe_ids:
-      - redis_ping
-      - k8s_list_pods_namespace
+      - k8s_clinical_pod_status
+      - k8s_clinical_pod_metrics
+      - k8s_clinical_pod_log_tail
+      - prom_pod_cpu_cores
+      - prom_pod_memory_wss
     stop_on_first_failure: false
 
   - symptom_group: ollama_500_context
     layer: application
-    error_hint_pattern: "(?i)ollama|500|context"
+    priority: 30
+    labels_alertname: "Ollama500Context"
+    labels_reason_pattern: "(?i)ollama|context|prompt|model"
+    error_hint_pattern: "(?i)ollama|500"
     canonical_query_pattern: "(?i)topology_cache|infra_topology"
     probe_ids:
       - redis_ping
@@ -22,6 +33,7 @@ rows:
 
   - symptom_group: redis_streams_stuck
     layer: infrastructure
+    priority: 40
     error_hint_pattern: "(?i)redis|pel|lock|delayed"
     canonical_query_pattern: "(?i)events:inbound|omni:delayed"
     probe_ids:
@@ -31,6 +43,7 @@ rows:
 
   - symptom_group: prometheus_escalate_premature
     layer: application
+    priority: 50
     error_hint_pattern: "(?i)escalat|identifiers"
     canonical_query_pattern: "(?i)unspecified|insufficient"
     probe_ids:
@@ -41,6 +54,7 @@ rows:
   # Catch-all (last): any alert text matches — Master Plan V3 prober-before-analyst
   - symptom_group: generic_unclassified
     layer: unknown
+    priority: 999
     error_hint_pattern: ".*"
     canonical_query_pattern: ".*"
     probe_ids:

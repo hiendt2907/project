@@ -41,6 +41,12 @@ class WorkerSettings(BaseSettings):
     def _god_mode_implies_lab(self) -> "WorkerSettings":
         if self.god_mode:
             self.lab_unchained = True
+        if self.env_mode == "prod":
+            # Prod is fail-closed: never allow lab/god bypass flags.
+            self.god_mode = False
+            self.lab_unchained = False
+            self.cluster_full_access = False
+            self.proactive_fallback_bypass_policy_in_god_mode = False
         return self
 
     @model_validator(mode="after")
@@ -110,6 +116,70 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_ACTIONS"),
         description="Executor service: mutation jobs (JSON envelope).",
     )
+    kafka_topic_action_feedback: str = Field(
+        default="omni-action-feedback",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_ACTION_FEEDBACK"),
+        description="Executor → Analyst: mutate result (stdout/stderr/exit_code).",
+    )
+    omni_auto_execute_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_AUTO_EXECUTE_ENABLED"),
+        description="Lab: EXECUTE_MUTATE runs after Pre-apply without Telegram/Redis confirm.",
+    )
+    omni_autonomous_rollout_on_cpu_incident: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_AUTONOMOUS_ROLLOUT_ON_CPU_INCIDENT"),
+        description=(
+            "When RAG hits on a workload CPU alert with namespace+deployment in evidence, "
+            "also emit k8s_rollout_restart (not only when RAG text mentions restart). "
+            "Disable for suggest-only/chatbot mode."
+        ),
+    )
+    omni_autonomous_rollout_on_fault_incident: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_AUTONOMOUS_ROLLOUT_ON_FAULT_INCIDENT"),
+        description=(
+            "When evidence indicates workload fault (CreateContainer/CrashLoop/probe failure/ImagePull) "
+            "with namespace+deployment labels, emit k8s_rollout_restart automatically."
+        ),
+    )
+    autonomous_verify_max_rounds: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Max verify rounds (feedback loop) before escalate.",
+    )
+    autonomous_execute_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        description="Max attempt_count (mutate + retries); above → ESCALATE_TO_HUMAN.",
+    )
+    executor_action_rate_limit_burst: int = Field(
+        default=6,
+        ge=1,
+        le=200,
+        description="Max EXECUTE_MUTATE per action fingerprint within window before skip/escalate.",
+    )
+    executor_action_rate_limit_window_sec: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+        description="Rate limit window in seconds for executor action fingerprint control.",
+    )
+    autonomous_agentic_max_steps: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Max LLM agentic steps when RAG does not hit.",
+    )
+    autonomous_sigma_observation_window: int = Field(
+        default=1,
+        ge=1,
+        le=20,
+        validation_alias=AliasChoices("OMNI_AUTONOMOUS_SIGMA_OBSERVATION_WINDOW"),
+        description="Consecutive proof+sigma passes required before EXECUTE_MUTATE.",
+    )
     trace_correlation_ping_enabled: bool = Field(
         default=True,
         description="After analyst handles diagnostic evidence, emit omni-actions SUGGEST_REMEDIATION with same trace_id (unified tracing).",
@@ -125,6 +195,7 @@ class WorkerSettings(BaseSettings):
         "kafka_topic_diagnostic_evidence",
         "kafka_topic_tool_audit",
         "kafka_topic_actions",
+        "kafka_topic_action_feedback",
         mode="after",
     )
     @classmethod
@@ -140,6 +211,7 @@ class WorkerSettings(BaseSettings):
             "kafka_topic_diagnostic_evidence": "omni-diagnostic-evidence",
             "kafka_topic_tool_audit": "omni-tool-audit",
             "kafka_topic_actions": "omni-actions",
+            "kafka_topic_action_feedback": "omni-action-feedback",
         }
         fb = defaults.get(info.field_name or "", "omni-alerts")
         if not isinstance(v, str) or not v.strip():
@@ -155,12 +227,21 @@ class WorkerSettings(BaseSettings):
         default="omni-analyst-evidence",
         description="Kafka group for svc-analyst — consumes omni-diagnostic-evidence only.",
     )
+    consumer_group_analyst_feedback: str = Field(
+        default="omni-analyst-action-feedback",
+        description="Kafka group for analyst — consumes omni-action-feedback.",
+    )
     consumer_name_analyst: str = Field(default="omni-analyst-1")
     consumer_group_executor: str = Field(
         default="omni-executor-actions",
         description="Kafka group for svc-executor — consumes omni-actions only.",
     )
     consumer_name_executor: str = Field(default="omni-executor-1")
+    env_mode: Literal["prod", "dev"] = Field(
+        default="prod",
+        validation_alias=AliasChoices("OMNI_ENV_MODE"),
+        description="Environment governance mode: prod=strict fail-closed, dev=high-action by role.",
+    )
     worker_role: Literal["full", "prober", "analyst", "core", "executor"] = Field(
         default="full",
         description=(
@@ -194,6 +275,12 @@ class WorkerSettings(BaseSettings):
     model_helper: str = Field(default="qwen2.5:1.5b")
     ollama_keep_alive: str = Field(default="5m")
     embed_model: str = Field(default="nomic-embed-text:latest")
+    #: Cùng chiều vector (768) với `embed_model` nếu dùng — khi 400, thử model này sau khi cắt ngắn.
+    embed_model_fallback: str = Field(
+        default="",
+        description="Optional 768-dim Ollama embed model; empty = chỉ retry truncate khi 400.",
+    )
+    rag_embed_max_tokens: int = Field(default=512, ge=64, le=2048)
     ollama_lease_ttl_sec: int = Field(default=120, ge=10)
 
     # --- pgvector: một bảng rag_documents, phân vùng theo collection_name (API gọi là collection_id) ---
@@ -255,7 +342,13 @@ class WorkerSettings(BaseSettings):
         default=100,
         ge=10,
         le=500,
-        description="Alert summary + analyst + RagGate output — tối đa từ (whitespace).",
+        description="Trần cứng tóm tắt; dùng cùng concise_reply (min của hai).",
+    )
+    omni_concise_reply_max_words: int = Field(
+        default=30,
+        ge=10,
+        le=200,
+        description="Phản hồi analyst/RAG/Telegram proactive — tối đa từ (local LLM; mặc định ~30).",
     )
     infra_enrich_max_total_chars: int = Field(
         default=6000,
@@ -265,6 +358,49 @@ class WorkerSettings(BaseSettings):
     )
 
     rag_fast_path_score: float = Field(default=0.9, ge=0.0, le=1.0)
+
+    # Phase ZERO — SRE truth / hybrid / hot cache (see plan: RAG infra upgrade)
+    rag_truth_law_enforced: bool = Field(
+        default=True,
+        description="Khi không RAG hit: không gọi LLM chẩn đoán tự do — trả token manual.",
+    )
+    rag_manual_unknown_token: str = Field(
+        default="I_DO_NOT_KNOW_PROCEED_TO_MANUAL",
+        description="Chuỗi cố định khi không đủ căn cứ RAG.",
+    )
+    rag_post_filter_metadata_enabled: bool = Field(
+        default=True,
+        description="Incident-like query: bỏ chunk metadata type=reference thuần (Phase A).",
+    )
+    rag_hybrid_search_enabled: bool = Field(
+        default=False,
+        description="Postgres dense + full-text RRF trong pgvector_store.",
+    )
+    rag_hybrid_vector_weight: float = Field(default=0.65, ge=0.0, le=1.0)
+    rag_hot_cache_enabled: bool = Field(default=False, description="Redis JSON cache trước similarity_search.")
+    rag_hot_cache_ttl_sec: int = Field(default=3600, ge=60, le=86400)
+    rag_tier_uncertain_gate_enabled: bool = Field(
+        default=False,
+        description="Bật mới áp ngưỡng knowledge_uncertain (tránh đổi hành vi mặc định).",
+    )
+    rag_tier_knowledge_uncertain_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    rag_evidence_contradiction_check_enabled: bool = Field(
+        default=True,
+        description="So khớp output LLM vs SDK facts — chặn remediation mâu thuẫn.",
+    )
+    pre_action_state_revalidate_enabled: bool = Field(
+        default=True,
+        description="Trước rollout restart: so generation snapshot vs live Deployment.",
+    )
+    pgvector_collection_k8s_troubleshoot: str = Field(
+        default="",
+        description="Rỗng = dùng pgvector_collection_k8s_expert; Phase A2 incident routing.",
+    )
+    diag_evidence_llm_model: str = Field(
+        default="",
+        description="Rỗng = model_reasoning_engine; có thể đặt model_helper cho tier nhẹ.",
+    )
+    rag_rerank_enabled: bool = Field(default=False, description="Reserved: cross-encoder rerank sau vector.")
 
     # Telegram session_state:{chat_id} — TTL Redis (giây)
     session_ttl_sec: int = Field(default=86400, ge=120)
@@ -657,16 +793,20 @@ class WorkerSettings(BaseSettings):
         ),
     )
     proactive_react_memory_max_chars: int = Field(
-        default=3200,
+        default=2400,
         ge=400,
         le=8000,
         description="Max chars for react_memory block merged into proactive fallback prompt (tail kept).",
     )
     proactive_llm_prompt_max_chars: int = Field(
-        default=4096,
+        default=3072,
         ge=800,
         le=12000,
         description="Max chars for full proactive fallback prompt before LLM parse (head kept).",
+    )
+    proactive_react_require_namespace_for_list: bool = Field(
+        default=True,
+        description="Proactive ReAct: cấm k8s_list_pods không có namespace (tránh quét cả cluster).",
     )
     proactive_react_memory_line_max_chars: int = Field(
         default=2000,
