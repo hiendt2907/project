@@ -3,6 +3,22 @@
 This file consolidates all current report documents under `docs/reports/` into one place for review.
 Original files are kept unchanged.
 
+## Latest Iteration Addendum (Security Cleanup + Conservative Refactor)
+
+### What Changed in System Behavior
+- Replaced DSN hardcoded defaults with `${OMNI_DB_PASSWORD}` placeholders in runtime/training paths.
+- Added fail-fast DSN secret validation in `PostgresRAGSettings`.
+- Introduced strict secret gates: `.gitleaks.toml`, `.pre-commit-config.yaml`, CI step, `make secret-gate`, and `make secret-history-audit`.
+- Tagged legacy monolith scripts/targets more explicitly to reduce accidental usage in split topology.
+
+### Verification Snapshot
+- Pass: `make secret-gate`, env/mutate/classifier/docs gates, contract/integration pytest, `make e2e-incident-matrix`.
+- Fail (recorded blockers): `make e2e-proactive` and `make autonomy-gate` with `sigma_gate_ok=false`; `gateway_alert_loki_verify.sh` strict stage assertion unstable for required multi-deployment trace presence.
+
+### Blocker Classification
+- `infra_blocker`: insufficient sigma evidence in strict audit window.
+- `logic_blocker`: trace-stage strict assertion instability under current timing/log propagation.
+
 ## Source Files
 
 - `docs/reports/phase-1-state-machine-report.md`

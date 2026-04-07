@@ -11,7 +11,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import asyncpg
 from pgvector.asyncpg import register_vector
@@ -40,7 +40,17 @@ class PostgresRAGSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="POSTGRES_", extra="ignore")
 
-    rag_dsn: str = Field(default="postgresql://appuser:GD3fjTJJxfzi0bau6TSaoWV9Q8TeuEYxahQrFDh6DCnMRjgFdEQ1q7Hf3FKFbxD8@pgpool-gateway:5432/ragdb")
+    rag_dsn: str = Field(default="postgresql://appuser:${OMNI_DB_PASSWORD}@pgpool-gateway:5432/ragdb")
+
+    @field_validator("rag_dsn", mode="after")
+    @classmethod
+    def _validate_rag_dsn_secret(cls, v: str) -> str:
+        s = str(v or "").strip()
+        if "${OMNI_DB_PASSWORD}" in s or ":password@" in s.lower():
+            raise ValueError(
+                "POSTGRES_RAG_DSN must be injected from Secret; placeholder/default password is not allowed."
+            )
+        return v
 
 
 async def init_pg_pool(settings: PostgresRAGSettings | None = None) -> asyncpg.Pool:

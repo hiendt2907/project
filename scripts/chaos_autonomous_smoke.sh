@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# LEGACY MONOLITH CHAOS SCRIPT: default targets `deployment/omni-worker`.
+# Keep only for controlled comparison; split topology should use dedicated prober/core flows.
 # Chaos smoke: verify autonomous_decider (Redis manifest → Ollama → allowlist → tool + [AUTONOMOUS_FIX]).
 # Optional --god: bật OMNI_GOD_MODE (lab_unchained) + full autonomous_safe_tools như production (có k8s_rollout_restart — chỉ multi-agent).
 #

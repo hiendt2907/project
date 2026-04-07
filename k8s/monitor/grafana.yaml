@@ -12,7 +12,7 @@ metadata:
 type: Opaque
 stringData:
   # Đổi sau deploy: kubectl create secret generic grafana-admin --from-literal=password='...' -n monitor --dry-run=client -o yaml | kubectl apply -f -
-  password: changeme
+  password: "__REQUIRED_GRAFANA_ADMIN_PASSWORD__"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

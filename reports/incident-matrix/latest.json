@@ -1,7 +1,7 @@
 {
-  "started_at": 1775540661,
-  "ended_at": 1775540781,
-  "duration_sec": 120,
+  "started_at": 1775543775,
+  "ended_at": 1775543896,
+  "duration_sec": 121,
   "summary": {
     "total": 2,
     "passed": 2,
@@ -12,15 +12,15 @@
     {
       "scenario": "nginx_waiting_fault",
       "status": "passed",
-      "duration_sec": 48,
-      "trace_id": "gw-prom-5ca478a0d96f",
+      "duration_sec": 50,
+      "trace_id": "gw-prom-42a68d44683b",
       "note": ""
     },
     {
       "scenario": "redis_probe_fault",
       "status": "passed",
-      "duration_sec": 71,
-      "trace_id": "gw-prom-4321e7627a3c",
+      "duration_sec": 70,
+      "trace_id": "gw-prom-48f5e1803a4e",
       "note": ""
     }
   ]

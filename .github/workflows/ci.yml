@@ -13,6 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Secret scan (critical fail)
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.18.2 detect --no-git --source=/repo --config=/repo/.gitleaks.toml --report-path=/repo/leak_report.json --verbose
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

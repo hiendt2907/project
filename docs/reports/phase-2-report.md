@@ -25,3 +25,15 @@ Move classification to label-first matching with deterministic priority.
 
 ## Memory Applied
 - Applied from `docs/reports/project-memory.md`: `FailurePatterns`, `CrossPhaseConstraints`.
+
+## Iteration Update - Conservative Cleanup
+### Scope
+- `Makefile`
+- `scripts/deploy_v6.sh`
+- `scripts/v63_deploy_test.sh`
+- `scripts/chaos_autonomous_smoke.sh`
+
+### What Changed in System Behavior
+- Legacy deploy target now has explicit prefixed path (`legacy-deploy-worker`) and deprecation warning on old target.
+- Legacy monolith scripts are explicitly tagged as legacy to prevent accidental use in split topology.
+- No destructive code deletion was performed in this pass.

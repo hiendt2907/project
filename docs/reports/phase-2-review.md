@@ -10,3 +10,7 @@
 
 ## Trade-offs
 - Requires more disciplined alert labeling upstream to unlock full classifier precision.
+
+## Iteration Findings - Conservative Cleanup
+- `rg` grep-first confirmed legacy script references still exist in docs/rules, so hard deletion is deferred.
+- Tagging + deprecation warning is safer than immediate removal for operational continuity.

@@ -10,3 +10,6 @@
 
 ## Trade-offs
 - More strict CI can increase initial friction but reduces architectural drift.
+
+## Iteration Findings - Secret Gate
+- Running history scan in strict fail mode surfaces legacy leaks that require governance decision (rotate + history rewrite approval), not silent suppression.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# LEGACY MONOLITH SCRIPT: kept for historical comparison only.
+# Preferred split deployment flow: `make deploy-worker`.
 set -e
 
 echo "🚀 Bắt đầu quá trình Build & Tích hợp Omni Platform V6..."

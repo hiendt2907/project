@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# LEGACY MONOLITH SCRIPT: kept for historical comparison only.
+# Preferred split deployment flow: `make deploy-worker`.
 # Omni V6.3 Master Deployment & Chaos Test Script
 set -e
 

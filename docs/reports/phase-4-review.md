@@ -9,3 +9,6 @@
 
 ## Trade-offs
 - Unit confidence increased, but runtime confidence still requires build/rollout/e2e cycle.
+
+## Iteration Findings - Memory
+- Capturing blockers as structured memory materially improves next-run triage and avoids false “green” conclusions.

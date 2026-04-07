@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: test-evidence docker-worker docker-gateway deploy-worker deploy-worker-legacy deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate
+.PHONY: test-evidence docker-worker docker-gateway deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate secret-gate secret-history-audit
 
 test-evidence:
 	bash scripts/run_test_evidence.sh
@@ -49,6 +49,10 @@ deploy-services: deploy-ollama deploy-gateway
 
 # Single-process legacy: OMNI_WORKER_ROLE=full (monolith). Scale omni-prober/analyst/core to 0 if using this.
 deploy-worker-legacy:
+	@echo "[legacy] deploy-worker-legacy is deprecated; use legacy-deploy-worker."
+	@$(MAKE) legacy-deploy-worker
+
+legacy-deploy-worker:
 	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-worker-configmap.yaml
 	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-worker-rbac.yaml
 	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-worker.yaml
@@ -85,8 +89,15 @@ classifier-regression-gate:
 phase-docs-gate:
 	.venv/bin/python scripts/validate_phase_docs_gate.py
 
+secret-gate:
+	docker run --rm -v "$$(pwd):/repo" zricethezav/gitleaks:v8.18.2 detect --no-git --source=/repo --config=/repo/.gitleaks.toml --report-path=/repo/leak_report.json --verbose
+
+secret-history-audit:
+	docker run --rm -v "$$(pwd):/repo" zricethezav/gitleaks:v8.18.2 detect --source=/repo --config=/repo/.gitleaks.toml --report-path=/repo/leak_report_history.json --verbose
+
 # Phase 5 gate: fail when autonomy verification regresses.
 autonomy-gate:
+	$(MAKE) secret-gate
 	.venv/bin/python scripts/validate_env_mode_gate.py
 	.venv/bin/python scripts/validate_mutate_only_gate.py
 	.venv/bin/python scripts/validate_classifier_regression_gate.py

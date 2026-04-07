@@ -1,0 +1,39 @@
+title = "Omni Gitleaks Config"
+
+[allowlist]
+description = "Bỏ qua các file tài liệu và mock test"
+paths = [
+    '''docs/.*''',
+    '''tests/mocks/.*''',
+    '''docs/reports/project-memory\.md''',
+    '''tests/test_normalize\.py''',
+    '''.*__pycache__/.*''',
+    '''\.venv/.*''',
+    '''\.env''',
+    '''leak_report\.json''',
+    '''leak_report_history\.json''',
+    '''deployments/.*''',
+]
+
+[[rules]]
+description = "Chặn Postgres DSN (Omni Core DB)"
+id = "omni-postgres-dsn"
+regex = '''postgres(ql)?://[a-zA-Z0-9_]+:[a-zA-Z0-9_]+@[a-z0-9.-]+:[0-9]+/'''
+keywords = ["postgres", "postgresql"]
+
+[[rules]]
+description = "Chặn Telegram Bot Token (Omni Alerts)"
+id = "omni-telegram-token"
+regex = '''[0-9]{7,10}:[a-zA-Z0-9_-]{35}'''
+keywords = ["tele", "bot"]
+
+[[rules]]
+description = "Chặn Generic API Keys & Secrets"
+id = "generic-api-key"
+regex = '''(?i)(key|api|token|secret|password|passwd|pwd)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=]{16,45}'''
+entropy = 3.5
+
+[[rules]]
+description = "Chặn Private Keys"
+id = "private-key"
+regex = '''-----BEGIN [A-Z ]+ PRIVATE KEY-----'''

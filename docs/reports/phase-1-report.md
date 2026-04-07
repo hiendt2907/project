@@ -27,3 +27,21 @@ Enforce mutate-only execution semantics for `EXECUTE_MUTATE`.
 
 ## Memory Applied
 - Applied from `docs/reports/project-memory.md` sections: `Invariants`, `ReasonCodes`.
+
+## Iteration Update - Security Cleanup (Strict)
+### Objective
+Remove hardcoded secret-like defaults and enforce fail-fast secret hygiene.
+
+### Scope
+- `src/workers/settings.py`
+- `src/rag/pgvector_store.py`
+- `src/training/cli_hil_ingest.py`
+- `k8s/monitor/grafana.yaml`
+- `k8s/monitor/grafana-telegram-alerting-secret.yaml`
+- `.gitleaks.toml`
+- `.pre-commit-config.yaml`
+
+### What Changed in System Behavior
+- Runtime DSN defaults now use `${OMNI_DB_PASSWORD}` placeholder instead of embedded password.
+- `PostgresRAGSettings` now fails fast when placeholder/default-style DSN is used at runtime.
+- Secret scan is now mandatory in CI/local gate via `gitleaks` (critical fail for new leaks).

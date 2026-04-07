@@ -26,3 +26,8 @@ Expand contract tests for mutate semantics, classifier priority, and proof-gate 
 
 ## Memory Applied
 - Applied from `docs/reports/project-memory.md`: `CrossPhaseConstraints`, `FailurePatterns`.
+
+## Iteration Update - Documentation/Memory Assimilation
+### What Changed in System Behavior
+- Added mandatory security-scanning artifacts (`leak_report.json`, `leak_report_history.json`) to release evidence flow.
+- Added blocker classification language (`infra_blocker`/`logic_blocker`) for failed strict runtime checks.

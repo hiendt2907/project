@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Security gate chưa “sạch bóng” khi bật scan strict: DSN credential cũ còn nằm trong history commit; đồng thời strict runtime audit có thể fail (`sigma_gate_ok=false`, `trace_stage_matrix_ok=false`) dù unit/contract pass và deploy thành công.  
+**Fix:** Thay toàn bộ DSN hardcoded hiện tại bằng placeholder `${OMNI_DB_PASSWORD}` + fail-fast validator tại `src/rag/pgvector_store.py`; chuẩn hóa placeholder secret manifest Grafana; thêm `.gitleaks.toml` + `.pre-commit-config.yaml`; CI/Make thêm `secret-gate` (working tree, critical fail) và `secret-history-audit` tách riêng để governance xử lý history (rotate key + duyệt rewrite lịch sử). Verify: `make secret-gate` pass, `make e2e-incident-matrix` pass, `make autonomy-gate` fail do `sigma_gate_ok/trace_stage_matrix_ok` (đã ghi blocker).
+
 **Symptom:** `EXECUTE_MUTATE` vẫn có thể nhận read-only tools (`k8s_describe_resource`, `inspect_*`, `list_*`) và classifier dễ map nhầm `ProbeFailureLab` do regex rộng; planner đôi lúc đề xuất tool read-only/hallucinated, gây hành vi mutate không chuẩn kiến trúc.  
 **Fix:** Refactor theo mutate-only contract: tách `K8S_SDK_MUTATING_TOOL_NAMES` vs `READONLY_TOOL_ALLOWLIST` trong `workers/autonomous_execute.py`, reject có `reason_code` chuẩn; `analyst_agentic_loop` map reject sang reason codes SIEM và route read-only plan về suggest channel; `diagnostic_mapping` đổi label-first + `priority`, matrix pin row `ProbeFailureLab`; `evidence_consumer` thêm `Proof of Fault + 3-sigma + observation window` trước emit mutate; thêm gates `validate_mutate_only_gate.py`, `validate_classifier_regression_gate.py`, `validate_phase_docs_gate.py` + pytest contracts `test_diagnostic_mapping.py`, `test_evidence_proof_gate.py`.
 

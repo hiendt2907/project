@@ -28,3 +28,14 @@ Promote mutate semantics, classifier regression, and documentation completeness 
 
 ## Memory Applied
 - Applied from `docs/reports/project-memory.md`: `Guardrails`, `CrossPhaseConstraints`.
+
+## Iteration Update - Release Hardening
+### Scope
+- `.gitleaks.toml`
+- `.pre-commit-config.yaml`
+- `Makefile` (`secret-gate`, `secret-history-audit`)
+- `.github/workflows/ci.yml` (secret scan step)
+
+### What Changed in System Behavior
+- PR/CI now block on new secret leaks by default.
+- History audit is explicit and separated to avoid silent legacy-risk carryover.

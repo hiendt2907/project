@@ -631,8 +631,11 @@ class WorkerSettings(BaseSettings):
         description="Báo cáo Deep Scout; None = không gửi.",
     )
     postgres_dsn: str = Field(
-        default="postgresql://appuser:GD3fjTJJxfzi0bau6TSaoWV9Q8TeuEYxahQrFDh6DCnMRjgFdEQ1q7Hf3FKFbxD8@pgpool-gateway:5432/ragdb", 
-        description="asyncpg DSN (Pgpool-II gateway); để rỗng nếu không dùng Postgres."
+        default="postgresql://appuser:${OMNI_DB_PASSWORD}@pgpool-gateway:5432/ragdb",
+        description=(
+            "asyncpg DSN (Pgpool-II gateway). Must be overridden via env/Secret; "
+            "placeholder default is fail-fast by design."
+        ),
     )
 
     # Deep Scout autonomous (1.5B synthesis + Redis/Postgres)

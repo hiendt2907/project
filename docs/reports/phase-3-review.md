@@ -10,3 +10,7 @@
 
 ## Trade-offs
 - Fail-closed gating can reduce automation in borderline incidents but lowers false-positive mutation risk.
+
+## Iteration Findings - Verification
+- Secret + contract gates are stable.
+- Runtime strict proactive gate remains sensitive to lab sigma/trace timing and can fail despite healthy deploy rollout.

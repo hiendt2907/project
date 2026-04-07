@@ -4,11 +4,14 @@
 - `EXECUTE_MUTATE` only executes mutate-capable tools; read/query tools must route to `SUGGEST_REMEDIATION`.
 - Mutate decisions are fail-closed in `prod` and must keep `trace_id` + auditable `reason_code`.
 - Planner output cannot override Proof-of-Fault controls (critical evidence + 3-sigma + observation window).
+- Runtime/app config must not ship embedded credentials; DSN defaults stay placeholder-only and secret-injected at runtime.
 
 ## FailurePatterns
 - Classifier misroute can happen when broad regex rows run before label-constrained rows.
 - Planner can emit read-only/hallucinated tools even when JSON shape is valid.
 - Single metric spikes are noisy; windowed sigma checks are required before mutation.
+- Strict proactive audit can fail in low-noise lab windows (`sigma_gate_ok=false`) even when rollout and contract tests pass.
+- Strict trace-stage checks can be timing-sensitive under split topology/log propagation.
 
 ## ReasonCodes
 - Semantic/channel: `ERR_SEM_CHANNEL_MISMATCH`, `ERR_SEM_INVALID_TOOL_TAXONOMY`.
@@ -20,7 +23,9 @@
 - Keep mutate/read-only taxonomy explicit in runtime constants and CI gates.
 - Keep classifier regression gate for `ProbeFailureLab` not mapping to `ollama_500_context`.
 - Documentation gate blocks incomplete phase records.
+- Keep `gitleaks` critical gate for working tree (`--no-git`) and run history scan as separate governance audit target.
 
 ## CrossPhaseConstraints
 - Any change touching mutate/classifier/planner must update tests and gates together.
 - Every phase report must include `What Changed in System Behavior` and `Memory Applied`.
+- Any detected historical secret requires key rotation first, then explicit approval before history rewrite actions.
