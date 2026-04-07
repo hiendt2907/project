@@ -24,6 +24,7 @@ from workers.autonomous_decider import autonomous_decider_loop
 from workers.baseline_snapshot import baseline_snapshot_loop
 from workers.forecast_autonomous_loop import autonomous_forecast_loop
 from workers.alert_to_event import build_anomaly_event_from_alert_payload
+from workers.autonomous_feedback_loop import kafka_action_feedback_loop
 from workers.diagnostic_dispatcher import run_diagnostic_pipeline
 from workers.evidence_consumer import reason_from_diagnostic_evidence
 from workers.handler_context import WorkerHandlerContext
@@ -50,6 +51,13 @@ from workers.ollama_semaphore import RedisOllamaSemaphore
 from workers.settings import WorkerSettings
 from workers.redis_client import connect_redis
 from workers.telegram_outbound import send_telegram_out_for_inbound
+from workers.autonomy_contract import (
+    TRANSITION_CONTEXT_READY,
+    TRANSITION_DIAGNOSED,
+    TRANSITION_INGESTED,
+    emit_terminal_tombstone,
+    emit_transition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +182,13 @@ async def _process_stream_entry(
         payload.setdefault("trace_id", trace)
         trace = str(payload.get("trace_id"))
         tok_trace = push_trace_id(trace)
+        await emit_transition(
+            ctx,
+            trace_id=trace,
+            transition=TRANSITION_INGESTED,
+            component="omni_worker_stream_consumer",
+            detail=f"redis_msg_id={msg_id}",
+        )
         log_start_request(
             trace,
             phase="stream_consumer",
@@ -190,6 +205,13 @@ async def _process_stream_entry(
             log_preview(raw, max_chars=1600),
         )
         logger.info("[%s] stream_read redis_msg_id=%s", trace, msg_id)
+        await emit_transition(
+            ctx,
+            trace_id=trace,
+            transition=TRANSITION_CONTEXT_READY,
+            component="omni_worker_stream_consumer",
+            detail="payload_ready_for_diagnostic",
+        )
         # Master Plan V3: omni-alerts → prober only (diagnostic pipeline → evidence topic); reasoning in kafka_evidence_loop.
         if payload.get("chat_id") is not None:
             try:
@@ -202,6 +224,13 @@ async def _process_stream_entry(
                 logger.warning("[%s] evidence_reply context not stored", trace)
         ev = build_anomaly_event_from_alert_payload(payload)
         await run_diagnostic_pipeline(ctx, ev)
+        await emit_transition(
+            ctx,
+            trace_id=trace,
+            transition=TRANSITION_DIAGNOSED,
+            component="omni_worker_stream_consumer",
+            detail="diagnostic_pipeline_completed",
+        )
         dur_ms = (time.perf_counter() - t0) * 1000.0
         log_end_request(
             trace,
@@ -225,6 +254,13 @@ async def _process_stream_entry(
             logger.exception("[%s] event=stream_parse_error redis_msg_id=%s", trace, msg_id)
             
         await ctx.ledger.record_exception(e, phase="4", component="handler", swallow_errors=True)
+        await emit_terminal_tombstone(
+            ctx,
+            trace_id=trace,
+            reason_code="STREAM_CONSUMER_EXCEPTION",
+            component="omni_worker_stream_consumer",
+            detail=f"{type(e).__name__}: {e}",
+        )
         
         # Logic Retry Sinh Tử (Exponential Backoff qua ZSET)
         retry_count = await ctx.redis.incr(retry_key)
@@ -341,7 +377,7 @@ async def kafka_alerts_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> N
             if stop.is_set():
                 break
             try:
-                fields = decode_kafka_value_to_fields(msg.value)
+                fields = decode_kafka_value_to_fields(msg.value, msg.headers)
                 mid = kafka_msg_id(msg.topic, msg.partition, msg.offset)
                 await _process_stream_entry(ctx, mid, fields)
                 await consumer.commit()
@@ -372,7 +408,7 @@ async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) ->
             if stop.is_set():
                 break
             try:
-                fields = decode_kafka_value_to_fields(msg.value)
+                fields = decode_kafka_value_to_fields(msg.value, msg.headers)
                 await reason_from_diagnostic_evidence(ctx, fields)
                 await consumer.commit()
             except Exception as e:
@@ -484,6 +520,7 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
             tasks.append(asyncio.create_task(telegram_loop(ctx, stop), name="telegram_loop"))
     if role in ("full", "analyst"):
         tasks.append(asyncio.create_task(kafka_evidence_loop(ctx, stop), name="kafka_evidence_loop"))
+        tasks.append(asyncio.create_task(kafka_action_feedback_loop(ctx, stop), name="kafka_action_feedback_loop"))
     if role in ("full", "core"):
         tasks.extend(
             [

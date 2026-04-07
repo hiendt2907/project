@@ -11,6 +11,7 @@ TOPICS=(
   "omni-alerts"
   "omni-diagnostic-evidence"
   "omni-actions"
+  "omni-action-feedback"
   "omni-dlq"
   "omni-proactive-incidents"
   "omni-audit-sandbox"

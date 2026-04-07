@@ -85,6 +85,63 @@ class QueryResponse(BaseModel):
     points: list[PointStruct]
 
 
+def _is_ollama_embed_bad_request(e: BaseException) -> bool:
+    try:
+        import httpx
+
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 400:
+            return True
+    except Exception:
+        pass
+    msg = str(e).lower()
+    return "400" in msg or "bad request" in msg or "status code 400" in msg
+
+
+async def _ollama_embed_query_robust(
+    ollama: Any,
+    query: str,
+    *,
+    embed_model: str,
+    embed_model_fallback: str | None,
+    keep_alive: str,
+    query_max_chars: int,
+) -> list[float]:
+    """Truncate + tiered retry on 400; optional fallback model (cùng dim với index)."""
+    from pkg.rag.embed_utils import truncate_for_embedding
+
+    base = (query or "")[: int(query_max_chars)]
+    tiers = (512, 256, 128, 64)
+    models: list[str] = [embed_model]
+    fb = (embed_model_fallback or "").strip()
+    if fb and fb != embed_model:
+        models.append(fb)
+
+    last_err: BaseException | None = None
+    for model in models:
+        for tier in tiers:
+            chunk = truncate_for_embedding(base, max_tokens=tier)
+            try:
+                emb_resp = await ollama.embed(
+                    model=model,
+                    input=chunk,
+                    keep_alive=keep_alive,
+                )
+                return _embedding_vector_from_ollama_response(emb_resp)
+            except Exception as e:
+                last_err = e
+                if _is_ollama_embed_bad_request(e):
+                    logger.warning(
+                        "event=rag_ollama_embed_failed model=%s tier_tokens=%s ollama_400_retry err=%s",
+                        model,
+                        tier,
+                        str(e)[:220],
+                    )
+                    continue
+                logger.warning("event=rag_ollama_embed_failed model=%s err=%s", model, e)
+                raise RuntimeError(f"rag_ollama_embed_failed:{e!s}") from e
+    raise RuntimeError(f"rag_ollama_embed_failed:{last_err!s}") from last_err
+
+
 def _embedding_vector_from_ollama_response(resp: dict[str, Any]) -> list[float]:
     if "embedding" in resp:
         emb = resp["embedding"]
@@ -175,6 +232,7 @@ class PGVectorStore:
         *,
         ollama: Any,
         embed_model: str,
+        embed_model_fallback: str | None = None,
         keep_alive: str = "5m",
         limit: int = 8,
         score_threshold: float | None = None,
@@ -187,20 +245,185 @@ class PGVectorStore:
         """
         if ollama is None:
             raise TypeError("similarity_search requires ollama client")
-        emb_resp = await ollama.embed(
-            model=embed_model,
-            input=(query or "")[: int(query_max_chars)],
+        vector = await _ollama_embed_query_robust(
+            ollama,
+            query,
+            embed_model=embed_model,
+            embed_model_fallback=embed_model_fallback,
             keep_alive=keep_alive,
+            query_max_chars=int(query_max_chars),
         )
-        vector = _embedding_vector_from_ollama_response(emb_resp)
-        return await self.query_points(
-            collection_name=collection_id,
-            query=vector,
-            limit=int(limit),
-            score_threshold=score_threshold,
-            with_payload=True,
-            payload_filters=payload_filters,
+        try:
+            return await self.query_points(
+                collection_name=collection_id,
+                query=vector,
+                limit=int(limit),
+                score_threshold=score_threshold,
+                with_payload=True,
+                payload_filters=payload_filters,
+            )
+        except Exception as e:
+            logger.warning("event=rag_pgvector_query_failed err=%s", e)
+            raise RuntimeError(f"rag_pgvector_query_failed:{e!s}") from e
+
+    def _rrf_merge_points(
+        self,
+        dense: list[PointStruct],
+        sparse: list[PointStruct],
+        *,
+        k: int = 60,
+        dense_weight: float = 0.65,
+    ) -> list[PointStruct]:
+        """Reciprocal rank fusion for hybrid retrieval."""
+        w_d = max(0.0, min(1.0, float(dense_weight)))
+        w_s = 1.0 - w_d
+        scores: dict[str, float] = {}
+        payloads: dict[str, dict[str, Any]] = {}
+        for rank, p in enumerate(dense):
+            pid = str(p.id)
+            scores[pid] = scores.get(pid, 0.0) + w_d / (k + rank + 1)
+            payloads.setdefault(pid, dict(p.payload or {}))
+        for rank, p in enumerate(sparse):
+            pid = str(p.id)
+            scores[pid] = scores.get(pid, 0.0) + w_s / (k + rank + 1)
+            payloads.setdefault(pid, dict(p.payload or {}))
+        ordered = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+        out: list[PointStruct] = []
+        for pid in ordered:
+            out.append(
+                PointStruct(
+                    id=pid,
+                    payload=payloads.get(pid, {}),
+                    score=float(scores[pid]),
+                )
+            )
+        return out
+
+    async def fulltext_search_points(
+        self,
+        collection_name: str,
+        query_text: str,
+        limit: int = 12,
+    ) -> QueryResponse:
+        """BM25-style ranking via Postgres ``ts_rank`` + ``plainto_tsquery``."""
+        qt = (query_text or "").strip()
+        if len(qt) < 2:
+            return QueryResponse(points=[])
+        # Avoid tsquery parse errors: keep alnum-ish words
+        safe = re.sub(r"[^\w\s.-]", " ", qt)[:2000].strip()
+        if len(safe) < 2:
+            return QueryResponse(points=[])
+        sql = """
+        SELECT id, payload,
+          ts_rank(
+            to_tsvector('english', left(
+              coalesce(payload->>'text','') || ' ' || coalesce(payload->>'summary',''),
+              12000
+            )),
+            plainto_tsquery('english', $2)
+          ) AS score
+        FROM rag_documents
+        WHERE collection_name = $1
+          AND to_tsvector('english', left(
+              coalesce(payload->>'text','') || ' ' || coalesce(payload->>'summary',''),
+              12000
+            )) @@ plainto_tsquery('english', $2)
+        ORDER BY score DESC
+        LIMIT $3
+        """
+        lim = max(1, min(48, int(limit)))
+        async with self._pool.acquire() as conn:
+            try:
+                rows = await conn.fetch(sql, collection_name, safe, lim)
+            except Exception as e:
+                logger.warning("fulltext_search_points failed: %s", e)
+                return QueryResponse(points=[])
+        pts: list[PointStruct] = []
+        for r in rows:
+            payload_data = json.loads(r["payload"]) if isinstance(r["payload"], str) else r["payload"]
+            sc = float(r["score"] or 0.0)
+            pts.append(PointStruct(id=str(r["id"]), payload=payload_data, score=sc))
+        return QueryResponse(points=pts)
+
+    async def similarity_search_hybrid(
+        self,
+        query: str,
+        collection_id: str,
+        *,
+        ollama: Any,
+        embed_model: str,
+        embed_model_fallback: str | None = None,
+        keep_alive: str = "5m",
+        limit: int = 8,
+        score_threshold: float | None = None,
+        query_max_chars: int = 8000,
+        payload_filters: dict[str, str] | None = None,
+        hybrid_vector_weight: float = 0.65,
+    ) -> QueryResponse:
+        """Dense + sparse merge (RRF), then apply score_threshold to best dense score per id."""
+        if ollama is None:
+            raise TypeError("similarity_search_hybrid requires ollama client")
+        vector = await _ollama_embed_query_robust(
+            ollama,
+            query,
+            embed_model=embed_model,
+            embed_model_fallback=embed_model_fallback,
+            keep_alive=keep_alive,
+            query_max_chars=int(query_max_chars),
         )
+        dense_lim = max(limit * 3, 16)
+        try:
+            dense = await self.query_points(
+                collection_name=collection_id,
+                query=vector,
+                limit=int(dense_lim),
+                score_threshold=None,
+                with_payload=True,
+                payload_filters=payload_filters,
+            )
+        except Exception as e:
+            logger.warning("event=rag_pgvector_query_failed err=%s", e)
+            raise RuntimeError(f"rag_pgvector_query_failed:{e!s}") from e
+        sparse = await self.fulltext_search_points(
+            collection_id,
+            (query or "")[: int(query_max_chars)],
+            limit=max(12, int(limit) * 3),
+        )
+        merged = self._rrf_merge_points(
+            list(dense.points or []),
+            list(sparse.points or []),
+            dense_weight=float(hybrid_vector_weight),
+        )
+        # Re-fetch dense scores for threshold; keep merge order for top `limit`
+        dense_by_id = {str(p.id): float(p.score or 0.0) for p in (dense.points or [])}
+        out_pts: list[PointStruct] = []
+        for p in merged:
+            did = str(p.id)
+            best_sim = dense_by_id.get(did)
+            if best_sim is None:
+                # id only from sparse: run single id lookup optional — skip low-confidence
+                continue
+            if score_threshold is not None and best_sim < float(score_threshold):
+                continue
+            out_pts.append(
+                PointStruct(
+                    id=did,
+                    payload=dict(p.payload or {}),
+                    score=best_sim,
+                )
+            )
+            if len(out_pts) >= int(limit):
+                break
+        if not out_pts and dense.points:
+            # Fallback: pure dense if hybrid produced nothing
+            for p in dense.points[: int(limit)]:
+                sc = float(getattr(p, "score", None) or 0.0)
+                if score_threshold is not None and sc < float(score_threshold):
+                    continue
+                out_pts.append(p)
+                if len(out_pts) >= int(limit):
+                    break
+        return QueryResponse(points=out_pts)
 
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -260,6 +483,12 @@ class PGVectorStore:
         CREATE INDEX IF NOT EXISTS doc_vendor_embedding_idx ON doc_vendor USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
         CREATE INDEX IF NOT EXISTS doc_sre_knowledge_embedding_idx ON doc_sre_knowledge USING hnsw (embedding vector_cosine_ops);
         CREATE INDEX IF NOT EXISTS doc_k8s_expert_embedding_idx ON doc_k8s_expert USING hnsw (embedding vector_cosine_ops);
+        CREATE INDEX IF NOT EXISTS doc_k8s_expert_fts_idx ON doc_k8s_expert USING gin (
+          to_tsvector('english', left(
+            coalesce(payload->>'text','') || ' ' || coalesce(payload->>'summary',''),
+            12000
+          ))
+        );
         """
         async with self._pool.acquire() as conn:
             await conn.execute(sql)

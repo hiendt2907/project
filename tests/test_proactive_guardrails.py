@@ -6,8 +6,10 @@ import pytest
 
 from workers.proactive_guardrails import (
     extract_resource_ref,
+    looks_like_kubernetes_pod_full_name,
     proactive_gigo_cluster_identity_ok,
     proactive_lease_key,
+    proactive_rollout_restart_allowed,
     resource_freeze_redis_key,
 )
 from workers.proactive_models import AnomalyEvent
@@ -41,6 +43,30 @@ def test_extract_resource_ref_rollout() -> None:
         {"namespace": "prod", "deployment": "api"},
     )
     assert r == ("prod", "Deployment", "api")
+
+
+def test_proactive_rollout_restart_allowed_ok() -> None:
+    ev = AnomalyEvent(trace_id="trace-1", canonical_query="x", namespace="multi-agent")
+    ok, reason = proactive_rollout_restart_allowed(
+        ev, {"namespace": "multi-agent", "deployment": "omni-core"}
+    )
+    assert ok and reason == ""
+
+
+def test_proactive_rollout_restart_blocked_pod_like_deployment() -> None:
+    ev = AnomalyEvent(trace_id="trace-2", canonical_query="x", namespace="ns")
+    pod_like = "omni-core-7d4f8a9b2c-abcde"
+    assert looks_like_kubernetes_pod_full_name(pod_like) is True
+    ok, reason = proactive_rollout_restart_allowed(ev, {"namespace": "ns", "deployment": pod_like})
+    assert ok is False
+    assert "pod" in reason
+
+
+def test_proactive_rollout_restart_missing_ns() -> None:
+    ev = AnomalyEvent(trace_id="trace-3", canonical_query="x", namespace="")
+    ok, reason = proactive_rollout_restart_allowed(ev, {"deployment": "api"})
+    assert ok is False
+    assert reason == "missing_namespace"
 
 
 def test_extract_resource_ref_none_when_missing_ns() -> None:

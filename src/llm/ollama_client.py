@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, Field, PrivateAttr
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_NUM_CTX = 4096
 
@@ -119,6 +122,13 @@ class OllamaClient(BaseModel):
         if keep_alive is not None:
             body["keep_alive"] = keep_alive
         r = await self._client.post("/api/embed", json=body)
+        if r.status_code == 400:
+            ilen = len(input) if isinstance(input, str) else sum(len(x) for x in input) if isinstance(input, list) else 0
+            logger.warning(
+                "event=ollama_embed_400 status=400 model=%s input_len=%s",
+                model,
+                ilen,
+            )
         if r.status_code == 404 and isinstance(input, str):
             legacy: dict[str, Any] = {
                 "model": model,

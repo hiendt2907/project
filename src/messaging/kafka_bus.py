@@ -32,7 +32,25 @@ def kafka_msg_id(topic: str, partition: int, offset: int) -> str:
     return f"kafka-{topic}-{partition}-{offset}"
 
 
-def decode_kafka_value_to_fields(raw: bytes) -> dict[str, str]:
+def _trace_id_from_envelope_or_inner(body: dict[str, Any]) -> str:
+    trace = str(body.get("trace_id") or "").strip()
+    if trace:
+        return trace
+    data = body.get("data")
+    if isinstance(data, str) and data.strip().startswith("{"):
+        try:
+            inner = json.loads(data)
+            if isinstance(inner, dict):
+                return str(inner.get("trace_id") or "").strip()
+        except Exception:
+            return ""
+    return ""
+
+
+def decode_kafka_value_to_fields(
+    raw: bytes,
+    headers: list[tuple[str, bytes]] | None = None,
+) -> dict[str, str]:
     """JSON object → redis-stream-like string fields for existing handlers."""
     body: dict[str, Any] = json.loads(raw.decode("utf-8"))
     out: dict[str, str] = {}
@@ -44,6 +62,14 @@ def decode_kafka_value_to_fields(raw: bytes) -> dict[str, str]:
             out[key] = ""
         else:
             out[key] = str(v)
+    if headers:
+        for hk, hv in headers:
+            if hk == "trace_id" and hv:
+                try:
+                    out["trace_id"] = hv.decode("utf-8", errors="replace")
+                except Exception:
+                    out["trace_id"] = str(hv)
+                break
     return out
 
 
@@ -57,8 +83,12 @@ class KafkaBus:
         if not is_valid_kafka_topic(topic):
             logger.warning("skip kafka send: invalid topic name %r", topic)
             return
+        trace = _trace_id_from_envelope_or_inner(envelope)
         payload = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
-        await self._p.send_and_wait(topic, value=payload)
+        headers: list[tuple[str, bytes]] = []
+        if trace:
+            headers.append(("trace_id", trace.encode("utf-8", errors="ignore")))
+        await self._p.send_and_wait(topic, value=payload, headers=headers or None)
 
     async def send_envelope_inner(self, topic: str, inner: dict[str, Any], extra: dict[str, Any] | None = None) -> None:
         env: dict[str, Any] = {"data": json.dumps(inner, ensure_ascii=False)}

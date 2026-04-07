@@ -67,6 +67,16 @@ def _infer_doc_type(path: str) -> str:
     return "reference"
 
 
+def _infer_knowledge_level(path: str) -> str:
+    """Phase C: L1 symptom / L2 investigation / L3 resolution (metadata.level)."""
+    p = (path or "").lower()
+    if "troubleshoot" in p or "debug" in p:
+        return "symptom"
+    if "/tasks/" in p:
+        return "resolution"
+    return "investigation"
+
+
 def _chunk_text(text: str, *, size: int, overlap: int) -> list[str]:
     t = (text or "").strip()
     if not t:
@@ -294,6 +304,7 @@ async def run_k8s_official_ingest(*, dry_run: bool = False, max_pages_override: 
                 raise RuntimeError(f"embed batch mismatch want {len(texts)} got {len(vecs)}")
             points: list[PointStruct] = []
             for (url, dtype, ch), vec in zip(slice_, vecs, strict=True):
+                path = urlparse(url).path or ""
                 pid = str(
                     uuid.uuid5(
                         uuid.NAMESPACE_URL,
@@ -304,6 +315,7 @@ async def run_k8s_official_ingest(*, dry_run: bool = False, max_pages_override: 
                     "source": "official_k8s",
                     "url": url,
                     "type": dtype,
+                    "level": _infer_knowledge_level(path),
                     "version": ws.k8s_official_metadata_version,
                 }
                 payload: dict[str, Any] = {

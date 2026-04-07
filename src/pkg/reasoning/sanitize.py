@@ -6,6 +6,8 @@ import json
 import re
 from typing import Any, cast
 
+from pkg.rag.embed_utils import truncate_for_embedding
+
 # Probes chỉ kiểm tra hạ tầng chung; không đo CPU/memory của workload cụ thể.
 _GENERIC_INFRA_PROBES = frozenset(
     {
@@ -38,7 +40,7 @@ def evidence_relevance_warning(alert_hint: str, probe: str) -> str | None:
     if p.startswith("prom_pod_"):
         return None
 
-    if p.startswith("k8s_clinical_"):
+    if p.startswith("k8s_clinical_") or p.startswith("k8s_events") or p.startswith("k8s_resource"):
         return None
 
     if p in _GENERIC_INFRA_PROBES:
@@ -113,3 +115,93 @@ def format_batch_sanitized_analyst_user_text(ev_docs: list[dict[str, Any]]) -> s
         blocks.append(f"\n### Probe block {i}: {p}\n")
         blocks.append(format_sanitized_analyst_user_text(cast(dict[str, Any], ev)))
     return "\n".join(blocks)
+
+
+_RE_HTTP_JUNK = re.compile(
+    r"(?is)^HTTP/\d[\s\S]{0,800}?Bad Request|content-type:\s*[\w/-]+|^\s*400\s",
+)
+
+
+def _parse_extracted_fact_obj(ev: dict[str, Any]) -> dict[str, Any]:
+    ef = ev.get("extracted_fact")
+    if isinstance(ef, dict):
+        return ef
+    if isinstance(ef, str) and ef.strip().startswith("{"):
+        try:
+            o = json.loads(ef)
+            return dict(o) if isinstance(o, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _alert_name_from_batch(batch: list[dict[str, Any]]) -> str:
+    for b in batch:
+        ar = str(b.get("alert_rule") or "").strip()
+        if ar:
+            return ar[:240]
+    cq = str(batch[0].get("canonical_query_snippet") or "").strip() if batch else ""
+    if cq.startswith("{"):
+        try:
+            o = json.loads(cq)
+            labels = o.get("labels") if isinstance(o, dict) else None
+            if isinstance(labels, dict):
+                an = str(labels.get("alertname") or labels.get("alert_name") or "").strip()
+                if an:
+                    return an[:240]
+        except Exception:
+            pass
+    return "unknown"
+
+
+def _events_probe_ids() -> frozenset[str]:
+    return frozenset({"k8s_clinical_pod_events", "k8s_events_probe"})
+
+
+def filter_evidence_for_rag(batch: list[dict[str, Any]], *, max_tokens: int = 512) -> str:
+    """
+    Minimal anti-GIGO text for RAG embedding: alert name, container reasons from PodStatus,
+    and critical events only — no raw HTTP/400 dumps.
+    """
+    if not batch:
+        return "[RAG_QUERY] (empty batch)"
+
+    alert_name = _alert_name_from_batch(batch)
+    container_reason = ""
+    status_ef: dict[str, Any] = {}
+    for b in batch:
+        if str(b.get("probe") or "") != "k8s_clinical_pod_status":
+            continue
+        status_ef = _parse_extracted_fact_obj(cast(dict[str, Any], b))
+        phase = str(status_ef.get("phase") or "").strip()
+        wr = status_ef.get("waiting_reasons")
+        wr_s = ", ".join(str(x) for x in wr) if isinstance(wr, list) else ""
+        sig = status_ef.get("container_signals")
+        if isinstance(sig, list):
+            sig_s = ", ".join(str(x) for x in sig[:12])
+        else:
+            sig_s = str(sig or "")[:500]
+        container_reason = f"phase={phase} waiting_reasons=[{wr_s}] signals=[{sig_s}]"
+        break
+
+    ev_lines: list[str] = []
+    for b in batch:
+        pid = str(b.get("probe") or "")
+        if pid not in _events_probe_ids():
+            continue
+        raw = str(b.get("raw") or "")
+        raw = _RE_HTTP_JUNK.sub("", raw).strip()
+        if raw:
+            ev_lines.append(raw[:1200])
+
+    critical = "\n---\n".join(ev_lines) if ev_lines else ""
+    critical = _RE_HTTP_JUNK.sub("", critical).strip()
+
+    parts = [
+        "[RAG_QUERY]",
+        f"alert_name={alert_name}",
+        f"container_reason={container_reason[:1200]}",
+        f"critical_events={critical[:2000]}",
+    ]
+    text = "\n".join(p for p in parts if p)
+    return truncate_for_embedding(text, max_tokens=max_tokens)

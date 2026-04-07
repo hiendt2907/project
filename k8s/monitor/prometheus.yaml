@@ -272,6 +272,17 @@ data:
             annotations:
               summary: "redis-exporter is down"
               description: "Redis metrics exporter scrape is down for 2m."
+          # Lab / nghiệm thu V3: Pod Running nhưng Ready=False (readiness probe sai port/path).
+          - alert: ProbeFailureLab
+            expr: kube_pod_status_ready{namespace="multi-agent", pod=~"redis-exporter-.*", condition="true"} == 0
+            for: 90s
+            labels:
+              severity: warning
+              domain: redis
+              namespace: multi-agent
+            annotations:
+              summary: "Readiness probe failing for redis-exporter"
+              description: "kube_pod_status_ready is 0 (expect probe to :9121/metrics). Context deadline / wrong port possible."
           - alert: OmniPostgresNodeLoss
             expr: count(up{job="kubernetes-pods",kubernetes_namespace="multi-agent",kubernetes_pod_name=~"omni-postgres-[0-9]+"} == 1) < 3
             for: 2m
@@ -373,6 +384,44 @@ data:
             annotations:
               summary: "nginx-test pod CPU sustained high (cAdvisor lab rule)"
               description: "nginx container CPU rate > 0.04 cores (~80% of 50m limit). Pod {{ $labels.pod }}."
+          # Lab: kube-state-metrics — container chờ lỗi (vd. 4Mi bị OrbStack reject → CreateContainerError) hoặc CrashLoop.
+          - alert: NginxTestContainerWaitingFaultLab
+            expr: |
+              max by (namespace, pod, container, reason) (
+                kube_pod_container_status_waiting_reason{
+                  namespace="multi-agent",
+                  pod=~"nginx-test-.*",
+                  container="nginx",
+                  reason=~"CreateContainerError|CreateContainerConfigError|CrashLoopBackOff|ImagePullBackOff|ErrImagePull"
+                }
+              ) > 0
+            for: 30s
+            labels:
+              severity: critical
+              domain: lab
+              workload: nginx-test
+            annotations:
+              summary: "nginx-test container waiting with fault reason (lab)"
+              description: "Pod {{ $labels.pod }} container {{ $labels.container }} reason={{ $labels.reason }} (kube-state-metrics)."
+          # Lab: lần terminate gần nhất = OOMKilled (cần spike RAM hoặc limit quá thấp sau khi container đã chạy).
+          - alert: NginxTestContainerLastTerminatedOOMLab
+            expr: |
+              max by (namespace, pod, container, reason) (
+                kube_pod_container_status_last_terminated_reason{
+                  namespace="multi-agent",
+                  pod=~"nginx-test-.*",
+                  container="nginx",
+                  reason="OOMKilled"
+                }
+              ) > 0
+            for: 30s
+            labels:
+              severity: critical
+              domain: lab
+              workload: nginx-test
+            annotations:
+              summary: "nginx-test container last termination OOMKilled (lab)"
+              description: "Pod {{ $labels.pod }} container {{ $labels.container }} last OOMKilled (kube-state-metrics)."
       # Pod resource pressure — cAdvisor + kube_pod_container_resource_limits (kube-state-metrics).
       # Scope: namespace multi-agent; tune thresholds via annotations / replays.
       - name: omni_pod_resource_alerts

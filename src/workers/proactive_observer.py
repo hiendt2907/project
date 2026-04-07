@@ -56,6 +56,14 @@ from workers.proactive_models import DEFAULT_RULE, AnomalyEvent
 from workers.proactive_policy_gate import learning_governance_decision as _learning_governance_decision
 from workers.proactive_react_runner import run_proactive_react_fallback
 from workers.otel_tracing import child_span, proactive_trace_span
+from workers.autonomy_contract import (
+    TRANSITION_CONTEXT_READY,
+    TRANSITION_INGESTED,
+    TRANSITION_REQUIRES_HUMAN,
+    TRANSITION_VERIFIED_SUCCESS,
+    emit_terminal_tombstone,
+    emit_transition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -631,6 +639,14 @@ async def _fail_safe_after_tool_error(
             )
         except Exception as e:
             logger.warning("[%s] proactive telegram fail_safe: %s", trace, e)
+    await emit_terminal_tombstone(
+        ctx,
+        trace_id=trace,
+        reason_code=reason_code,
+        component="proactive_observer",
+        detail=str(err)[:1200],
+        meta={"tool": call.tool, "pattern_key": pattern_key},
+    )
 
 
 async def _append_audit(
@@ -910,6 +926,13 @@ async def _process_proactive_message(
         return
 
     trace = ev.trace_id
+    await emit_transition(
+        ctx,
+        trace_id=trace,
+        transition=TRANSITION_INGESTED,
+        component="proactive_observer",
+        detail=f"msg_id={msg_id}",
+    )
     if ws.proactive_gigo_require_cluster_identity:
         ok_gigo, gigo_detail = proactive_gigo_cluster_identity_ok(ev)
         if not ok_gigo:
@@ -927,6 +950,14 @@ async def _process_proactive_message(
     tok_trace = push_trace_id(trace)
     try:
         pattern_key = _pattern_key_from_event(ev)
+        timed_out = False
+        await emit_transition(
+            ctx,
+            trace_id=trace,
+            transition=TRANSITION_CONTEXT_READY,
+            component="proactive_observer",
+            detail=f"pattern_key={pattern_key}",
+        )
         prev_proactive = getattr(ctx, "inbound_proactive", False)
         prev_trace = getattr(ctx, "inbound_trace_id", "")
         ctx.inbound_proactive = True
@@ -955,6 +986,7 @@ async def _process_proactive_message(
                         timeout=ws.proactive_event_timeout_sec,
                     )
                 except asyncio.TimeoutError:
+                    timed_out = True
                     inc_proactive_event_timeout()
                     logger.warning("[%s] proactive_event_timeout_sec exceeded", trace)
                     await _append_audit(
@@ -976,11 +1008,35 @@ async def _process_proactive_message(
                         )
                     except Exception:
                         logger.exception("[%s] dlq event timeout", trace)
+                    await emit_terminal_tombstone(
+                        ctx,
+                        trace_id=trace,
+                        reason_code="EVENT_TIMEOUT",
+                        component="proactive_observer",
+                        detail=f"msg_id={msg_id}",
+                    )
         finally:
             observe_proactive_incident_duration(time.monotonic() - t0_incident)
             await ctx.semaphore.release(token)
             ctx.inbound_proactive = prev_proactive
             ctx.inbound_trace_id = prev_trace
+        if not timed_out:
+            await emit_transition(
+                ctx,
+                trace_id=trace,
+                transition=TRANSITION_VERIFIED_SUCCESS,
+                component="proactive_observer",
+                detail="pipeline_complete",
+            )
+        else:
+            await emit_transition(
+                ctx,
+                trace_id=trace,
+                transition=TRANSITION_REQUIRES_HUMAN,
+                status="error",
+                component="proactive_observer",
+                detail="pipeline_timeout",
+            )
     finally:
         pop_trace_id(tok_trace)
 
@@ -1020,7 +1076,7 @@ async def kafka_proactive_incidents_loop(ctx: WorkerHandlerContext, stop: asynci
                 for msg in batch:
                     if stop.is_set():
                         return
-                    fields = decode_kafka_value_to_fields(msg.value)
+                    fields = decode_kafka_value_to_fields(msg.value, msg.headers)
                     raw = fields.get("data") or fields.get("payload") or "{}"
                     msg_id = kafka_msg_id(msg.topic, msg.partition, msg.offset)
                     _dbg_log(

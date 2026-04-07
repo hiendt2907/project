@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from workers.baseline_snapshot import REDIS_KEY_SNAPSHOT
+from workers.env_mode import is_dev_mode
 from workers.observation_sanitize import sanitize_for_llm
 from workers.react_logging import log_react_json
 from workers.tool_observation import prepare_observation_for_llm, prepare_tool_return_for_llm
@@ -164,6 +165,8 @@ def _schemas_for_safe_tools(safe: set[str]) -> str:
 
 
 def _validate_k8s_ns(ws: Any, call: ToolCallPayload, allowed_ns: set[str]) -> bool:
+    if is_dev_mode(ws):
+        return True
     if call.tool != "k8s_rollout_restart":
         return True
     ns = str(call.args.get("namespace") or "").strip()

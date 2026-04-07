@@ -4,17 +4,22 @@
 # kubectl port-forward trên laptop vẫn là legacy (dễ không đạt ngưỡng CPU).
 #
 # Hai kịch bản E2E:
-#   (A) Synthetic:  SKIP_STRESS=1 bash scripts/nginx_test_cpu_alert_lab.sh
-#   (B) CPU thật:     bash scripts/nginx_test_cpu_alert_lab.sh
+#   (A) Synthetic (pipeline evidence + RAG/LLM): SKIP_STRESS=1 bash scripts/nginx_test_cpu_alert_lab.sh
+#   (B) CPU thật — tải xong rồi mới POST: bash scripts/nginx_test_cpu_alert_lab.sh
+#   (C) CPU thật — giữ tải trong lúc POST + verify (true alarm, SDK PodMetrics còn cao):
+#         STRESS_OVERLAP_ALERT=1 WARMUP_SEC=15 SLEEP_SEC=60 bash scripts/nginx_test_cpu_alert_lab.sh
 #
 # Env:
 #   STRESS_MODE=curl        # mặc định: Pod curlimages + N worker curl → LOAD_TARGET
 #   STRESS_MODE=portforward # legacy: port-forward host + curl
 #   CURL_IMAGE=curlimages/curl:8.5.0
 #   LOAD_TARGET=http://nginx-test.multi-agent.svc.cluster.local/
-#   LOAD_CONCURRENCY=10000
+#   LOAD_CONCURRENCY=256        # mặc định: ~256 worker (mỗi worker = vòng lặp curl). ĐỪNG để 5000+ — dễ OOM load pod.
 #   STRESS_SEC=15
 #   SKIP_STRESS=1
+#   STRESS_OVERLAP_ALERT=1   # giữ pod load chạy khi gọi gateway (khuyến nghị cho true alarm)
+#   OVERLAP_STRESS_SEC=300   # thời gian load pod còn sống (curl vòng lặp)
+#   WARMUP_SEC=10            # đợi sau Ready trước khi POST (PodMetrics/metrics-server)
 #   WAIT_PROM_CPU=1
 #   NS=multi-agent
 #
@@ -37,7 +42,11 @@ E2E_EXEC_DEPLOY="${E2E_EXEC_DEPLOY:-omni-prober}"
 STRESS_MODE="${STRESS_MODE:-curl}"
 LOAD_TARGET="${LOAD_TARGET:-http://nginx-test.${NS}.svc.cluster.local/}"
 CURL_IMAGE="${CURL_IMAGE:-curlimages/curl:8.5.0}"
-LOAD_CONCURRENCY="${LOAD_CONCURRENCY:-10000}"
+LOAD_CONCURRENCY="${LOAD_CONCURRENCY:-256}"
+STRESS_OVERLAP_ALERT="${STRESS_OVERLAP_ALERT:-0}"
+OVERLAP_STRESS_SEC="${OVERLAP_STRESS_SEC:-300}"
+WARMUP_SEC="${WARMUP_SEC:-10}"
+POD_LOAD=""
 
 PF_HOST="${PF_HOST:-127.0.0.1}"
 PF_LOCAL_PORT="${PF_LOCAL_PORT:-18080}"
@@ -45,6 +54,10 @@ PF_LOCAL_PORT="${PF_LOCAL_PORT:-18080}"
 TMP="$(mktemp -d)"
 PF_PID=""
 cleanup() {
+  if [[ -n "${POD_LOAD:-}" ]]; then
+    "${KUBE}" delete pod "${POD_LOAD}" -n "${NS}" --ignore-not-found=true --wait=false 2>/dev/null || true
+    POD_LOAD=""
+  fi
   if [[ "${STRESS_MODE}" == "portforward" ]]; then
     # shellcheck disable=SC2046
     kill $(jobs -p) 2>/dev/null || true
@@ -70,10 +83,20 @@ fi
 echo "nginx-test pod: ${POD}"
 
 if [[ "${SKIP_STRESS}" != "1" && "${STRESS_CPU}" == "1" ]]; then
+  if [[ "${LOAD_CONCURRENCY}" =~ ^[0-9]+$ ]] && [[ "${LOAD_CONCURRENCY}" -gt 2000 ]]; then
+    echo "WARN: LOAD_CONCURRENCY=${LOAD_CONCURRENCY} rất cao — mỗi worker là một tiến trình nền; dễ OOM Pod load (curl). Khuyến nghị 128–512." >&2
+  fi
   echo ""
   if [[ "${STRESS_MODE}" == "curl" ]]; then
-    echo "=== 2) In-cluster load: ${CURL_IMAGE} — ${LOAD_CONCURRENCY}× curl loop → ${LOAD_TARGET} (${STRESS_SEC}s) ==="
+    if [[ "${STRESS_OVERLAP_ALERT}" == "1" ]]; then
+      LOAD_SLEEP="${OVERLAP_STRESS_SEC}"
+      echo "=== 2) In-cluster load (OVERLAP alert): ${CURL_IMAGE} — ${LOAD_CONCURRENCY}× curl → ${LOAD_TARGET} (sleep ${LOAD_SLEEP}s, pod giữ chạy đến khi xong bước 3) ==="
+    else
+      LOAD_SLEEP="${STRESS_SEC}"
+      echo "=== 2) In-cluster load: ${CURL_IMAGE} — ${LOAD_CONCURRENCY}× curl loop → ${LOAD_TARGET} (${LOAD_SLEEP}s) ==="
+    fi
     POD_LOAD="nginx-load-$(date +%s)"
+    export POD_LOAD
     # Heredoc bash: \$ để biến chạy trong container, không expand ở máy gọi kubectl.
     cat <<EOF | "${KUBE}" apply -f -
 apiVersion: v1
@@ -97,7 +120,7 @@ spec:
             (while true; do curl -fsS -o /dev/null "\$URL" 2>/dev/null || true; done) &
             i=\$((i+1))
           done
-          sleep ${STRESS_SEC}
+          sleep ${LOAD_SLEEP}
           echo load_done
       resources:
         requests:
@@ -107,16 +130,26 @@ spec:
           cpu: "4"
           memory: 4Gi
 EOF
-    if ! "${KUBE}" wait --for=jsonpath='{.status.phase}'=Succeeded "pod/${POD_LOAD}" -n "${NS}" --timeout="$((STRESS_SEC + 180))s"; then
-      echo "FAIL: load pod không Succeeded." >&2
-      "${KUBE}" get "pod/${POD_LOAD}" -n "${NS}" -o wide || true
-      "${KUBE}" describe "pod/${POD_LOAD}" -n "${NS}" | tail -40 || true
-      "${KUBE}" logs "pod/${POD_LOAD}" -n "${NS}" --tail=80 || true
-      "${KUBE}" delete pod "${POD_LOAD}" -n "${NS}" --ignore-not-found=true --wait=false 2>/dev/null || true
-      exit 1
+    if [[ "${STRESS_OVERLAP_ALERT}" == "1" ]]; then
+      if ! "${KUBE}" wait --for=condition=Ready "pod/${POD_LOAD}" -n "${NS}" --timeout=180s; then
+        echo "FAIL: load pod không Ready." >&2
+        exit 1
+      fi
+      echo "=== 2a) Warmup ${WARMUP_SEC}s — để CPU nginx và PodMetrics tăng trước POST alert ==="
+      sleep "${WARMUP_SEC}"
+    else
+      if ! "${KUBE}" wait --for=jsonpath='{.status.phase}'=Succeeded "pod/${POD_LOAD}" -n "${NS}" --timeout="$((STRESS_SEC + 180))s"; then
+        echo "FAIL: load pod không Succeeded." >&2
+        "${KUBE}" get "pod/${POD_LOAD}" -n "${NS}" -o wide || true
+        "${KUBE}" describe "pod/${POD_LOAD}" -n "${NS}" | tail -40 || true
+        "${KUBE}" logs "pod/${POD_LOAD}" -n "${NS}" --tail=80 || true
+        "${KUBE}" delete pod "${POD_LOAD}" -n "${NS}" --ignore-not-found=true --wait=false 2>/dev/null || true
+        exit 1
+      fi
+      "${KUBE}" logs "pod/${POD_LOAD}" -n "${NS}" --tail=30 || true
+      "${KUBE}" delete pod "${POD_LOAD}" -n "${NS}" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+      POD_LOAD=""
     fi
-    "${KUBE}" logs "pod/${POD_LOAD}" -n "${NS}" --tail=30 || true
-    "${KUBE}" delete pod "${POD_LOAD}" -n "${NS}" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
   elif [[ "${STRESS_MODE}" == "portforward" ]]; then
     echo "=== 2) LEGACY port-forward ${PF_HOST}:${PF_LOCAL_PORT} + curl workers (host) ==="
     "${KUBE}" port-forward -n "${NS}" --address "${PF_HOST}" "deploy/nginx-test" "${PF_LOCAL_PORT}:80" &

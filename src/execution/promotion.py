@@ -10,6 +10,7 @@ from typing import Any
 from execution.manager import SandboxManager
 from execution.policy import PolicyVerdict, check_promotion_tool
 from workers.k8s_tools import (
+    deployment_evidence_snapshot,
     execute_rollout_restart_from_pending,
     redis_key_write_pending,
 )
@@ -51,6 +52,7 @@ async def run_gated_allowlisted_execute(ctx: Any, args: dict[str, Any]) -> str:
         intended_tool,
         lab_unchained=bool(ws.lab_unchained),
         cluster_full_access=bool(getattr(ws, "cluster_full_access", False)),
+        env_mode=str(getattr(ws, "env_mode", "prod") or "prod"),
     )
     if pol.verdict == PolicyVerdict.DENIED:
         return f"[DATA] error\n[DIAGNOSIS] Promotion policy: {pol.reason}"
@@ -153,6 +155,11 @@ async def run_gated_allowlisted_execute(ctx: Any, args: dict[str, Any]) -> str:
                 "deployment": dep,
                 "trace_id": trace,
             }
+            if bool(getattr(ws, "pre_action_state_revalidate_enabled", True)):
+                try:
+                    pending["evidence_snapshot"] = await deployment_evidence_snapshot(ns, dep)
+                except Exception as e:
+                    logger.warning("write_pending evidence_snapshot: %s", e)
             await ctx.redis.set(
                 redis_key_write_pending(int(chat_id)),
                 json.dumps(pending, ensure_ascii=False),

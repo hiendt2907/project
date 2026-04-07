@@ -10,9 +10,12 @@ import httpx
 
 from workers.diagnostic_evidence import ProbeRunRaw
 from workers.diagnostic_k8s_clinical import (
+    probe_k8s_clinical_pod_events,
+    probe_k8s_clinical_pod_log_previous,
     probe_k8s_clinical_pod_log_tail,
     probe_k8s_clinical_pod_metrics,
     probe_k8s_clinical_pod_status,
+    probe_k8s_resource_quota_probe,
 )
 from workers.diagnostic_resource import pod_identity_from_event
 from workers.k8s_tools import _load_k8s_config
@@ -194,6 +197,10 @@ PROBE_REGISTRY: dict[str, ProbeFn] = {
     "k8s_clinical_pod_status": probe_k8s_clinical_pod_status,
     "k8s_clinical_pod_metrics": probe_k8s_clinical_pod_metrics,
     "k8s_clinical_pod_log_tail": probe_k8s_clinical_pod_log_tail,
+    "k8s_clinical_pod_log_previous": probe_k8s_clinical_pod_log_previous,
+    "k8s_clinical_pod_events": probe_k8s_clinical_pod_events,
+    "k8s_events_probe": probe_k8s_clinical_pod_events,
+    "k8s_resource_quota_probe": probe_k8s_resource_quota_probe,
     "prom_pod_cpu_cores": probe_prom_pod_cpu_cores,
     "prom_pod_memory_wss": probe_prom_pod_memory_wss,
 }

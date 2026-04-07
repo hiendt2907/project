@@ -6,9 +6,14 @@ import logging
 import time
 from typing import Any
 
+from pkg.reasoning.sre_output import compact_sre_diagnosis
+
 from workers import ollama_prompts_en as ope
 from workers.baseline_snapshot import fetch_baseline_system_prompt
 from workers.handler_context import WorkerHandlerContext
+from pkg.reasoning.two_channel_sdk import parse_two_channel_sdk_only
+
+from workers.llm_context_budget import effective_reply_max_words, truncate_to_words
 from workers.infra_context import enrich_working_text_with_infra, fetch_k8s_expert_context_for_diagnostic
 from workers.infra_preflight import preflight_infra_kb
 from workers.log_preview import log_preview
@@ -106,7 +111,7 @@ async def reason_diagnostic_evidence_only(
                 baseline = await fetch_baseline_system_prompt(
                     ctx.redis, ctx.settings.baseline_system_prompt_max_chars
                 )
-        max_words = int(getattr(ctx.settings, "omni_summary_max_words", 100))
+        max_words = effective_reply_max_words(ctx.settings)
         if sanitized:
             kb_note = ""
             if kb_expert:
@@ -132,6 +137,9 @@ async def reason_diagnostic_evidence_only(
             )
             num_predict = None
         model = ctx.settings.model_reasoning_engine
+        dm = getattr(ctx.settings, "diag_evidence_llm_model", None) or ""
+        if isinstance(dm, str) and dm.strip():
+            model = dm.strip()
         inc_llm_requests()
         chat_opts: dict[str, Any] = {"num_predict": num_predict} if num_predict else {}
         resp = await ctx.ollama.chat(
@@ -150,8 +158,11 @@ async def reason_diagnostic_evidence_only(
                 "Compare SDK PodMetrics vs alert; if SDK shows ~0% CPU, classify FALSE_ALARM / STALE_METRIC."
             )
         else:
-            out = ope.truncate_plain_text_to_max_words(
-                raw_ollama.strip(),
+            out = compact_sre_diagnosis(
+                ope.truncate_plain_text_to_max_words(
+                    raw_ollama.strip(),
+                    max_words=max_words,
+                ),
                 max_words=max_words,
             )
         return out
@@ -169,3 +180,90 @@ async def reason_diagnostic_evidence_only(
             out_preview=log_preview(end_out if not err else f"{type(err).__name__}: {err}", max_chars=1600),
             error=(f"{type(err).__name__}: {err}" if err else None),
         )
+
+
+_ZERO_KNOWLEDGE_SYSTEM = (
+    "[MODE: ZERO_KNOWLEDGE — RAG miss]\n"
+    "You have NO retrieval-augmented knowledge for this turn. "
+    "Infer ONLY from the diagnostic evidence below (Kubernetes SDK probes, structured facts in the block).\n"
+    "Do NOT invent fixes from general documentation or memory. "
+    "If you cannot ground a conclusion in the evidence, set verdict ESCALATE in MACHINE_JSON.\n\n"
+    "Output format (strict, English):\n"
+    "MACHINE_JSON: {\"verdict\":\"DIAGNOSE\"|\"ESCALATE\",\"hypothesis\":\"...\",\"action\":{\"tool\":\"\",\"args\":{}}}\n"
+    "HUMAN_SUMMARY: <at most 30 words, one line>\n\n"
+    "MACHINE_JSON must be one line, max 600 characters. action.tool must be empty unless you have "
+    "namespace+deployment from evidence labels for an allowlisted rollout (otherwise ESCALATE)."
+)
+
+
+async def reason_diagnostic_rag_miss_sdk_only(
+    ctx: WorkerHandlerContext,
+    payload: dict[str, Any],
+    trace: str,
+) -> dict[str, Any]:
+    """
+    RAG miss + Truth Law: LLM allowed, SDK-only reasoning, two-channel output.
+    Returns: human_summary, machine dict|None, raw_llm, display_line (for legacy return).
+    """
+    _ = trace
+    raw_user_text = str(payload.get("text") or "").strip()
+    if not raw_user_text:
+        return {
+            "human": "No evidence.",
+            "machine": {"verdict": "ESCALATE", "hypothesis": "empty input", "action": {}},
+            "raw_llm": "",
+            "display_line": "No text content.",
+        }
+    if not ctx.scout_ready.is_set():
+        return {
+            "human": "Baseline not ready.",
+            "machine": {"verdict": "ESCALATE", "hypothesis": "scout not ready", "action": {}},
+            "raw_llm": "",
+            "display_line": "Deep Scout baseline not ready; retry shortly.",
+        }
+
+    max_words = effective_reply_max_words(ctx.settings)
+    system = (
+        "[OUTPUT_LANGUAGE] English only. No Vietnamese.\n\n"
+        + _ZERO_KNOWLEDGE_SYSTEM
+        + f"\n\nHUMAN_SUMMARY must be at most {max_words} words."
+    )
+    model = ctx.settings.model_reasoning_engine
+    dm = getattr(ctx.settings, "diag_evidence_llm_model", None) or ""
+    if isinstance(dm, str) and dm.strip():
+        model = dm.strip()
+    inc_llm_requests()
+    resp = await ctx.ollama.chat(
+        model=model,
+        messages=[
+            {"role": "system", "content": system[:16000]},
+            {"role": "user", "content": raw_user_text[:24000]},
+        ],
+        keep_alive=ctx.settings.ollama_keep_alive,
+        options={"num_predict": 512, "temperature": 0.1},
+    )
+    raw_ollama = _ollama_message_content(resp)
+    if not raw_ollama.strip():
+        return {
+            "human": "Empty model output.",
+            "machine": {"verdict": "ESCALATE", "hypothesis": "LLM empty", "action": {}},
+            "raw_llm": "",
+            "display_line": "ANALYST_EMPTY: Ollama returned no text.",
+        }
+
+    parsed = parse_two_channel_sdk_only(raw_ollama)
+    human = truncate_to_words(parsed.get("human") or raw_ollama, max_words)
+    machine = parsed.get("machine")
+    if not isinstance(machine, dict):
+        machine = {"verdict": "ESCALATE", "hypothesis": "unparseable machine json", "action": {}}
+
+    display = f"{human}\n[MACHINE]{json.dumps(machine, ensure_ascii=False)[:800]}"
+    return {
+        "human": human,
+        "machine": machine,
+        "raw_llm": raw_ollama,
+        "display_line": compact_sre_diagnosis(
+            ope.truncate_plain_text_to_max_words(display.strip(), max_words=max_words),
+            max_words=max_words,
+        ),
+    }

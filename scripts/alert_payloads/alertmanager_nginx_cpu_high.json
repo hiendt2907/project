@@ -8,7 +8,7 @@
         "alertname": "HighCPUUsage",
         "severity": "warning",
         "namespace": "multi-agent",
-        "pod": "nginx-test-6d56cf59f6-zzzsg",
+        "pod": "nginx-test-DYNAMIC",
         "deployment": "nginx-test",
         "container": "nginx"
       },

@@ -24,6 +24,43 @@ PROACTIVE_MUTATE_TOOLS: frozenset[str] = frozenset(
 )
 
 
+_POD_FQN_TAIL = re.compile(r"-[a-f0-9]{9,10}-[a-z0-9]{5}$", re.IGNORECASE)
+_RS_TAIL = re.compile(r"-[a-f0-9]{9,10}$", re.IGNORECASE)
+
+
+def looks_like_kubernetes_pod_full_name(name: str) -> bool:
+    """Pod name …-replicasethash-podhash (tránh đưa làm Deployment)."""
+    s = (name or "").strip()
+    if len(s) < 18:
+        return False
+    return bool(_POD_FQN_TAIL.search(s))
+
+
+def looks_like_kubernetes_replicaset_name(name: str) -> bool:
+    """ReplicaSet …-deployment-hash (không phải tên Deployment)."""
+    s = (name or "").strip()
+    if len(s) < 12:
+        return False
+    if looks_like_kubernetes_pod_full_name(s):
+        return False
+    return bool(_RS_TAIL.search(s)) and len(s) > 24
+
+
+def proactive_rollout_restart_allowed(ev: "AnomalyEvent", args: dict[str, Any]) -> tuple[bool, str]:
+    """Bắt buộc namespace + deployment; từ chối hint giống Pod/ReplicaSet."""
+    ns = str((args or {}).get("namespace") or getattr(ev, "namespace", "") or "").strip()
+    dep = str((args or {}).get("deployment") or (args or {}).get("name") or "").strip()
+    if not ns:
+        return False, "missing_namespace"
+    if not dep:
+        return False, "missing_deployment"
+    if looks_like_kubernetes_pod_full_name(dep):
+        return False, "hint_looks_like_pod_name"
+    if looks_like_kubernetes_replicaset_name(dep):
+        return False, "hint_looks_like_replicaset_name"
+    return True, ""
+
+
 def proactive_gigo_cluster_identity_ok(ev: "AnomalyEvent") -> tuple[bool, str]:
     """GIGO ingress: cần ít nhất một trong hai — scope K8s (namespace) hoặc ngữ cảnh PromQL (trigger).
 

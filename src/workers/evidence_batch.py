@@ -13,15 +13,35 @@ AGG_TIMEOUT_SEC = 3.0
 BATCH_TTL = 120
 FLUSH_LOCK_TTL = 30
 
+# Khớp `resource_probe_ids` / `kube_pod_state_probe_ids` — gom đủ trước RAG (tránh flush 2/5 probe).
+_WORKLOAD_FULL_PROBE_SET = frozenset(
+    {
+        "k8s_clinical_pod_status",
+        "k8s_clinical_pod_metrics",
+        "k8s_clinical_pod_log_tail",
+        "prom_pod_cpu_cores",
+        "prom_pod_memory_wss",
+    }
+)
+
 REDIS_BATCH = "omni:diag_batch:{trace}"
 REDIS_T0 = "omni:diag_batch_t0:{trace}"
 REDIS_LOCK = "omni:diag_flush_lock:{trace}"
+REDIS_EXPECTED = "omni:diag_expected:{trace}"
 
 
 def _decode(b: Any) -> str:
     if isinstance(b, bytes):
         return b.decode("utf-8", errors="replace")
     return str(b)
+
+
+async def register_diag_expected_probes(redis: Any, trace: str, probes: list[str]) -> None:
+    """Expected probe ids for this trace (smart dispatcher). TTL matches batch window."""
+    try:
+        await redis.setex(REDIS_EXPECTED.format(trace=trace), BATCH_TTL, json.dumps(probes))
+    except Exception as e:
+        logger.warning("event=diag_expected_register_fail trace=%s err=%s", trace, e)
 
 
 async def append_evidence_and_take_flush_batch(
@@ -56,13 +76,24 @@ async def append_evidence_and_take_flush_batch(
     keys = {_decode(x) for x in (keys_raw or [])}
 
     sym = str(ev_doc.get("symptom_group") or "").strip()
-    workload = sym == "workload_resource"
+    workload = sym in ("workload_resource", "pod_container_state")
+
+    expected_set: frozenset[str] | None = None
+    try:
+        raw_exp = await redis.get(REDIS_EXPECTED.format(trace=trace))
+        if raw_exp:
+            exp_list = json.loads(_decode(raw_exp))
+            if isinstance(exp_list, list) and exp_list:
+                expected_set = frozenset(str(x) for x in exp_list)
+    except Exception:
+        expected_set = None
 
     ready = False
     if workload:
-        ready = (
-            "k8s_clinical_pod_status" in keys and "k8s_clinical_pod_metrics" in keys
-        ) or elapsed >= AGG_TIMEOUT_SEC
+        if expected_set is not None:
+            ready = expected_set <= keys or elapsed >= AGG_TIMEOUT_SEC
+        else:
+            ready = _WORKLOAD_FULL_PROBE_SET <= keys or elapsed >= AGG_TIMEOUT_SEC
     else:
         # Matrix / khác: gom tối đa 3s hoặc ≥2 probe (thường redis+kafka)
         ready = elapsed >= AGG_TIMEOUT_SEC or len(keys) >= 2
@@ -80,7 +111,7 @@ async def append_evidence_and_take_flush_batch(
 
     try:
         blob = await redis.hgetall(hk)
-        for kdel in (hk, tk, lk):
+        for kdel in (hk, tk, lk, REDIS_EXPECTED.format(trace=trace)):
             try:
                 await redis.delete(kdel)
             except Exception:
@@ -96,6 +127,10 @@ async def append_evidence_and_take_flush_batch(
         # Thứ tự ổn định theo probe
         order = [
             "k8s_clinical_pod_status",
+            "k8s_clinical_pod_events",
+            "k8s_events_probe",
+            "k8s_resource_quota_probe",
+            "k8s_clinical_pod_log_previous",
             "k8s_clinical_pod_metrics",
             "k8s_clinical_pod_log_tail",
             "prom_pod_cpu_cores",

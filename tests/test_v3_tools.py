@@ -74,12 +74,13 @@ def test_all_schemas_json_string() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_approval_writes_redis_key_with_ttl() -> None:
+async def test_request_approval_returns_false_no_redis_escalation_contract() -> None:
     redis = FakeAsyncRedis()
     ctx = SimpleNamespace(
         redis=redis,
-        settings=SimpleNamespace(approval_request_ttl_sec=600, telegram_admin_chat_id=None),
+        settings=SimpleNamespace(telegram_admin_chat_id=None),
         telegram=None,
+        inbound_trace_id="trace-t",
     )
     ok = await request_approval(
         ctx,
@@ -89,23 +90,15 @@ async def test_request_approval_writes_redis_key_with_ttl() -> None:
     )
     assert ok is False
     keys = [k for k in await redis.keys(f"{APPROVAL_KEY_PREFIX}*")]
-    assert len(keys) == 1
-    ttl = await redis.ttl(keys[0])
-    assert ttl > 0
+    assert len(keys) == 0
 
 
 @pytest.mark.asyncio
-async def test_approval_status_reads_pending() -> None:
+async def test_approval_status_deprecated_returns_none() -> None:
     redis = FakeAsyncRedis()
     ctx = SimpleNamespace(redis=redis)
-    token = "deadbeefcafe"
-    key = f"{APPROVAL_KEY_PREFIX}{token}"
-    await redis.set(
-        key,
-        '{"status":"pending","tool":"t","fp":"f","token":"deadbeefcafe"}',
-    )
-    st = await approval_status(ctx, token)
-    assert st == "pending"
+    st = await approval_status(ctx, "any")
+    assert st is None
 
 
 def test_prepare_tool_return_truncates_and_sanitizes() -> None:

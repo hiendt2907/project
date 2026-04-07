@@ -195,7 +195,11 @@ class SandboxManager:
                 policy_reason="command_too_long",
             )
 
-        pol = check_sandbox_command(cmd, lab_unchained=bool(self._s.lab_unchained))
+        pol = check_sandbox_command(
+            cmd,
+            lab_unchained=bool(self._s.lab_unchained),
+            env_mode=str(getattr(self._s, "env_mode", "prod") or "prod"),
+        )
         await self._audit_sandbox(
             kafka,
             trace_id=tid,

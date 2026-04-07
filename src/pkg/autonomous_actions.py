@@ -1,0 +1,67 @@
+"""Kafka contracts: SUGGEST_REMEDIATION (audit) vs EXECUTE_MUTATE (executor); omni-action-feedback."""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+ACTION_SUGGEST_REMEDIATION = "SUGGEST_REMEDIATION"
+ACTION_EXECUTE_MUTATE = "EXECUTE_MUTATE"
+
+
+def build_execute_mutate_body(
+    trace_id: str,
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    attempt_count: int,
+    correlation_id: str | None = None,
+) -> dict[str, Any]:
+    """Inner Kafka JSON for omni-actions — executor runs mutate after Pre-apply when allowed."""
+    cid = (correlation_id or "").strip() or str(uuid.uuid4())
+    return {
+        "action": ACTION_EXECUTE_MUTATE,
+        "trace_id": str(trace_id).strip(),
+        "data": {
+            "tool_name": str(tool_name).strip()[:256],
+            "args": dict(args) if isinstance(args, dict) else {},
+            "attempt_count": max(1, int(attempt_count)),
+            "correlation_id": cid,
+        },
+    }
+
+
+def build_action_feedback_body(
+    *,
+    trace_id: str,
+    tool_name: str,
+    correlation_id: str,
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+    status: str = "ok",
+    skipped_reason: str | None = None,
+    mutate_args: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Payload for omni-action-feedback (producer: executor)."""
+    return {
+        "trace_id": str(trace_id).strip(),
+        "tool_name": str(tool_name).strip()[:256],
+        "correlation_id": str(correlation_id).strip(),
+        "stdout": (stdout or "")[:24000],
+        "stderr": (stderr or "")[:12000],
+        "exit_code": int(exit_code),
+        "status": str(status)[:32],
+        "skipped_reason": (skipped_reason or "")[:2000] if skipped_reason else "",
+        "mutate_args": dict(mutate_args) if isinstance(mutate_args, dict) else {},
+    }
+
+
+def infer_exit_code_from_tool_output(text: str) -> int:
+    """Heuristic: tool returns human-readable string; 1 if error markers."""
+    s = (text or "").lower()
+    if "[data] error" in s or "[data] api_error" in s or "[data] stale_state" in s:
+        return 1
+    if "error" in s[:200] and "diagnosis" in s[:400]:
+        return 1
+    return 0

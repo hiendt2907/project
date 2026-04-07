@@ -57,16 +57,33 @@ data:
   OMNI_AUTONOMOUS_FIX_COOLDOWN_SEC: "600"
   OMNI_AUTONOMOUS_SAFE_TOOLS: "k8s_rollout_restart,redis_health,redis_expert_check,sandbox_cleanup"
   OMNI_AUTONOMOUS_ALLOWED_NAMESPACES: "multi-agent"
+  # Executor: cho phép chạy EXECUTE_MUTATE thay vì chỉ audit-only.
+  OMNI_AUTO_EXECUTE_ENABLED: "true"
+  # Emit restart mutate khi evidence là fault workload (probe/crashloop/createcontainer/imagepull...).
+  OMNI_AUTONOMOUS_ROLLOUT_ON_FAULT_INCIDENT: "true"
   # In-cluster service URLs & worker runtime (non-secret — override per lab via ConfigMap)
   OMNI_REDIS_URL: "redis://redis:6379/0"
   OMNI_REDIS_CLUSTER: "false"
   OMNI_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  OMNI_ENV_MODE: "prod"
   OMNI_OLLAMA_BASE_URL: "http://ollama-service:11434"
   OMNI_OLLAMA_NUM_PARALLEL: "1"
   OMNI_OLLAMA_HTTP_TIMEOUT_SEC: "600"
   OMNI_OLLAMA_HTTP_CONNECT_TIMEOUT_SEC: "15"
   OMNI_TELEGRAM_ENABLED: "true"
+  # Model profile (go-prod baseline on current Ollama inventory)
+  # - chat_model: fast/robust interactive + tool JSON
+  # - reasoning_engine: diagnosis/planning quality
+  # - heavy_lifter: long-context synthesis/compression
+  # - helper: JSON repair / lightweight transforms
+  # - diag_evidence_llm_model: planner in evidence_consumer (pin to avoid fallback drift)
+  # - autonomous_decider_model: autonomous decider loop
   OMNI_CHAT_MODEL: "qwen2.5:7b"
+  OMNI_MODEL_REASONING_ENGINE: "deepseek-r1:8b"
+  OMNI_MODEL_HEAVY_LIFTER: "gemma3:27b"
+  OMNI_MODEL_HELPER: "qwen2.5:1.5b"
+  OMNI_DIAG_EVIDENCE_LLM_MODEL: "deepseek-r1:8b"
+  OMNI_AUTONOMOUS_DECIDER_MODEL: "deepseek-r1:8b"
   OMNI_EMBED_MODEL: "nomic-embed-text:latest"
   OMNI_DEEP_SCOUT_INTERVAL_SEC: "1800"
   OMNI_METRICS_LISTEN_PORT: "9090"

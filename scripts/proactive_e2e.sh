@@ -9,6 +9,7 @@ KUBE="${ROOT}/scripts/with_working_kube.sh"
 PY="${ROOT}/.venv/bin/python"
 DURATION_SEC="${DURATION_SEC:-90}"
 INTERVAL_SEC="${INTERVAL_SEC:-10}"
+STRICT_ROLLOUT="${STRICT_ROLLOUT:-1}"
 
 usage() {
   cat <<'EOF'
@@ -17,6 +18,7 @@ Usage: scripts/proactive_e2e.sh [options]
 Environment:
   DURATION_SEC   Audit simulation window (default 90)
   INTERVAL_SEC   Seconds between gateway + XADD ticks (default 10)
+  E2E_INJECT_PROACTIVE  Set to 1 to pass --inject-proactive to full_system_audit (Kafka proactive inject)
 
 Steps:
   1. docker build worker + gateway (`multi-agent-system:latest`, `omni-gateway:latest`)
@@ -62,12 +64,21 @@ if [[ "${SKIP_RESTART}" -eq 0 ]]; then
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-executor.yaml"
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-gateway.yaml"
   "${KUBE}" rollout restart deployment/omni-worker deployment/omni-prober deployment/omni-analyst deployment/omni-core deployment/omni-executor deployment/omni-gateway -n multi-agent
-  "${KUBE}" rollout status deployment/omni-prober -n multi-agent --timeout=180s || true
-  "${KUBE}" rollout status deployment/omni-analyst -n multi-agent --timeout=180s || true
-  "${KUBE}" rollout status deployment/omni-core -n multi-agent --timeout=180s || true
-  "${KUBE}" rollout status deployment/omni-executor -n multi-agent --timeout=180s || true
-  "${KUBE}" rollout status deployment/omni-gateway -n multi-agent --timeout=180s || true
-  "${KUBE}" rollout status deployment/omni-worker -n multi-agent --timeout=60s || true
+  if [[ "${STRICT_ROLLOUT}" == "1" ]]; then
+    "${KUBE}" rollout status deployment/omni-prober -n multi-agent --timeout=180s
+    "${KUBE}" rollout status deployment/omni-analyst -n multi-agent --timeout=180s
+    "${KUBE}" rollout status deployment/omni-core -n multi-agent --timeout=180s
+    "${KUBE}" rollout status deployment/omni-executor -n multi-agent --timeout=180s
+    "${KUBE}" rollout status deployment/omni-gateway -n multi-agent --timeout=180s
+    "${KUBE}" rollout status deployment/omni-worker -n multi-agent --timeout=60s || true
+  else
+    "${KUBE}" rollout status deployment/omni-prober -n multi-agent --timeout=180s || true
+    "${KUBE}" rollout status deployment/omni-analyst -n multi-agent --timeout=180s || true
+    "${KUBE}" rollout status deployment/omni-core -n multi-agent --timeout=180s || true
+    "${KUBE}" rollout status deployment/omni-executor -n multi-agent --timeout=180s || true
+    "${KUBE}" rollout status deployment/omni-gateway -n multi-agent --timeout=180s || true
+    "${KUBE}" rollout status deployment/omni-worker -n multi-agent --timeout=60s || true
+  fi
   METRICS_DEPLOY="omni-prober"
   if replicas="$("${KUBE}" get deploy omni-worker -n multi-agent -o jsonpath='{.spec.replicas}' 2>/dev/null)" && [[ "${replicas:-0}" != "0" ]]; then
     METRICS_DEPLOY="omni-worker"
@@ -84,8 +95,17 @@ if [[ "${SKIP_RESTART}" -eq 0 ]]; then
 fi
 
 echo "[proactive_e2e] full_system_audit (${DURATION_SEC}s, interval ${INTERVAL_SEC}s) ..."
-exec "${PY}" "${ROOT}/scripts/full_system_audit.py" \
-  --duration-sec "${DURATION_SEC}" \
-  --interval-sec "${INTERVAL_SEC}" \
-  --strict \
-  --min-action-experience 0
+if [[ "${E2E_INJECT_PROACTIVE:-0}" == "1" ]]; then
+  exec "${PY}" "${ROOT}/scripts/full_system_audit.py" \
+    --duration-sec "${DURATION_SEC}" \
+    --interval-sec "${INTERVAL_SEC}" \
+    --strict \
+    --min-action-experience 0 \
+    --inject-proactive
+else
+  exec "${PY}" "${ROOT}/scripts/full_system_audit.py" \
+    --duration-sec "${DURATION_SEC}" \
+    --interval-sec "${INTERVAL_SEC}" \
+    --strict \
+    --min-action-experience 0
+fi

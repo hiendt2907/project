@@ -7,7 +7,12 @@ import logging
 from typing import Any
 
 from workers.handlers import WorkerHandlerContext
-from workers.llm_context_budget import truncate_for_llm
+from workers.env_mode import is_dev_mode
+from workers.llm_context_budget import (
+    effective_reply_max_words,
+    truncate_for_llm,
+    truncate_to_words,
+)
 from workers.metrics_exporter import (
     inc_learning_upsert,
     inc_llm_requests,
@@ -25,6 +30,7 @@ from workers.proactive_guardrails import (
     is_namespace_frozen_fallback,
     is_resource_frozen,
     proactive_lease_key,
+    proactive_rollout_restart_allowed,
     try_acquire_resource_lease,
 )
 from workers.proactive_models import AnomalyEvent
@@ -47,9 +53,10 @@ async def run_proactive_react_fallback(
     import workers.proactive_observer as po
 
     ws = ctx.settings
-    if ws.proactive_fallback_bypass_policy_in_god_mode and (
+    dev_mode = is_dev_mode(ws)
+    if dev_mode or (ws.proactive_fallback_bypass_policy_in_god_mode and (
         ws.god_mode or ws.lab_unchained or getattr(ws, "cluster_full_access", False)
-    ):
+    )):
         allowed_tools = set(TOOL_REGISTRY.keys())
     else:
         allowed_tools = {t.strip() for t in ws.proactive_fallback_allow_tools.split(",") if t.strip()}
@@ -106,7 +113,11 @@ async def run_proactive_react_fallback(
             confidence = pending_conf
             reason = pending_reason
         else:
+            wcap = effective_reply_max_words(ws)
             prompt = (
+                f"CONCISENESS: toi da {wcap} tu neu tra loi van ban; uu tien tool.\n"
+                f"k8s_list_pods: bat buoc namespace (khong quet ca cluster).\n"
+                f"k8s_rollout_restart: bat buoc namespace + deployment hop le (khong phai ten pod/RS).\n"
                 f"rule={ev.rule_name}\n"
                 f"metric_value={ev.metric_value}\nthreshold={ev.threshold}\n"
                 f"canonical_query={ev.canonical_query[:1000]}\n"
@@ -140,7 +151,8 @@ async def run_proactive_react_fallback(
                 continue
             if (
                 not (
-                    ws.proactive_fallback_bypass_policy_in_god_mode
+                    dev_mode
+                    or ws.proactive_fallback_bypass_policy_in_god_mode
                     and (ws.god_mode or ws.lab_unchained or getattr(ws, "cluster_full_access", False))
                 )
                 and confidence < ws.proactive_fallback_confidence_min
@@ -160,8 +172,37 @@ async def run_proactive_react_fallback(
                 phase = "treat"
                 continue
 
-        last_call = call
-        ref = extract_resource_ref(call.tool, call.args)
+        exec_call = call
+        if call.tool == "k8s_list_pods":
+            ns_arg = str((call.args or {}).get("namespace") or "").strip()
+            if bool(getattr(ws, "proactive_react_require_namespace_for_list", True)) and not ns_arg:
+                obs = f"iter#{iteration}:{phase}: list_pods_blocked_missing_namespace"
+                observations.append(obs)
+                await po._react_mem_append(ctx, trace, obs)
+                inc_proactive_fallback("policy_deny")
+                if phase == "treat":
+                    pending_treatment = None
+                    phase = "prescribe"
+                continue
+
+        if call.tool == "k8s_rollout_restart":
+            exec_args = dict(call.args or {})
+            if not str(exec_args.get("namespace") or "").strip() and (ev.namespace or "").strip():
+                exec_args["namespace"] = str(ev.namespace).strip()
+            ok_rr, deny = proactive_rollout_restart_allowed(ev, exec_args)
+            if not ok_rr:
+                obs = f"iter#{iteration}:{phase}: rollout_blocked={deny}"
+                observations.append(obs)
+                await po._react_mem_append(ctx, trace, obs)
+                inc_proactive_fallback("policy_deny")
+                if phase == "treat":
+                    pending_treatment = None
+                    phase = "prescribe"
+                continue
+            exec_call = call.model_copy(update={"args": exec_args})
+
+        last_call = exec_call
+        ref = extract_resource_ref(exec_call.tool, exec_call.args)
         if ref and ws.proactive_resource_freeze_enabled:
             ns, kind, name = ref
             if await is_resource_frozen(
@@ -171,7 +212,7 @@ async def run_proactive_react_fallback(
                 kind=kind,
                 name=name,
             ):
-                obs = f"iter#{iteration}:{phase}: resource_frozen tool={call.tool}"
+                obs = f"iter#{iteration}:{phase}: resource_frozen tool={exec_call.tool}"
                 observations.append(obs)
                 await po._react_mem_append(ctx, trace, obs)
                 inc_proactive_skip_frozen("resource")
@@ -181,7 +222,7 @@ async def run_proactive_react_fallback(
             if await is_namespace_frozen_fallback(
                 ctx.redis, key_prefix=ws.proactive_freeze_key_prefix, namespace=ns
             ):
-                obs = f"iter#{iteration}:{phase}: namespace_frozen tool={call.tool}"
+                obs = f"iter#{iteration}:{phase}: namespace_frozen tool={exec_call.tool}"
                 observations.append(obs)
                 await po._react_mem_append(ctx, trace, obs)
                 inc_proactive_skip_frozen("namespace")
@@ -189,8 +230,8 @@ async def run_proactive_react_fallback(
                     phase = "prescribe"
                 continue
 
-        if ref and call.tool in PROACTIVE_MUTATE_TOOLS:
-            lk = proactive_lease_key(DEFAULT_LEASE_PREFIX, call.tool, ref)
+        if ref and exec_call.tool in PROACTIVE_MUTATE_TOOLS:
+            lk = proactive_lease_key(DEFAULT_LEASE_PREFIX, exec_call.tool, ref)
             lease_ok = await try_acquire_resource_lease(
                 ctx.redis,
                 lk,
@@ -198,7 +239,7 @@ async def run_proactive_react_fallback(
                 ttl_sec=ws.proactive_lease_ttl_sec,
             )
             if not lease_ok:
-                obs = f"iter#{iteration}:{phase}: lease_conflict tool={call.tool}"
+                obs = f"iter#{iteration}:{phase}: lease_conflict tool={exec_call.tool}"
                 observations.append(obs)
                 await po._react_mem_append(ctx, trace, obs)
                 inc_proactive_lease_conflict()
@@ -207,10 +248,10 @@ async def run_proactive_react_fallback(
                 continue
 
         try:
-            fn = TOOL_REGISTRY[call.tool]
-            with child_span("proactive_tool_execute", tool_name=call.tool):
+            fn = TOOL_REGISTRY[exec_call.tool]
+            with child_span("proactive_tool_execute", tool_name=exec_call.tool):
                 out_fb = await asyncio.wait_for(
-                    fn(ctx, call.args),
+                    fn(ctx, exec_call.args),
                     timeout=ws.proactive_tool_timeout_sec,
                 )
             out_raw = str(out_fb)
@@ -219,11 +260,11 @@ async def run_proactive_react_fallback(
             out_fb_s = prepare_tool_return_for_llm(ctx, out_raw, max_chars=react_cap)
             verified = po._quick_verify_output(out_fb_s, ws.proactive_verify_keywords_fail)
             status_now = po._result_status(out_fb_s)
-            actionable_fix = bool(verified and call.tool in PROACTIVE_MUTATE_TOOLS)
+            actionable_fix = bool(verified and exec_call.tool in PROACTIVE_MUTATE_TOOLS)
             inc_proactive_fallback("success" if verified else "verify_fail")
             inc_proactive_verify("success" if verified else "fail")
             obs = (
-                f"iter#{iteration}:{phase}: tool={call.tool} verified={verified} "
+                f"iter#{iteration}:{phase}: tool={exec_call.tool} verified={verified} "
                 f"actionable_fix={actionable_fix} status={status_now} obs={out_fb_s[:280]}"
             )
             observations.append(obs)
@@ -236,7 +277,7 @@ async def run_proactive_react_fallback(
                 data={
                     "iteration": iteration,
                     "phase": phase,
-                    "tool": call.tool,
+                    "tool": exec_call.tool,
                     "verified": verified,
                     "actionable_fix": actionable_fix,
                     "result_status": status_now,
@@ -247,7 +288,7 @@ async def run_proactive_react_fallback(
                 trace_id=trace,
                 rule_id=ev.rule_name,
                 outcome="REACT_ITERATION_OK" if verified else "REACT_ITERATION_FAIL",
-                commands_run=call.tool,
+                commands_run=exec_call.tool,
                 detail=out_fb_s[:2000],
                 meta={
                     "path": "fallback_react",
@@ -264,8 +305,8 @@ async def run_proactive_react_fallback(
                 phase = "prescribe"
                 continue
             if phase == "treat":
-                last_treat_tool = call.tool
-                last_treat_args = dict(call.args or {})
+                last_treat_tool = exec_call.tool
+                last_treat_args = dict(exec_call.args or {})
                 last_treat_output = out_fb_s
                 last_treat_verified = verified
                 pending_treatment = None
@@ -296,7 +337,7 @@ async def run_proactive_react_fallback(
                 phase = "prescribe"
                 continue
         except asyncio.TimeoutError as e:
-            obs = f"iter#{iteration}:{phase}: timeout tool={call.tool}"
+            obs = f"iter#{iteration}:{phase}: timeout tool={exec_call.tool}"
             observations.append(obs)
             await po._react_mem_append(ctx, trace, obs)
             await po._fail_safe_after_tool_error(
@@ -304,7 +345,7 @@ async def run_proactive_react_fallback(
                 ev,
                 trace,
                 pattern_key,
-                call,
+                exec_call,
                 e,
                 reason_code="TOOL_TIMEOUT",
                 stream_msg_id=msg_id,
@@ -313,7 +354,7 @@ async def run_proactive_react_fallback(
             final_reason = "tool_timeout"
             break
         except Exception as e:
-            obs = f"iter#{iteration}:{phase}: exception tool={call.tool}"
+            obs = f"iter#{iteration}:{phase}: exception tool={exec_call.tool}"
             observations.append(obs)
             await po._react_mem_append(ctx, trace, obs)
             await po._fail_safe_after_tool_error(
@@ -321,7 +362,7 @@ async def run_proactive_react_fallback(
                 ev,
                 trace,
                 pattern_key,
-                call,
+                exec_call,
                 e,
                 reason_code="TOOL_EXCEPTION",
                 stream_msg_id=msg_id,
@@ -339,15 +380,22 @@ async def run_proactive_react_fallback(
 
     if ctx.telegram and ws.telegram_admin_chat_id:
         try:
+            tw = effective_reply_max_words(ws)
             if resolved:
-                safe_res = po._sanitize_proactive_telegram_body(resolved_output)
+                safe_res = truncate_to_words(
+                    po._sanitize_proactive_telegram_body(resolved_output),
+                    tw,
+                )
                 await ctx.telegram.send_message(
                     int(ws.telegram_admin_chat_id),
                     f"[PROACTIVE][RESOLVED] trace={trace} tool={resolved_tool} conf={resolved_confidence:.2f}\n"
                     f"{safe_res[:3000]}",
                 )
             else:
-                obs_tail = po._sanitize_proactive_telegram_body("\n".join(observations[-4:]))
+                obs_tail = truncate_to_words(
+                    po._sanitize_proactive_telegram_body("\n".join(observations[-4:])),
+                    tw,
+                )
                 await ctx.telegram.send_message(
                     int(ws.telegram_admin_chat_id),
                     f"[PROACTIVE][ESCALATED] trace={trace} reason={esc_reason}\n"

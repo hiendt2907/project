@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import json
 
-from workers.diagnostic_resource import is_workload_resource_alert, pod_identity_from_event, resource_probe_ids
+from workers.diagnostic_resource import (
+    is_kube_pod_container_state_alert,
+    is_workload_resource_alert,
+    kube_pod_state_probe_ids,
+    pod_identity_from_event,
+    resource_probe_ids,
+)
 from workers.proactive_models import AnomalyEvent
 
 
@@ -41,6 +47,76 @@ def test_non_resource_no_pod() -> None:
         canonical_query="{}",
         error_hint="cpu high",
         namespace="",
+    )
+    assert is_workload_resource_alert(ev) is False
+
+
+def test_kube_pod_container_state_alert_with_reason() -> None:
+    cq = json.dumps(
+        {
+            "labels": {
+                "alertname": "NginxTestContainerWaitingFaultLab",
+                "namespace": "multi-agent",
+                "pod": "nginx-test-abc",
+                "reason": "CreateContainerError",
+            },
+            "annotations": {},
+        }
+    )
+    ev = AnomalyEvent(
+        trace_id="t-state",
+        canonical_query=cq,
+        error_hint="waiting fault",
+        namespace="multi-agent",
+    )
+    assert is_kube_pod_container_state_alert(ev) is True
+    assert is_workload_resource_alert(ev) is False
+    assert kube_pod_state_probe_ids()[:3] == [
+        "k8s_clinical_pod_status",
+        "k8s_clinical_pod_metrics",
+        "k8s_clinical_pod_log_tail",
+    ]
+
+
+def test_kube_state_metric_not_workload_resource() -> None:
+    cq = json.dumps(
+        {
+            "labels": {
+                "alertname": "PodWaiting",
+                "namespace": "ns",
+                "pod": "p",
+                "__name__": "kube_pod_container_status_waiting_reason",
+                "reason": "CreateContainerError",
+            },
+            "annotations": {},
+        }
+    )
+    ev = AnomalyEvent(
+        trace_id="t-kube",
+        canonical_query=cq,
+        error_hint="PodWaiting memory check",
+        namespace="ns",
+    )
+    assert is_workload_resource_alert(ev) is False
+
+
+def test_labels_reason_excludes_workload_resource() -> None:
+    cq = json.dumps(
+        {
+            "labels": {
+                "alertname": "Whatever",
+                "namespace": "ns",
+                "pod": "p",
+                "reason": "CrashLoopBackOff",
+            },
+            "annotations": {},
+        }
+    )
+    ev = AnomalyEvent(
+        trace_id="t-reason",
+        canonical_query=cq,
+        error_hint="cpu high",
+        namespace="ns",
     )
     assert is_workload_resource_alert(ev) is False
 

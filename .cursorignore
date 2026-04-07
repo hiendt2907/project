@@ -83,3 +83,7 @@ coverage/
 *.gz
 # Legacy deployments (canonical: k8s/deployments/)
 deployments/
+
+# Heavy mirrored vendor docs (keep markdown/json index files)
+docs/vendor/**/*.html
+docs/vendor/**/*.htm

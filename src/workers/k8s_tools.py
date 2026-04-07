@@ -152,6 +152,25 @@ async def discover_deployment_across_namespaces(apps: Any, hint: str) -> list[tu
     return _discover_pairs_from_hint(hint, pairs)
 
 
+async def deployment_evidence_snapshot(namespace: str, deployment_name: str) -> dict[str, Any]:
+    """Stable fields for pre-apply revalidation (Phase ZERO)."""
+    await _load_k8s_config()
+    apps = client.AppsV1Api()
+    try:
+        d = await apps.read_namespaced_deployment(deployment_name, namespace)
+        meta = d.metadata
+        return {
+            "deployment_generation": int(meta.generation or 0) if meta else 0,
+            "deployment_resource_version": str(meta.resource_version or "") if meta else "",
+            "deployment_uid": str(meta.uid or "") if meta and meta.uid else "",
+        }
+    except ApiException as e:
+        logger.warning("deployment_evidence_snapshot api %s: %s", e.status, e.reason)
+        return {}
+    finally:
+        await apps.api_client.close()
+
+
 async def execute_rollout_restart(namespace: str, deployment_name: str) -> str:
     await _load_k8s_config()
     apps = client.AppsV1Api()
@@ -179,8 +198,58 @@ async def execute_rollout_restart_from_pending(_ctx: Any, data: dict[str, Any]) 
         return "[DATA] error\n[DIAGNOSIS] Thiếu namespace trong pending."
     if not isinstance(dep, str) or not dep.strip():
         return "[DATA] error\n[DIAGNOSIS] Thiếu deployment trong pending."
+    ns_s, dep_s = ns.strip(), dep.strip()
+    ws = getattr(_ctx, "settings", None)
+    if ws is not None and bool(getattr(ws, "pre_action_state_revalidate_enabled", True)):
+        snap = data.get("evidence_snapshot")
+        if isinstance(snap, dict) and snap.get("deployment_generation") is not None:
+            cur = await deployment_evidence_snapshot(ns_s, dep_s)
+            if not cur:
+                return (
+                    "[DATA] stale_state\n[DIAGNOSIS] Could not re-read Deployment — action cancelled.\n"
+                    "[ACTION] Re-probe cluster state."
+                )
+            try:
+                gen_old = int(snap.get("deployment_generation"))
+                gen_new = int(cur.get("deployment_generation") or -1)
+            except (TypeError, ValueError):
+                gen_old, gen_new = -1, -1
+            if gen_old != gen_new:
+                logger.warning(
+                    "event=stale_evidence reason=deployment_generation_drift trace=%s ns=%s deployment=%s old_gen=%s new_gen=%s",
+                    getattr(_ctx, "inbound_trace_id", ""),
+                    ns_s,
+                    dep_s,
+                    gen_old,
+                    gen_new,
+                )
+                return (
+                    "[DATA] stale_state\n[DIAGNOSIS] Deployment generation changed since confirmation — "
+                    "action cancelled.\n[ACTION] Re-probe and confirm again."
+                )
+            uid_old = str(snap.get("deployment_uid") or "").strip()
+            uid_new = str(cur.get("deployment_uid") or "").strip()
+            if uid_old and uid_new and uid_old != uid_new:
+                logger.warning(
+                    "event=stale_evidence reason=deployment_uid_drift trace=%s ns=%s deployment=%s",
+                    getattr(_ctx, "inbound_trace_id", ""),
+                    ns_s,
+                    dep_s,
+                )
+                return (
+                    "[DATA] stale_state\n[DIAGNOSIS] Deployment UID drift — action cancelled.\n"
+                    "[ACTION] Re-probe cluster state."
+                )
+            logger.info(
+                "event=pre_apply_revalidate_ok trace=%s ns=%s deployment=%s gen=%s uid=%s",
+                getattr(_ctx, "inbound_trace_id", ""),
+                ns_s,
+                dep_s,
+                cur.get("deployment_generation"),
+                (str(cur.get("deployment_uid") or "")[:12] or "-"),
+            )
     setattr(_ctx, "k8s_mutated", True)
-    return await execute_rollout_restart(ns.strip(), dep.strip())
+    return await execute_rollout_restart(ns_s, dep_s)
 
 
 async def _load_k8s_config() -> None:
@@ -945,10 +1014,16 @@ async def tool_k8s_rollout_restart(ctx: Any, args: dict[str, Any]) -> str:
             "hoặc user gõ rõ restart/rollout trong tin nhắn."
         )
 
+    pend_body: dict[str, Any] = {"namespace": ns, "deployment": dep_name}
+    if ws is not None and bool(getattr(ws, "pre_action_state_revalidate_enabled", True)):
+        try:
+            pend_body["evidence_snapshot"] = await deployment_evidence_snapshot(ns, dep_name)
+        except Exception as e:
+            logger.warning("rollout pending snapshot failed: %s", e)
     await r.setex(
         redis_key_rollout_pending(int(chat_id)),
         600,
-        json.dumps({"namespace": ns, "deployment": dep_name}, ensure_ascii=False),
+        json.dumps(pend_body, ensure_ascii=False),
     )
     return (
         "[CONFIRM_REQUIRED] "

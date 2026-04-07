@@ -26,6 +26,7 @@ from workers.clarification import (
 )
 from workers.entity_extract import extract_entities_llm, merge_llm_entities_into_slots
 from workers.infra_context import enrich_working_text_with_infra, fetch_infra_injection_for_fallback
+from workers.llm_context_budget import effective_reply_max_words
 from workers.autonomous_route import try_autonomous_sdk_route
 from workers.infra_preflight import LearnedContext, preflight_infra_kb
 from pkg.rag.gate import evaluate_rag_gate
@@ -104,7 +105,7 @@ def _cap_inbound_user_reply(text: str | None, ctx: WorkerHandlerContext) -> str:
             pass
     return ope.truncate_plain_text_to_max_words(
         s,
-        max_words=int(getattr(ctx.settings, "omni_summary_max_words", 100)),
+        max_words=effective_reply_max_words(ctx.settings),
     )
 
 
@@ -1422,7 +1423,7 @@ async def _handle_inbound_payload_impl(
     if gate_out.hit and (gate_out.formatted or "").strip():
         out = ope.truncate_plain_text_to_max_words(
             gate_out.formatted.strip(),
-            max_words=int(getattr(ctx.settings, "omni_summary_max_words", 100)),
+            max_words=effective_reply_max_words(ctx.settings),
         )
         if chat_id_int is not None:
             state.recent_messages.append({"role": "user", "content": raw_user_text})

@@ -12,15 +12,18 @@
 #   SLEEP_SEC=25
 #   E2E_EXEC_DEPLOY=omni-prober          # Pod chạy python3 để POST tới gateway
 #   E2E_TRACE_LOG_DEPLOYS="omni-prober …" # override danh sách grep log theo trace
+#   E2E_NGINX_POD_AUTO=1                 # (default) với alertmanager_nginx_cpu_high.json: patch labels.pod = pod app=nginx-test hiện tại
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KUBE="${ROOT}/scripts/with_working_kube.sh"
 PAYLOAD="${1:-${ROOT}/scripts/alert_payloads/alertmanager_nginx_cpu_high.json}"
+PATCHED_PAYLOAD=""
 GW_INTERNAL="${GW_INTERNAL:-http://omni-gateway.multi-agent.svc.cluster.local}"
 LOKI_URL="${LOKI_URL:-http://loki.monitor.svc.cluster.local:3100}"
 SLEEP_SEC="${SLEEP_SEC:-25}"
 NS="${NS:-multi-agent}"
+STRICT_ASSERT="${STRICT_ASSERT:-1}"
 
 # Pod có Python + image worker — tránh omni-gateway (slim) nếu thiếu python.
 EXEC_DEPLOY="${E2E_EXEC_DEPLOY:-omni-prober}"
@@ -41,6 +44,52 @@ TRACE_LOG_DEPLOYS="${E2E_TRACE_LOG_DEPLOYS:-$(_default_trace_deploys)}"
 if [[ ! -f "$PAYLOAD" ]]; then
   echo "Missing payload: $PAYLOAD" >&2
   exit 1
+fi
+
+if [[ "${E2E_NGINX_POD_AUTO:-1}" == "1" ]] && [[ "$(basename "$PAYLOAD")" == "alertmanager_nginx_cpu_high.json" || "$(basename "$PAYLOAD")" == "alertmanager_nginx_waiting_fault.json" ]]; then
+  if [[ -n "${E2E_NGINX_POD:-}" ]]; then
+    NGINX_POD="${E2E_NGINX_POD}"
+  else
+    NGINX_POD="$("${KUBE}" get pods -n "$NS" -l app=nginx-test -o json 2>/dev/null | python3 -c "
+import json, sys
+items = json.load(sys.stdin).get('items', [])
+bad_reasons = frozenset({
+    'CreateContainerError', 'CrashLoopBackOff', 'CreateContainerConfigError',
+    'ImagePullBackOff', 'ErrImagePull',
+})
+def pick():
+    for it in sorted(items, key=lambda x: x['metadata']['name']):
+        for cs in it.get('status', {}).get('containerStatuses') or []:
+            r = (cs.get('state') or {}).get('waiting', {}).get('reason') or ''
+            if r in bad_reasons:
+                return it['metadata']['name']
+    for it in sorted(items, key=lambda x: x['metadata']['name']):
+        for cs in it.get('status', {}).get('containerStatuses') or []:
+            if cs.get('ready') is False:
+                return it['metadata']['name']
+    return items[0]['metadata']['name'] if items else ''
+print(pick())
+")"
+  fi
+  if [[ -z "$NGINX_POD" ]]; then
+    echo "FAIL: E2E_NGINX_POD_AUTO: no pod with label app=nginx-test in namespace ${NS}" >&2
+    exit 1
+  fi
+  PATCHED_PAYLOAD="$(mktemp "${TMPDIR:-/tmp}/e2e-gw-alert.XXXXXX.json")"
+  python3 -c "
+import json, sys
+pod, src, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src) as f:
+    d = json.load(f)
+for a in d.get('alerts', []):
+    if (a.get('labels') or {}).get('deployment') == 'nginx-test':
+        a['labels']['pod'] = pod
+with open(dst, 'w') as f:
+    json.dump(d, f, indent=2)
+" "$NGINX_POD" "$PAYLOAD" "$PATCHED_PAYLOAD"
+  PAYLOAD="${PATCHED_PAYLOAD}"
+  trap '[[ -n "${PATCHED_PAYLOAD:-}" && -f "${PATCHED_PAYLOAD}" ]] && rm -f "${PATCHED_PAYLOAD}"' EXIT
+  echo "=== 0a) E2E_NGINX_POD_AUTO: alert labels.pod=${NGINX_POD} (live app=nginx-test) ==="
 fi
 
 if ! "${KUBE}" get deploy "$EXEC_DEPLOY" -n "$NS" &>/dev/null; then
@@ -106,42 +155,161 @@ else
   echo "$WR_LINES" | grep -F "handler_done" || echo "(chưa có handler_done — pipeline còn xử lý hoặc chỉ stream_consumer)"
 fi
 
+if [[ "${STRICT_ASSERT}" == "1" ]]; then
+  echo ""
+  echo "=== 3b) Strict stage assertions ==="
+  STAGE_DEP_HITS=0
+  for dep in $TRACE_LOG_DEPLOYS; do
+    if echo "${WR_LINES}" | grep -qF "deploy/${dep}"; then
+      STAGE_DEP_HITS=$((STAGE_DEP_HITS + 1))
+    fi
+  done
+  if [[ "${STAGE_DEP_HITS}" -lt 3 ]]; then
+    echo "FAIL: trace_id ${TRACE} does not appear in >=3 worker deployments (hits=${STAGE_DEP_HITS})" >&2
+    exit 2
+  fi
+  if ! echo "${WR_LINES}" | grep -Eq "event=omni_actions_in|event=action_emitted|event=action_feedback_published|REQUIRES_HUMAN"; then
+    echo "FAIL: trace_id ${TRACE} has no action/feedback/terminal markers" >&2
+    exit 3
+  fi
+  echo "PASS: strict stage assertions satisfied (worker_deploy_hits=${STAGE_DEP_HITS})"
+fi
+
 echo ""
 echo "=== 4) Loki query_range (Promtail: namespace + pod_name) ==="
 LOKI_POD_RE='omni-prober.*|omni-analyst.*|omni-core.*|omni-executor.*|omni-gateway.*|omni-worker.*'
+E2E_LOKI_LIMIT="${E2E_LOKI_LIMIT:-500}"
 echo "LogQL (Grafana Explore): {namespace=\"multi-agent\", pod_name=~\"${LOKI_POD_RE}\"} |= \"$TRACE\""
-"${KUBE}" exec -n "$NS" "deploy/${EXEC_DEPLOY}" -- python3 -c "
-import json, time, urllib.parse, urllib.request
-trace = '''${TRACE}'''
-loki = '''${LOKI_URL}'''
-q = '{namespace=\"multi-agent\", pod_name=~\"${LOKI_POD_RE}\"} |= \"' + trace + '\"'
+echo "limit=${E2E_LOKI_LIMIT}"
+"${KUBE}" exec -i -n "$NS" "deploy/${EXEC_DEPLOY}" -- env \
+  TRACE="${TRACE}" LOKI_URL="${LOKI_URL}" E2E_LOKI_LIMIT="${E2E_LOKI_LIMIT}" \
+  python3 - <<'PYLOKI'
+import json
+import os
+import time
+import urllib.parse
+import urllib.request
+
+trace = os.environ["TRACE"]
+loki = os.environ["LOKI_URL"]
+lim = os.environ.get("E2E_LOKI_LIMIT", "500")
+LOKI_POD_RE = (
+    "omni-prober.*|omni-analyst.*|omni-core.*|omni-executor.*|"
+    "omni-gateway.*|omni-worker.*"
+)
+q = '{namespace="multi-agent", pod_name=~"' + LOKI_POD_RE + '"} |= "' + trace + '"'
 now = int(time.time())
 start = (now - 3600) * 10**9
 end = now * 10**9
-params = urllib.parse.urlencode({'query': q, 'limit': '100', 'start': str(start), 'end': str(end)})
-url = loki.rstrip('/') + '/loki/api/v1/query_range?' + params
+params = urllib.parse.urlencode(
+    {"query": q, "limit": lim, "start": str(start), "end": str(end)}
+)
+url = loki.rstrip("/") + "/loki/api/v1/query_range?" + params
 try:
-    r = urllib.request.urlopen(url, timeout=25)
+    r = urllib.request.urlopen(url, timeout=35)
     d = json.loads(r.read().decode())
 except Exception as e:
-    print(json.dumps({'loki_error': str(e)}))
+    print(json.dumps({"loki_error": str(e)}))
     raise SystemExit(0)
-res = d.get('data', {}).get('result') or []
-lines = []
+
+res = d.get("data", {}).get("result") or []
+rows = []
+by_pod: dict[str, int] = {}
 for s in res:
-    for v in s.get('values') or []:
+    stream = s.get("stream") or {}
+    pod = stream.get("pod_name") or stream.get("pod") or "?"
+    for v in s.get("values") or []:
         if len(v) >= 2:
-            lines.append(v[1])
-print('--- Loki (last 35 lines) ---')
-for ln in lines[-35:]:
-    print((ln[:600] + '…') if len(ln) > 600 else ln)
-if not lines:
-    print('(empty — kiểm tra Promtail ship namespace multi-agent / Loki DNS)')
-"
+            ts_ns = int(v[0])
+            line = v[1]
+            rows.append((ts_ns, pod, line))
+            by_pod[pod] = by_pod.get(pod, 0) + 1
+
+rows.sort(key=lambda x: x[0])
+lines_only = [r[2] for r in rows]
+
+print("--- Loki (last 35 lines, mọi pod) ---")
+for ln in lines_only[-35:]:
+    print((ln[:600] + "…") if len(ln) > 600 else ln)
+if not lines_only:
+    print("(empty — kiểm tra Promtail ship namespace multi-agent / Loki DNS)")
+
+print("")
+print("=== 5) Phân tích luồng dữ liệu (Loki, theo trace) ===")
+if not rows:
+    print("(không có dòng Loki — bỏ qua phân tích)")
+    raise SystemExit(0)
+
+print(f"• Tổng dòng index được: {len(rows)} (streams={len(res)})")
+print("• Số dòng theo pod_name (Promtail → Loki):")
+for pod, n in sorted(by_pod.items(), key=lambda x: -x[1]):
+    short = pod[:56] + "…" if len(pod) > 58 else pod
+    print(f"    - {short}: {n}")
+
+t0, t1 = rows[0][0], rows[-1][0]
+print(f"• Khung thời gian log: {(t1 - t0) / 1e6:.1f} ms (đầu → cuối trong sample)")
+
+
+def _summarize(line: str) -> tuple[str, str]:
+    try:
+        j = json.loads(line)
+        lg = str(j.get("logger") or "")
+        msg = str(j.get("message") or "")
+        tid = str(j.get("trace_id") or "")
+        return lg, (msg[:140] + "…") if len(msg) > 140 else msg, tid
+    except Exception:
+        return "", (line[:140] + "…") if len(line) > 140 else line, ""
+
+
+def _stage_hint(lg: str, msg: str) -> str:
+    m = (lg + " " + msg).lower()
+    if "start_request" in m:
+        return "ingress consumer (Kafka omni-alerts)"
+    if "diagnostic_dispatcher" in m or "diagnostic_evidence" in m:
+        return "SDK probes → Kafka omni-diagnostic-evidence"
+    if "evidence_consumer" in m or "kafka_evidence" in m:
+        return "analyst: evidence batch / RAG / actions"
+    if "omni_actions_in" in m or "kafka_actions" in m:
+        return "executor: omni-actions"
+    if "omni-gateway" in m or "webhook" in m:
+        return "gateway"
+    if "end_request" in m:
+        return "consumer kết thúc request"
+    return "khác"
+
+
+print("• Timeline (rút gọn, theo thứ tự thời gian):")
+for ts_ns, pod, line in rows[: min(80, len(rows))]:
+    lg, sm, _tid = _summarize(line)
+    stage = _stage_hint(lg, sm)
+    pshort = pod.replace("omni-", "")[:24]
+    print(f"    [{ts_ns}] {pshort:26} | {stage}")
+    if lg:
+        print(f"               {lg}: {sm}")
+
+# Luồng nghiệp vụ (một đoạn)
+print("• Diễn giải luồng (data path):")
+has = " ".join(lines_only).lower()
+steps = []
+if "start_request" in has or "alert_kafka_in" in has:
+    steps.append("Kafka omni-alerts → omni-prober stream_consumer nhận envelope Prometheus/Alertmanager.")
+if "diagnostic_dispatcher" in has:
+    steps.append("Prober lập kế hoạch probe (SDK + Prom) và publish evidence lên omni-diagnostic-evidence.")
+if "evidence_consumer" in has or "diag_batch" in has:
+    steps.append("omni-analyst evidence_consumer: so alert vs SDK (STATE_MACHINE_CONTRAST) nếu đủ evidence, else RAG / LLM.")
+if "omni_actions_in" in has or "kafka_actions_consumer" in has:
+    steps.append("omni-executor consume omni-actions (audit / suggest) cùng trace_id.")
+if "end_request" in has:
+    steps.append("Prober end_request — vòng alert đóng trong consumer.")
+if not steps:
+    steps.append("(Không khớp pattern chuẩn — xem raw log phía trên.)")
+for i, s in enumerate(steps, 1):
+    print(f"    {i}. {s}")
+PYLOKI
 
 echo ""
-echo "=== 5) Checklist nghiệp vụ ==="
-echo "• Default alert: pod nginx-test*, namespace multi-agent, HighCPU / ~90% (see alertmanager_nginx_cpu_high.json)."
+echo "=== 6) Checklist nghiệp vụ ==="
+echo "• Default alert: pod nginx-test (E2E_NGINX_POD_AUTO patch từ app=nginx-test), namespace multi-agent."
 echo "• MPV3 split: trace xuất hiện trước hết ở omni-prober (omni-alerts); analyst = evidence loop."
 echo "• omni-executor: expect event=omni_actions_in action=SUGGEST_REMEDIATION (English diagnosis) — not legacy ping."
 echo "• Dùng trace trong Grafana Explore Loki:  $TRACE"
