@@ -3,6 +3,21 @@
 This file consolidates all current report documents under `docs/reports/` into one place for review.
 Original files are kept unchanged.
 
+## Latest Iteration Addendum (Safe Cleanup + Triple Dashboard Rebuild)
+
+### What Changed in System Behavior
+- Removed legacy Grafana dashboard payloads and rebuilt provisioning to only 3 dashboards: `Omni Ops`, `Omni Security`, `Omni Learning`.
+- Canonicalized dashboard sources under `k8s/monitor/dashboards/*.json` and updated `grafana-dashboards` ConfigMap payload accordingly.
+- Added sync helper contract in `scripts/sync_grafana_dashboard_configmaps.py` and dashboard mapping document `docs/reports/dashboard-source-of-truth.md`.
+
+### Verification Snapshot
+- Pass: `make secret-gate`, `make env-mode-gate`, `make mutate-only-gate`, `make classifier-regression-gate`, `make phase-docs-gate`, `make docker-worker`, `make docker-gateway`, `make deploy-worker`, `make deploy-gateway`, Grafana rollout, `make e2e-incident-matrix`.
+- Fail (recorded blockers): `make autonomy-gate` and `make e2e-proactive` due to strict checks `sigma_gate_ok=false` (insufficient sigma evidence) and `trace_stage_matrix_ok=false` in proactive strict matrix.
+
+### Blocker Classification
+- `infra_blocker`: low-noise lab window did not produce enough 3-sigma hits for strict gate.
+- `logic_blocker`: strict trace-stage assertion remains timing-sensitive under split topology in proactive flow.
+
 ## Latest Iteration Addendum (Security Cleanup + Conservative Refactor)
 
 ### What Changed in System Behavior
@@ -36,6 +51,9 @@ Original files are kept unchanged.
 - `docs/reports/phase-4-review.md`
 - `docs/reports/phase-5-report.md`
 - `docs/reports/phase-5-review.md`
+- `docs/reports/phase-6-report.md`
+- `docs/reports/phase-6-review.md`
+- `docs/reports/dashboard-source-of-truth.md`
 - `docs/reports/project-memory.md`
 
 ---

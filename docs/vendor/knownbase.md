@@ -4,6 +4,9 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Dashboard provisioning bị rác do tồn tại đồng thời bộ cũ (L0/L1/L2/L3) và nhu cầu mới (Ops/Security/Learning), gây drift giữa dashboard source và runtime Grafana sidecar.  
+**Fix:** Xóa toàn bộ JSON dashboard cũ trong `k8s/monitor/dashboards`, dựng lại 3 dashboard chuẩn `omni_ops.json`, `omni_security.json`, `omni_learning.json`, và thay `k8s/monitor/grafana-dashboards.yaml` chỉ còn 3 key tương ứng. Bổ sung script sync mới `scripts/sync_grafana_dashboard_configmaps.py` để render ConfigMap từ đúng 3 JSON canonical. Verify: `./scripts/with_working_kube.sh apply -f k8s/monitor/grafana-dashboards.yaml` + rollout `deployment/grafana -n monitor`.
+
 **Symptom:** Security gate chưa “sạch bóng” khi bật scan strict: DSN credential cũ còn nằm trong history commit; đồng thời strict runtime audit có thể fail (`sigma_gate_ok=false`, `trace_stage_matrix_ok=false`) dù unit/contract pass và deploy thành công.  
 **Fix:** Thay toàn bộ DSN hardcoded hiện tại bằng placeholder `${OMNI_DB_PASSWORD}` + fail-fast validator tại `src/rag/pgvector_store.py`; chuẩn hóa placeholder secret manifest Grafana; thêm `.gitleaks.toml` + `.pre-commit-config.yaml`; CI/Make thêm `secret-gate` (working tree, critical fail) và `secret-history-audit` tách riêng để governance xử lý history (rotate key + duyệt rewrite lịch sử). Verify: `make secret-gate` pass, `make e2e-incident-matrix` pass, `make autonomy-gate` fail do `sigma_gate_ok/trace_stage_matrix_ok` (đã ghi blocker).
 

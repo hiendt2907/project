@@ -5,6 +5,7 @@
 - Mutate decisions are fail-closed in `prod` and must keep `trace_id` + auditable `reason_code`.
 - Planner output cannot override Proof-of-Fault controls (critical evidence + 3-sigma + observation window).
 - Runtime/app config must not ship embedded credentials; DSN defaults stay placeholder-only and secret-injected at runtime.
+- Grafana provisioning for Omni monitoring is canonicalized to exactly three dashboards: `Omni Ops`, `Omni Security`, `Omni Learning`.
 
 ## FailurePatterns
 - Classifier misroute can happen when broad regex rows run before label-constrained rows.
@@ -12,6 +13,7 @@
 - Single metric spikes are noisy; windowed sigma checks are required before mutation.
 - Strict proactive audit can fail in low-noise lab windows (`sigma_gate_ok=false`) even when rollout and contract tests pass.
 - Strict trace-stage checks can be timing-sensitive under split topology/log propagation.
+- Dashboard drift appears when ConfigMap payload and JSON source files are not synchronized from one canonical set.
 
 ## ReasonCodes
 - Semantic/channel: `ERR_SEM_CHANNEL_MISMATCH`, `ERR_SEM_INVALID_TOOL_TAXONOMY`.
@@ -24,6 +26,7 @@
 - Keep classifier regression gate for `ProbeFailureLab` not mapping to `ollama_500_context`.
 - Documentation gate blocks incomplete phase records.
 - Keep `gitleaks` critical gate for working tree (`--no-git`) and run history scan as separate governance audit target.
+- Always classify runtime verify failures explicitly as `infra_blocker` or `logic_blocker` before release messaging.
 
 ## CrossPhaseConstraints
 - Any change touching mutate/classifier/planner must update tests and gates together.

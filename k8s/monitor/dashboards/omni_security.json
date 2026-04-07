@@ -1,0 +1,65 @@
+{
+  "title": "Omni Security",
+  "uid": "omni-security",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "tags": ["omni", "security"],
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "label": "namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "mimir" },
+        "query": "label_values(up, kubernetes_namespace)",
+        "current": { "selected": true, "text": "multi-agent", "value": "multi-agent" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "ERR_GOV events (1h)",
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [{ "refId": "A", "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_GOV_\" [1h]))" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Proof/Sigma blocks (1h)",
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 0 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [{ "refId": "A", "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_REA_SIGMA_GATE_BLOCKED\" [1h])) + sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_REA_NO_PHYSICAL_PROOF\" [1h]))" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Denied mutation attempts (1h)",
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [{ "refId": "A", "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_GOV_UNAUTHORIZED_MUTATION\" [1h]))" }]
+    },
+    {
+      "id": 4,
+      "type": "logs",
+      "title": "Recent security reason codes",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 5 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [{ "refId": "A", "expr": "{namespace=\"$namespace\", pod_name=~\"omni-.*\"} |~ \"ERR_GOV_|ERR_REA_\"" }]
+    },
+    {
+      "id": 5,
+      "type": "text",
+      "title": "Gate checklist",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 15 },
+      "options": {
+        "mode": "markdown",
+        "content": "- `make secret-gate`\n- `make env-mode-gate`\n- `make mutate-only-gate`\n- `make classifier-regression-gate`\n- `make phase-docs-gate`\n\nIf runtime verify fails, classify as `infra_blocker` or `logic_blocker` before release."
+      }
+    }
+  ]
+}

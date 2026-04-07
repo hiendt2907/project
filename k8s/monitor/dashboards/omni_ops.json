@@ -1,0 +1,92 @@
+{
+  "title": "Omni Ops",
+  "uid": "omni-ops",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "tags": ["omni", "ops"],
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "label": "namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "mimir" },
+        "query": "label_values(up, kubernetes_namespace)",
+        "current": { "selected": true, "text": "multi-agent", "value": "multi-agent" }
+      },
+      {
+        "name": "trace_id",
+        "label": "trace_id",
+        "type": "textbox",
+        "query": "",
+        "current": { "selected": true, "text": "", "value": "" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Gateway 200 rate (5m)",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(omni_gateway_requests_total{status=\"200_ok\"}[5m]))" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Auto verify success ratio (5m)",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "100 * (sum(increase(omni_proactive_verify_total{outcome=\"success\"}[5m])) / clamp_min(sum(increase(omni_proactive_verify_total[5m])), 1))" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Active firing alerts",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "sum(ALERTS{alertstate=\"firing\"})" }]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Ollama up",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "max(omni_ollama_up)" }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "3-sigma CPU / MEM Z",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        { "refId": "A", "expr": "omni:node_cpu:z", "legendFormat": "cpu_z" },
+        { "refId": "B", "expr": "omni:mem:z", "legendFormat": "mem_z" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Proactive outcome rates (5m)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(omni_proactive_outcome_total{outcome=\"react_resolved\"}[5m]))", "legendFormat": "resolved/s" },
+        { "refId": "B", "expr": "sum(rate(omni_proactive_outcome_total{outcome=\"react_escalated\"}[5m]))", "legendFormat": "escalated/s" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "logs",
+      "title": "Trace logs by trace_id",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 13 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [{ "refId": "A", "expr": "{namespace=\"$namespace\", pod_name=~\"omni-prober.*|omni-analyst.*|omni-core.*|omni-executor.*|omni-gateway.*\"} |= \"$trace_id\"" }]
+    }
+  ]
+}
