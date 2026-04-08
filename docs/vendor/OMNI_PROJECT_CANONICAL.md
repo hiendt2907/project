@@ -143,4 +143,6 @@ Luồng nghiệp vụ giữ **`trace_id`** xuyên suốt ingest → probe → re
 
 ---
 
+**Chỉ mục tài liệu đầy đủ:** [../DOCUMENTATION_INDEX.md](../DOCUMENTATION_INDEX.md)
+
 *Tài liệu này thay thế vai trò “điểm vào duy nhất” cho kiến trúc Omni; các doc chi tiết khác không được mâu thuẫn phần đã khóa ở đây.*

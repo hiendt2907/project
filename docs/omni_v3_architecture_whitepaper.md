@@ -1,5 +1,7 @@
 # Whitepaper Kiến trúc Enterprise: Omni-Worker V3 (AI-SRE Tự Trị)
 
+**Canonical vận hành hiện tại (split / Kafka / RAG):** [vendor/OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md) — whitepaper này nhấn mạnh thiết kế **enterprise**; đối chiếu canonical cho topology lab.
+
 **Phiên bản tài liệu:** nội bộ kỹ thuật — đối tượng: Ban Giám đốc / Kiến trúc sư / An toàn thông tin  
 **Phạm vi:** Mô tả **bằng chứng từ mã nguồn** trong repo; không thay thế hồ sơ tuân thủ ngân hàng chính thức.  
 **Liên quan:** Báo cáo slide tóm tắt nằm ở `docs/omni_v3_executive_report.md` (song song, không gộp).

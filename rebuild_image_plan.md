@@ -1,5 +1,7 @@
 # Implementation Plan: Rebuild Image & Cleanup Deployment
 
+> **Canonical:** [docs/vendor/OMNI_PROJECT_CANONICAL.md](docs/vendor/OMNI_PROJECT_CANONICAL.md). Historical plan.
+
 This plan outlines the steps to rebuild the Docker images with the latest fixes and then update the production deployment to use the new image, removing the temporary "hotfix" hacks (ConfigMaps and runtime pip installs).
 
 ## User Review Required

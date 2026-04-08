@@ -1,5 +1,7 @@
 # MCP integration (ADR — pilot)
 
+**Canonical:** [vendor/OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md).
+
 ## Context
 
 Omni-worker tools today resolve through in-process `TOOL_REGISTRY` (`workers/tools.py`, `workers/tool_registry.py`). Proactive auto-remediation restricts mutations to `PROACTIVE_MUTATE_TOOLS` intersected with allowlists (`workers/proactive_guardrails.py`, `workers/proactive_tool_policy.py`).

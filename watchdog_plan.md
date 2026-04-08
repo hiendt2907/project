@@ -1,5 +1,7 @@
 # Implementation Plan: Omni Watchdog (Autonomous SRE Pod)
 
+> **Doc map:** [docs/DOCUMENTATION_INDEX.md](docs/DOCUMENTATION_INDEX.md) · **Canonical:** [docs/vendor/OMNI_PROJECT_CANONICAL.md](docs/vendor/OMNI_PROJECT_CANONICAL.md). Planning snapshot.
+
 This plan outlines the creation of a dedicated monitoring and self-healing service (`omni-watchdog`) that operates independently of the main worker to ensure the stability of the RAG data layer and the core application.
 
 ## User Review Required

@@ -1,5 +1,7 @@
 # Incident Report: Omni Worker Connectivity & RAG Migration Failure
 
+> **Current architecture:** [docs/vendor/OMNI_PROJECT_CANONICAL.md](docs/vendor/OMNI_PROJECT_CANONICAL.md). This report is **point-in-time** (2026-03-31).
+
 ## Summary
 On 2026-03-31, the `omni-worker` service experienced a persistent `CrashLoopBackOff` following a migration of the RAG data layer from Qdrant to PostgreSQL (CNPG). The service was unable to authenticate with the database and encountered multiple code/environment mismatches. Fixes were applied via environment overrides and ConfigMap-based code patching.
 

@@ -1,5 +1,7 @@
 # Implementation Plan: Autonomous Self-Healing Layer
 
+> **Doc map:** [docs/DOCUMENTATION_INDEX.md](docs/DOCUMENTATION_INDEX.md) · **Canonical:** [docs/vendor/OMNI_PROJECT_CANONICAL.md](docs/vendor/OMNI_PROJECT_CANONICAL.md). Planning snapshot — not necessarily current runtime.
+
 This plan outlines the creation of an autonomous system capable of detecting, diagnosing, and repairing common infrastructure and application errors (like authentication failures, missing packages, and DB schema mismatches) without manual intervention.
 
 ## User Review Required

@@ -1,5 +1,7 @@
 # Architectural Analysis: Omni Autonomous Platform
 
+> **Living ops + split topology:** [docs/vendor/OMNI_PROJECT_CANONICAL.md](docs/vendor/OMNI_PROJECT_CANONICAL.md). This file may describe **legacy** paths (e.g. Redis stream vs Kafka); use canonical for truth.
+
 This document provides a deep-dive into the architectural design, data flows, and intelligence patterns of the Omni system.
 
 ## 1. High-Level Architecture Overview

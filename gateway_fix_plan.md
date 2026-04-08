@@ -1,5 +1,7 @@
 # Implementation Plan: Fix Gateway Redis Cluster Support
 
+> **Canonical:** [docs/vendor/OMNI_PROJECT_CANONICAL.md](docs/vendor/OMNI_PROJECT_CANONICAL.md). Historical plan — verify current gateway/Kafka in repo.
+
 The `omni-gateway` is currently failing to enqueue events because its connection logic only supports standalone Redis and is defaulting to a non-existent `redis:6379` host. This plan will update the gateway to use the correct Redis Cluster configuration.
 
 ## User Review Required

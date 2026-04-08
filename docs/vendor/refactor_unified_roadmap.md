@@ -1,5 +1,7 @@
 # Unified refactor roadmap
 
+**Live architecture:** [OMNI_PROJECT_CANONICAL.md](OMNI_PROJECT_CANONICAL.md) · **Doc index:** [../DOCUMENTATION_INDEX.md](../DOCUMENTATION_INDEX.md).
+
 Single source of truth for the multi-phase refactor. **Newest plan iterations** may live under `.cursor/plans/`; canonical source plans referenced:
 
 - Redis standalone: `redis_standalone_migration_*.plan.md` (Cursor plans dir)

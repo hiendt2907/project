@@ -1,10 +1,10 @@
 # Omni playbook / memory index (pointers only)
 
-**Canonical (kiến trúc + vận hành — đọc trước):** [docs/vendor/OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md)
+**Canonical (kiến trúc + vận hành — đọc trước):** [vendor/OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md) · **Chỉ mục doc:** [DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md)
 
 This document is an **index**: it points to where knowledge lives. It does **not** duplicate SOP text or long runbooks.
 
-**Bookmark cũ:** [docs/vendor/golden_path_split.md](vendor/golden_path_split.md) → redirect tới canonical.
+**Bookmark cũ:** [vendor/golden_path_split.md](vendor/golden_path_split.md) → redirect tới canonical.
 
 ## Corpus contract (where to write what)
 
@@ -54,7 +54,7 @@ Extend this table as new `rule_name` values or taxonomies appear — keep rows *
 
 ## Related docs
 
-- `[docs/vendor/OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md)` — **canonical** kiến trúc + Kafka + RAG + verify
+- `[vendor/OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md)` — **canonical** kiến trúc + Kafka + RAG + verify
 - `[docs/proactive_state_machine.md](proactive_state_machine.md)` — phases, audit, metrics
 - `[docs/reports/chaos-rag-selflearn-runbook.md](reports/chaos-rag-selflearn-runbook.md)` — chaos/matrix + shadow self-learning lab, Registry, Learning Delta, Redis export (no auto-ingest)
 

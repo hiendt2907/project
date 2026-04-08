@@ -3,6 +3,9 @@ marp: true
 theme: default
 class: invert 
 ---
+
+<!-- Canonical ops: docs/vendor/OMNI_PROJECT_CANONICAL.md -->
+
 # Slide 1: Tầm nhìn AI-SRE Tự Trị (Omni-Worker V3)
 
 - Chuyển dịch từ **phản ứng thủ công** sang **vòng lặp tự trị** trên Kubernetes: quan sát baseline, suy luận có trạng thái, hành động có kiểm soát.
