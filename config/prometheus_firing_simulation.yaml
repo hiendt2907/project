@@ -1,0 +1,148 @@
+# One scenario per alert rule in k8s/monitor/prometheus.yaml (omni-rules.yml).
+# Payloads built via config/prometheus_alert_label_catalog.yaml + workload_resolve.
+version: 1
+scenarios:
+  - id: prom_OmniBaselineCpuZHigh
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniBaselineCpuZHigh
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniBaselineMemZHigh
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniBaselineMemZHigh
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniBaselineDiskZHigh
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniBaselineDiskZHigh
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniGatewayDown
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniGatewayDown
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniWorkerDown
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniWorkerDown
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniRedisStandaloneDown
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniRedisStandaloneDown
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniRedisExporterDown
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniRedisExporterDown
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_ProbeFailureLab
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: ProbeFailureLab
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniPostgresNodeLoss
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniPostgresNodeLoss
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniPgpoolDown
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniPgpoolDown
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniK8sDeploymentUnavailable
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniK8sDeploymentUnavailable
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniPodCrashLoop
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniPodCrashLoop
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniOllamaDown
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniOllamaDown
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniProactiveVerificationFailSpike
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniProactiveVerificationFailSpike
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniProactiveIncidentSlow
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniProactiveIncidentSlow
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniLearningWriteFail
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniLearningWriteFail
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_OmniNetworkPacketDrop
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: OmniNetworkPacketDrop
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_NginxTestHighCpuLab
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: NginxTestHighCpuLab
+    expected_channel: EXECUTE_MUTATE
+    expected_reason_codes: []
+  - id: prom_NginxTestContainerWaitingFaultLab
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: NginxTestContainerWaitingFaultLab
+    expected_channel: EXECUTE_MUTATE
+    expected_reason_codes: []
+  - id: prom_NginxTestContainerLastTerminatedOOMLab
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: NginxTestContainerLastTerminatedOOMLab
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_PodCpuUtilizationVsLimitHigh
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: PodCpuUtilizationVsLimitHigh
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_PodMemoryWorkingSetVsLimitHigh
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: PodMemoryWorkingSetVsLimitHigh
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_PodNetworkThroughputHigh
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: PodNetworkThroughputHigh
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []
+  - id: prom_PodFilesystemIOThroughputHigh
+    group: prometheus_rules
+    runner: gateway_payload
+    prometheus_alert: PodFilesystemIOThroughputHigh
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes: []

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sync 3 canonical Grafana dashboards into grafana-dashboards ConfigMap."""
+"""Sync canonical Grafana dashboards into grafana-dashboards ConfigMap."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 JSON_DIR = ROOT / "k8s/monitor/dashboards"
 OUT = ROOT / "k8s/monitor/grafana-dashboards.yaml"
-FILES = ("omni_ops.json", "omni_security.json", "omni_learning.json")
+FILES = (
+    "omni_ops.json",
+    "omni_security.json",
+    "omni_learning.json",
+    "omni_pod_resources.json",
+    "omni_node_resources.json",
+)
 
 
 def _indent_yaml_block(text: str) -> str:

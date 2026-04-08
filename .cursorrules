@@ -38,6 +38,7 @@ Senior Python/SRE engineer for this Omni lab repo (OrbStack Kubernetes, async-fi
 - If cluster/tooling is unavailable, report exact failure and do not claim runtime verification.
 
 ## PROJECT KNOWLEDGEBASE
+- Canonical architecture + ops (single file, code-grounded): `docs/vendor/OMNI_PROJECT_CANONICAL.md`.
 - After resolving real bugs/incidents, update `docs/vendor/knownbase.md` with concise:
   - Symptom
   - Fix

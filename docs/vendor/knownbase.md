@@ -1,8 +1,19 @@
 # Known issues (symptom → fix)
 
+**Split topology / deploy / logs:** [OMNI_PROJECT_CANONICAL.md](OMNI_PROJECT_CANONICAL.md) (canonical); [golden_path_split.md](golden_path_split.md) chỉ là redirect.
+
 Short entries only. **Newest first** within each section. If the same symptom already exists, update **Fix** instead of adding a duplicate.
 
 ## Logic / application
+
+**Symptom:** Cần mở rộng incident training matrix theo registry và thêm self-learning shadow nhưng vẫn giữ runtime hiện tại không drift; verify strict thường fail ở `sigma_gate_ok`/`trace_stage_matrix_ok` dù matrix run pass.  
+**Fix:** Thêm `config/incident_training_matrix.yaml` + payload generator `scripts/incident_matrix_payload_from_config.py`, mở rộng `scripts/e2e_incident_matrix.sh` chạy theo registry (31 scenario hiện hữu); thêm shadow module `src/workers/selflearning_shadow.py` và cờ `OMNI_*` mặc định off trong `src/workers/settings.py`; thêm gates `scripts/validate_nonimpact_guards_gate.py` + `scripts/validate_learning_loop_gate.py` và nối vào `Makefile` (`autonomy-gate`). Verify: `STRICT_ASSERT=0 SLEEP_SEC=5 bash scripts/e2e_incident_matrix.sh` => pass, strict audit vẫn ghi blocker `insufficient_sigma_evidence`/`trace_not_found_in_required_stages`.
+
+**Symptom:** Ops team thiếu góc nhìn tài nguyên theo lớp hạ tầng: chưa có dashboard tách riêng cho usage pod (ngoại trừ `kube-system`) và usage node K8s nên khó soi saturation theo scope vận hành.  
+**Fix:** Bổ sung `k8s/monitor/dashboards/omni_pod_resources.json` + `omni_node_resources.json`; mở rộng sync contract trong `scripts/sync_grafana_dashboard_configmaps.py`; regenerate `k8s/monitor/grafana-dashboards.yaml` để provision thêm 2 dashboard mới. Verify: apply ConfigMap + rollout `deployment/grafana -n monitor`.
+
+**Symptom:** Dashboard Pod/Node bản rút gọn thiếu panel vận hành sâu và không soi được queue pipeline (Redis/Kafka, DLQ, lag, stuck-consumer).  
+**Fix:** Rebuild full panel sets cho `omni_pod_resources.json` + `omni_node_resources.json`; thêm cụm panel Redis/Kafka health gồm `omni_worker_lag_size`, heuristic stuck consumer (`max_over_time + changes`), Redis stream backlog (`omni_redis_stream_backlog`), DLQ/Kafka Loki log panels. Đồng thời bật scrape kubelet `/metrics/resource` qua job `kubernetes-nodes-resource` trong `k8s/monitor/prometheus.yaml` để pod CPU/memory usage có dữ liệu `namespace/pod`. Verify: query panel chính trả series >0 và Grafana rollout OK.
 
 **Symptom:** Dashboard provisioning bị rác do tồn tại đồng thời bộ cũ (L0/L1/L2/L3) và nhu cầu mới (Ops/Security/Learning), gây drift giữa dashboard source và runtime Grafana sidecar.  
 **Fix:** Xóa toàn bộ JSON dashboard cũ trong `k8s/monitor/dashboards`, dựng lại 3 dashboard chuẩn `omni_ops.json`, `omni_security.json`, `omni_learning.json`, và thay `k8s/monitor/grafana-dashboards.yaml` chỉ còn 3 key tương ứng. Bổ sung script sync mới `scripts/sync_grafana_dashboard_configmaps.py` để render ConfigMap từ đúng 3 JSON canonical. Verify: `./scripts/with_working_kube.sh apply -f k8s/monitor/grafana-dashboards.yaml` + rollout `deployment/grafana -n monitor`.

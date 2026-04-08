@@ -3,6 +3,21 @@
 This file consolidates all current report documents under `docs/reports/` into one place for review.
 Original files are kept unchanged.
 
+## Latest Iteration Addendum (Full Incident Training Matrix + Shadow Learning)
+
+### What Changed in System Behavior
+- Added centralized scenario registry `config/incident_training_matrix.yaml` and made `scripts/e2e_incident_matrix.sh` matrix-driven (payload scenarios via `scripts/incident_matrix_payload_from_config.py`).
+- Added shadow self-learning module `src/workers/selflearning_shadow.py` and wired it into evidence reasoning path with default-off feature flags in `src/workers/settings.py`.
+- Added explicit non-impact/learning gates: `scripts/validate_nonimpact_guards_gate.py`, `scripts/validate_learning_loop_gate.py` and integrated into `autonomy-gate`.
+
+### Verification Snapshot
+- Pass: `make docker-worker`, `make docker-gateway`, `make deploy-worker`, `make deploy-gateway`, `bash scripts/e2e_incident_matrix.sh` (31/31 pass with `STRICT_ASSERT=0`), targeted pytest for updated contracts.
+- Fail (strict): `make autonomy-gate` and `scripts/full_system_audit.py --strict` still fail on `sigma_gate_ok=false`; second strict run also showed `trace_stage_matrix_ok=false`.
+
+### Blocker Classification
+- `infra_blocker`: strict sigma gate has insufficient evidence in current lab window (`dr=0`, `z_cpu=0`, `z_mem=0` across samples).
+- `logic_blocker`: strict trace-stage assertion can intermittently miss required stages under split topology timing.
+
 ## Latest Iteration Addendum (Safe Cleanup + Triple Dashboard Rebuild)
 
 ### What Changed in System Behavior
@@ -53,6 +68,8 @@ Original files are kept unchanged.
 - `docs/reports/phase-5-review.md`
 - `docs/reports/phase-6-report.md`
 - `docs/reports/phase-6-review.md`
+- `docs/reports/phase-7-report.md`
+- `docs/reports/phase-7-review.md`
 - `docs/reports/dashboard-source-of-truth.md`
 - `docs/reports/project-memory.md`
 

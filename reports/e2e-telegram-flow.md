@@ -1,5 +1,7 @@
 # E2E: Telegram input → output (full luồng)
 
+> **Topology:** Below assumes **legacy** `deployment/omni-worker` (single pod). For **split** MPV3, Telegram/stream handling may live on a different role — confirm `OMNI_WORKER_ROLE` and use logs from the deployment that runs the Telegram loop. Start here: [docs/vendor/OMNI_PROJECT_CANONICAL.md](../docs/vendor/OMNI_PROJECT_CANONICAL.md).
+
 ## Luồng dữ liệu
 
 ```mermaid

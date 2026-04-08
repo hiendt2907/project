@@ -1,5 +1,7 @@
 # Master Plan V3 — Báo cáo tổng hợp (single source of truth)
 
+**Kiến trúc vận hành hiện tại (bám code, một file):** [OMNI_PROJECT_CANONICAL.md](OMNI_PROJECT_CANONICAL.md) — đọc trước khi đối chiếu bảng lịch sử bên dưới.
+
 **File này** gom **toàn bộ** nội dung review MPV3: báo cáo theo plan (§0–§13), **Phase 0.5 DEEP PURGE** (§14), **Sổ đen nợ** (§15), **Redis Sentinel lab** (§16). Các file `master_plan_v3_phase05_report.md`, `technical_debt_blackbook.md`, `redis_sentinel_lab.md` chỉ còn vai trò **trỏ về đây** (tránh lệch bản).
 
 **Tham chiếu plan:** `kafka_v3_event_sre_bc3d0f10.plan.md` (Cursor plans — **không sửa file plan gốc**).  
@@ -182,7 +184,7 @@ Quy ước: mỗi phase hoàn tất → **commit + push** + prefix **`[x]`**; c�
 | Ingest | `omni-alerts` | Prober | **[x]** `omni-prober` |
 | Evidence | `omni-diagnostic-evidence` | Analyst | **[x]** `omni-analyst` |
 | Actions | `omni-actions` | Executor | **[x]** Deployment **`omni-executor`**, `OMNI_WORKER_ROLE=executor`, consumer `kafka_actions_loop` → `execute_write_pending` (JSON envelope). |
-| Results | `omni-results` | Reporter | **Chưa** service reporter riêng. |
+| Results / feedback | `omni-action-feedback` | Analyst | **[x]** Producer: executor `publish_action_feedback` → topic `omni-action-feedback` ([`kafka_ensure_omni_topics.sh`](../../scripts/kafka_ensure_omni_topics.sh)). Consumer: `kafka_action_feedback_loop` / [`autonomous_feedback_loop.py`](../../src/workers/autonomous_feedback_loop.py) trên `omni-analyst` — upsert `action_experience` (pgvector), replan khi fail. Tên **`omni-results`** trong bản plan cũ **không** dùng làm topic; xem [OMNI_PROJECT_CANONICAL.md](OMNI_PROJECT_CANONICAL.md). |
 
 ### 8.2 Bảng ánh xạ (plan)
 
@@ -253,7 +255,7 @@ ee95e57 [x] MPV3: OMNI_WORKER_ROLE split (prober/analyst/core), K8s deployments 
 
 Tóm tắt nhanh:
 
-1. **`omni-results` + Reporter** — chưa có consumer/service.
+1. **Kết quả thực thi / feedback** — triển khai qua topic **`omni-action-feedback`** (không phải `omni-results`). Service reporter tách tên `omni-results` **không** tồn tại; luồng chuẩn: executor → `omni-action-feedback` → analyst. Chi tiết: [OMNI_PROJECT_CANONICAL.md](OMNI_PROJECT_CANONICAL.md).
 2. **`omni-core` / `omni-executor` + SA `omni-worker`:** vẫn **cluster-admin** trong lab — thu hẹp RBAC là follow-up.
 3. **Ollama:** thiếu Service `ollama-service` → có thể cảnh báo embed/DNS.
 4. **Redis Sentinel:** client đã có; **cụm Sentinel trên K8s** do operator tự dựng (xem `redis_sentinel_lab.md`).
@@ -323,7 +325,7 @@ Tóm tắt nhanh:
 
 | # | Nợ | Trạng thái / ghi chú |
 |---|-----|----------------------|
-| 1 | `omni-actions` / `omni-results` service | **omni-actions:** consumer `kafka_actions_loop`, Deployment `omni-executor`, topic trong `kafka_ensure_omni_topics.sh`. **omni-results** (reporter): chưa có. |
+| 1 | `omni-actions` / `omni-action-feedback` | **omni-actions:** consumer `kafka_actions_loop`, Deployment `omni-executor`. **Feedback:** topic `omni-action-feedback`, producer executor, consumer analyst (`autonomous_feedback_loop`) — **đã có**. Tên `omni-results` trong bảng cũ = deprecated / không map topic. |
 | 2 | `omni-core` + SA `cluster-admin` | Chưa thu hẹp — lab vận hành mutate. |
 | 3 | Analyst runtime vs executor | **Đã tách:** `evidence_consumer` → `reason_diagnostic_evidence_only` (không `handle_inbound` / không `pkg.executor`). |
 | 4 | Ollama Service DNS | Cảnh báo embed nếu không có `ollama-service` — chưa đổi. |

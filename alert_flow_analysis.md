@@ -1,5 +1,7 @@
 # Technical Analysis: End-to-End Alert Flow & Autonomous Reasoning
 
+> **Legacy / snapshot:** Default lab today is **MPV3 split** (prober / analyst / core / executor). This narrative may describe monolith or Redis stream paths; verify against [docs/vendor/OMNI_PROJECT_CANONICAL.md](docs/vendor/OMNI_PROJECT_CANONICAL.md).
+
 This document outlines the precise journey of a metric alert through the Omni system, from ingestion to autonomous remediation and self-learning.
 
 ## 1. Phase 1: Ingestion & Sentinel (The Gateway)

@@ -1,0 +1,8 @@
+{
+  "chaos_run_id": "20260407T092024Z",
+  "strict_assert": "0",
+  "sleep_sec": "8",
+  "namespace": "multi-agent",
+  "scenarios": "cpu_throttling_fake_healthy,memory_leak_slow_poison",
+  "started_at_unix": 1775553624
+}

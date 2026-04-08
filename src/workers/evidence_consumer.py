@@ -42,6 +42,7 @@ from workers.reasoning_evidence_inbound import (
     reason_diagnostic_evidence_only,
     reason_diagnostic_rag_miss_sdk_only,
 )
+from workers.selflearning_shadow import run_shadow_selflearning
 from workers.telegram_escalation import emit_telegram_escalation
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.telegram_outbound import send_telegram_out_for_inbound
@@ -518,6 +519,12 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 display_out = f"{display_out.strip()}\n[SOURCE: SDK_FACTS_ONLY]"
             if not isinstance(machine, dict):
                 machine = {}
+            await run_shadow_selflearning(
+                ctx,
+                trace=trace,
+                sanitized_text=sanitized_text,
+                machine=machine,
+            )
 
             contradict_sdk = bool(
                 getattr(ctx.settings, "rag_evidence_contradiction_check_enabled", True)

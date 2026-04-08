@@ -857,6 +857,46 @@ class WorkerSettings(BaseSettings):
     )
     action_experience_enabled: bool = Field(default=True)
     action_experience_score_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+    multi_hypothesis_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_MULTI_HYPOTHESIS_ENABLED"),
+        description="Tier-1 shadow: generate up to 3 hypotheses from local LLM (default off).",
+    )
+    multi_hypothesis_shadow_only: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_MULTI_HYPOTHESIS_SHADOW_ONLY"),
+        description="Keep multi-hypothesis output in shadow artifacts only (no runtime decision override).",
+    )
+    deep_probe_orchestration_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_DEEP_PROBE_ORCHESTRATION_ENABLED"),
+        description="Tier-1 shadow: attach probe suggestions from hypotheses (default off).",
+    )
+    knowledge_draft_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_KNOWLEDGE_DRAFT_ENABLED"),
+        description="Stage Symptom/RootCause/Fix draft artifacts (no direct doc writes by default).",
+    )
+    shadow_influence_suggest_only: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_SHADOW_INFLUENCE_SUGGEST_ONLY"),
+        description="Tier-2 opt-in: shadow quality may improve suggest text only.",
+    )
+    autonomous_writeback_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_AUTONOMOUS_WRITEBACK_ENABLED"),
+        description="Tier-2 opt-in: allow action_experience writeback path.",
+    )
+    knowledge_promotion_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_KNOWLEDGE_PROMOTION_ENABLED"),
+        description="Tier-3 opt-in: allow reviewed draft promotion to docs.",
+    )
+    autodoc_git_push_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_AUTODOC_GIT_PUSH_ENABLED"),
+        description="Tier-3 opt-in: allow doc git push only with explicit approval flow.",
+    )
     routing_experience_enabled: bool = Field(
         default=True,
         description="Ghi + đọc Postgres action_experience để fast-path bỏ LLM sau slow-path thành công.",

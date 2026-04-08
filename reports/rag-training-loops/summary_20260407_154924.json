@@ -1,0 +1,32 @@
+{
+  "stamp": "20260407_154924",
+  "iterations_requested": 5,
+  "all_passed": false,
+  "iterations": [
+    {
+      "iteration": 1,
+      "ok": false,
+      "duration_sec": 6
+    },
+    {
+      "iteration": 2,
+      "ok": false,
+      "duration_sec": 4
+    },
+    {
+      "iteration": 3,
+      "ok": false,
+      "duration_sec": 4
+    },
+    {
+      "iteration": 4,
+      "ok": false,
+      "duration_sec": 5
+    },
+    {
+      "iteration": 5,
+      "ok": false,
+      "duration_sec": 4
+    }
+  ]
+}

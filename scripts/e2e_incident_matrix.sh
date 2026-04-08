@@ -4,23 +4,32 @@
 #   - nginx_waiting_fault: induce CreateContainerConfigError on nginx-test, then verify gateway trace path.
 #   - redis_probe_fault: reuse redis_exporter_probe_lab.sh (break readiness probe -> verify -> restore).
 #   - nginx_cpu_overlap: optional CPU overlap scenario for comparison.
+#   - gateway_payload: synthetic Alertmanager payloads from config (Prometheus label contract).
 #
 # Usage:
 #   bash scripts/e2e_incident_matrix.sh
 # Env:
 #   NS=multi-agent
 #   SCENARIOS=nginx_waiting_fault,redis_probe_fault,nginx_cpu_overlap
+#   MATRIX_PATHS=path:path  (merged scenario lists; default = training matrix + prometheus_firing_simulation)
 #   SLEEP_SEC=35
 #   STRICT_ASSERT=1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KUBE="${ROOT}/scripts/with_working_kube.sh"
+if [[ -x "${ROOT}/.venv/bin/python" ]]; then
+  PYTHON_BIN="${PYTHON_BIN:-${ROOT}/.venv/bin/python}"
+else
+  PYTHON_BIN="${PYTHON_BIN:-python3}"
+fi
 NS="${NS:-multi-agent}"
-SCENARIOS="${SCENARIOS:-nginx_waiting_fault,redis_probe_fault}"
+SCENARIOS="${SCENARIOS:-}"
 SLEEP_SEC="${SLEEP_SEC:-35}"
 STRICT_ASSERT="${STRICT_ASSERT:-1}"
 REPORT_JSON="${REPORT_JSON:-${ROOT}/reports/incident-matrix/latest.json}"
+MATRIX_PATHS="${MATRIX_PATHS:-${ROOT}/config/incident_training_matrix.yaml:${ROOT}/config/prometheus_firing_simulation.yaml}"
+export MATRIX_PATHS
 
 NGINX_CFG_CM="${NGINX_CFG_CM:-non-existent-config}"
 NGINX_CM_CREATED=0
@@ -37,7 +46,7 @@ _append_report_entry() {
   local duration_sec="$3"
   local trace_id="$4"
   local note="$5"
-  python3 - "$REPORT_ENTRIES" "$scenario" "$status" "$duration_sec" "$trace_id" "$note" <<'PY'
+  "${PYTHON_BIN}" - "$REPORT_ENTRIES" "$scenario" "$status" "$duration_sec" "$trace_id" "$note" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -55,9 +64,25 @@ with f.open("a", encoding="utf-8") as fp:
 PY
 }
 
+_matrix_runner_for() {
+  local sid="$1"
+  MATRIX_PATHS="${MATRIX_PATHS}" "${PYTHON_BIN}" "${ROOT}/scripts/matrix_lookup.py" runner "${sid}"
+}
+
+_scenario_exists_in_matrix() {
+  local sid="$1"
+  local out
+  out="$(_matrix_runner_for "$sid")"
+  [[ -n "${out}" ]]
+}
+
+_matrix_all_scenarios_csv() {
+  MATRIX_PATHS="${MATRIX_PATHS}" "${PYTHON_BIN}" "${ROOT}/scripts/matrix_lookup.py" all-ids
+}
+
 _extract_trace_id() {
   local log_file="$1"
-  python3 - "$log_file" <<'PY'
+  "${PYTHON_BIN}" - "$log_file" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -153,12 +178,60 @@ _run_nginx_cpu_overlap() {
     bash "${ROOT}/scripts/nginx_test_cpu_alert_lab.sh"
 }
 
+_run_gateway_payload_scenario() {
+  local sid="${1:-${CURRENT_SCENARIO:-}}"
+  if [[ -z "${sid}" ]]; then
+    echo "missing scenario id for gateway payload runner" >&2
+    return 2
+  fi
+  local payload
+  payload="$(mktemp)"
+  MATRIX_PATHS="${MATRIX_PATHS}" NS="${NS}" \
+    "${PYTHON_BIN}" "${ROOT}/scripts/incident_matrix_payload_from_config.py" \
+    --scenario-id "${sid}" \
+    --namespace "${NS}" \
+    --out "${payload}" >/dev/null
+  NS="${NS}" STRICT_ASSERT="${STRICT_ASSERT}" SLEEP_SEC="${SLEEP_SEC}" \
+    bash "${ROOT}/scripts/gateway_alert_loki_verify.sh" "${payload}"
+  rm -f "${payload}"
+}
+
+_dispatch_scenario() {
+  local sc="$1"
+  case "${sc}" in
+    nginx_waiting_fault) _run_scenario "${sc}" _run_nginx_waiting_fault ;;
+    redis_probe_fault) _run_scenario "${sc}" _run_redis_probe_fault ;;
+    nginx_cpu_overlap) _run_scenario "${sc}" _run_nginx_cpu_overlap ;;
+    *)
+      local r
+      r="$(_matrix_runner_for "${sc}")"
+      if [[ "${r}" == "gateway_payload" ]]; then
+        CURRENT_SCENARIO="${sc}" _run_scenario "${sc}" _run_gateway_payload_scenario
+      else
+        echo "Unknown scenario or runner: ${sc} (runner=${r})" >&2
+        TOTAL_COUNT=$((TOTAL_COUNT + 1))
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        _append_report_entry "${sc}" "failed" "0" "" "unknown_scenario"
+      fi
+      ;;
+  esac
+}
+
 _emit_report() {
-  local end_ts report_dir
+  local end_ts report_dir meta_git meta_cfg
   end_ts="$(date +%s)"
   report_dir="$(dirname "${REPORT_JSON}")"
   mkdir -p "${report_dir}"
-  python3 - "$REPORT_ENTRIES" "$REPORT_JSON" "$START_TS" "$end_ts" <<'PY'
+  meta_git="$(cd "${ROOT}" && git rev-parse HEAD 2>/dev/null || echo "")"
+  meta_cfg=""
+  if [[ -f "${ROOT}/config/incident_training_matrix.yaml" ]]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      meta_cfg="$(sha256sum "${ROOT}/config/incident_training_matrix.yaml" 2>/dev/null | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      meta_cfg="$(shasum -a 256 "${ROOT}/config/incident_training_matrix.yaml" 2>/dev/null | awk '{print $1}')"
+    fi
+  fi
+  "${PYTHON_BIN}" - "$REPORT_ENTRIES" "$REPORT_JSON" "$START_TS" "$end_ts" "$meta_git" "$meta_cfg" "$MATRIX_PATHS" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -167,6 +240,9 @@ entries_file = Path(sys.argv[1])
 out_file = Path(sys.argv[2])
 start_ts = int(sys.argv[3])
 end_ts = int(sys.argv[4])
+git_sha = sys.argv[5] if len(sys.argv) > 5 else ""
+config_sha = sys.argv[6] if len(sys.argv) > 6 else ""
+matrix_paths = sys.argv[7] if len(sys.argv) > 7 else ""
 
 entries = []
 if entries_file.exists():
@@ -179,9 +255,13 @@ if entries_file.exists():
 passed = sum(1 for e in entries if e.get("status") == "passed")
 failed = sum(1 for e in entries if e.get("status") != "passed")
 report = {
+    "schema_version": "1",
     "started_at": start_ts,
     "ended_at": end_ts,
     "duration_sec": max(0, end_ts - start_ts),
+    "git_sha": git_sha,
+    "config_sha256_primary_matrix": config_sha,
+    "matrix_paths": matrix_paths,
     "summary": {
         "total": len(entries),
         "passed": passed,
@@ -205,20 +285,23 @@ _cleanup() {
 trap _cleanup EXIT
 
 IFS=',' read -r -a arr <<<"${SCENARIOS}"
+if [[ "${#arr[@]}" -eq 0 || -z "${arr[0]:-}" ]]; then
+  SCENARIOS="$(_matrix_all_scenarios_csv)"
+  IFS=',' read -r -a arr <<<"${SCENARIOS}"
+fi
 for raw in "${arr[@]}"; do
   sc="$(echo "${raw}" | tr -d '[:space:]')"
-  case "${sc}" in
-    nginx_waiting_fault) _run_scenario "${sc}" _run_nginx_waiting_fault ;;
-    redis_probe_fault) _run_scenario "${sc}" _run_redis_probe_fault ;;
-    nginx_cpu_overlap) _run_scenario "${sc}" _run_nginx_cpu_overlap ;;
-    "") ;;
-    *)
-      echo "Unknown scenario: ${sc}" >&2
-      TOTAL_COUNT=$((TOTAL_COUNT + 1))
-      FAIL_COUNT=$((FAIL_COUNT + 1))
-      _append_report_entry "${sc}" "failed" "0" "" "unknown_scenario"
-      ;;
-  esac
+  if [[ -n "${sc}" ]] && ! _scenario_exists_in_matrix "${sc}"; then
+    echo "Unknown scenario in matrix: ${sc}" >&2
+    TOTAL_COUNT=$((TOTAL_COUNT + 1))
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    _append_report_entry "${sc}" "failed" "0" "" "unknown_scenario_in_matrix"
+    continue
+  fi
+  if [[ -z "${sc}" ]]; then
+    continue
+  fi
+  _dispatch_scenario "${sc}"
 done
 
 report_path="$(_emit_report)"

@@ -1,0 +1,172 @@
+# Label contract for Alertmanager-style payloads matching omni-rules (k8s/monitor/prometheus.yaml).
+# series_label_keys: labels present on firing alerts from PromQL (after aggregation).
+# static_labels: merged from rule `labels:` in Prometheus.
+# workload_resolve: optional — resolve real pod/container in lab via kubectl (deployment selector).
+#
+version: 1
+alerts:
+  # --- omni_baseline_alerts (scalar / no series labels after abs()) ---
+  OmniBaselineCpuZHigh:
+    static_labels: { severity: warning }
+    series_label_keys: []
+    annotations:
+      summary: "CPU Z-score exceeded 3-sigma"
+      description: "abs(omni:node_cpu:z) > 3 (recording rule omni:node_cpu:z)"
+  OmniBaselineMemZHigh:
+    static_labels: { severity: warning }
+    series_label_keys: []
+    annotations:
+      summary: "Memory Z-score exceeded 3-sigma"
+      description: "abs(omni:mem:z) > 3 (recording rule omni:mem:z)"
+  OmniBaselineDiskZHigh:
+    static_labels: { severity: warning }
+    series_label_keys: []
+    annotations:
+      summary: "Disk usage Z-score exceeded 3-sigma"
+      description: "abs(omni:node_disk:z) > 3 (recording rule omni:node_disk:z; disk_used_ratio 0-1)"
+
+  # --- max()/sum() without by — typically only rule labels on alert ---
+  OmniGatewayDown:
+    static_labels: { severity: critical, domain: dataflow }
+    series_label_keys: []
+    annotations:
+      summary: "omni-gateway is down"
+      description: "Gateway pod scrape is not up for 2m, alert ingress path may be broken."
+  OmniWorkerDown:
+    static_labels: { severity: critical, domain: logic }
+    series_label_keys: []
+    annotations:
+      summary: "omni-worker is down"
+      description: "Worker pod scrape is not up for 2m, processing pipeline is halted."
+  OmniRedisStandaloneDown:
+    static_labels: { severity: critical, domain: redis }
+    series_label_keys: []
+    annotations:
+      summary: "Redis standalone is down"
+      description: "Expected redis StatefulSet pod scrape up; current max(up) is {{ $value }}."
+  OmniRedisExporterDown:
+    static_labels: { severity: warning, domain: redis }
+    series_label_keys: []
+    annotations:
+      summary: "redis-exporter is down"
+      description: "Redis metrics exporter scrape is down for 2m."
+
+  # kube_pod_status_ready retains pod/namespace/condition labels
+  ProbeFailureLab:
+    static_labels: { severity: warning, domain: redis, namespace: multi-agent }
+    series_label_keys: [namespace, pod, condition, uid]
+    series_label_defaults: { condition: "true" }
+    annotations:
+      summary: "Readiness probe failing for redis-exporter"
+      description: "kube_pod_status_ready is 0 (expect probe to :9121/metrics). Context deadline / wrong port possible."
+    workload_resolve: { deployment: redis-exporter, container: redis-exporter }
+
+  OmniPostgresNodeLoss:
+    static_labels: { severity: critical, domain: db }
+    series_label_keys: []
+    annotations:
+      summary: "Postgres cluster node count dropped"
+      description: "Expected 3 postgres pods up, current count is {{ $value }}."
+  OmniPgpoolDown:
+    static_labels: { severity: critical, domain: db }
+    series_label_keys: []
+    annotations:
+      summary: "pgpool-gateway is unavailable"
+      description: "PGPool deployment has no available replicas."
+  OmniK8sDeploymentUnavailable:
+    static_labels: { severity: warning, domain: k8s }
+    series_label_keys: []
+    annotations:
+      summary: "Deployment unavailable replicas detected"
+      description: "Some deployments in namespace multi-agent have unavailable replicas."
+  OmniPodCrashLoop:
+    static_labels: { severity: warning, domain: k8s }
+    series_label_keys: []
+    annotations:
+      summary: "Pod restart spike in multi-agent"
+      description: "Container restarts exceeded threshold in the last 10m."
+  OmniOllamaDown:
+    static_labels: { severity: critical, domain: system }
+    series_label_keys: []
+    annotations:
+      summary: "Ollama probe failed"
+      description: "omni_ollama_up is 0 for 3m."
+  OmniProactiveVerificationFailSpike:
+    static_labels: { severity: warning, domain: business }
+    series_label_keys: []
+    annotations:
+      summary: "Proactive verify fail/deny rate elevated"
+      description: "Proactive verification fail/deny rate is above 0.2/s over 10m."
+  OmniProactiveIncidentSlow:
+    static_labels: { severity: warning, domain: business }
+    series_label_keys: []
+    annotations:
+      summary: "Proactive incident handling very slow (p99)"
+      description: "p99 omni_proactive_incident_duration_seconds > 300s over 10m rate window (lab threshold; tune per cluster)."
+  OmniLearningWriteFail:
+    static_labels: { severity: warning, domain: logic }
+    series_label_keys: []
+    annotations:
+      summary: "Learning write failures detected (sustained)"
+      description: "At least 2 action_experience learning upsert fails in a 15m window, for 15m (reduces single-blip / Missingseries flap)."
+  OmniNetworkPacketDrop:
+    static_labels: { severity: warning, domain: network }
+    series_label_keys: []
+    annotations:
+      summary: "Network packet drops elevated"
+      description: "Node packet drop rate is above threshold over 10m."
+
+  # --- omni_lab_nginx ---
+  NginxTestHighCpuLab:
+    static_labels: { severity: warning, domain: lab, workload: nginx-test }
+    series_label_keys: [namespace, pod]
+    annotations:
+      summary: "nginx-test pod CPU sustained high (cAdvisor lab rule)"
+      description: "nginx container CPU rate > 0.04 cores (~80% of 50m limit). Pod {{ $labels.pod }}."
+    workload_resolve: { deployment: nginx-test, container: nginx }
+  NginxTestContainerWaitingFaultLab:
+    static_labels: { severity: critical, domain: lab, workload: nginx-test }
+    series_label_keys: [namespace, pod, container, reason]
+    series_label_defaults: { reason: CreateContainerError }
+    annotations:
+      summary: "nginx-test container waiting with fault reason (lab)"
+      description: "Pod {{ $labels.pod }} container {{ $labels.container }} reason={{ $labels.reason }} (kube-state-metrics)."
+    workload_resolve: { deployment: nginx-test, container: nginx }
+  NginxTestContainerLastTerminatedOOMLab:
+    static_labels: { severity: critical, domain: lab, workload: nginx-test }
+    series_label_keys: [namespace, pod, container, reason]
+    series_label_defaults: { reason: OOMKilled }
+    annotations:
+      summary: "nginx-test container last termination OOMKilled (lab)"
+      description: "Pod {{ $labels.pod }} container {{ $labels.container }} last OOMKilled (kube-state-metrics)."
+    workload_resolve: { deployment: nginx-test, container: nginx }
+
+  # --- omni_pod_resource_alerts (cAdvisor / sum by) ---
+  PodCpuUtilizationVsLimitHigh:
+    static_labels: { severity: warning, domain: pod, signal: cpu }
+    series_label_keys: [namespace, pod, container]
+    annotations:
+      summary: "Pod container CPU usage high vs limit (multi-agent)"
+      description: "CPU rate / limit > 85% for 5m. namespace={{ $labels.namespace }} pod={{ $labels.pod }} container={{ $labels.container }}."
+    workload_resolve: { deployment: nginx-test, container: nginx }
+  PodMemoryWorkingSetVsLimitHigh:
+    static_labels: { severity: warning, domain: pod, signal: memory }
+    series_label_keys: [namespace, pod, container]
+    annotations:
+      summary: "Pod container memory working set high vs limit (multi-agent)"
+      description: "working_set_bytes / memory limit > 90% for 5m. namespace={{ $labels.namespace }} pod={{ $labels.pod }} container={{ $labels.container }}."
+    workload_resolve: { deployment: nginx-test, container: nginx }
+  PodNetworkThroughputHigh:
+    static_labels: { severity: warning, domain: pod, signal: network }
+    series_label_keys: [namespace, pod]
+    annotations:
+      summary: "Pod network throughput high (multi-agent)"
+      description: "Sum rx+tx rate > 50 MiB/s for 5m (cAdvisor). namespace={{ $labels.namespace }} pod={{ $labels.pod }}."
+    workload_resolve: { deployment: nginx-test, container: nginx }
+  PodFilesystemIOThroughputHigh:
+    static_labels: { severity: warning, domain: pod, signal: disk_io }
+    series_label_keys: [namespace, pod, container]
+    annotations:
+      summary: "Pod container filesystem read+write throughput high (multi-agent)"
+      description: "read+write bytes/s > 50 MiB/s for 5m (cAdvisor). namespace={{ $labels.namespace }} pod={{ $labels.pod }} container={{ $labels.container }}."
+    workload_resolve: { deployment: nginx-test, container: nginx }

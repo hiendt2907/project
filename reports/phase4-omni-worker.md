@@ -1,5 +1,7 @@
 # Chặng 4 — Trái tim hệ thống (Omni Worker)
 
+> **Monolith-only report** (`deployment/omni-worker`). Default lab path is **MPV3 split** — see [docs/vendor/OMNI_PROJECT_CANONICAL.md](../docs/vendor/OMNI_PROJECT_CANONICAL.md).
+
 ## Đã giao
 
 | Thành phần | Đường dẫn | Mô tả |

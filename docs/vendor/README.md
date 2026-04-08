@@ -1,5 +1,7 @@
 # Vendor Docs Local Mirror
 
+**Omni project canonical (architecture + ops):** [`OMNI_PROJECT_CANONICAL.md`](./OMNI_PROJECT_CANONICAL.md) — single source grounded in code; start here before vendor mirrors.
+
 This directory stores a local mirror of official documentation pages used by this project.
 
 Canonical path: **`docs/vendor/`** (always use this spelling in rules, links, and CI).

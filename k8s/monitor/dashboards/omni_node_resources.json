@@ -1,0 +1,171 @@
+{
+  "title": "Omni Node Resources",
+  "uid": "omni-node-resources",
+  "schemaVersion": 39,
+  "version": 2,
+  "editable": true,
+  "tags": ["omni", "resources", "nodes"],
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "label": "node",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "mimir" },
+        "query": "label_values(node_uname_info, instance)",
+        "current": { "selected": true, "text": "All", "value": ".*" },
+        "includeAll": true,
+        "allValue": ".*"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Node count",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "count(count by(instance) (node_uname_info{instance=~\"$node\"}))" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Avg CPU usage (%)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "avg(100 * (1 - avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\",instance=~\"$node\"}[5m]))))" }],
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Avg memory usage (%)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "avg(100 * (1 - (node_memory_MemAvailable_bytes{instance=~\"$node\"} / node_memory_MemTotal_bytes{instance=~\"$node\"})))" }],
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Avg load1",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [{ "refId": "A", "expr": "avg(node_load1{instance=~\"$node\"})" }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Node CPU usage (%) by instance",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\",instance=~\"$node\"}[5m])))",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Node load (1m/5m)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        { "refId": "A", "expr": "node_load1{instance=~\"$node\"}", "legendFormat": "{{instance}} load1" },
+        { "refId": "B", "expr": "node_load5{instance=~\"$node\"}", "legendFormat": "{{instance}} load5" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Node memory usage (%) by instance",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - (node_memory_MemAvailable_bytes{instance=~\"$node\"} / node_memory_MemTotal_bytes{instance=~\"$node\"}))",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Node network throughput bytes/s",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        { "refId": "A", "expr": "sum by(instance) (rate(node_network_receive_bytes_total{instance=~\"$node\",device!~\"lo|veth.*|cali.*\"}[5m]))", "legendFormat": "{{instance}} rx" },
+        { "refId": "B", "expr": "sum by(instance) (rate(node_network_transmit_bytes_total{instance=~\"$node\",device!~\"lo|veth.*|cali.*\"}[5m]))", "legendFormat": "{{instance}} tx" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Node filesystem used (%) top 10 mountpoints",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, 100 * (1 - (node_filesystem_avail_bytes{instance=~\"$node\",fstype!~\"tmpfs|overlay|squashfs|ramfs\",mountpoint!~\"/run.*|/var/lib/kubelet/pods.*\"} / node_filesystem_size_bytes{instance=~\"$node\",fstype!~\"tmpfs|overlay|squashfs|ramfs\",mountpoint!~\"/run.*|/var/lib/kubelet/pods.*\"})))",
+          "legendFormat": "{{instance}} {{mountpoint}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Node disk IO bytes/s",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        { "refId": "A", "expr": "sum by(instance) (rate(node_disk_read_bytes_total{instance=~\"$node\"}[5m]))", "legendFormat": "{{instance}} read" },
+        { "refId": "B", "expr": "sum by(instance) (rate(node_disk_written_bytes_total{instance=~\"$node\"}[5m]))", "legendFormat": "{{instance}} write" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] }
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Node allocatable resources",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "kube_node_status_allocatable{resource=~\"cpu|memory\"}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "K8s worker lag by app (queue pressure quick view)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(app) (max_over_time(omni_worker_lag_size[15m]))",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "options": { "showHeader": true }
+    }
+  ]
+}

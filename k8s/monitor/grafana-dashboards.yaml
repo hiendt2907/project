@@ -15,17 +15,204 @@ data:
       "schemaVersion": 39,
       "version": 1,
       "editable": true,
-      "tags": ["omni", "ops"],
-      "time": { "from": "now-6h", "to": "now" },
-      "templating": { "list": [ { "name": "namespace", "label": "namespace", "type": "query", "datasource": { "type": "prometheus", "uid": "mimir" }, "query": "label_values(up, kubernetes_namespace)", "current": { "selected": true, "text": "multi-agent", "value": "multi-agent" } }, { "name": "trace_id", "label": "trace_id", "type": "textbox", "query": "", "current": { "selected": true, "text": "", "value": "" } } ] },
+      "tags": [
+        "omni",
+        "ops"
+      ],
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "label": "namespace",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "mimir"
+            },
+            "query": "label_values(up, kubernetes_namespace)",
+            "current": {
+              "selected": true,
+              "text": "multi-agent",
+              "value": "multi-agent"
+            }
+          },
+          {
+            "name": "trace_id",
+            "label": "trace_id",
+            "type": "textbox",
+            "query": "",
+            "current": {
+              "selected": true,
+              "text": "",
+              "value": ""
+            }
+          }
+        ]
+      },
       "panels": [
-        { "id": 1, "type": "stat", "title": "Gateway 200 rate (5m)", "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "sum(rate(omni_gateway_requests_total{status=\"200_ok\"}[5m]))" } ] },
-        { "id": 2, "type": "stat", "title": "Auto verify success ratio (5m)", "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "100 * (sum(increase(omni_proactive_verify_total{outcome=\"success\"}[5m])) / clamp_min(sum(increase(omni_proactive_verify_total[5m])), 1))" } ] },
-        { "id": 3, "type": "stat", "title": "Active firing alerts", "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "sum(ALERTS{alertstate=\"firing\"})" } ] },
-        { "id": 4, "type": "stat", "title": "Ollama up", "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "max(omni_ollama_up)" } ] },
-        { "id": 5, "type": "timeseries", "title": "3-sigma CPU / MEM Z", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "omni:node_cpu:z", "legendFormat": "cpu_z" }, { "refId": "B", "expr": "omni:mem:z", "legendFormat": "mem_z" } ] },
-        { "id": 6, "type": "timeseries", "title": "Proactive outcome rates (5m)", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "sum(rate(omni_proactive_outcome_total{outcome=\"react_resolved\"}[5m]))", "legendFormat": "resolved/s" }, { "refId": "B", "expr": "sum(rate(omni_proactive_outcome_total{outcome=\"react_escalated\"}[5m]))", "legendFormat": "escalated/s" } ] },
-        { "id": 7, "type": "logs", "title": "Trace logs by trace_id", "gridPos": { "h": 10, "w": 24, "x": 0, "y": 13 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "{namespace=\"$namespace\", pod_name=~\"omni-prober.*|omni-analyst.*|omni-core.*|omni-executor.*|omni-gateway.*\"} |= \"$trace_id\"" } ] }
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Gateway 200 rate (5m)",
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(omni_gateway_requests_total{status=\"200_ok\"}[5m]))"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Auto verify success ratio (5m)",
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (sum(increase(omni_proactive_verify_total{outcome=\"success\"}[5m])) / clamp_min(sum(increase(omni_proactive_verify_total[5m])), 1))"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Active firing alerts",
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 12,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(ALERTS{alertstate=\"firing\"})"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Ollama up",
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 18,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(omni_ollama_up)"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "3-sigma CPU / MEM Z",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 5
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "omni:node_cpu:z",
+              "legendFormat": "cpu_z"
+            },
+            {
+              "refId": "B",
+              "expr": "omni:mem:z",
+              "legendFormat": "mem_z"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Proactive outcome rates (5m)",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 5
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(omni_proactive_outcome_total{outcome=\"react_resolved\"}[5m]))",
+              "legendFormat": "resolved/s"
+            },
+            {
+              "refId": "B",
+              "expr": "sum(rate(omni_proactive_outcome_total{outcome=\"react_escalated\"}[5m]))",
+              "legendFormat": "escalated/s"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "logs",
+          "title": "Trace logs by trace_id",
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 13
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "{namespace=\"$namespace\", pod_name=~\"omni-prober.*|omni-analyst.*|omni-core.*|omni-executor.*|omni-gateway.*\"} |= \"$trace_id\""
+            }
+          ]
+        }
       ]
     }
   omni_security.json: |
@@ -35,15 +222,133 @@ data:
       "schemaVersion": 39,
       "version": 1,
       "editable": true,
-      "tags": ["omni", "security"],
-      "time": { "from": "now-24h", "to": "now" },
-      "templating": { "list": [ { "name": "namespace", "label": "namespace", "type": "query", "datasource": { "type": "prometheus", "uid": "mimir" }, "query": "label_values(up, kubernetes_namespace)", "current": { "selected": true, "text": "multi-agent", "value": "multi-agent" } } ] },
+      "tags": [
+        "omni",
+        "security"
+      ],
+      "time": {
+        "from": "now-24h",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "label": "namespace",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "mimir"
+            },
+            "query": "label_values(up, kubernetes_namespace)",
+            "current": {
+              "selected": true,
+              "text": "multi-agent",
+              "value": "multi-agent"
+            }
+          }
+        ]
+      },
       "panels": [
-        { "id": 1, "type": "stat", "title": "ERR_GOV events (1h)", "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_GOV_\" [1h]))" } ] },
-        { "id": 2, "type": "stat", "title": "Proof/Sigma blocks (1h)", "gridPos": { "h": 5, "w": 8, "x": 8, "y": 0 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_REA_SIGMA_GATE_BLOCKED\" [1h])) + sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_REA_NO_PHYSICAL_PROOF\" [1h]))" } ] },
-        { "id": 3, "type": "stat", "title": "Denied mutation attempts (1h)", "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_GOV_UNAUTHORIZED_MUTATION\" [1h]))" } ] },
-        { "id": 4, "type": "logs", "title": "Recent security reason codes", "gridPos": { "h": 10, "w": 24, "x": 0, "y": 5 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "{namespace=\"$namespace\", pod_name=~\"omni-.*\"} |~ \"ERR_GOV_|ERR_REA_\"" } ] },
-        { "id": 5, "type": "text", "title": "Gate checklist", "gridPos": { "h": 5, "w": 24, "x": 0, "y": 15 }, "options": { "mode": "markdown", "content": "- `make secret-gate`\n- `make env-mode-gate`\n- `make mutate-only-gate`\n- `make classifier-regression-gate`\n- `make phase-docs-gate`\n\nIf runtime verify fails, classify as `infra_blocker` or `logic_blocker` before release." } }
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "ERR_GOV events (1h)",
+          "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 0,
+            "y": 0
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_GOV_\" [1h]))"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Proof/Sigma blocks (1h)",
+          "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 8,
+            "y": 0
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_REA_SIGMA_GATE_BLOCKED\" [1h])) + sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_REA_NO_PHYSICAL_PROOF\" [1h]))"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Denied mutation attempts (1h)",
+          "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 16,
+            "y": 0
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_GOV_UNAUTHORIZED_MUTATION\" [1h]))"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "logs",
+          "title": "Recent security reason codes",
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 5
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "{namespace=\"$namespace\", pod_name=~\"omni-.*\"} |~ \"ERR_GOV_|ERR_REA_\""
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "text",
+          "title": "Gate checklist",
+          "gridPos": {
+            "h": 5,
+            "w": 24,
+            "x": 0,
+            "y": 15
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "- `make secret-gate`\n- `make env-mode-gate`\n- `make mutate-only-gate`\n- `make classifier-regression-gate`\n- `make phase-docs-gate`\n\nIf runtime verify fails, classify as `infra_blocker` or `logic_blocker` before release."
+          }
+        }
       ]
     }
   omni_learning.json: |
@@ -53,15 +358,955 @@ data:
       "schemaVersion": 39,
       "version": 1,
       "editable": true,
-      "tags": ["omni", "learning"],
-      "time": { "from": "now-24h", "to": "now" },
-      "templating": { "list": [ { "name": "namespace", "label": "namespace", "type": "query", "datasource": { "type": "prometheus", "uid": "mimir" }, "query": "label_values(up, kubernetes_namespace)", "current": { "selected": true, "text": "multi-agent", "value": "multi-agent" } } ] },
+      "tags": [
+        "omni",
+        "learning"
+      ],
+      "time": {
+        "from": "now-24h",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "label": "namespace",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "mimir"
+            },
+            "query": "label_values(up, kubernetes_namespace)",
+            "current": {
+              "selected": true,
+              "text": "multi-agent",
+              "value": "multi-agent"
+            }
+          }
+        ]
+      },
       "panels": [
-        { "id": 1, "type": "timeseries", "title": "Learning upserts trend", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "sum(rate(omni_learning_upserts_total[5m]))", "legendFormat": "upserts/s" } ] },
-        { "id": 2, "type": "timeseries", "title": "Verified success vs failure", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }, "datasource": { "type": "prometheus", "uid": "mimir" }, "targets": [ { "refId": "A", "expr": "sum(rate(omni_proactive_verify_total{outcome=\"success\"}[5m]))", "legendFormat": "verified_success/s" }, { "refId": "B", "expr": "sum(rate(omni_proactive_verify_total{outcome=\"failed\"}[5m]))", "legendFormat": "verified_failed/s" } ] },
-        { "id": 3, "type": "stat", "title": "Planner fallback events (1h)", "gridPos": { "h": 5, "w": 8, "x": 0, "y": 8 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-analyst.*|omni-core.*\"} |= \"PLANNER_FALLBACK\" [1h]))" } ] },
-        { "id": 4, "type": "stat", "title": "Proof gate blocked (1h)", "gridPos": { "h": 5, "w": 8, "x": 8, "y": 8 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_REA_SIGMA_GATE_BLOCKED\" [1h]))" } ] },
-        { "id": 5, "type": "stat", "title": "No-physical-proof blocked (1h)", "gridPos": { "h": 5, "w": 8, "x": 16, "y": 8 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_REA_NO_PHYSICAL_PROOF\" [1h]))" } ] },
-        { "id": 6, "type": "logs", "title": "Learning evidence snapshots", "gridPos": { "h": 10, "w": 24, "x": 0, "y": 13 }, "datasource": { "type": "loki", "uid": "loki" }, "targets": [ { "refId": "A", "expr": "{namespace=\"$namespace\", pod_name=~\"omni-.*\"} |~ \"learning_upsert|action_experience|VERIFIED_SUCCESS|PLAN_EMITTED\"" } ] }
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Learning upserts trend",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(omni_learning_upserts_total[5m]))",
+              "legendFormat": "upserts/s"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Verified success vs failure",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(omni_proactive_verify_total{outcome=\"success\"}[5m]))",
+              "legendFormat": "verified_success/s"
+            },
+            {
+              "refId": "B",
+              "expr": "sum(rate(omni_proactive_verify_total{outcome=\"failed\"}[5m]))",
+              "legendFormat": "verified_failed/s"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Planner fallback events (1h)",
+          "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 0,
+            "y": 8
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-analyst.*|omni-core.*\"} |= \"PLANNER_FALLBACK\" [1h]))"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Proof gate blocked (1h)",
+          "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 8,
+            "y": 8
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_REA_SIGMA_GATE_BLOCKED\" [1h]))"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "No-physical-proof blocked (1h)",
+          "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 16,
+            "y": 8
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(count_over_time({namespace=\"$namespace\",pod_name=~\"omni-.*\"} |= \"ERR_REA_NO_PHYSICAL_PROOF\" [1h]))"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "logs",
+          "title": "Learning evidence snapshots",
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 13
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "{namespace=\"$namespace\", pod_name=~\"omni-.*\"} |~ \"learning_upsert|action_experience|VERIFIED_SUCCESS|PLAN_EMITTED\""
+            }
+          ]
+        }
+      ]
+    }
+  omni_pod_resources.json: |
+    {
+      "title": "Omni Pod Resources",
+      "uid": "omni-pod-resources",
+      "schemaVersion": 39,
+      "version": 2,
+      "editable": true,
+      "tags": [
+        "omni",
+        "resources",
+        "pods",
+        "redis",
+        "kafka"
+      ],
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "label": "namespace",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "mimir"
+            },
+            "query": "label_values(kube_pod_info{namespace!=\"kube-system\"}, namespace)",
+            "current": {
+              "selected": true,
+              "text": "multi-agent",
+              "value": "multi-agent"
+            },
+            "includeAll": true,
+            "allValue": ".*"
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Running pods",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(kube_pod_status_phase{namespace=~\"$namespace\",phase=\"Running\"}==1)"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "CrashLoopBackOff pods",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(kube_pod_container_status_waiting_reason{namespace=~\"$namespace\",reason=\"CrashLoopBackOff\"})"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Redis up",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(redis_up)"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Consumer stuck heuristic (15m)",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum((max_over_time(omni_worker_lag_size[15m]) > bool 0) * (changes(omni_worker_lag_size[15m]) == bool 0))"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Pod CPU usage cores (top 20)",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(20, sum by(namespace, pod) (rate(container_cpu_usage_seconds_total{job=\"kubernetes-nodes-resource\",namespace!=\"kube-system\",namespace=~\"$namespace\",pod!=\"\",container!=\"\",container!=\"POD\"}[5m])))",
+              "legendFormat": "{{namespace}}/{{pod}}"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Pod memory working set MiB (top 20)",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(20, sum by(namespace, pod) (container_memory_working_set_bytes{job=\"kubernetes-nodes-resource\",namespace!=\"kube-system\",namespace=~\"$namespace\",pod!=\"\",container!=\"\",container!=\"POD\"}) / 1024 / 1024)",
+              "legendFormat": "{{namespace}}/{{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "MiB"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Pod CPU utilization vs request (%) top 15",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 12
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(15, 100 * (sum by(namespace,pod) (rate(container_cpu_usage_seconds_total{job=\"kubernetes-nodes-resource\",namespace!=\"kube-system\",namespace=~\"$namespace\",pod!=\"\",container!=\"\",container!=\"POD\"}[5m])) / clamp_min(sum by(namespace,pod) (kube_pod_container_resource_requests{namespace!=\"kube-system\",namespace=~\"$namespace\",resource=\"cpu\",unit=\"core\"}), 0.001)))",
+              "legendFormat": "{{namespace}}/{{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Pod memory utilization vs request (%) top 15",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 12
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(15, 100 * (sum by(namespace,pod) (container_memory_working_set_bytes{job=\"kubernetes-nodes-resource\",namespace!=\"kube-system\",namespace=~\"$namespace\",pod!=\"\",container!=\"\",container!=\"POD\"}) / clamp_min(sum by(namespace,pod) (kube_pod_container_resource_requests{namespace!=\"kube-system\",namespace=~\"$namespace\",resource=\"memory\",unit=\"byte\"}), 1)))",
+              "legendFormat": "{{namespace}}/{{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 9,
+          "type": "table",
+          "title": "Pod restart increase (30m) top 20",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 20
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(20, sum by(namespace,pod) (increase(kube_pod_container_status_restarts_total{namespace=~\"$namespace\"}[30m])))",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "options": {
+            "showHeader": true
+          }
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Kafka consumer lag proxy (omni_worker_lag_size by app)",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 20
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(app) (omni_worker_lag_size)",
+              "legendFormat": "{{app}}"
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "Redis blocked clients",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 28
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "redis_blocked_clients",
+              "legendFormat": "{{kubernetes_pod_name}}"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Redis commands processed /s",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 28
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "rate(redis_commands_processed_total[5m])",
+              "legendFormat": "{{kubernetes_pod_name}}"
+            }
+          ]
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Redis memory used MiB",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 28
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "redis_memory_used_bytes / 1024 / 1024",
+              "legendFormat": "{{kubernetes_pod_name}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "MiB"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 14,
+          "type": "timeseries",
+          "title": "Redis stream backlog (30m max) by stream",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 36
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(stream) (max_over_time(omni_redis_stream_backlog[30m]))",
+              "legendFormat": "{{stream}}"
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "type": "logs",
+          "title": "DLQ events logs",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 36
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "{namespace=\"multi-agent\", pod_name=~\"omni-.*\"} |~ \"dlq|omni-dlq|events:dlq\""
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "type": "logs",
+          "title": "Kafka pipeline logs (topics/consumer hints)",
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 44
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "{namespace=\"multi-agent\", pod_name=~\"omni-.*|kafka-.*\"} |~ \"kafka|omni-alerts|omni-actions|omni-action-feedback|consumer\""
+            }
+          ]
+        }
+      ]
+    }
+  omni_node_resources.json: |
+    {
+      "title": "Omni Node Resources",
+      "uid": "omni-node-resources",
+      "schemaVersion": 39,
+      "version": 2,
+      "editable": true,
+      "tags": [
+        "omni",
+        "resources",
+        "nodes"
+      ],
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "node",
+            "label": "node",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "mimir"
+            },
+            "query": "label_values(node_uname_info, instance)",
+            "current": {
+              "selected": true,
+              "text": "All",
+              "value": ".*"
+            },
+            "includeAll": true,
+            "allValue": ".*"
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Node count",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count(count by(instance) (node_uname_info{instance=~\"$node\"}))"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Avg CPU usage (%)",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "avg(100 * (1 - avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\",instance=~\"$node\"}[5m]))))"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Avg memory usage (%)",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "avg(100 * (1 - (node_memory_MemAvailable_bytes{instance=~\"$node\"} / node_memory_MemTotal_bytes{instance=~\"$node\"})))"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Avg load1",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 0
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "avg(node_load1{instance=~\"$node\"})"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Node CPU usage (%) by instance",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (1 - avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\",instance=~\"$node\"}[5m])))",
+              "legendFormat": "{{instance}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Node load (1m/5m)",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 4
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "node_load1{instance=~\"$node\"}",
+              "legendFormat": "{{instance}} load1"
+            },
+            {
+              "refId": "B",
+              "expr": "node_load5{instance=~\"$node\"}",
+              "legendFormat": "{{instance}} load5"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Node memory usage (%) by instance",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 12
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes{instance=~\"$node\"} / node_memory_MemTotal_bytes{instance=~\"$node\"}))",
+              "legendFormat": "{{instance}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Node network throughput bytes/s",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 12
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(instance) (rate(node_network_receive_bytes_total{instance=~\"$node\",device!~\"lo|veth.*|cali.*\"}[5m]))",
+              "legendFormat": "{{instance}} rx"
+            },
+            {
+              "refId": "B",
+              "expr": "sum by(instance) (rate(node_network_transmit_bytes_total{instance=~\"$node\",device!~\"lo|veth.*|cali.*\"}[5m]))",
+              "legendFormat": "{{instance}} tx"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Node filesystem used (%) top 10 mountpoints",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 20
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(10, 100 * (1 - (node_filesystem_avail_bytes{instance=~\"$node\",fstype!~\"tmpfs|overlay|squashfs|ramfs\",mountpoint!~\"/run.*|/var/lib/kubelet/pods.*\"} / node_filesystem_size_bytes{instance=~\"$node\",fstype!~\"tmpfs|overlay|squashfs|ramfs\",mountpoint!~\"/run.*|/var/lib/kubelet/pods.*\"})))",
+              "legendFormat": "{{instance}} {{mountpoint}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Node disk IO bytes/s",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 20
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(instance) (rate(node_disk_read_bytes_total{instance=~\"$node\"}[5m]))",
+              "legendFormat": "{{instance}} read"
+            },
+            {
+              "refId": "B",
+              "expr": "sum by(instance) (rate(node_disk_written_bytes_total{instance=~\"$node\"}[5m]))",
+              "legendFormat": "{{instance}} write"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 11,
+          "type": "table",
+          "title": "Node allocatable resources",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 28
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "kube_node_status_allocatable{resource=~\"cpu|memory\"}",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "options": {
+            "showHeader": true
+          }
+        },
+        {
+          "id": 12,
+          "type": "table",
+          "title": "K8s worker lag by app (queue pressure quick view)",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 28
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by(app) (max_over_time(omni_worker_lag_size[15m]))",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "options": {
+            "showHeader": true
+          }
+        }
       ]
     }

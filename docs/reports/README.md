@@ -1,5 +1,7 @@
 # Autonomy Phase Reports Index
 
+**Live architecture (code):** [../vendor/OMNI_PROJECT_CANONICAL.md](../vendor/OMNI_PROJECT_CANONICAL.md) — phase reports below are historical / planning artifacts.
+
 ## Status Board
 
 - Phase 1: `in_progress` - `docs/reports/phase-1-state-machine-report.md`
