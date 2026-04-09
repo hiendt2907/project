@@ -11,6 +11,10 @@ _RE_FALSE_ALARM_BLOCK = re.compile(r"\bFALSE_ALARM\b|\bSTALE_METRIC\b", re.IGNOR
 # No trailing \\b: "CrashLoopBackOff" has no boundary after "Loop" before "BackOff".
 _RE_CRASH = re.compile(r"(crashloop|crash\s*loop|backoff|oomkilled)", re.IGNORECASE)
 _RE_HIGH_CPU = re.compile(r"\b(high\s+cpu|cpu\s+spike|elevated\s+cpu|usage.*high)\b", re.IGNORECASE)
+_RE_UNCERTAIN = re.compile(
+    r"\b(maybe|possibly|perhaps|unclear|might|could|seems|appears)\b",
+    re.IGNORECASE,
+)
 
 
 def llm_contradicts_sdk_facts(llm_text: str, evidence_batch_text: str) -> bool:
@@ -21,6 +25,12 @@ def llm_contradicts_sdk_facts(llm_text: str, evidence_batch_text: str) -> bool:
     llm = (llm_text or "").strip()
     ev = (evidence_batch_text or "").strip()
     if not llm or not ev:
+        return False
+
+    # Hedge language without a concrete crash/CPU/false-alarm claim → do not treat as contradiction.
+    if _RE_UNCERTAIN.search(llm) and not (
+        _RE_CRASH.search(llm) or _RE_HIGH_CPU.search(llm) or _RE_FALSE_ALARM_BLOCK.search(llm)
+    ):
         return False
 
     if _RE_FALSE_ALARM_BLOCK.search(ev):

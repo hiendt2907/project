@@ -132,7 +132,10 @@ def expand_entries(
     shuffle_seed: int | None = None,
     god_mode: bool = False,
 ) -> list[ExpandedSopEntry]:
-    allowlist = fast_path_auto_execute_allowlist(WorkerSettings(god_mode=god_mode))
+    # Prod validator strips god_mode; expand "god" branch must model dev/lab settings.
+    allowlist = fast_path_auto_execute_allowlist(
+        WorkerSettings(god_mode=god_mode, env_mode="dev" if god_mode else "prod")
+    )
     iters = [iter(_expand_one_template(t, allowlist=allowlist)) for t in seed.templates]
     merged = _round_robin_take(iters, max_total)
     if shuffle_seed is not None:

@@ -16,18 +16,22 @@ def build_execute_mutate_body(
     args: dict[str, Any],
     attempt_count: int,
     correlation_id: str | None = None,
+    reasoning_chain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Inner Kafka JSON for omni-actions — executor runs mutate after Pre-apply when allowed."""
     cid = (correlation_id or "").strip() or str(uuid.uuid4())
+    data: dict[str, Any] = {
+        "tool_name": str(tool_name).strip()[:256],
+        "args": dict(args) if isinstance(args, dict) else {},
+        "attempt_count": max(1, int(attempt_count)),
+        "correlation_id": cid,
+    }
+    if reasoning_chain is not None and isinstance(reasoning_chain, dict) and reasoning_chain:
+        data["reasoning_chain"] = reasoning_chain
     return {
         "action": ACTION_EXECUTE_MUTATE,
         "trace_id": str(trace_id).strip(),
-        "data": {
-            "tool_name": str(tool_name).strip()[:256],
-            "args": dict(args) if isinstance(args, dict) else {},
-            "attempt_count": max(1, int(attempt_count)),
-            "correlation_id": cid,
-        },
+        "data": data,
     }
 
 

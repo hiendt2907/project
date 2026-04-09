@@ -13,6 +13,8 @@
 #   E2E_EXEC_DEPLOY=omni-prober          # Pod chạy python3 để POST tới gateway
 #   E2E_TRACE_LOG_DEPLOYS="omni-prober …" # override danh sách grep log theo trace
 #   E2E_NGINX_POD_AUTO=1                 # (default) với alertmanager_nginx_cpu_high.json: patch labels.pod = pod app=nginx-test hiện tại
+#   STRICT_ASSERT=1                     # trace in >=3 worker deploy logs + action marker
+#   E2E_ASSERT_DIAGNOSTIC_POLICY=1        # optional: INV_/DIAGNOSTIC_* or agentic/discovery (agentic_mutate_plan|readonly_discovery_redirect|k8s_args_coerced); SLEEP_SEC>=120 if Ollama slow
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -173,6 +175,20 @@ if [[ "${STRICT_ASSERT}" == "1" ]]; then
     exit 3
   fi
   echo "PASS: strict stage assertions satisfied (worker_deploy_hits=${STAGE_DEP_HITS})"
+fi
+
+# Optional: assert diagnostic policy / reasoning_chain markers (nginx waiting fault lab).
+if [[ "${E2E_ASSERT_DIAGNOSTIC_POLICY:-}" == "1" ]]; then
+  echo ""
+  echo "=== 3c) Diagnostic policy markers (optional) ==="
+  if [[ -z "${WR_LINES:-}" ]]; then
+    echo "SKIP: no worker log lines for trace (set WR_LINES from step 3)" >&2
+  elif ! echo "${WR_LINES}" | grep -Eq "DIAGNOSTIC_INVARIANT_GATE|reasoning_chain|INV_NO_RESTART_ON_BROKEN_SPEC|PLANNER_READONLY_ROUTE|ERR_SEM_CHANNEL_MISMATCH|diagnostic_invariant_gate|agentic_mutate_plan|readonly_discovery_redirect|k8s_args_coerced"; then
+    echo "FAIL: trace_id ${TRACE} has no diagnostic policy / planner-route / agentic-discovery markers in worker logs" >&2
+    exit 4
+  else
+    echo "PASS: diagnostic policy markers present"
+  fi
 fi
 
 echo ""

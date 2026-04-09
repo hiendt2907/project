@@ -126,6 +126,7 @@ Luồng nghiệp vụ giữ **`trace_id`** xuyên suốt ingest → probe → re
 
 ## 9. Nợ / giới hạn đã biết (tóm tắt)
 
+- **Đa cluster / đa nền tảng trong một Omni:** **chưa có** — một deployment Omni = một client Kubernetes (in-cluster hoặc một kubeconfig hiệu lực). Không có fleet registry hay routing kubeconfig theo `cluster_id` trong code. Vận hành hiện tại: **một stack Omni mỗi cluster / mỗi môi trường**; nếu cần “một control plane — nhiều cluster” thì đó là **nợ kỹ thuật** (thiết kế ClusterRegistry + payload + executor multi-client).
 - **RBAC:** `omni-executor` / core thường gắn SA rộng trong lab — thu hẹp theo [adr-rbac-executor.md](adr-rbac-executor.md).
 - **Ollama:** service `ollama-service:11434` hoặc `host.docker.internal` — xem knownbase embed/DNS.
 - **Strict audit** nhạy môi trường lab.
@@ -136,7 +137,7 @@ Luồng nghiệp vụ giữ **`trace_id`** xuyên suốt ingest → probe → re
 
 - Worker entry: `src/workers/omni_worker.py`
 - Settings: `src/workers/settings.py`
-- Evidence: `src/workers/evidence_consumer.py`
+- Evidence: `src/workers/evidence_consumer.py` — Proof-of-Fault three lanes (`resource` / `state` / `app_log`): [../reports/incident-evidence-three-lanes.md](../reports/incident-evidence-three-lanes.md)
 - Actions consumer: `src/workers/kafka_actions_consumer.py`
 - RAG gate: `src/pkg/rag/gate.py`
 - Store: `src/rag/pgvector_store.py`

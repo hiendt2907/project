@@ -1,19 +1,31 @@
 version: 1
 # gateway_payload: prometheus_alert must match config/prometheus_alert_label_catalog.yaml (labels from k8s/monitor/prometheus.yaml).
+# proof_lane: resource | state | app_log — see docs/reports/incident-evidence-three-lanes.md
+# expected_stage: sigma_verify | state_confirm | log_surge_verify
 scenarios:
   - id: nginx_waiting_fault
     group: baseline_resource
     runner: builtin
-    expected_channel: EXECUTE_MUTATE
-    expected_reason_codes: []
+    prometheus_alert: NginxTestContainerWaitingFaultLab
+    series_label_defaults: { reason: CreateContainerError }
+    proof_lane: state
+    expected_stage: state_confirm
+    diagnostic_pattern: config_integrity
+    expected_channel: SUGGEST_REMEDIATION
+    expected_reason_codes:
+      - INV_NO_RESTART_ON_BROKEN_SPEC
   - id: redis_probe_fault
     group: baseline_resource
     runner: builtin
+    proof_lane: resource
+    expected_stage: sigma_verify
     expected_channel: SUGGEST_REMEDIATION
     expected_reason_codes: []
   - id: nginx_cpu_overlap
     group: baseline_resource
     runner: builtin
+    proof_lane: resource
+    expected_stage: sigma_verify
     expected_channel: EXECUTE_MUTATE
     expected_reason_codes: []
 
@@ -21,6 +33,8 @@ scenarios:
     group: resource_silent_killers
     runner: gateway_payload
     prometheus_alert: PodCpuUtilizationVsLimitHigh
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: CPU throttling increases P99 while CPU z-score remains low."
     description: "Detect throttling via container_cpu_cfs_throttled_seconds_total, not only CPU percent."
     expected_channel: SUGGEST_REMEDIATION
@@ -29,6 +43,8 @@ scenarios:
     group: resource_silent_killers
     runner: gateway_payload
     prometheus_alert: PodMemoryWorkingSetVsLimitHigh
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: RSS memory trends upward in sawtooth pattern without OOM."
     description: "Diagnose trend vs threshold and compare RSS vs cache."
     expected_channel: SUGGEST_REMEDIATION
@@ -37,6 +53,8 @@ scenarios:
     group: resource_silent_killers
     runner: gateway_payload
     prometheus_alert: NginxTestContainerWaitingFaultLab
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Pod appears Running but process is deadlocked or zombie."
     description: "Verify application health endpoint instead of relying solely on K8s liveness."
     expected_channel: SUGGEST_REMEDIATION
@@ -46,6 +64,8 @@ scenarios:
     group: db_connectivity
     runner: gateway_payload
     prometheus_alert: OmniPgpoolDown
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: DB alive but app fails with connection timeout."
     description: "Suggest pool sizing and long-running query diagnostics before restart."
     expected_channel: SUGGEST_REMEDIATION
@@ -54,6 +74,8 @@ scenarios:
     group: db_connectivity
     runner: gateway_payload
     prometheus_alert: OmniPostgresNodeLoss
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Two DB nodes claim primary due to unstable network."
     description: "Do not mutate when quorum/fencing cannot be verified."
     expected_channel: SUGGEST_REMEDIATION
@@ -62,6 +84,8 @@ scenarios:
     group: db_connectivity
     runner: gateway_payload
     prometheus_alert: OmniNetworkPacketDrop
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Internal DNS intermittently fails causing unstable DB connectivity."
     description: "Distinguish infra-level DNS issues from app defects."
     expected_channel: SUGGEST_REMEDIATION
@@ -71,6 +95,9 @@ scenarios:
     group: logic_governance
     runner: gateway_payload
     prometheus_alert: PodCpuUtilizationVsLimitHigh
+    workload_profile: api_web
+    proof_lane: app_log
+    expected_stage: log_surge_verify
     summary: "Training: Error rate 100% while CPU and memory z-scores stay near zero."
     description: "Prioritize business logic fault evidence over pure sigma metrics."
     expected_channel: SUGGEST_REMEDIATION
@@ -78,7 +105,9 @@ scenarios:
   - id: stale_secret_auth_trap
     group: logic_governance
     runner: gateway_payload
-    prometheus_alert: PodCpuUtilizationVsLimitHigh
+    prometheus_alert: OmniStaleSecretAuthTrap
+    proof_lane: state
+    expected_stage: state_confirm
     summary: "Training: Secret rotated but pods still run with stale env values."
     description: "Compare pod restart time against secret update time."
     expected_channel: EXECUTE_MUTATE
@@ -87,6 +116,8 @@ scenarios:
     group: logic_governance
     runner: gateway_payload
     prometheus_alert: PodFilesystemIOThroughputHigh
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Storage latency spikes while CPU and memory look normal."
     description: "Investigate iowait and storage latency path."
     expected_channel: SUGGEST_REMEDIATION
@@ -96,6 +127,8 @@ scenarios:
     group: edge_security
     runner: gateway_payload
     prometheus_alert: OmniGatewayDown
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Crafted alert requests destructive mutation."
     description: "Must reject unauthorized mutation and emit governance reason code."
     expected_channel: SUGGEST_REMEDIATION
@@ -104,6 +137,8 @@ scenarios:
     group: edge_security
     runner: gateway_payload
     prometheus_alert: OmniProactiveVerificationFailSpike
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Service A fails due to slow Service B."
     description: "Perform RCA by trace correlation instead of treating as isolated fault."
     expected_channel: SUGGEST_REMEDIATION
@@ -112,6 +147,8 @@ scenarios:
     group: edge_security
     runner: gateway_payload
     prometheus_alert: OmniK8sDeploymentUnavailable
+    proof_lane: state
+    expected_stage: state_confirm
     summary: "Training: Runtime config differs from expected desired state."
     description: "Detect unmanaged drift and require controlled remediation."
     expected_channel: SUGGEST_REMEDIATION
@@ -120,6 +157,8 @@ scenarios:
     group: edge_security
     runner: gateway_payload
     prometheus_alert: OmniBaselineCpuZHigh
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Node clock skew causing auth/Kafka timing failures."
     description: "Validate node time skew before app-level interventions."
     expected_channel: SUGGEST_REMEDIATION
@@ -128,6 +167,8 @@ scenarios:
     group: edge_security
     runner: gateway_payload
     prometheus_alert: OmniOllamaDown
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Unknown service not covered by knowledge base."
     description: "Must return uncertainty and request safe probing/escalation."
     expected_channel: SUGGEST_REMEDIATION
@@ -136,6 +177,8 @@ scenarios:
     group: edge_security
     runner: gateway_payload
     prometheus_alert: OmniBaselineCpuZHigh
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Scheduled backup causes periodic CPU spike."
     description: "Correlate with schedule context to avoid false positive actions."
     expected_channel: SUGGEST_REMEDIATION
@@ -145,6 +188,8 @@ scenarios:
     group: k8s_deepdive
     runner: gateway_payload
     prometheus_alert: PodCpuUtilizationVsLimitHigh
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: PID exhaustion / cgroup limits."
     description: "Explain healthy metrics with dead app behavior from pids/cgroup limits."
     expected_channel: SUGGEST_REMEDIATION
@@ -153,6 +198,8 @@ scenarios:
     group: k8s_deepdive
     runner: gateway_payload
     prometheus_alert: PodFilesystemIOThroughputHigh
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Stale NFS mount / hanging IO."
     description: "Identify stale network storage mount despite Running pod state."
     expected_channel: SUGGEST_REMEDIATION
@@ -162,6 +209,8 @@ scenarios:
     runner: gateway_payload
     prometheus_alert: NginxTestContainerWaitingFaultLab
     series_label_defaults: { reason: ImagePullBackOff }
+    proof_lane: state
+    expected_stage: state_confirm
     summary: "Training: ImagePullBackOff / registry auth expiry."
     description: "Diagnose token/secret expiry and refresh imagePullSecrets."
     expected_channel: SUGGEST_REMEDIATION
@@ -171,6 +220,8 @@ scenarios:
     group: db_middleware_deepdive
     runner: gateway_payload
     prometheus_alert: OmniPostgresNodeLoss
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Postgres TXID wraparound risk."
     description: "Investigate autovacuum and xid age before destructive actions."
     expected_channel: SUGGEST_REMEDIATION
@@ -179,6 +230,8 @@ scenarios:
     group: db_middleware_deepdive
     runner: gateway_payload
     prometheus_alert: OmniProactiveIncidentSlow
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Kafka partition skew / hot partition."
     description: "Detect skewed keys and hotspot workers."
     expected_channel: SUGGEST_REMEDIATION
@@ -187,6 +240,8 @@ scenarios:
     group: db_middleware_deepdive
     runner: gateway_payload
     prometheus_alert: OmniRedisStandaloneDown
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Redis OOM / eviction policy mismatch."
     description: "Diagnose maxmemory-policy mismatch vs workload."
     expected_channel: SUGGEST_REMEDIATION
@@ -196,6 +251,8 @@ scenarios:
     group: network_os_traps
     runner: gateway_payload
     prometheus_alert: OmniGatewayDown
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: mTLS handshake failures."
     description: "Check cert validity and clock alignment across sidecars."
     expected_channel: SUGGEST_REMEDIATION
@@ -204,6 +261,8 @@ scenarios:
     group: network_os_traps
     runner: gateway_payload
     prometheus_alert: PodNetworkThroughputHigh
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: DNS search path / ndots amplification."
     description: "Detect ndots-induced resolver amplification."
     expected_channel: SUGGEST_REMEDIATION
@@ -212,6 +271,8 @@ scenarios:
     group: network_os_traps
     runner: gateway_payload
     prometheus_alert: OmniNetworkPacketDrop
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Egress policy / silent deny."
     description: "Differentiate external connectivity policy failures from app bugs."
     expected_channel: SUGGEST_REMEDIATION
@@ -220,6 +281,8 @@ scenarios:
     group: network_os_traps
     runner: gateway_payload
     prometheus_alert: PodMemoryWorkingSetVsLimitHigh
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: JVM Metaspace / non-heap OOM."
     description: "Diagnose non-heap metaspace growth."
     expected_channel: SUGGEST_REMEDIATION
@@ -228,6 +291,8 @@ scenarios:
     group: network_os_traps
     runner: gateway_payload
     prometheus_alert: OmniOllamaDown
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Entropy starvation slow TLS."
     description: "Check entropy availability and crypto randomness sources."
     expected_channel: SUGGEST_REMEDIATION
@@ -236,6 +301,8 @@ scenarios:
     group: network_os_traps
     runner: gateway_payload
     prometheus_alert: OmniK8sDeploymentUnavailable
+    proof_lane: state
+    expected_stage: state_confirm
     summary: "Training: Incompatible schema migration / race."
     description: "Detect replica migration/race condition hazards."
     expected_channel: SUGGEST_REMEDIATION
@@ -244,6 +311,8 @@ scenarios:
     group: network_os_traps
     runner: gateway_payload
     prometheus_alert: PodFilesystemIOThroughputHigh
+    proof_lane: resource
+    expected_stage: sigma_verify
     summary: "Training: Deleted-but-open log / disk full."
     description: "Detect deleted-but-open file descriptor leak."
     expected_channel: SUGGEST_REMEDIATION

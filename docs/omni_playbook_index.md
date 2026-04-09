@@ -12,6 +12,7 @@ This document is an **index**: it points to where knowledge lives. It does **not
 |----------------|----------|
 | **Single source — kiến trúc + Kafka + RAG + verify (bám code)** | [OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md) |
 | Invariants, guardrails, failure patterns after a **behavior change** | [project-memory.md](../reports/project-memory.md) |
+| Diagnostic policy (INV_*), `reasoning_chain`, ReAct/blind lane | [diagnostic-policy-spec.md](../reports/diagnostic-policy-spec.md) + [project-memory.md](../reports/project-memory.md) |
 | **Symptom → fix** from a real incident or debug session | [knownbase.md](knownbase.md) |
 | MPV3 / architecture review | [master_plan_v3_review_report.md](master_plan_v3_review_report.md) |
 | New long-lived technical notes | Prefer `docs/vendor/`; phase reports in `docs/reports/` |

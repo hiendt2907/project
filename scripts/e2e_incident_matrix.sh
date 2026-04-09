@@ -12,8 +12,9 @@
 #   NS=multi-agent
 #   SCENARIOS=nginx_waiting_fault,redis_probe_fault,nginx_cpu_overlap
 #   MATRIX_PATHS=path:path  (merged scenario lists; default = training matrix + prometheus_firing_simulation)
-#   SLEEP_SEC=35
+#   SLEEP_SEC=35                    # raise to 120–200 if STRICT_ASSERT + gateway E2E needs analyst/Ollama logs (planner slow)
 #   STRICT_ASSERT=1
+#   E2E_ASSERT_DIAGNOSTIC_POLICY=1  # nginx_waiting_fault defaults to 1: require INV_*/DIAGNOSTIC_INVARIANT_GATE markers in worker logs
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -163,9 +164,13 @@ _induce_nginx_waiting_fault() {
 _run_nginx_waiting_fault() {
   _induce_nginx_waiting_fault
   local payload="${ROOT}/scripts/alert_payloads/alertmanager_nginx_waiting_fault.json"
+  local rc=0
+  # Quality gate: not trace-only — require diagnostic policy / invariant markers (see gateway_alert_loki_verify.sh 3c).
   NS="${NS}" STRICT_ASSERT="${STRICT_ASSERT}" SLEEP_SEC="${SLEEP_SEC}" \
-    bash "${ROOT}/scripts/gateway_alert_loki_verify.sh" "${payload}"
+    E2E_ASSERT_DIAGNOSTIC_POLICY="${E2E_ASSERT_DIAGNOSTIC_POLICY:-1}" \
+    bash "${ROOT}/scripts/gateway_alert_loki_verify.sh" "${payload}" || rc=$?
   _restore_nginx
+  return "${rc}"
 }
 
 _run_redis_probe_fault() {
@@ -191,9 +196,11 @@ _run_gateway_payload_scenario() {
     --scenario-id "${sid}" \
     --namespace "${NS}" \
     --out "${payload}" >/dev/null
+  local rc=0
   NS="${NS}" STRICT_ASSERT="${STRICT_ASSERT}" SLEEP_SEC="${SLEEP_SEC}" \
-    bash "${ROOT}/scripts/gateway_alert_loki_verify.sh" "${payload}"
+    bash "${ROOT}/scripts/gateway_alert_loki_verify.sh" "${payload}" || rc=$?
   rm -f "${payload}"
+  return "${rc}"
 }
 
 _dispatch_scenario() {

@@ -30,6 +30,18 @@ def test_completed_vs_high_cpu_language() -> None:
     assert llm_contradicts_sdk_facts(llm, ev) is True
 
 
+def test_uncertain_llm_does_not_contradict_without_symptom() -> None:
+    ev = "status: Completed phase: Succeeded"
+    llm = "Possibly a transient issue; unclear from the evidence."
+    assert llm_contradicts_sdk_facts(llm, ev) is False
+
+
+def test_uncertain_but_elevated_cpu_still_contradicts() -> None:
+    ev = "status: Completed phase: Succeeded"
+    llm = "Possibly elevated CPU spike — worth checking HPA."
+    assert llm_contradicts_sdk_facts(llm, ev) is True
+
+
 def test_summarize_facts_for_anchor() -> None:
     docs = [{"result": "PASSED", "extracted_fact": '{"cpu":"1m"}'}]
     s = summarize_facts_for_anchor(docs)

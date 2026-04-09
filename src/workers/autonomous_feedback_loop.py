@@ -334,12 +334,14 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
             ensure_ascii=False,
         ),
     )
+    rc_fb = plan.get("reasoning_chain") if isinstance(plan.get("reasoning_chain"), dict) else None
     await emit_execute_mutate(
         ctx,
         trace=trace,
         tool_name=plan["tool_name"],
         args=plan["args"],
         attempt_count=next_attempt,
+        reasoning_chain=rc_fb,
     )
     await emit_transition(
         ctx,

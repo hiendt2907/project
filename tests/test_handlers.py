@@ -292,9 +292,9 @@ def test_slow_path_system_messages_god_vs_sdk() -> None:
     assert "SRE Command Generator" in msgs[0]["content"]
     assert "SDK-only" in msgs[1]["content"] or "Cấm** subprocess" in msgs[1]["content"]
 
-    ctx.settings = WorkerSettings(god_mode=True)
+    ctx.settings = WorkerSettings(god_mode=True, env_mode="dev")
     msgs_g = _slow_path_system_messages_for_ctx(ctx)
     assert "SRE Command Generator" in msgs_g[0]["content"]
-    assert "God mode" in msgs_g[1]["content"] or "god" in msgs_g[1]["content"].lower()
+    assert "god mode" in msgs_g[1]["content"].lower() or "lab_unchained" in msgs_g[1]["content"].lower()
     assert "execute_shell_command" in msgs_g[1]["content"]
     assert "kubectl top pods -A" in msgs_g[1]["content"]

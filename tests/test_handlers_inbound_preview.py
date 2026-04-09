@@ -145,7 +145,7 @@ def test_build_agentic_unattended_omits_reply_tool_listing() -> None:
 def test_build_agentic_unattended_god_sdk_first_no_god_fewshot() -> None:
     """God/lab unattended must not inject SLOW_SYSTEM_GOD few-shot (shell-first for kubectl top)."""
     ctx = MagicMock()
-    ctx.settings = WorkerSettings(god_mode=True)
+    ctx.settings = WorkerSettings(god_mode=True, env_mode="dev")
     msgs = build_agentic_system_messages(ctx, unattended_alert=True)
     blob = "\n".join(str(m.get("content", "")) for m in msgs)
     assert "LAB_SHELL" in blob or "last resort" in blob.lower()
