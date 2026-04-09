@@ -1,0 +1,22 @@
+{
+  "schema": "omni-alert-flow-realistic-run-v1",
+  "scenario_code": "B",
+  "fault_type": "crashloop|oom|other",
+  "run_at": "ISO8601",
+  "cluster": "staging|lab",
+  "namespace": "multi-agent",
+  "deployment": "nginx-test",
+  "trace_id": "",
+  "alertname": "",
+  "gateway_response_status": "",
+  "loki_query_used": "{namespace=\"multi-agent\", pod_name=~\"omni-.*\"} |= \"TRACE\"",
+  "pipeline_log_markers": {
+    "diag_batch_flush": false,
+    "rag_hit": false,
+    "sdk_only_or_rag_miss": false,
+    "state_machine_contrast_only": false,
+    "suggest_remediation_emitted": false
+  },
+  "verdict_human": "",
+  "notes": "Strip secrets before commit; store under reports/alert-flow-realistic/runs/ if needed."
+}

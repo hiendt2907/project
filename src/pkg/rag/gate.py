@@ -92,6 +92,8 @@ def normalize_rag_query(raw_text: str, hints: dict[str, str] | None) -> str:
         svc = hints.get("service_name") if isinstance(hints.get("service_name"), str) else None
         an = hints.get("alertname") or hints.get("alert_name")
         an = an if isinstance(an, str) and an.strip() else None
+        sg = hints.get("symptom_group") if isinstance(hints.get("symptom_group"), str) else None
+        dp = hints.get("diagnostic_pattern") if isinstance(hints.get("diagnostic_pattern"), str) else None
         if ns:
             parts.append(f"namespace={ns}")
         if pod:
@@ -100,6 +102,10 @@ def normalize_rag_query(raw_text: str, hints: dict[str, str] | None) -> str:
             parts.append(f"service={svc}")
         if an:
             parts.append(f"alertname={an}")
+        if sg and sg.strip():
+            parts.append(f"symptom_group={sg.strip()}")
+        if dp and dp.strip():
+            parts.append(f"diagnostic_pattern={dp.strip()}")
     if parts:
         t = " ".join(parts) + "\n" + t
     t = t.strip()

@@ -57,6 +57,17 @@ Tài liệu tóm tắt / slide / whitepaper (có thể mô tả “một worker�
 | Vị trí | Ghi chú |
 |--------|---------|
 | [reports/](reports/) (trong `docs/`) | Phase 1–7, chaos-rag-selflearn, templates, dashboard SoT — **danh sách đầy đủ:** [reports/README.md](reports/README.md). |
+| [reports/tech-debt-remediation-plan.md](reports/tech-debt-remediation-plan.md) | Kế hoạch xử lý technical debt (trừ fleet). |
+| [reports/rag-gate-observability.md](reports/rag-gate-observability.md) | Log grep + env chỉnh RAG gate. |
+| [reports/ci-verification-report.md](reports/ci-verification-report.md) | Báo cáo xác minh build/deploy/gate/pytest (snapshot). |
+| [reports/incident-evidence-three-lanes.md](reports/incident-evidence-three-lanes.md) | Proof-of-Fault: lane `resource` / `state` / `app_log` + matrix. |
+| [reports/diagnostic-policy-spec.md](reports/diagnostic-policy-spec.md) | **Diagnostic Policy:** INV_* invariants, discovery tool map, ReAct O/H/V/A, blind `proof_lane`, `reasoning_chain` on `SUGGEST_REMEDIATION`. Code: `pkg/reasoning/diagnostic_policy.py`, gate in `evidence_consumer`. |
+| [reports/sigma-log-bypass-spec.md](reports/sigma-log-bypass-spec.md) | Loki sustained-5xx bypass (điều kiện, env, fail-closed). |
+| [runbooks/sigma-log-bypass-ops.md](runbooks/sigma-log-bypass-ops.md) | Bật/tắt bypass lab, verify grep. |
+| [reports/e2e-dual-trace-log-analysis-20260407.md](reports/e2e-dual-trace-log-analysis-20260407.md) | Hai trace E2E (`gw-prom-d7796b45517d` lab contrast + `gw-prom-21e83e390b09` waiting fault): phân tích từng dòng prober/analyst/executor. |
+| [reports/e2e-nginx-waiting-fault-log-analysis.md](reports/e2e-nginx-waiting-fault-log-analysis.md) | E2E fault `nginx_waiting_fault`: phân tích log theo dòng + `trace_id`. |
+| [reports/alert-flow-realistic-test-plan.md](reports/alert-flow-realistic-test-plan.md) | Kế hoạch test luồng alert thực (staging / replay / soak). |
+| [reports/alert-flow-realistic/PHASE0_CHECKLIST.md](reports/alert-flow-realistic/PHASE0_CHECKLIST.md) | Checklist Phase 0 trước khi inject fault. |
 | [phase_report_template.md](phase_report_template.md), [phase_review_template.md](phase_review_template.md) | Template báo cáo / review phase. |
 
 ---

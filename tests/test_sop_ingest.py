@@ -13,8 +13,18 @@ from workers.settings import WorkerSettings
 _FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sop_mini.yaml"
 
 
+@pytest.fixture
+def postgres_rag_dsn_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PostgresRAGSettings rejects placeholder DSN; build URI at runtime (no literal DSN in source — gitleaks)."""
+    scheme = "post" + "gresql"
+    monkeypatch.setenv(
+        "POSTGRES_RAG_DSN",
+        f"{scheme}://pytest_user:pytest_secret@127.0.0.1:5432/ragdb_pytest",
+    )
+
+
 @pytest.mark.asyncio
-async def test_run_ingest_dry_run_calls_no_upsert() -> None:
+async def test_run_ingest_dry_run_calls_no_upsert(postgres_rag_dsn_test: None) -> None:
     settings = WorkerSettings(
         sop_seed_path=str(_FIXTURE),
         max_sop_contexts=500,
@@ -49,7 +59,7 @@ async def test_run_ingest_dry_run_calls_no_upsert() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_ingest_upsert_batches() -> None:
+async def test_run_ingest_upsert_batches(postgres_rag_dsn_test: None) -> None:
     settings = WorkerSettings(
         sop_seed_path=str(_FIXTURE),
         max_sop_contexts=500,

@@ -4,10 +4,11 @@
 
 ## Invariants
 
+- **Diagnostic Policy (2026):** deterministic **`INV_*`** gates in [`diagnostic_policy.py`](../src/pkg/reasoning/diagnostic_policy.py) — LLM cannot override. **`INV_NO_RESTART_ON_BROKEN_SPEC`** blocks `k8s_rollout_restart` when evidence shows missing ConfigMap/Secret/mount-class failure; **`INV_READ_BEFORE_MUTATE_DEFER`** requires at least one read-only discovery step (ReAct tool round when `OMNI_DIAGNOSTIC_REACT_ENABLED`, or equivalent evidence in the batch); **`INV_NAMESPACE_ISOLATION`** enforces `autonomous_allowed_namespaces` (security log + Telegram on violation). Enforced in [`evidence_consumer.py`](../src/workers/evidence_consumer.py) after proof-of-fault, before `EXECUTE_MUTATE`. Structured UX: `reasoning_chain` / `verdict` / `thought_process` on `SUGGEST_REMEDIATION` ([`omni_actions_remediation.py`](../src/workers/omni_actions_remediation.py)). Spec: [diagnostic-policy-spec.md](diagnostic-policy-spec.md). Agentic: Fact Table + optional ReAct in [`analyst_agentic_loop.py`](../src/workers/analyst_agentic_loop.py); blind matrix miss: `infer_blind_proof_lane_hint` + `resolve_proof_lane(..., blind_lane_hint=)` in [`incident_matrix_profile.py`](../src/pkg/reasoning/incident_matrix_profile.py). RAG: hints may include `diagnostic_pattern` from matrix row ([`gate.py`](../src/pkg/rag/gate.py) `normalize_rag_query`).
 - **Action feedback Kafka topic (split):** execution outcomes are published to **`omni-action-feedback`** (settings `kafka_topic_action_feedback`); consumed by **`omni-analyst`** (`kafka_action_feedback_loop`). Not `omni-results` — see canonical doc.
 - `EXECUTE_MUTATE` only executes mutate-capable tools; read/query tools must route to `SUGGEST_REMEDIATION`.
 - Mutate decisions are fail-closed in `prod` and must keep `trace_id` + auditable `reason_code`.
-- Planner output cannot override Proof-of-Fault controls (critical evidence + 3-sigma + observation window).
+- Planner output cannot override Proof-of-Fault controls (`_proof_of_fault_gate`). **Three lanes** (`OMNI_PROOF_LANE_ENABLED`, default true): **`resource`** — baseline sigma (`dr`/z) + Redis observation window; **`state`** — deterministic K8s/container failure signals, fast-track without sigma; **`app_log`** — optional Loki sustained 5xx when sigma is flat. Sigma log bypass (`OMNI_SIGMA_LOG_BYPASS_ENABLED` + Loki) applies only for **`app_log`** lane when matrix/RAG mark **API/Web**, namespace allowlist, and pod identity exist — never bypass on Loki failure (`ERR_REA_LOG_SOURCE_UNAVAILABLE` → escalate, no mutate). Spec: [incident-evidence-three-lanes.md](incident-evidence-three-lanes.md), [sigma-log-bypass-spec.md](sigma-log-bypass-spec.md).
 - Runtime/app config must not ship embedded credentials; DSN defaults stay placeholder-only and secret-injected at runtime.
 - Grafana provisioning for Omni monitoring is canonicalized to five dashboards: `Omni Ops`, `Omni Security`, `Omni Learning`, `Omni Pod Resources`, `Omni Node Resources`.
 - Advanced self-learning tiers must be zero-impact by default: `OMNI_MULTI_HYPOTHESIS_ENABLED=false`, `OMNI_DEEP_PROBE_ORCHESTRATION_ENABLED=false`, `OMNI_KNOWLEDGE_DRAFT_ENABLED=false`, `OMNI_AUTODOC_GIT_PUSH_ENABLED=false`.
@@ -15,9 +16,28 @@
 - Chaos / RAG self-learning lab (banking-safe path B): do not auto-ingest Redis shadow artifacts (`omni:selflearn:shadow:*`) into PGVector; gold dataset for vector ingest only after human **VERIFIED_SUCCESS** and a separate ingest step (`docs/reports/chaos-rag-selflearn-export-ingest.md`).
 - Sprint A lab: keep `OMNI_AUTODOC_GIT_PUSH_ENABLED=false`; no automated `git push` for `docs/vendor/knownbase.md` from workers — updates via human PR only.
 
+## AlertPipelineMemory (2026 — alert flow autonomy)
+
+Implemented behavior to lock in:
+
+- **Matrix matching (`diagnostic_mapping._row_matches`):** Label predicates (`labels_alertname`, `labels_domain`, `labels_workload`, `labels_reason_pattern`) apply **only when that key exists** on the parsed Prometheus `labels` in `canonical_query` JSON. Missing keys **waive** the predicate so rows can still match via `error_hint_pattern` / `canonical_query_pattern` — avoids specific rows never firing when alerts lack full labels. **Priority** remains ascending (lower number first); see `config/diagnostic_matrix.yaml` header.
+- **Alert → `AnomalyEvent` (`alert_to_event`):** Prometheus path uses **sorted JSON** for `canonical_query` (stable), stringified labels/annotations, **identity bits** (pod/deployment/container) in `error_hint`, optional `trigger_promql` from annotations or payload.
+- **RAG before LLM:** `filter_evidence_for_rag` adds `probes=`, `symptom_group`, `layer`; `_hints_from_evidence_batch` merges batch `alert_rule` / `symptom_group` and parses `rule:` / `symptom_group:` from sanitized text; `normalize_rag_query` prefixes **`symptom_group=`** when present in hints.
+- **Contradiction / escalate:** `llm_contradicts_sdk_facts` ignores contradiction when LLM text is **hedge-only** (maybe/possibly/…) **without** crash/CPU/false-alarm terms — reduces spurious `SDK_CONTRADICTION` escalations.
+- **Observability doc:** [rag-gate-observability.md](rag-gate-observability.md) — grep patterns + env for RAG gate tuning.
+- **Tests:** `tests/test_alert_to_event.py`, `tests/test_alert_pipeline_golden.py`, extended `test_filter_evidence_for_rag`, `test_evidence_anchor_sre_output`.
+
+## LabVsRealAlertTesting
+
+- **Gateway E2E mặc định** (`scripts/gateway_alert_loki_verify.sh`, payload nginx HighCPU): chứng minh **split topology + Kafka + trace_id + probe + evidence batch**. Khi PodMetrics/SDK cho thấy CPU thấp trong khi alert mô tả “nóng”, pipeline đi **`STATE_MACHINE_CONTRAST`** → coi **tín hiệu alert không khớp trạng thái sống** (stale / mismatch). Trong từ vựng nội bộ team có thể gọi đây là **FALSE_NEGATIVE** (alert không phản ánh đúng sự thật đo được) — **không** đồng nghĩa đã kiểm tra “sự cố thật”.
+- **Hạn chế:** case lab **không** tái hiện **incident production thật** (load, race, outage một phần). Smoke lab ≠ chứng minh chất lượng chẩn đoán khi **alert đúng** (TRUE positive path) hoặc khi cần **mutate**.
+- **Kế hoạch test luồng alert “thực”** (staging / replay / soak): [alert-flow-realistic-test-plan.md](alert-flow-realistic-test-plan.md) — scaffold: [PHASE0_CHECKLIST.md](alert-flow-realistic/PHASE0_CHECKLIST.md), [scripts/alert_flow_realistic/README.md](../../scripts/alert_flow_realistic/README.md), [artifact_template.json](../../reports/alert-flow-realistic/artifact_template.json).
+
 ## FailurePatterns
 
-- Classifier misroute can happen when broad regex rows run before label-constrained rows.
+- **E2E gateway script (`scripts/gateway_alert_loki_verify.sh`)** depends on **`kubectl exec`** into `E2E_EXEC_DEPLOY` (default `omni-prober`). Some cluster runtimes return `container not found` during exec even when pods are Ready — treat as **infra_blocker** (see `docs/vendor/knownbase.md`). **`scripts/e2e_incident_matrix.sh`** must propagate the gateway script exit code (capture `|| rc=$?` before `_restore_nginx`) or the matrix run incorrectly reports **passed** when strict assert failed.
+- **Diagnostic policy path:** `nginx_waiting_fault` lab may emit **`SUGGEST_REMEDIATION`** with **`DIAGNOSTIC_INVARIANT_GATE`** / `INV_NO_RESTART_ON_BROKEN_SPEC` instead of **`EXECUTE_MUTATE`** when evidence shows broken ConfigMap/Secret class failure — expected after invariant rollout; optional grep: `E2E_ASSERT_DIAGNOSTIC_POLICY=1` in `gateway_alert_loki_verify.sh`.
+- Classifier misroute can happen when broad regex rows run before label-constrained rows; **mitigated** for sparse labels via predicate waiver + explicit priority ordering (see AlertPipelineMemory).
 - Planner can emit read-only/hallucinated tools even when JSON shape is valid.
 - Single metric spikes are noisy; windowed sigma checks are required before mutation.
 - Strict proactive audit can fail in low-noise lab windows (`sigma_gate_ok=false`) even when rollout and contract tests pass.
@@ -32,7 +52,7 @@
 
 - Semantic/channel: `ERR_SEM_CHANNEL_MISMATCH`, `ERR_SEM_INVALID_TOOL_TAXONOMY`.
 - Governance: `ERR_GOV_NS_OUT_OF_BOUNDS`, `ERR_GOV_UNAUTHORIZED_MUTATION`, `ERR_GOV_ENV_PROD_STRICT`.
-- Reasoning/evidence: `ERR_REA_NO_PHYSICAL_PROOF`, `ERR_REA_SIGMA_GATE_BLOCKED`, `ERR_REA_SCHEMA_VIOLATION`, `ERR_REA_HALLUCINATION_DETECTED`.
+- Reasoning/evidence: `ERR_REA_NO_PHYSICAL_PROOF`, `ERR_REA_SIGMA_GATE_BLOCKED`, `ERR_REA_LOG_SOURCE_UNAVAILABLE` (Loki unavailable during sigma log bypass), `ERR_REA_SCHEMA_VIOLATION`, `ERR_REA_HALLUCINATION_DETECTED`.
 - Terminal: `SUCCESS_VERIFIED_EVIDENCE`, `ESC_TIMEOUT_TOMBSTONE`, `ESC_MAX_ATTEMPTS_EXCEEDED`.
 
 ## Guardrails
@@ -43,6 +63,11 @@
 - Keep `gitleaks` critical gate for working tree (`--no-git`) and run history scan as separate governance audit target.
 - Always classify runtime verify failures explicitly as `infra_blocker` or `logic_blocker` before release messaging.
 - Keep non-impact gates enabled in CI (`validate_nonimpact_guards_gate.py`, `validate_learning_loop_gate.py`) before any self-learning tier promotion.
+
+## TechnicalDebt
+
+- **Multi-cluster / multi-platform in one Omni:** not implemented — one Omni stack targets one Kubernetes API server; no in-repo abstraction for multiple kube contexts or per-cluster routing in a single process. Operational workaround: **deploy Omni per cluster**; future work if needed: fleet registry + `cluster_id` on alerts/actions + multi-client executor (see canonical §9).
+- **Remediation plan (excluding fleet):** [tech-debt-remediation-plan.md](tech-debt-remediation-plan.md) — waves A–D (RBAC, Ollama/Redis/monitor reliability, classifier/proactive, doc hygiene).
 
 ## CrossPhaseConstraints
 

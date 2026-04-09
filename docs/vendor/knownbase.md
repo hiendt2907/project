@@ -6,6 +6,15 @@ Short entries only. **Newest first** within each section. If the same symptom al
 
 ## Logic / application
 
+**Symptom:** Worker pods (prober/analyst/core/executor) **CrashLoopBackOff** với `ImportError: cannot import name '_parse_tool_json' from 'workers.analyst_agentic_loop'`.  
+**Fix:** Giữ alias `_parse_tool_json = _parse_agentic_json` trong `analyst_agentic_loop.py` vì `autonomous_feedback_loop.py` vẫn import tên cũ. Verify: `PYTHONPATH=src python -c "from workers.autonomous_feedback_loop import kafka_action_feedback_loop"`; `make docker-worker && make deploy-worker`.
+
+**Symptom:** `kubectl exec -n multi-agent deploy/omni-prober -- …` (hoặc `omni-core`) trả `Internal error occurred: unable to upgrade connection: container not found ("omni-prober")` dù pod `Ready` và chỉ một container — E2E `gateway_alert_loki_verify.sh` / `e2e_incident_matrix.sh` không chạy được bước POST qua exec.  
+**Fix:** **infra_blocker** — kiểm tra CRI/Kubernetes provider (OrbStack/Docker Desktop), kube-apiserver ↔ kubelet exec; thử `kubectl exec` từ máy khác hoặc nâng cấp runtime. Workaround tạm: chạy POST alert từ pod có shell trong cluster theo cách khác (Job `curl`, port-forward tới gateway) — không sửa bằng đổi tên container nếu manifest đã đúng. Verify khi exec ổn: `kubectl exec … -- true` = 0 rồi `SCENARIOS=nginx_waiting_fault bash scripts/e2e_incident_matrix.sh`.
+
+**Symptom:** Sigma (`ERR_REA_SIGMA_GATE_BLOCKED`) chặn mutate dù workload HTTP thật sự 5xx liên tục; hoặc Loki không đọc được khi đã đủ điều kiện API/Web + `autonomous_allowed_namespaces`.  
+**Fix:** Bật lab `OMNI_SIGMA_LOG_BYPASS_ENABLED=true` + `OMNI_LOKI_BASE_URL`; matrix row `workload_profile: api_web` (vd. `silent_5xx_bypass_sigma`); `workers/log_surge_probe.py` chứng minh sustained 500/503/504. Nếu Loki lỗi: `ERR_REA_LOG_SOURCE_UNAVAILABLE` + Telegram `"Sigma blocked & Log source unavailable"` + tombstone — không mutate. Verify: `pytest tests/test_incident_matrix_profile.py tests/test_log_surge_probe.py`; grep log `event=log_surge_sigma_bypass_ok` khi lab inject 5xx.
+
 **Symptom:** Cần mở rộng incident training matrix theo registry và thêm self-learning shadow nhưng vẫn giữ runtime hiện tại không drift; verify strict thường fail ở `sigma_gate_ok`/`trace_stage_matrix_ok` dù matrix run pass.  
 **Fix:** Thêm `config/incident_training_matrix.yaml` + payload generator `scripts/incident_matrix_payload_from_config.py`, mở rộng `scripts/e2e_incident_matrix.sh` chạy theo registry (31 scenario hiện hữu); thêm shadow module `src/workers/selflearning_shadow.py` và cờ `OMNI_*` mặc định off trong `src/workers/settings.py`; thêm gates `scripts/validate_nonimpact_guards_gate.py` + `scripts/validate_learning_loop_gate.py` và nối vào `Makefile` (`autonomy-gate`). Verify: `STRICT_ASSERT=0 SLEEP_SEC=5 bash scripts/e2e_incident_matrix.sh` => pass, strict audit vẫn ghi blocker `insufficient_sigma_evidence`/`trace_not_found_in_required_stages`.
 

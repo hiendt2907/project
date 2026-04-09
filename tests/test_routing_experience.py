@@ -153,7 +153,7 @@ async def test_record_routing_from_success_upserts() -> None:
 
 @pytest.mark.asyncio
 async def test_record_routing_god_auto_execute_shell() -> None:
-    ws = WorkerSettings(god_mode=True)
+    ws = WorkerSettings(god_mode=True, env_mode="dev")
     ctx = MagicMock()
     ctx.settings = ws
     ctx.inbound_user_text = "chạy kubectl get pods cho anh"

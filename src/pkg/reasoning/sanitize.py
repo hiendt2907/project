@@ -197,9 +197,17 @@ def filter_evidence_for_rag(batch: list[dict[str, Any]], *, max_tokens: int = 51
     critical = "\n---\n".join(ev_lines) if ev_lines else ""
     critical = _RE_HTTP_JUNK.sub("", critical).strip()
 
+    probe_ids = sorted({str(b.get("probe") or "").strip() for b in batch if b.get("probe")})[:24]
+    probes_csv = ",".join(probe_ids) if probe_ids else ""
+    sg = str(batch[0].get("symptom_group") or "").strip() if batch else ""
+    ly = str(batch[0].get("layer") or "").strip() if batch else ""
+
     parts = [
         "[RAG_QUERY]",
         f"alert_name={alert_name}",
+        f"probes={probes_csv}" if probes_csv else "",
+        f"symptom_group={sg}" if sg else "",
+        f"layer={ly}" if ly else "",
         f"container_reason={container_reason[:1200]}",
         f"critical_events={critical[:2000]}",
     ]

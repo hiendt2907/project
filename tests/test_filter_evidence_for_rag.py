@@ -33,6 +33,8 @@ def test_filter_evidence_for_rag_strips_http_noise() -> None:
     assert "HTTP/1.1" not in out
     assert "400 Bad Request" not in out
     assert "Content-Type" not in out
+    assert "probes=" in out
+    assert "k8s_clinical_pod_events" in out
     assert "PodDown" in out
     assert "ImagePullBackOff" in out
     assert "pull access denied" in out

@@ -38,6 +38,19 @@ def test_build_execute_mutate_body() -> None:
     assert b["data"]["correlation_id"]
 
 
+def test_build_execute_mutate_body_reasoning_chain_optional() -> None:
+    rc = {"verdict": "EXECUTE_PLAN", "lane": "state", "thought_process": ["OBSERVATION: x"]}
+    b = build_execute_mutate_body(
+        "tr-rc",
+        tool_name="k8s_rollout_restart",
+        args={"namespace": "ns", "deployment": "dep"},
+        attempt_count=1,
+        reasoning_chain=rc,
+    )
+    assert b["data"]["reasoning_chain"] == rc
+    assert "proof_of_fault" not in b["data"]
+
+
 def test_build_action_feedback_body() -> None:
     fb = build_action_feedback_body(
         trace_id="t1",

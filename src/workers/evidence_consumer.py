@@ -9,11 +9,17 @@ from typing import Any
 
 from pkg.rag.gate import evaluate_rag_gate
 from pkg.reasoning import coerce_evidence_dict
+from pkg.reasoning.evidence_signals import critical_evidence_present
 from pkg.reasoning.evidence_anchor import llm_contradicts_sdk_facts, summarize_facts_for_anchor
 from pkg.reasoning.reason_codes import (
+    ERR_REA_LOG_SOURCE_UNAVAILABLE,
     ERR_REA_NO_PHYSICAL_PROOF,
     ERR_REA_SIGMA_GATE_BLOCKED,
     ERR_SEM_CHANNEL_MISMATCH,
+    INV_NAMESPACE_ISOLATION,
+    INV_NO_RESTART_ON_BROKEN_SPEC,
+    INV_READ_BEFORE_MUTATE,
+    PLANNER_PHASE_DONE,
 )
 from pkg.reasoning.sre_output import compact_sre_diagnosis
 from pkg.reasoning.sanitize import (
@@ -23,7 +29,7 @@ from pkg.reasoning.sanitize import (
     format_sanitized_analyst_user_text,
 )
 from workers.alert_sdk_truth_compare import compare_alert_claim_to_sdk_state
-from workers.analyst_agentic_loop import run_agentic_mutate_plan
+from workers.analyst_agentic_loop import infer_blind_proof_lane_hint, run_agentic_mutate_plan
 from workers.evidence_batch import append_evidence_and_take_flush_batch
 from workers.evidence_mutate_emit import (
     emit_execute_mutate,
@@ -43,6 +49,14 @@ from workers.reasoning_evidence_inbound import (
     reason_diagnostic_rag_miss_sdk_only,
 )
 from workers.selflearning_shadow import run_shadow_selflearning
+from workers.env_mode import namespace_allowed
+from pkg.reasoning.diagnostic_policy import (
+    build_reasoning_chain_payload,
+    evaluate_diagnostic_invariants,
+    evidence_suggests_broken_spec,
+)
+from pkg.reasoning.incident_matrix_profile import resolve_proof_lane
+from workers.log_surge_probe import evaluate_log_surge_sigma_bypass, namespace_pod_from_batch
 from workers.telegram_escalation import emit_telegram_escalation
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.telegram_outbound import send_telegram_out_for_inbound
@@ -92,12 +106,8 @@ _NS_POD = re.compile(
     r"\bnamespace[=:]\s*([\w.-]+)|\bns[=:]\s*([\w.-]+)|\bpod[=:]\s*([\w.-]+)",
     re.I,
 )
-_RE_CRITICAL_FAULT = re.compile(
-    r"(crashloop|createcontainer|imagepull|oomkilled|oom|failedmount|unschedul|readiness.*fail|liveness.*fail|waiting|backoff|exit[_\s-]*code)",
-    re.IGNORECASE,
-)
-
-
+_RE_RULE_LINE = re.compile(r"(?:^|\n)\s*rule:\s*([^\n]+)", re.I)
+_RE_SYMPTOM_LINE = re.compile(r"(?:^|\n)\s*symptom_group:\s*([^\n]+)", re.I)
 def _f64(v: Any) -> float | None:
     try:
         return float(v)
@@ -105,28 +115,54 @@ def _f64(v: Any) -> float | None:
         return None
 
 
-def _critical_evidence_present(batch: list[dict[str, Any]]) -> bool:
-    for b in batch:
-        hint = str(b.get("alert_hint") or "")
-        if _RE_CRITICAL_FAULT.search(hint):
-            return True
-        snip = str(b.get("canonical_query_snippet") or "").strip()
-        if not snip.startswith("{"):
-            continue
-        try:
-            j = json.loads(snip)
-        except Exception:
-            continue
-        if not isinstance(j, dict):
-            continue
-        labels = j.get("labels")
-        if not isinstance(labels, dict):
-            continue
-        reason = str(labels.get("reason") or "")
-        alertname = str(labels.get("alertname") or "")
-        if _RE_CRITICAL_FAULT.search(reason) or _RE_CRITICAL_FAULT.search(alertname):
-            return True
-    return False
+async def _try_log_surge_sigma_bypass(
+    ctx: WorkerHandlerContext,
+    trace: str,
+    batch: list[dict[str, Any]],
+    rag_match_text: str | None,
+) -> tuple[bool, dict[str, Any], bool]:
+    """
+    Optional Loki sustained-5xx path when sigma is false (API/Web + allowlist ns).
+    Returns (bypass_ok, extra_meta, escalate_log_unavailable).
+    """
+    from pkg.reasoning.incident_matrix_profile import is_api_web_workload
+
+    ws = ctx.settings
+    if not bool(getattr(ws, "omni_sigma_log_bypass_enabled", False)):
+        return False, {}, False
+    ns, pod = namespace_pod_from_batch(batch)
+    if not ns or not namespace_allowed(ws, ns):
+        return False, {}, False
+    if not is_api_web_workload(batch, rag_match_text=rag_match_text):
+        return False, {}, False
+    if not (pod or "").strip():
+        return False, {}, False
+    base = str(getattr(ws, "omni_loki_base_url", "") or "").strip()
+    if not base:
+        return False, {}, False
+    res = await evaluate_log_surge_sigma_bypass(
+        loki_base_url=base,
+        namespace=ns,
+        pod_name=pod,
+        window_sec=int(getattr(ws, "omni_log_surge_window_sec", 300) or 300),
+        min_lines=int(getattr(ws, "omni_log_surge_min_lines", 5) or 5),
+        min_ratio=float(getattr(ws, "omni_log_surge_min_ratio", 0.5) or 0.5),
+        line_limit=int(getattr(ws, "omni_log_surge_line_limit", 500) or 500),
+        timeout_sec=float(getattr(ws, "omni_log_surge_http_timeout_sec", 25.0) or 25.0),
+    )
+    extra = dict(res.meta or {})
+    extra["log_surge_reason"] = res.reason
+    if res.ok:
+        logger.info(
+            "event=log_surge_sigma_bypass_ok trace=%s reason=%s lines=%s",
+            trace,
+            res.reason,
+            extra.get("lines_fetched"),
+        )
+        return True, {"log_surge_bypass": True, **extra}, False
+    if res.escalate_log_unavailable:
+        return False, extra, True
+    return False, extra, False
 
 
 async def _proof_of_fault_gate(
@@ -134,8 +170,10 @@ async def _proof_of_fault_gate(
     *,
     trace: str,
     batch: list[dict[str, Any]],
+    rag_match_text: str | None = None,
+    blind_lane_hint: str | None = None,
 ) -> tuple[bool, str, dict[str, Any]]:
-    critical = _critical_evidence_present(batch)
+    critical = critical_evidence_present(batch)
     snap_raw = await ctx.redis.get(REDIS_KEY_SNAPSHOT)
     snap: dict[str, Any] = {}
     if snap_raw:
@@ -152,25 +190,89 @@ async def _proof_of_fault_gate(
 
     needed = max(1, int(getattr(ctx.settings, "autonomous_sigma_observation_window", 1) or 1))
     wkey = f"omni:proof_of_fault:window:{trace}"
-    if critical and sigma_ok:
-        cur = int(await ctx.redis.incr(wkey))
-        await ctx.redis.expire(wkey, 600)
-    else:
-        await ctx.redis.delete(wkey)
-        cur = 0
-    window_ok = cur >= needed
-    meta = {
+    lane, lane_src = resolve_proof_lane(
+        batch, rag_match_text=rag_match_text, blind_lane_hint=blind_lane_hint
+    )
+    meta: dict[str, Any] = {
         "critical_evidence": critical,
         "sigma_ok": sigma_ok,
-        "window_count": cur,
         "window_needed": needed,
         "baseline": {"dr": dr, "z_cpu": z_cpu, "z_mem": z_mem, "threshold": z_thr},
+        "proof_lane": lane,
+        "proof_lane_source": lane_src,
     }
     if not critical:
         return False, ERR_REA_NO_PHYSICAL_PROOF, meta
-    if not sigma_ok or not window_ok:
-        return False, ERR_REA_SIGMA_GATE_BLOCKED, meta
-    return True, "", meta
+
+    legacy = not bool(getattr(ctx.settings, "omni_proof_lane_enabled", True))
+    if legacy:
+        if not sigma_ok:
+            by_ok, extra, esc = await _try_log_surge_sigma_bypass(ctx, trace, batch, rag_match_text)
+            if by_ok:
+                meta.update(extra)
+                meta["sigma_ok"] = True
+                meta["sigma_bypass_via_log_surge"] = True
+                return True, "", meta
+            if esc:
+                meta.update(extra)
+                return False, ERR_REA_LOG_SOURCE_UNAVAILABLE, meta
+            return False, ERR_REA_SIGMA_GATE_BLOCKED, meta
+
+        if critical and sigma_ok:
+            cur = int(await ctx.redis.incr(wkey))
+            await ctx.redis.expire(wkey, 600)
+        else:
+            await ctx.redis.delete(wkey)
+            cur = 0
+        window_ok = cur >= needed
+        meta["window_count"] = cur
+        meta["sigma_ok"] = sigma_ok
+        if not window_ok:
+            return False, ERR_REA_SIGMA_GATE_BLOCKED, meta
+        return True, "", meta
+
+    if lane == "state":
+        meta["sigma_ok"] = True
+        meta["sigma_bypass_reason"] = "state_lane_physical_proof"
+        needed_eff = 1
+        cur = int(await ctx.redis.incr(wkey))
+        await ctx.redis.expire(wkey, 600)
+        meta["window_count"] = cur
+        if cur < needed_eff:
+            return False, ERR_REA_SIGMA_GATE_BLOCKED, meta
+        return True, "", meta
+
+    if lane == "resource":
+        if not sigma_ok:
+            return False, ERR_REA_SIGMA_GATE_BLOCKED, meta
+        cur = int(await ctx.redis.incr(wkey))
+        await ctx.redis.expire(wkey, 600)
+        meta["window_count"] = cur
+        meta["sigma_ok"] = sigma_ok
+        if cur < needed:
+            return False, ERR_REA_SIGMA_GATE_BLOCKED, meta
+        return True, "", meta
+
+    # app_log
+    if sigma_ok:
+        cur = int(await ctx.redis.incr(wkey))
+        await ctx.redis.expire(wkey, 600)
+        meta["window_count"] = cur
+        meta["sigma_ok"] = sigma_ok
+        if cur < needed:
+            return False, ERR_REA_SIGMA_GATE_BLOCKED, meta
+        return True, "", meta
+
+    by_ok, extra, esc = await _try_log_surge_sigma_bypass(ctx, trace, batch, rag_match_text)
+    if by_ok:
+        meta.update(extra)
+        meta["sigma_ok"] = True
+        meta["sigma_bypass_via_log_surge"] = True
+        return True, "", meta
+    if esc:
+        meta.update(extra)
+        return False, ERR_REA_LOG_SOURCE_UNAVAILABLE, meta
+    return False, ERR_REA_SIGMA_GATE_BLOCKED, meta
 
 
 def _hints_from_evidence_text(text: str) -> dict[str, str] | None:
@@ -189,6 +291,36 @@ def _hints_from_evidence_text(text: str) -> dict[str, str] | None:
             h.setdefault("pod_name", val)
         else:
             h.setdefault("namespace", val)
+    rm = _RE_RULE_LINE.search(t)
+    if rm:
+        rule = rm.group(1).strip()
+        if rule and rule != "n/a":
+            h.setdefault("alertname", rule[:240])
+    sm = _RE_SYMPTOM_LINE.search(t)
+    if sm:
+        sg = sm.group(1).strip()
+        if sg:
+            h.setdefault("symptom_group", sg[:240])
+    return h if h else None
+
+
+def _hints_from_evidence_batch(batch: list[dict[str, Any]], text: str) -> dict[str, str] | None:
+    """Merge structured hints from evidence dicts + sanitized analyst text."""
+    from pkg.reasoning.incident_matrix_profile import pick_matrix_row_for_batch
+
+    h: dict[str, str] = dict(_hints_from_evidence_text(text) or {})
+    if batch:
+        ar = str(batch[0].get("alert_rule") or "").strip()
+        if ar:
+            h.setdefault("alertname", ar[:240])
+        sg = str(batch[0].get("symptom_group") or "").strip()
+        if sg:
+            h.setdefault("symptom_group", sg[:240])
+        row = pick_matrix_row_for_batch(batch, rag_match_text=None)
+        if row:
+            dp = row.get("diagnostic_pattern")
+            if isinstance(dp, str) and dp.strip():
+                h.setdefault("diagnostic_pattern", dp.strip()[:240])
     return h if h else None
 
 
@@ -204,6 +336,11 @@ async def _emit_suggest_remediation(
     confidence: float,
     source: str,
     suggested_tool: str,
+    verdict: str | None = None,
+    lane: str | None = None,
+    thought_process: list[str] | None = None,
+    invariant_id: str | None = None,
+    reasoning_chain: dict[str, Any] | None = None,
 ) -> None:
     if not ctx.settings.trace_correlation_ping_enabled:
         return
@@ -219,6 +356,11 @@ async def _emit_suggest_remediation(
         confidence=_clamp01(confidence),
         source=source,
         suggested_tool=suggested_tool,
+        verdict=verdict,
+        lane=lane,
+        thought_process=thought_process,
+        invariant_id=invariant_id,
+        reasoning_chain=reasoning_chain,
     )
     try:
         await k.send_dict(ctx.settings.kafka_topic_actions, {"data": json.dumps(body, ensure_ascii=False)})
@@ -237,22 +379,64 @@ async def _emit_agentic_mutate_if_any(
     batch: list[dict[str, Any]],
     *,
     sanitized_text: str,
+    rag_match_text: str | None = None,
+    rag_reasoning_hints: str | None = None,
 ) -> None:
     """
     Planner-first mutate emission:
-    - always ask LLM planner (max N steps) using sanitized SDK/RAG context
-    - no heuristic auto-rollout shortcut
+    - optional blind proof_lane hint (matrix miss) before planner
+    - always ask LLM planner (max N steps) using Fact Table + sanitized context
+    - proof_of_fault gate (with blind lane hint)
+    - diagnostic invariant gate (INV_*) before EXECUTE_MUTATE
     """
+    blind_pre = await infer_blind_proof_lane_hint(
+        ctx, batch, sanitized_text=sanitized_text, rag_match_text=rag_match_text
+    )
+    lane_for_mx, _ls = resolve_proof_lane(batch, rag_match_text=rag_match_text)
     mx = int(getattr(ctx.settings, "autonomous_agentic_max_steps", 5) or 5)
+    if lane_for_mx == "state":
+        mx = max(mx, 8)
     plan = await run_agentic_mutate_plan(
         ctx,
         trace=trace,
         sanitized_text=sanitized_text,
         batch=batch,
         max_steps=mx,
+        rag_reasoning_hints=rag_reasoning_hints,
     )
+    discovery_steps: list[str] = list(plan.get("discovery_steps") or []) if plan else []
+    if plan and str(plan.get("reason_code") or "") == PLANNER_PHASE_DONE:
+        fa = str(plan.get("final_analysis") or "").strip()
+        rc = plan.get("reasoning_chain") if isinstance(plan.get("reasoning_chain"), dict) else None
+        tp_done: list[str] = []
+        if rc and isinstance(rc.get("thought_process"), list):
+            tp_done = [str(x) for x in rc["thought_process"]][:32]
+        lane_g = str(rc.get("lane") or "state") if isinstance(rc, dict) else "state"
+        await _emit_suggest_remediation(
+            ctx,
+            trace=trace,
+            diagnosis=fa or "Planner concluded diagnostic session; see reasoning_chain.",
+            confidence=0.78,
+            source="PLANNER_DIAGNOSTIC_DONE",
+            suggested_tool="k8s_describe_resource",
+            reasoning_chain=rc,
+            verdict="SUGGEST_FIX",
+            lane=lane_g,
+            thought_process=tp_done,
+        )
+        await emit_transition(
+            ctx,
+            trace_id=trace,
+            transition=TRANSITION_PLAN_EMITTED,
+            component="evidence_consumer",
+            detail="planner_phase_done_suggest",
+            meta={"phase": "done", "reason_code": PLANNER_PHASE_DONE},
+        )
+        logger.info("event=planner_phase_done_emitted trace=%s", trace)
+        return
     if plan and str(plan.get("reason_code") or "") == ERR_SEM_CHANNEL_MISMATCH:
         suggested = str(plan.get("suggested_tool") or "").strip() or "inspect_pod_details"
+        rc = plan.get("reasoning_chain") if isinstance(plan.get("reasoning_chain"), dict) else None
         await _emit_suggest_remediation(
             ctx,
             trace=trace,
@@ -263,6 +447,7 @@ async def _emit_agentic_mutate_if_any(
             confidence=0.5,
             source="PLANNER_READONLY_ROUTE",
             suggested_tool=suggested,
+            reasoning_chain=rc,
         )
         await emit_transition(
             ctx,
@@ -272,7 +457,25 @@ async def _emit_agentic_mutate_if_any(
             detail=f"planner_readonly_routed:{suggested}",
             meta={"reason_code": ERR_SEM_CHANNEL_MISMATCH},
         )
-        return
+        # Continue: synthesize rollout restart from evidence so proof-of-fault + INV_* gates still run
+        # (hard-fail / broken-spec path must reach evaluate_diagnostic_invariants).
+        lane_saved = plan.get("lane_hint") if isinstance(plan.get("lane_hint"), str) else None
+        rr = rollout_args_from_evidence_batch(batch)
+        is_fault = workload_fault_incident_rollout_eligible(batch)
+        is_cpu = workload_cpu_incident_rollout_eligible(batch)
+        if not rr or not (is_fault or is_cpu):
+            return
+        plan = {
+            "tool_name": "k8s_rollout_restart",
+            "args": dict(rr),
+            "discovery_steps": discovery_steps,
+            "lane_hint": lane_saved.strip() if lane_saved and lane_saved.strip() else None,
+            "reasoning_chain": rc,
+        }
+        logger.warning(
+            "event=agentic_mutate_fallback_after_readonly_mismatch trace=%s tool=k8s_rollout_restart",
+            trace,
+        )
     if not plan:
         # Planner-first failed (LLM unavailable/invalid JSON): safe deterministic fallback
         # only for clearly identified workload incidents.
@@ -318,8 +521,35 @@ async def _emit_agentic_mutate_if_any(
             meta={"reason_code": ERR_SEM_CHANNEL_MISMATCH},
         )
         return
-    proof_ok, reason_code, proof_meta = await _proof_of_fault_gate(ctx, trace=trace, batch=batch)
+    blind_lane_eff: str | None = blind_pre
+    if plan:
+        lh_raw = plan.get("lane_hint")
+        if isinstance(lh_raw, str) and lh_raw.strip():
+            blind_lane_eff = lh_raw.strip()
+    proof_ok, reason_code, proof_meta = await _proof_of_fault_gate(
+        ctx,
+        trace=trace,
+        batch=batch,
+        rag_match_text=rag_match_text,
+        blind_lane_hint=blind_lane_eff,
+    )
     if not proof_ok:
+        if reason_code == ERR_REA_LOG_SOURCE_UNAVAILABLE:
+            await emit_telegram_escalation(
+                ctx,
+                trace,
+                "Sigma blocked & Log source unavailable",
+                reason="SIGMA_LOG_UNAVAILABLE",
+            )
+            await emit_terminal_tombstone(
+                ctx,
+                trace_id=trace,
+                reason_code=ERR_REA_LOG_SOURCE_UNAVAILABLE,
+                component="evidence_consumer",
+                detail="Sigma blocked & Log source unavailable",
+                meta=proof_meta,
+            )
+            return
         await _emit_suggest_remediation(
             ctx,
             trace=trace,
@@ -337,6 +567,67 @@ async def _emit_agentic_mutate_if_any(
             meta={"reason_code": reason_code, "proof_of_fault": proof_meta},
         )
         return
+    pl_inv = proof_meta.get("proof_lane")
+    proof_lane_for_inv = str(pl_inv).strip() if isinstance(pl_inv, str) and pl_inv.strip() else None
+    inv_ok, inv_reason, inv_meta = evaluate_diagnostic_invariants(
+        ctx.settings,
+        tool_name=tn,
+        args=args,
+        batch=batch,
+        discovery_tool_names=discovery_steps,
+        proof_lane=proof_lane_for_inv,
+    )
+    if not inv_ok:
+        lane_guess = str(proof_meta.get("proof_lane") or "unknown")
+        tp: list[str] = []
+        if plan and isinstance(plan.get("reasoning_chain"), dict):
+            raw_tp = plan["reasoning_chain"].get("thought_process")
+            if isinstance(raw_tp, list):
+                tp = [str(x) for x in raw_tp][:24]
+        tp.append(f"Invariant blocked mutate: {inv_reason}")
+        verdict = (
+            "SUGGEST_FIX_SOURCE"
+            if inv_reason == INV_NO_RESTART_ON_BROKEN_SPEC
+            else "DEFERRED"
+        )
+        rc = build_reasoning_chain_payload(
+            verdict=verdict,
+            lane=lane_guess,
+            thought_process=tp,
+            invariant_id=inv_reason,
+        )
+        await _emit_suggest_remediation(
+            ctx,
+            trace=trace,
+            diagnosis=(
+                f"Diagnostic policy blocked EXECUTE_MUTATE ({inv_reason}). "
+                "See reasoning_chain; fix source-of-truth or add read-only discovery."
+            ),
+            confidence=0.55,
+            source="DIAGNOSTIC_INVARIANT_GATE",
+            suggested_tool="k8s_describe_resource",
+            reasoning_chain=rc,
+            verdict=verdict,
+            lane=lane_guess,
+            thought_process=tp,
+            invariant_id=inv_reason,
+        )
+        if inv_meta.get("security_signal") or inv_reason == INV_NAMESPACE_ISOLATION:
+            await emit_telegram_escalation(
+                ctx,
+                trace,
+                f"invariant={inv_reason} tool={tn} args_namespace={args.get('namespace')!r}",
+                reason=str(inv_reason),
+            )
+        await emit_transition(
+            ctx,
+            trace_id=trace,
+            transition=TRANSITION_PLAN_EMITTED,
+            component="evidence_consumer",
+            detail=f"diagnostic_invariant_blocked:{inv_reason}",
+            meta={"invariant_id": inv_reason, "inv_meta": inv_meta},
+        )
+        return
     if tn == "k8s_rollout_restart":
         ns = str(args.get("namespace") or "").strip()
         dep = str(args.get("deployment") or "").strip()
@@ -346,12 +637,14 @@ async def _emit_agentic_mutate_if_any(
             except Exception:
                 args["evidence_snapshot"] = {}
     args["proof_of_fault"] = proof_meta
+    exec_rc = plan.get("reasoning_chain") if isinstance(plan, dict) else None
     await emit_execute_mutate(
         ctx,
         trace=trace,
         tool_name=tn,
         args=args,
         attempt_count=1,
+        reasoning_chain=exec_rc if isinstance(exec_rc, dict) else None,
     )
 
 
@@ -442,7 +735,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         if len(batch) == 1:
             sanitized_text = format_sanitized_analyst_user_text(batch[0])
 
-        ev_hints = _hints_from_evidence_text(sanitized_text)
+        ev_hints = _hints_from_evidence_batch(batch, sanitized_text)
         rag_query = filter_evidence_for_rag(batch)
         gate_out = await evaluate_rag_gate(ctx, rag_query, hints=ev_hints, trace=trace)
         rag_gate_failed = bool(
@@ -473,6 +766,44 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 ope.truncate_plain_text_to_max_words(raw_fmt, max_words=mw),
                 max_words=mw,
             )
+            rag_txt = (gate_out.match_text_en or gate_out.formatted or "").strip() or None
+            proof_lane_pre, lane_src = resolve_proof_lane(batch, rag_match_text=rag_txt)
+            broken = evidence_suggests_broken_spec(batch)
+            intercept_rag_suggest = (proof_lane_pre == "state") or broken
+
+            if intercept_rag_suggest:
+                hints_body = (
+                    "(RAG reference for planner — verify with read-only tools; not ground truth)\n\n"
+                    f"{gate_out.formatted.strip()[:12000]}\n\n"
+                    f"chunk_ids: {getattr(gate_out, 'chunk_ids', None) or []}\n"
+                    f"suggested_tool_hint: {gate_out.suggested_tool or 'kubectl_describe_pod'}\n"
+                )
+                logger.info(
+                    "event=rag_hints_buffered trace=%s proof_lane=%s lane_src=%s broken_spec=%s",
+                    trace,
+                    proof_lane_pre,
+                    lane_src,
+                    broken,
+                )
+                await store_autonomous_trace_context(ctx.redis, trace, batch=batch, sanitized_text=sanitized_text)
+                await emit_transition(
+                    ctx,
+                    trace_id=trace,
+                    transition=TRANSITION_PLAN_EMITTED,
+                    component="evidence_consumer",
+                    detail="rag_hints_only_await_planner",
+                    meta={"proof_lane": proof_lane_pre, "intercept_rag_suggest": True},
+                )
+                await _emit_agentic_mutate_if_any(
+                    ctx,
+                    trace,
+                    batch,
+                    sanitized_text=sanitized_text,
+                    rag_match_text=rag_txt,
+                    rag_reasoning_hints=hints_body,
+                )
+                return f"[trace={trace}] RAG hints absorbed into planner (state/broken-spec intercept)."
+
             await _emit_suggest_remediation(
                 ctx,
                 trace=trace,
@@ -489,7 +820,9 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 component="evidence_consumer",
                 detail="rag_hit_suggested",
             )
-            await _emit_agentic_mutate_if_any(ctx, trace, batch, sanitized_text=sanitized_text)
+            await _emit_agentic_mutate_if_any(
+                ctx, trace, batch, sanitized_text=sanitized_text, rag_match_text=rag_txt
+            )
             if chat_id is not None:
                 pld = {
                     "trace_id": trace,

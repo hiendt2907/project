@@ -173,12 +173,79 @@ class WorkerSettings(BaseSettings):
         le=20,
         description="Max LLM agentic steps when RAG does not hit.",
     )
+    omni_diagnostic_react_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_DIAGNOSTIC_REACT_ENABLED"),
+        description="Interleave read-only k8s tools in agentic planner before mutate (ReAct).",
+    )
+    omni_diagnostic_react_readonly_max: int = Field(
+        default=3,
+        ge=0,
+        le=12,
+        validation_alias=AliasChoices("OMNI_DIAGNOSTIC_REACT_READONLY_MAX"),
+        description="Max read-only tool rounds per agentic plan when react enabled.",
+    )
+    omni_blind_lane_llm_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_BLIND_LANE_LLM_ENABLED"),
+        description="When matrix row missing, ask local LLM for proof_lane (resource|state|app_log).",
+    )
     autonomous_sigma_observation_window: int = Field(
         default=1,
         ge=1,
         le=20,
         validation_alias=AliasChoices("OMNI_AUTONOMOUS_SIGMA_OBSERVATION_WINDOW"),
         description="Consecutive proof+sigma passes required before EXECUTE_MUTATE.",
+    )
+    omni_proof_lane_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_PROOF_LANE_ENABLED"),
+        description="When true: proof-of-fault uses resource/state/app_log lanes (matrix + heuristics). When false: legacy sigma + optional log bypass.",
+    )
+    omni_sigma_log_bypass_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_SIGMA_LOG_BYPASS_ENABLED"),
+        description="When true: sigma gate may be satisfied by Loki sustained 5xx evidence (API/Web workload).",
+    )
+    omni_loki_base_url: str = Field(
+        default="http://loki.monitor.svc.cluster.local:3100",
+        validation_alias=AliasChoices("OMNI_LOKI_BASE_URL"),
+        description="Base URL for Loki query_range (log surge probe).",
+    )
+    omni_log_surge_window_sec: int = Field(
+        default=300,
+        ge=60,
+        le=3600,
+        validation_alias=AliasChoices("OMNI_LOG_SURGE_WINDOW_SEC"),
+        description="Lookback window for Loki log surge probe.",
+    )
+    omni_log_surge_min_lines: int = Field(
+        default=5,
+        ge=2,
+        le=500,
+        validation_alias=AliasChoices("OMNI_LOG_SURGE_MIN_LINES"),
+        description="Minimum parsed lines (access status or JSON rows) before ratio applies.",
+    )
+    omni_log_surge_min_ratio: float = Field(
+        default=0.01,
+        ge=0.001,
+        le=1.0,
+        validation_alias=AliasChoices("OMNI_LOG_SURGE_MIN_RATIO"),
+        description="Minimum fraction of parsed log lines that are 5xx (500/503/504) or JSON error (e.g. 0.01 = 1%).",
+    )
+    omni_log_surge_line_limit: int = Field(
+        default=500,
+        ge=50,
+        le=5000,
+        validation_alias=AliasChoices("OMNI_LOG_SURGE_LINE_LIMIT"),
+        description="Loki query_range line limit for surge probe.",
+    )
+    omni_log_surge_http_timeout_sec: float = Field(
+        default=25.0,
+        ge=3.0,
+        le=120.0,
+        validation_alias=AliasChoices("OMNI_LOG_SURGE_HTTP_TIMEOUT_SEC"),
+        description="HTTP timeout for Loki request from analyst.",
     )
     trace_correlation_ping_enabled: bool = Field(
         default=True,

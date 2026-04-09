@@ -1,5 +1,9 @@
 # SRE Diagnostic Dictionary — symptom → ordered probes (deterministic; no LLM).
 # Rows seeded from docs/vendor/knownbase.md (abbreviated patterns).
+#
+# Ordering: ``priority`` ascending (lower = evaluated first). Put label-specific rows
+# before broad catch-alls. Label predicates apply only when the alert JSON actually
+# contains that label key (see ``diagnostic_mapping._row_matches``).
 version: 1
 rows:
   # Nếu alert có labels.reason + pod + namespace → dispatcher dùng nhánh pod_container_state (SDK), không qua dòng này.

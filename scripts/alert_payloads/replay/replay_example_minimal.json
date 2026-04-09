@@ -1,0 +1,28 @@
+{
+  "receiver": "omni-webhook",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "ReplayExampleMinimal",
+        "severity": "warning",
+        "namespace": "multi-agent",
+        "pod": "REPLACE_WITH_LIVE_POD",
+        "deployment": "nginx-test",
+        "container": "nginx"
+      },
+      "annotations": {
+        "summary": "Anonymized replay example — replace pod/labels after strip",
+        "description": "Expected outcome (fill in run notes): RAG_HIT | SDK_ONLY | STATE_MACHINE_CONTRAST | ESCALATE"
+      },
+      "startsAt": "2026-01-01T12:00:00Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://prometheus.example.invalid"
+    }
+  ],
+  "groupLabels": {},
+  "commonLabels": {},
+  "commonAnnotations": {},
+  "externalURL": "http://alertmanager.example.invalid"
+}

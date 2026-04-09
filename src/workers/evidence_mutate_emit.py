@@ -129,6 +129,7 @@ async def emit_execute_mutate(
     tool_name: str,
     args: dict[str, Any],
     attempt_count: int = 1,
+    reasoning_chain: dict[str, Any] | None = None,
 ) -> None:
     k = getattr(ctx, "kafka", None)
     ws = getattr(ctx, "settings", None)
@@ -140,6 +141,7 @@ async def emit_execute_mutate(
         tool_name=tool_name,
         args=args,
         attempt_count=attempt_count,
+        reasoning_chain=reasoning_chain,
     )
     try:
         await k.send_dict(ws.kafka_topic_actions, {"data": json.dumps(body, ensure_ascii=False)})

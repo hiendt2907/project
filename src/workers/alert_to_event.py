@@ -11,6 +11,28 @@ from workers.proactive_models import AnomalyEvent
 
 logger = logging.getLogger(__name__)
 
+def _stringify_labels(raw: dict[str, Any] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, v in raw.items():
+        if v is None:
+            continue
+        key = str(k).strip()
+        if not key:
+            continue
+        if isinstance(v, (dict, list)):
+            continue
+        out[key] = str(v).strip()
+    return out
+
+
+def _prometheus_canonical_document(labels: dict[str, str], annot: dict[str, str]) -> str:
+    """Stable JSON for ``canonical_query`` (sorted keys) so matrix label matching is reproducible."""
+    doc = {"labels": dict(sorted(labels.items())), "annotations": dict(sorted(annot.items()))}
+    raw = json.dumps(doc, ensure_ascii=False, sort_keys=True)
+    return raw[:2000]
+
 
 def build_anomaly_event_from_alert_payload(payload: dict[str, Any]) -> AnomalyEvent:
     """Build a minimal AnomalyEvent so the diagnostic matrix can classify and run probes."""
@@ -23,12 +45,19 @@ def build_anomaly_event_from_alert_payload(payload: dict[str, Any]) -> AnomalyEv
             body = {}
         alerts = body.get("alerts") or []
         a0: dict[str, Any] = alerts[0] if alerts and isinstance(alerts[0], dict) else {}
-        labels = a0.get("labels") if isinstance(a0.get("labels"), dict) else {}
-        annot = a0.get("annotations") if isinstance(a0.get("annotations"), dict) else {}
+        labels = _stringify_labels(a0.get("labels") if isinstance(a0.get("labels"), dict) else None)
+        annot = _stringify_labels(a0.get("annotations") if isinstance(a0.get("annotations"), dict) else None)
         alertname = str(labels.get("alertname") or "unknown_alert")
         ns = str(labels.get("namespace") or "")
-        eh = f"{alertname} {str(annot.get('description') or annot.get('summary') or '')[:400]}"
-        cq = json.dumps({"labels": labels, "annotations": annot}, ensure_ascii=False)[:2000]
+        desc = str(annot.get("description") or annot.get("summary") or "")
+        identity_bits = []
+        for key in ("pod", "pod_name", "deployment", "container", "statefulset", "daemonset"):
+            if labels.get(key):
+                identity_bits.append(f"{key}={labels[key]}")
+        eh_core = f"{alertname} {' '.join(identity_bits)} {desc}".strip()
+        eh = eh_core[:800] if eh_core else f"{alertname} {desc}"[:800]
+        cq = _prometheus_canonical_document(labels, annot)
+        trigger = str(annot.get("query") or annot.get("promql") or payload.get("trigger_promql") or "")[:2000]
         return AnomalyEvent(
             trace_id=trace_id,
             rule_name="IngressPrometheus",
@@ -38,7 +67,7 @@ def build_anomaly_event_from_alert_payload(payload: dict[str, Any]) -> AnomalyEv
             threshold=0.0,
             canonical_query=cq,
             timestamp=str(int(payload.get("received_at") or 0)),
-            trigger_promql="",
+            trigger_promql=trigger,
             error_hint=eh[:800],
         )
 

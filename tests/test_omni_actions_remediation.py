@@ -21,6 +21,24 @@ def test_build_suggest_remediation_body_shape() -> None:
     assert "Readiness" in b["data"]["diagnosis"]
 
 
+def test_build_suggest_remediation_body_reasoning_chain() -> None:
+    b = build_suggest_remediation_body(
+        "tr-rc",
+        diagnosis="Policy blocked restart.",
+        confidence=0.5,
+        source="DIAGNOSTIC_INVARIANT_GATE",
+        suggested_tool="k8s_describe_resource",
+        verdict="SUGGEST_FIX_SOURCE",
+        lane="state",
+        thought_process=["CreateContainerConfigError", "INV_NO_RESTART_ON_BROKEN_SPEC"],
+        invariant_id="INV_NO_RESTART_ON_BROKEN_SPEC",
+    )
+    rc = b["data"]["reasoning_chain"]
+    assert rc["verdict"] == "SUGGEST_FIX_SOURCE"
+    assert rc["lane"] == "state"
+    assert "INV_NO_RESTART" in rc["thought_process"][1]
+
+
 def test_executor_body_preview_english() -> None:
     inner = build_suggest_remediation_body(
         "tr-2",
