@@ -20,6 +20,7 @@ __pycache__/
 .tox/
 .coverage
 htmlcov/
+.benchmarks/
 
 # Build and packaging artifacts
 build/
@@ -35,6 +36,11 @@ agent_logs/
 metrics_dump/
 *.out
 *.err
+*.trace
+*.trace.json
+*.trace.ndjson
+*.prof
+*.cpuprofile
 
 # Local state and databases
 qdrant_storage/
@@ -57,6 +63,12 @@ coverage/
 .vscode/
 *.swp
 *.swo
+.windsurf/
+.system/
+.cursor/debug-*.log
+.cursor/sessions/
+.cursor/history/
+.cursor/cache/
 
 # Bulky media/docs usually not needed for coding context
 *.png
@@ -66,24 +78,51 @@ coverage/
 *.mp4
 *.mov
 *.pdf
+*.svg
+*.webp
+
+# Extra heavy binary/archive types
+*.zip
+*.tar
+*.gz
+*.tgz
+*.bz2
+*.xz
 
 # VCS metadata
 .git/
 .svn/
 
-# Extra IDE/tool noise
-.windsurf/
-.system/
-.cursor/debug-*.log
+# Generated docs/artifacts and exports
+docs/**/site/
+docs/**/_build/
+docs/**/*.drawio
+docs/**/*.pptx
+docs/**/*.key
+docs/**/*.csv
+docs/**/*.tsv
 
-# Extra heavy binary types
-*.webp
-*.zip
-*.tar
-*.gz
+# Kubernetes / observability heavy exports
+k8s/monitor/dashboards/*.json
+k8s/**/rendered/
+*.promdump
+*.pcap
+
 # Legacy deployments (canonical: k8s/deployments/)
 deployments/
 
 # Heavy mirrored vendor docs (keep markdown/json index files)
 docs/vendor/**/*.html
 docs/vendor/**/*.htm
+
+# Temp folders
+tmp/
+temp/
+.tmp/
+
+# Keep high-signal governance + runbook knowledge in context
+!docs/runbooks/**/*.md
+!docs/reports/project-memory.md
+!docs/vendor/knownbase.md
+!docs/DOCUMENTATION_INDEX.md
+!docs/vendor/OMNI_PROJECT_CANONICAL.md

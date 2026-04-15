@@ -24,7 +24,7 @@ def test_truncate_for_action_record():
     long = "x" * 6000
     t = truncate_for_action_record(long)
     assert len(t) < len(long)
-    assert t.endswith("…")
+    assert "[TRUNCATED orig_len=6000]" in t
 
 
 def test_render_llm_context_bounded():

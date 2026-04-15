@@ -17,7 +17,7 @@ from workers.diagnostic_k8s_clinical import (
     probe_k8s_clinical_pod_status,
     probe_k8s_resource_quota_probe,
 )
-from workers.diagnostic_resource import pod_identity_from_event
+from workers.diagnostic_resource import promql_workload_pod_regex_selector, workload_pod_prefix_for_promql
 from workers.k8s_tools import _load_k8s_config
 from workers.proactive_models import AnomalyEvent
 from workers.handlers import WorkerHandlerContext
@@ -114,20 +114,21 @@ def _instant_vector_summary(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
 
 async def probe_prom_pod_cpu_cores(ctx: WorkerHandlerContext, ev: AnomalyEvent) -> ProbeRunRaw:
-    ns, pod, _ = pod_identity_from_event(ev)
-    if not ns or not pod:
+    ns, wl = workload_pod_prefix_for_promql(ev)
+    pod_sel = promql_workload_pod_regex_selector(wl)
+    if not ns or not pod_sel:
         return ProbeRunRaw(
             probe_name="prom_pod_cpu_cores",
             status="SKIPPED",
-            raw_text="missing namespace or pod labels for PromQL",
+            raw_text="missing namespace or workload identity for PromQL (use deployment/workload labels or derivable pod name)",
         )
-    e_ns, e_pod = _prom_label_esc(ns), _prom_label_esc(pod)
+    e_ns = _prom_label_esc(ns)
+    # Workload-scoped regex (all pods of Deployment/STS) — never exact alert pod name.
     # container!="" loại cả series cAdvisor chỉ có pod-level (không có label container — k3s/OrbStack).
-    # (A) chuẩn per-container; (B) fallback tổng pod khi không có label container.
     promql = (
-        f'sum(rate(container_cpu_usage_seconds_total{{namespace="{e_ns}",pod="{e_pod}",'
+        f'sum(rate(container_cpu_usage_seconds_total{{namespace="{e_ns}",{pod_sel},'
         f'container!="POD"}}[5m])) '
-        f'or sum(rate(container_cpu_usage_seconds_total{{namespace="{e_ns}",pod="{e_pod}"}}[5m]))'
+        f'or sum(rate(container_cpu_usage_seconds_total{{namespace="{e_ns}",{pod_sel}}}[5m]))'
     )
     try:
         data = await _prometheus_instant_query(ctx, promql)
@@ -136,8 +137,8 @@ async def probe_prom_pod_cpu_cores(ctx: WorkerHandlerContext, ev: AnomalyEvent) 
         return ProbeRunRaw(
             probe_name="prom_pod_cpu_cores",
             status="PASSED" if ok else "INCONCLUSIVE",
-            raw_text=f"promql={promql[:300]} … | {summary}"[:4000],
-            structured_hint={"unit": "cores_sum_rate5m", **structured},
+            raw_text=f"workload_scoped promql={promql[:300]} … | {summary}"[:4000],
+            structured_hint={"unit": "cores_sum_rate5m", "workload": wl, **structured},
         )
     except Exception as e:
         logger.warning("probe_prom_pod_cpu_cores: %s", e)
@@ -149,18 +150,19 @@ async def probe_prom_pod_cpu_cores(ctx: WorkerHandlerContext, ev: AnomalyEvent) 
 
 
 async def probe_prom_pod_memory_wss(ctx: WorkerHandlerContext, ev: AnomalyEvent) -> ProbeRunRaw:
-    ns, pod, _ = pod_identity_from_event(ev)
-    if not ns or not pod:
+    ns, wl = workload_pod_prefix_for_promql(ev)
+    pod_sel = promql_workload_pod_regex_selector(wl)
+    if not ns or not pod_sel:
         return ProbeRunRaw(
             probe_name="prom_pod_memory_wss",
             status="SKIPPED",
-            raw_text="missing namespace or pod labels for PromQL",
+            raw_text="missing namespace or workload identity for PromQL (use deployment/workload labels or derivable pod name)",
         )
-    e_ns, e_pod = _prom_label_esc(ns), _prom_label_esc(pod)
+    e_ns = _prom_label_esc(ns)
     promql = (
-        f'sum(container_memory_working_set_bytes{{namespace="{e_ns}",pod="{e_pod}",'
+        f'sum(container_memory_working_set_bytes{{namespace="{e_ns}",{pod_sel},'
         f'container!="POD"}}) '
-        f'or sum(container_memory_working_set_bytes{{namespace="{e_ns}",pod="{e_pod}"}})'
+        f'or sum(container_memory_working_set_bytes{{namespace="{e_ns}",{pod_sel}}})'
     )
     try:
         data = await _prometheus_instant_query(ctx, promql)
@@ -169,8 +171,8 @@ async def probe_prom_pod_memory_wss(ctx: WorkerHandlerContext, ev: AnomalyEvent)
         return ProbeRunRaw(
             probe_name="prom_pod_memory_wss",
             status="PASSED" if ok else "INCONCLUSIVE",
-            raw_text=f"promql={promql[:300]} … | {summary}"[:4000],
-            structured_hint={"unit": "bytes_wss_sum", **structured},
+            raw_text=f"workload_scoped promql={promql[:300]} … | {summary}"[:4000],
+            structured_hint={"unit": "bytes_wss_sum", "workload": wl, **structured},
         )
     except Exception as e:
         logger.warning("probe_prom_pod_memory_wss: %s", e)

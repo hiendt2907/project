@@ -1,11 +1,11 @@
-# Incident Post-Mortem — disabled-recall-001
+# Incident Post-Mortem — fb-suppress-telegram-healthy
 
-**Date:** 2026-04-15T08:48:41Z
+**Date:** 2026-04-15T08:48:40Z
 **Outcome:** VERIFIED_SUCCESS
 
 ## Summary
 
-- **Alert:** `NginxTestContainerWaitingFaultLab`
+- **Alert:** `unknown`
 - **Namespace:** ``
 - **Workload:** ``
 - **Remediation tool:** `k8s_rollout_restart`

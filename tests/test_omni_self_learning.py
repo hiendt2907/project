@@ -136,6 +136,8 @@ def _make_ctx(redis_client: Any, vector_store: _InMemVectorStore) -> Any:
         autonomous_verify_max_rounds=3,
         omni_post_mutate_sdk_verify_enabled=False,
         omni_post_mutate_verify_planner_enabled=False,
+        # Legacy finalize path in this harness — allow RAG upsert without SDK verify (lab self-learning).
+        omni_experience_requires_sdk_verify=False,
         # RAG retrieval threshold (0 so all stored points are returned)
         action_experience_score_threshold=0.0,
         # memory canonicalization

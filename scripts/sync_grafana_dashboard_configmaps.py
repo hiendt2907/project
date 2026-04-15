@@ -14,6 +14,7 @@ FILES = (
     "omni_learning.json",
     "omni_pod_resources.json",
     "omni_node_resources.json",
+    "omni_slo_minimum.json",
 )
 
 

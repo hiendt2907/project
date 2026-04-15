@@ -50,7 +50,7 @@ def resolve_namespace_deployment_for_state_gate(
 
 async def check_deployment_rollout_healthy(namespace: str, deployment: str) -> tuple[bool, str]:
     """
-    True when Deployment has enough ready replicas vs desired (workload-level, no pod naming).
+    True when Deployment rollout converges on the latest revision (workload-level, no pod naming).
     """
     ns = (namespace or "").strip()
     dep = (deployment or "").strip()
@@ -69,13 +69,26 @@ async def check_deployment_rollout_healthy(namespace: str, deployment: str) -> t
         st = d.status
         desired = int(spec.replicas or 0) if spec else 0
         ready = int(st.ready_replicas or 0) if st else 0
+        updated = int(st.updated_replicas or 0) if st else 0
+        available = int(st.available_replicas or 0) if st else 0
         unavail = int(st.unavailable_replicas or 0) if st and st.unavailable_replicas else 0
+        observed_gen = int(st.observed_generation or 0) if st and st.observed_generation else 0
+        generation = int(d.metadata.generation or 0) if d and d.metadata and d.metadata.generation else 0
         if desired == 0:
             return True, "desired_replicas=0"
-        if ready < desired:
-            return False, f"ready_replicas={ready} desired={desired} unavailable_replicas={unavail}"
-        if unavail > 0:
-            return False, f"unavailable_replicas={unavail} desired={desired}"
-        return True, f"ready_replicas={ready} desired={desired}"
+        rollout_done = (
+            ready >= desired
+            and updated >= desired
+            and available >= desired
+            and observed_gen >= generation
+        )
+        detail = (
+            f"ready={ready} updated={updated} available={available} "
+            f"desired={desired} observed_generation={observed_gen} generation={generation} "
+            f"unavailable_replicas={unavail}"
+        )
+        if not rollout_done:
+            return False, detail
+        return True, detail
     finally:
         await apps.api_client.close()

@@ -69,6 +69,8 @@ data:
           - labels:
               namespace:
               pod_name:
+          # Omni worker logs là JSON (trace_id). Loki: | json | trace_id="..." — không gắn label trace_id (cardinality).
+          # Khi bật allow_structured_metadata + schema mới trong loki.yaml, có thể thêm json + structured_metadata ở đây.
 ---
 apiVersion: apps/v1
 kind: DaemonSet

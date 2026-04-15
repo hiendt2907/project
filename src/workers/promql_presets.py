@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from typing import TypedDict
 
+from workers.promql_workload_helpers import workload_pod_label_for_cadvisor
+
 
 class PromqlBuildMeta(TypedDict, total=False):
     used_profile: str
@@ -39,9 +41,12 @@ def build_dynamic_promql(
     pod_name: str | None = None,
     namespace: str | None = None,
     node: str | None = None,
+    workload_prefix: str | None = None,
 ) -> tuple[str, str, PromqlBuildMeta]:
     """
-    Sinh PromQL — host dùng node_*; pod bắt buộc cả namespace + pod (label kube cAdvisor).
+    Sinh PromQL — host dùng node_*; pod bắt buộc namespace + (pod_name hoặc workload_prefix).
+
+    Khi ``workload_prefix`` có (deployment/workload): cAdvisor dùng ``pod=~"^prefix-.*"`` — không khớp pod ephemeral cũ.
 
     Trả về (query, human_note, meta).
     """
@@ -85,20 +90,25 @@ def build_dynamic_promql(
         meta["used_profile"] = "node_exporter_cpu_default"
         return q, "host/node_exporter CPU (default)", meta
 
-    # --- pod (cAdvisor / kubelet) — BẮT BUỘC namespace + pod ---
+    # --- pod (cAdvisor / kubelet) — namespace + workload_prefix HOẶC pod_name ---
     if not namespace or not str(namespace).strip():
         raise ValueError("pod PromQL: thiếu namespace")
-    if not pod_name or not str(pod_name).strip():
-        raise ValueError("pod PromQL: thiếu pod_name")
+    wp = str(workload_prefix).strip() if workload_prefix and str(workload_prefix).strip() else ""
     ns_esc = _esc_label(str(namespace).strip())
-    pn = str(pod_name).strip()
-    # Full pod name (hash-suffix) → khớp chính xác; gợi ý workload ngắn → prefix regex
-    _looks_full = bool(re.search(r"-[a-z0-9]{8,12}-[a-z0-9]{3,8}$", pn, re.I))
-    if _looks_full:
-        pod_label = f'pod="{_esc_label(pn)}"'
+    if wp:
+        pod_label = workload_pod_label_for_cadvisor(wp)
+        meta["used_profile"] = "cAdvisor_workload_regex"
     else:
-        pod_re = re.escape(pn).replace(r"\-", "-")
-        pod_label = f'pod=~"^{pod_re}.*"'
+        if not pod_name or not str(pod_name).strip():
+            raise ValueError("pod PromQL: thiếu pod_name (hoặc truyền workload_prefix/deployment)")
+        pn = str(pod_name).strip()
+        # Full pod name (hash-suffix) → khớp chính xác; gợi ý workload ngắn → prefix regex
+        _looks_full = bool(re.search(r"-[a-z0-9]{8,12}-[a-z0-9]{3,8}$", pn, re.I))
+        if _looks_full:
+            pod_label = f'pod="{_esc_label(pn)}"'
+        else:
+            pod_re = re.escape(pn).replace(r"\-", "-")
+            pod_label = f'pod=~"^{pod_re}.*"'
 
     if key == "cpu":
         q = f'sum(rate(container_cpu_usage_seconds_total{{namespace="{ns_esc}",{pod_label}}}[5m]))'
@@ -112,8 +122,10 @@ def build_dynamic_promql(
         q = f'sum(rate(container_network_receive_bytes_total{{namespace="{ns_esc}",{pod_label}}}[5m]))'
     else:
         q = f'sum(rate(container_cpu_usage_seconds_total{{namespace="{ns_esc}",{pod_label}}}[5m]))'
-    meta["used_profile"] = "cAdvisor_pod_strict_ns_pod"
-    return q, f'pod/cAdvisor namespace="{ns_esc}" {pod_label}', meta
+    if "used_profile" not in meta or meta.get("used_profile") != "cAdvisor_workload_regex":
+        meta["used_profile"] = "cAdvisor_pod_strict_ns_pod"
+    scope = f'workload="{wp}"' if wp else pod_label
+    return q, f'pod/cAdvisor namespace="{ns_esc}" {scope}', meta
 
 
 def build_promql_from_intent(

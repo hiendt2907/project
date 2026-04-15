@@ -41,12 +41,14 @@ from workers.metrics_exporter import inc_experience_saved, inc_learning_upsert
 from workers.telegram_escalation import emit_telegram_escalation
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.autonomy_contract import (
+    TRANSITION_COMMAND_FEEDBACK_INGESTED,
     TRANSITION_EXECUTED,
     TRANSITION_PLAN_EMITTED,
     TRANSITION_POST_VERIFY_STATE_FAIL,
     TRANSITION_POST_VERIFY_STATE_OK,
     TRANSITION_REQUIRES_HUMAN,
-    TRANSITION_VERIFIED_SUCCESS,
+    TRANSITION_RE_EVALUATED,
+    TRANSITION_STATE_MACHINE_VERIFIED,
     emit_terminal_tombstone,
     emit_transition,
 )
@@ -219,6 +221,39 @@ def _archive_postmortem(
         logger.warning("event=archivist_postmortem_error trace=%s err=%s", trace, e)
 
 
+async def _verify_state_machine_gate(
+    ctx: WorkerHandlerContext,
+    *,
+    trace: str,
+    body: dict[str, Any],
+    mutate_args: dict[str, Any],
+    ctx_obj: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    """Require deployment-level healthy rollout before terminal success."""
+    ev = _anomaly_event_from_redis_ctx(trace, ctx_obj or {})
+    if ev is None:
+        return True, "state_gate_not_applicable_missing_anomaly_event"
+    tool_nm = str(body.get("tool_name") or "")
+    ns_gate, dep_gate = resolve_namespace_deployment_for_state_gate(mutate_args, tool_nm, ev)
+    if not ns_gate or not dep_gate:
+        return True, "state_gate_not_applicable_missing_namespace_or_deployment"
+    healthy, dep_detail = await check_deployment_rollout_healthy(ns_gate, dep_gate)
+    await emit_transition(
+        ctx,
+        trace_id=trace,
+        transition=TRANSITION_POST_VERIFY_STATE_OK if healthy else TRANSITION_POST_VERIFY_STATE_FAIL,
+        component="autonomous_feedback_loop",
+        detail="state_machine_gate_before_terminal_success",
+        meta={
+            "namespace": ns_gate,
+            "deployment": dep_gate,
+            "healthy": healthy,
+            "detail": dep_detail[:1500],
+        },
+    )
+    return healthy, dep_detail
+
+
 async def _finalize_feedback_success_verified(
     ctx: WorkerHandlerContext,
     *,
@@ -228,7 +263,30 @@ async def _finalize_feedback_success_verified(
     stdout: str,
     sdk_verify_summary: str,
     ctx_obj: dict[str, Any] | None = None,
-) -> None:
+) -> bool:
+    ok_sm, sm_detail = await _verify_state_machine_gate(
+        ctx,
+        trace=trace,
+        body=body,
+        mutate_args=mutate_args,
+        ctx_obj=ctx_obj,
+    )
+    if not ok_sm:
+        await emit_telegram_escalation(
+            ctx,
+            trace,
+            f"STATE_MACHINE_GATE_FAIL detail={sm_detail[:1500]}",
+            reason="STATE_MACHINE_GATE_FAIL",
+        )
+        await ctx.redis.delete(_STATE_KEY.format(trace=trace))
+        await emit_terminal_tombstone(
+            ctx,
+            trace_id=trace,
+            reason_code="STATE_MACHINE_GATE_FAIL",
+            component="autonomous_feedback_loop",
+            detail=sm_detail[:1200],
+        )
+        return False
     _archive_postmortem(trace, str(body.get("tool_name") or ""), mutate_args, ctx_obj)
     await _upsert_action_experience_on_success(
         ctx,
@@ -244,10 +302,11 @@ async def _finalize_feedback_success_verified(
     await emit_transition(
         ctx,
         trace_id=trace,
-        transition=TRANSITION_VERIFIED_SUCCESS,
+        transition=TRANSITION_STATE_MACHINE_VERIFIED,
         component="autonomous_feedback_loop",
-        detail="action_feedback_success_sdk_verified",
+        detail="action_feedback_success_state_machine_verified",
     )
+    return True
 
 
 async def _finalize_feedback_success_legacy(
@@ -258,25 +317,50 @@ async def _finalize_feedback_success_legacy(
     mutate_args: dict[str, Any],
     stdout: str,
     ctx_obj: dict[str, Any] | None = None,
-) -> None:
-    _archive_postmortem(trace, str(body.get("tool_name") or ""), mutate_args, ctx_obj)
-    await _upsert_action_experience_on_success(
+) -> bool:
+    ok_sm, sm_detail = await _verify_state_machine_gate(
         ctx,
         trace=trace,
-        tool_name=str(body.get("tool_name") or ""),
+        body=body,
         mutate_args=mutate_args,
-        stdout=stdout,
         ctx_obj=ctx_obj,
     )
+    if not ok_sm:
+        await emit_telegram_escalation(
+            ctx,
+            trace,
+            f"STATE_MACHINE_GATE_FAIL detail={sm_detail[:1500]}",
+            reason="STATE_MACHINE_GATE_FAIL",
+        )
+        await ctx.redis.delete(_STATE_KEY.format(trace=trace))
+        await emit_terminal_tombstone(
+            ctx,
+            trace_id=trace,
+            reason_code="STATE_MACHINE_GATE_FAIL",
+            component="autonomous_feedback_loop",
+            detail=sm_detail[:1200],
+        )
+        return False
+    _archive_postmortem(trace, str(body.get("tool_name") or ""), mutate_args, ctx_obj)
+    if not bool(getattr(ctx.settings, "omni_experience_requires_sdk_verify", True)):
+        await _upsert_action_experience_on_success(
+            ctx,
+            trace=trace,
+            tool_name=str(body.get("tool_name") or ""),
+            mutate_args=mutate_args,
+            stdout=stdout,
+            ctx_obj=ctx_obj,
+        )
     await _write_success_hot_cache(ctx, trace, stdout)
     await ctx.redis.delete(_STATE_KEY.format(trace=trace))
     await emit_transition(
         ctx,
         trace_id=trace,
-        transition=TRANSITION_VERIFIED_SUCCESS,
+        transition=TRANSITION_STATE_MACHINE_VERIFIED,
         component="autonomous_feedback_loop",
-        detail="action_feedback_success",
+        detail="action_feedback_success_legacy_state_machine_verified",
     )
+    return True
 
 
 async def _llm_post_verify_state_react(
@@ -401,6 +485,107 @@ async def _llm_replan_after_feedback(
     return None
 
 
+async def _finalize_if_deployment_rollout_healthy(
+    ctx: WorkerHandlerContext,
+    trace: str,
+    *,
+    body: dict[str, Any],
+    mutate_args: dict[str, Any],
+    ctx_obj: dict[str, Any] | None,
+    verify_summary: str,
+    stdout: str,
+    ev: AnomalyEvent,
+    reason_tag: str,
+) -> bool:
+    """
+    If the incident Deployment has sufficient ready replicas, treat feedback as verified success
+    without Telegram — even when SDK probes or planner disagree (stale pod in PromQL, loop-guard).
+    """
+    ws = ctx.settings
+    if not bool(getattr(ws, "omni_post_verify_deployment_state_enabled", True)):
+        return False
+    if not bool(getattr(ws, "omni_telegram_suppress_when_deployment_healthy", True)):
+        return False
+    tool_nm = str(body.get("tool_name") or "")
+    ns_gate, dep_gate = resolve_namespace_deployment_for_state_gate(mutate_args, tool_nm, ev)
+    if not ns_gate or not dep_gate:
+        return False
+    healthy, dep_detail = await check_deployment_rollout_healthy(ns_gate, dep_gate)
+    if not healthy:
+        return False
+    logger.info(
+        "[%s] event=telegram_escalation_suppressed reason=%s ns=%s dep=%s detail=%s",
+        trace,
+        reason_tag,
+        ns_gate,
+        dep_gate,
+        dep_detail[:400],
+    )
+    merged_out = (
+        stdout
+        + f"\n---suppressed_escalation:{reason_tag}---\n"
+        + f"deployment_rollout_ok ns={ns_gate} dep={dep_gate} {dep_detail}\n"
+        + verify_summary
+    )[:12000]
+    await _finalize_feedback_success_verified(
+        ctx,
+        trace=trace,
+        body=body,
+        mutate_args=mutate_args,
+        stdout=merged_out,
+        sdk_verify_summary=verify_summary,
+        ctx_obj=ctx_obj,
+    )
+    return True
+
+
+def _anomaly_event_from_redis_ctx(trace: str, ctx_obj: dict[str, Any] | None) -> AnomalyEvent | None:
+    if not ctx_obj:
+        return None
+    ev_min = ctx_obj.get("anomaly_event_min")
+    if not isinstance(ev_min, dict):
+        return None
+    try:
+        ev_d = dict(ev_min)
+        ev_d["trace_id"] = trace
+        return AnomalyEvent.model_validate(ev_d)
+    except Exception:
+        return None
+
+
+async def _finalize_if_deployment_rollout_healthy_from_stored_ctx(
+    ctx: WorkerHandlerContext,
+    trace: str,
+    *,
+    body: dict[str, Any],
+    mutate_args: dict[str, Any],
+    verify_summary: str,
+    stdout: str,
+    reason_tag: str,
+) -> bool:
+    raw = await ctx.redis.get(f"omni:autonomous:ctx:{trace}")
+    ctx_obj: dict[str, Any] = {}
+    if raw:
+        try:
+            ctx_obj = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+        except Exception:
+            ctx_obj = {}
+    ev = _anomaly_event_from_redis_ctx(trace, ctx_obj)
+    if ev is None:
+        return False
+    return await _finalize_if_deployment_rollout_healthy(
+        ctx,
+        trace,
+        body=body,
+        mutate_args=mutate_args,
+        ctx_obj=ctx_obj or None,
+        verify_summary=verify_summary,
+        stdout=stdout,
+        ev=ev,
+        reason_tag=reason_tag,
+    )
+
+
 def _initial_symptom_from_ctx(ctx_obj: dict[str, Any]) -> InitialSymptom | None:
     raw = ctx_obj.get("initial_symptom")
     if isinstance(raw, dict):
@@ -426,6 +611,27 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
     stderr = str(body.get("stderr") or "")
     skipped = str(body.get("skipped_reason") or "").strip()
     mutate_args = body.get("mutate_args") if isinstance(body.get("mutate_args"), dict) else {}
+    await emit_transition(
+        ctx,
+        trace_id=trace,
+        transition=TRANSITION_COMMAND_FEEDBACK_INGESTED,
+        component="autonomous_feedback_loop",
+        detail="action_feedback_received",
+        meta={
+            "status": str(body.get("status") or ""),
+            "exit_code": exit_code,
+            "step_id": str(mutate_args.get("step_id") or ""),
+            "command_hash": str(mutate_args.get("command_hash") or ""),
+            "host_identity": str(mutate_args.get("host_identity") or ""),
+        },
+    )
+    await emit_transition(
+        ctx,
+        trace_id=trace,
+        transition=TRANSITION_RE_EVALUATED,
+        component="autonomous_feedback_loop",
+        detail="feedback_ingested_re_evaluate_started",
+    )
 
     st = await _load_state(ctx.redis, trace)
     last_attempt = int(st.get("last_attempt_count") or 0)
@@ -448,8 +654,6 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
         if (
             tool_nm0 == "k8s_patch_secret"
             and bool(getattr(ws, "lab_chaos_credential_autofix_enabled", False))
-            and "secret_patch_ok" in (stdout or "")
-            and "chaos_credential" in (stdout or "").lower()
         ):
             rr_dep = ctx_obj.get("rollout_ns_dep")
             if isinstance(rr_dep, dict):
@@ -494,6 +698,45 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
                         )
                         return
 
+        # Lab: second feedback after chaos secret fix — rollout_restart; skip slow post_mutate planner if Deployment is healthy.
+        if (
+            tool_nm0 == "k8s_rollout_restart"
+            and bool(getattr(ws, "lab_chaos_credential_autofix_enabled", False))
+            and exit_code == 0
+        ):
+            rs_fb = str(mutate_args.get("reasoning") or "").lower()
+            if "chaos_credential" in rs_fb:
+                ns_r = str(mutate_args.get("namespace") or "").strip()
+                de_r = str(mutate_args.get("deployment") or "").strip()
+                if ns_r and de_r:
+                    healthy_r = False
+                    dep_det_r = ""
+                    for _attempt in range(24):
+                        healthy_r, dep_det_r = await check_deployment_rollout_healthy(ns_r, de_r)
+                        if healthy_r:
+                            break
+                        await asyncio.sleep(2.0)
+                    if healthy_r:
+                        merged_fb = (
+                            stdout + "\n---chaos_lab_rollout_verify---\n" + dep_det_r
+                        )[:12000]
+                        await _finalize_feedback_success_verified(
+                            ctx,
+                            trace=trace,
+                            body=body,
+                            mutate_args=mutate_args,
+                            stdout=merged_fb,
+                            sdk_verify_summary="chaos_lab_rollout_restart_deployment_healthy",
+                            ctx_obj=ctx_obj,
+                        )
+                        logger.info(
+                            "[%s] event=chaos_lab_rollout_finalize_verified ns=%s dep=%s",
+                            trace,
+                            ns_r,
+                            de_r,
+                        )
+                        return
+
         do_verify = bool(getattr(ws, "omni_post_mutate_sdk_verify_enabled", True))
         raw_verify = ctx_obj.get("omni_verify_required")
         if raw_verify is False:
@@ -532,6 +775,18 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
             sv_att = int(st_sv.get("state_verify_attempt") or 0) + 1
             max_sv = int(getattr(ws, "omni_state_verify_max_attempts", 2) or 2)
             if sv_att > max_sv:
+                if await _finalize_if_deployment_rollout_healthy(
+                    ctx,
+                    trace,
+                    body=body,
+                    mutate_args=mutate_args,
+                    ctx_obj=ctx_obj,
+                    verify_summary="",
+                    stdout=stdout,
+                    ev=ev,
+                    reason_tag="STATE_VERIFY_MAX_ATTEMPTS",
+                ):
+                    return
                 await emit_telegram_escalation(
                     ctx,
                     trace,
@@ -629,6 +884,18 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
             if plan_out and tn_plan:
                 next_attempt = last_attempt + 1
                 if next_attempt > max_attempts:
+                    if await _finalize_if_deployment_rollout_healthy(
+                        ctx,
+                        trace,
+                        body=body,
+                        mutate_args=mutate_args,
+                        ctx_obj=ctx_obj,
+                        verify_summary=verify_summary,
+                        stdout=stdout,
+                        ev=ev,
+                        reason_tag="MAX_MUTATE_ATTEMPTS_POST_STATE_VERIFY",
+                    ):
+                        return
                     await emit_telegram_escalation(
                         ctx,
                         trace,
@@ -672,6 +939,18 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
             if not all_ok:
                 sdk_fail_after_pmsv = True
             else:
+                if await _finalize_if_deployment_rollout_healthy(
+                    ctx,
+                    trace,
+                    body=body,
+                    mutate_args=mutate_args,
+                    ctx_obj=ctx_obj,
+                    verify_summary=verify_summary,
+                    stdout=stdout,
+                    ev=ev,
+                    reason_tag="POST_MUTATE_STATE_VERIFY_NO_DONE",
+                ):
+                    return
                 await emit_telegram_escalation(
                     ctx,
                     trace,
@@ -800,6 +1079,18 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
         )
 
         if sdk_round > max_sdk:
+            if await _finalize_if_deployment_rollout_healthy(
+                ctx,
+                trace,
+                body=body,
+                mutate_args=mutate_args,
+                ctx_obj=ctx_obj,
+                verify_summary=verify_summary,
+                stdout=stdout,
+                ev=ev,
+                reason_tag="SDK_VERIFY_EXHAUSTED",
+            ):
+                return
             await emit_telegram_escalation(
                 ctx,
                 trace,
@@ -817,6 +1108,18 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
             return
 
         if next_attempt > max_attempts:
+            if await _finalize_if_deployment_rollout_healthy(
+                ctx,
+                trace,
+                body=body,
+                mutate_args=mutate_args,
+                ctx_obj=ctx_obj,
+                verify_summary=verify_summary,
+                stdout=stdout,
+                ev=ev,
+                reason_tag="MAX_MUTATE_ATTEMPTS_POST_VERIFY",
+            ):
+                return
             await emit_telegram_escalation(
                 ctx,
                 trace,
@@ -859,7 +1162,7 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
         )
 
         llm_first = bool(getattr(ws, "omni_llm_first_autonomy_enabled", False))
-        legacy_det_fallback = bool(getattr(ws, "omni_legacy_deterministic_fallback", True))
+        legacy_det_fallback = bool(getattr(ws, "omni_legacy_deterministic_fallback", False))
         full_fb = bool(getattr(ws, "omni_feedback_full_agentic_planner_enabled", False)) or llm_first
         if full_fb:
             hints_sdk = (
@@ -893,6 +1196,18 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
                 return
             if llm_first and not legacy_det_fallback:
                 logger.error("event=ESCALATE_TO_HUMAN trace=%s reason=sdk_verify_no_agentic_plan", trace)
+                if await _finalize_if_deployment_rollout_healthy(
+                    ctx,
+                    trace,
+                    body=body,
+                    mutate_args=mutate_args,
+                    ctx_obj=ctx_obj,
+                    verify_summary=verify_summary,
+                    stdout=stdout,
+                    ev=ev,
+                    reason_tag="SDK_VERIFY_NO_AGENTIC_PLAN",
+                ):
+                    return
                 await emit_telegram_escalation(
                     ctx,
                     trace,
@@ -911,6 +1226,18 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
 
         if llm_first and not legacy_det_fallback:
             logger.error("event=ESCALATE_TO_HUMAN trace=%s reason=sdk_verify_no_agentic_plan", trace)
+            if await _finalize_if_deployment_rollout_healthy(
+                ctx,
+                trace,
+                body=body,
+                mutate_args=mutate_args,
+                ctx_obj=ctx_obj,
+                verify_summary=verify_summary,
+                stdout=stdout,
+                ev=ev,
+                reason_tag="SDK_VERIFY_NO_AGENTIC_PLAN",
+            ):
+                return
             await emit_telegram_escalation(
                 ctx,
                 trace,
@@ -938,6 +1265,18 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
                 "event=ESCALATE_TO_HUMAN trace=%s reason=sdk_verify_no_deterministic_plan",
                 trace,
             )
+            if await _finalize_if_deployment_rollout_healthy(
+                ctx,
+                trace,
+                body=body,
+                mutate_args=mutate_args,
+                ctx_obj=ctx_obj,
+                verify_summary=verify_summary,
+                stdout=stdout,
+                ev=ev,
+                reason_tag="SDK_VERIFY_NO_PLAN",
+            ):
+                return
             await emit_telegram_escalation(
                 ctx,
                 trace,
@@ -990,6 +1329,16 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
     feedback_failures += 1
     if feedback_failures > max_verify:
         logger.error("event=ESCALATE_TO_HUMAN trace=%s reason=max_verify_rounds", trace)
+        if await _finalize_if_deployment_rollout_healthy_from_stored_ctx(
+            ctx,
+            trace,
+            body=body,
+            mutate_args=mutate_args,
+            verify_summary="",
+            stdout=stdout,
+            reason_tag="MAX_VERIFY_ROUNDS",
+        ):
+            return
         await emit_telegram_escalation(
             ctx,
             trace,
@@ -1008,6 +1357,16 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
 
     if last_attempt >= max_attempts:
         logger.error("event=ESCALATE_TO_HUMAN trace=%s reason=max_mutate_attempts", trace)
+        if await _finalize_if_deployment_rollout_healthy_from_stored_ctx(
+            ctx,
+            trace,
+            body=body,
+            mutate_args=mutate_args,
+            verify_summary="",
+            stdout=stdout,
+            reason_tag="MAX_MUTATE_ATTEMPTS",
+        ):
+            return
         await emit_telegram_escalation(
             ctx,
             trace,
@@ -1027,6 +1386,16 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
     next_attempt = last_attempt + 1
     if next_attempt > max_attempts:
         logger.error("event=ESCALATE_TO_HUMAN trace=%s reason=attempt_count_exceeded", trace)
+        if await _finalize_if_deployment_rollout_healthy_from_stored_ctx(
+            ctx,
+            trace,
+            body=body,
+            mutate_args=mutate_args,
+            verify_summary="",
+            stdout=stdout,
+            reason_tag="ATTEMPT_COUNT_EXCEEDED",
+        ):
+            return
         await emit_telegram_escalation(
             ctx,
             trace,
@@ -1104,6 +1473,16 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
     plan = await _llm_replan_after_feedback(ctx, trace, stdout, stderr, exit_code)
     if not plan:
         logger.error("event=ESCALATE_TO_HUMAN trace=%s reason=replan_empty", trace)
+        if await _finalize_if_deployment_rollout_healthy_from_stored_ctx(
+            ctx,
+            trace,
+            body=body,
+            mutate_args=mutate_args,
+            verify_summary="",
+            stdout=stdout,
+            reason_tag="REPLAN_EMPTY",
+        ):
+            return
         await emit_telegram_escalation(
             ctx,
             trace,

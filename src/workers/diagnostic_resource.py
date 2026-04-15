@@ -75,7 +75,57 @@ def deployment_workload_from_event(ev: AnomalyEvent) -> tuple[str, str]:
         dep = str(labels.get("deployment") or labels.get("deployment_name") or "").strip()
     if not dep:
         dep = str(labels.get("workload") or "").strip()
+    if not dep:
+        dep = str(labels.get("statefulset") or "").strip()
+    if not dep and isinstance(ev.gigo_metadata, dict):
+        dep = str(
+            ev.gigo_metadata.get("deployment")
+            or ev.gigo_metadata.get("statefulset")
+            or ev.gigo_metadata.get("workload")
+            or ""
+        ).strip()
     return ns, dep
+
+
+# ReplicaSet-shaped pod (Deployment): <name>-<rs-hash>-<suffix>
+_DEPLOYMENT_MANAGED_POD = re.compile(
+    r"^(.+)-[a-f0-9]{8,10}-[a-z0-9]{3,8}$",
+    re.IGNORECASE,
+)
+
+
+def workload_pod_prefix_for_promql(ev: AnomalyEvent) -> tuple[str, str]:
+    """
+    Namespace + workload prefix for cAdvisor PromQL — aggregate all pods of the workload,
+    never a single ephemeral pod name (no pod=\"…\" exact match on alert pod).
+
+    Order: deployment/workload/statefulset labels → derive from ReplicaSet-shaped pod name
+    → StatefulSet ordinal pod name (foo-0).
+    """
+    ns, dep = deployment_workload_from_event(ev)
+    if not ns:
+        ns = (ev.namespace or "").strip()
+    if dep:
+        return ns, dep
+    _, pod, _ = pod_identity_from_event(ev)
+    if not pod:
+        return ns, ""
+    m = _DEPLOYMENT_MANAGED_POD.match(pod)
+    if m:
+        return ns, m.group(1)
+    mo = re.match(r"^(.+)-(\d+)$", pod)
+    if mo:
+        return ns, mo.group(1)
+    return ns, ""
+
+
+def promql_workload_pod_regex_selector(workload_prefix: str) -> str:
+    """Label selector fragment: pod=~\"^<workload>-.*\" (escaped)."""
+    w = (workload_prefix or "").strip()
+    if not w:
+        return ""
+    esc = re.escape(w).replace(r"\-", "-")
+    return f'pod=~"^{esc}-.*"'
 
 
 def pod_identity_from_event(ev: AnomalyEvent) -> tuple[str, str, str]:

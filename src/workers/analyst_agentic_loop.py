@@ -147,6 +147,12 @@ def _react_system_content(ws: Any, *, post_mutate_verify: bool = False) -> str:
             "Before setting phase to \"done\", compare <INITIAL_SYMPTOM> (when present) to the latest "
             "read-only tool outputs in <HISTORY>. Do not claim recovery without citing that comparison.\n"
         )
+    if bool(getattr(ws, "omni_shadow_os_mode", False)):
+        base += (
+            "\nSHADOW OS MODE ACTIVE: Do not assume SDK mutate execution. "
+            "Your plan must remain evidence-first and include clear remediation intent that can be "
+            "translated to human-run OS commands with dry-run + rollback."
+        )
     return base
 
 
@@ -299,6 +305,18 @@ def _rewrite_pod_scoped_to_workload_probe(
     ns = str(namespace or args.get("namespace") or "").strip()
     dep = str(deployment or args.get("deployment") or args.get("name") or "").strip()
     if ns and dep:
+        # Secret refs are pod-scoped in prompts, but env/secretKeyRef live on the Deployment
+        # template — describe Deployment once yields stable args vs repeating get_deployment_state.
+        if str(tool_name or "").strip() == "k8s_get_pod_secret_refs":
+            return (
+                "k8s_describe_resource",
+                {
+                    "resource_type": "Deployment",
+                    "name": dep,
+                    "namespace": ns,
+                },
+                f"pod_scoped_blocked:{tool_name}->k8s_describe_resource:Deployment",
+            )
         return (
             "k8s_get_deployment_state",
             {"namespace": ns, "deployment": dep},
@@ -416,7 +434,11 @@ def _general_credential_failure_hint(batch: list[dict[str, Any]]) -> str:
         "  reasoning.",
         f"- Namespace from evidence: {ns or '(take from Fact table / probe blocks)'}.",
         "- Do NOT call k8s_rollout_restart as the primary fix step.",
-        "- If unsure of the Secret name: use k8s_describe_resource on the failing pod first to read secretKeyRef.\n",
+        "- If unsure of the Secret name: use k8s_describe_resource on the **Deployment** (workload) "
+        "with resource_type=Deployment to read envFrom/secretKeyRef — do not use pod-scoped discovery for planning.\n",
+        "- If the Fact table already includes probe **preflight_deployment_secret_refs**, use "
+        "**extracted_fact.secret_refs** for Secret **name** and **key** (from Prometheus workload labels + "
+        "API read). **value** for k8s_patch_secret must still come from operator / Vault / runbook — never from logs.\n",
     ]
     return "\n".join(lines) + "\n\n"
 
@@ -582,7 +604,10 @@ def _post_verify_namespace_bound_ok(parsed: dict[str, Any], *, bound_ns: str, bo
 
 def _truncate_obs(text: str, cap: int) -> str:
     s = (text or "").strip()
-    return s if len(s) <= cap else s[: cap - 1] + "…"
+    if len(s) <= cap:
+        return s
+    keep = max(0, cap - 40)
+    return f"{s[:keep]} [TRUNCATED orig_len={len(s)}]"
 
 
 def _planner_readonly_output_cap(ws: Any) -> int:
@@ -733,7 +758,9 @@ async def run_agentic_mutate_plan(
     llm_first = bool(getattr(ws, "omni_llm_first_autonomy_enabled", False))
     legacy_prompt_hints = (not sole_eval) and (not llm_first)
     broken_prefix = _broken_spec_first_round_instruction(batch) if legacy_prompt_hints else ""
-    credential_hint = _general_credential_failure_hint(batch) if legacy_prompt_hints else ""
+    # Credential directive: needed under LLM-first too — otherwise the model loops on generic list/describe.
+    cred_block = "" if sole_eval else _general_credential_failure_hint(batch)
+    credential_hint = cred_block if cred_block and (legacy_prompt_hints or llm_first) else ""
     # recall_prefix: high-confidence playbook recall takes precedence, then credential hint, then broken_spec
     priority_prefix = recall_prefix or credential_hint or broken_prefix
 
@@ -791,10 +818,13 @@ async def run_agentic_mutate_plan(
         '{"tool_name":"k8s_apply_rbac_least_privilege","args":{"namespace":"multi-agent"},'
         '"step":"mutate"}.\n'
         'For k8s_patch_secret: {"namespace","name","key","value","value_source","value_source_ref"} — e.g. '
-        '{"tool_name":"k8s_patch_secret","args":{"namespace":"multi-agent","name":"<must come from k8s_get_pod_secret_refs>",'
+        '{"tool_name":"k8s_patch_secret","args":{"namespace":"multi-agent","name":"my-db-secret",'
         '"key":"DB_PASSWORD","value":"<from source-of-truth>","value_source":"runbook|lab_env|human_confirmed",'
         '"value_source_ref":"ticket-or-doc-id","reasoning":"restore credential mismatch"},"step":"mutate"}.\n'
-        "Never guess secret name; discover it from k8s_get_pod_secret_refs before k8s_get_secret_keys/k8s_patch_secret.\n"
+        "The name/key MUST be real strings taken from the prior k8s_describe_resource(Deployment) output "
+        "(secretKeyRef) or Fact table — never copy placeholder tokens from this prompt.\n"
+        "Never guess secret name; read secretKeyRef from k8s_describe_resource (Deployment workload) — "
+        "do NOT use k8s_get_pod_secret_refs (pod-scoped; blocked).\n"
         "For k8s_patch_resource (Deployment), args must include namespace, name, patch_json (object as JSON string).\n"
         "TOOL_CATALOG_WITH_PRECONDITIONS (JSON):\n"
         f"{_planner_tool_catalog_prompt(max_chars=12000)}\n"

@@ -10,9 +10,9 @@
 # POST /webhook/prometheus → Kafka → Analyst ReAct loop.
 #
 # Success criteria (NOT executor exit_code alone):
-#   1) omni-analyst logs: autonomy_transition transition=VERIFIED_SUCCESS component=autonomous_feedback_loop
-#      (post-mutate SDK verify + feedback closed-loop — see autonomous_feedback_loop.py).
-#   2) Kubernetes: newest chaos-victim pod reaches Ready (actual workload state).
+#   1) omni-analyst logs: autonomy_transition transition=STATE_MACHINE_VERIFIED component=autonomous_feedback_loop
+#      (closed-loop + deployment state-machine gate — see autonomous_feedback_loop.py).
+#   2) Kubernetes deployment state-machine: rollout status succeeds AND Available=True.
 #
 # Usage:
 #   bash scripts/inject_real_fault.sh           # inject fault
@@ -148,10 +148,11 @@ for a in d.get('data', {}).get('alerts', []):
 " 2>/dev/null || echo "  (prometheus not reachable from host)"
 
 # ── verify autonomous state machine + cluster ground truth ────────────────────
-section "VERIFY: executor fail-fast + analyst VERIFIED_SUCCESS (autonomous_feedback_loop)"
+section "VERIFY: executor fail-fast + analyst STATE_MACHINE_VERIFIED (autonomous_feedback_loop)"
 
 OMNI_PASS=0
 SUGGEST_ONLY_SEEN=0
+TRACE_TARGET=""
 for j in $(seq 1 90); do
     ELOG="$(
         kubectl logs -n "${NAMESPACE}" -l app=omni-executor --since-time="${VERIFY_LOGS_SINCE}" --tail=12000 2>/dev/null || true
@@ -168,48 +169,69 @@ for j in $(seq 1 90); do
     ALOG="$(
         kubectl logs -n "${NAMESPACE}" -l app=omni-analyst --since-time="${VERIFY_LOGS_SINCE}" --tail=25000 2>/dev/null || true
     )"
-    # autonomy_contract.emit_transition: transition=VERIFIED_SUCCESS, component=autonomous_feedback_loop
-    if echo "${ALOG}" | grep -F 'transition=VERIFIED_SUCCESS' | grep -qF 'component=autonomous_feedback_loop'; then
+    if [[ -z "${TRACE_TARGET}" ]]; then
+        TRACE_TARGET="$(
+            ALOG_INPUT="${ALOG}" NEW_POD_INPUT="${NEW_POD}" python3 - <<'PY'
+import os, re
+alog = os.environ.get("ALOG_INPUT", "")
+new_pod = os.environ.get("NEW_POD_INPUT", "")
+for line in alog.splitlines():
+    if new_pod and new_pod not in line and "deployment=chaos-victim" not in line and "KubePodCrashLoopVictim" not in line:
+        continue
+    m = re.search(r"trace(?:_id)?=([A-Za-z0-9-]+)", line)
+    if m:
+        print(m.group(1))
+        break
+PY
+        )"
+        if [[ -n "${TRACE_TARGET}" ]]; then
+            info "[verify ${j}/90] bound chaos trace_id=${TRACE_TARGET}"
+        fi
+    fi
+    # autonomy_contract.emit_transition: transition=STATE_MACHINE_VERIFIED, component=autonomous_feedback_loop
+    if [[ -n "${TRACE_TARGET}" ]] && echo "${ALOG}" | grep -F "[${TRACE_TARGET}]" | grep -F 'transition=STATE_MACHINE_VERIFIED' | grep -qF 'component=autonomous_feedback_loop'; then
         OMNI_PASS=1
         break
     fi
-    info "[verify ${j}/90] waiting for analyst autonomy_transition VERIFIED_SUCCESS (autonomous_feedback_loop)…"
+    if [[ -n "${TRACE_TARGET}" ]] && echo "${ALOG}" | grep -F "[${TRACE_TARGET}]" | grep -F 'transition=REQUIRES_HUMAN' | grep -qF 'component='; then
+        echo "  ✗ Omni verification FAILED: chaos trace ${TRACE_TARGET} reached REQUIRES_HUMAN"
+        kubectl logs -n "${NAMESPACE}" -l app=omni-analyst --since-time="${VERIFY_LOGS_SINCE}" --tail=120 2>/dev/null || true
+        exit 1
+    fi
+    info "[verify ${j}/90] waiting for analyst autonomy_transition STATE_MACHINE_VERIFIED (autonomous_feedback_loop)…"
     sleep 5
 done
 
 echo ""
 if [[ "${OMNI_PASS}" -ne 1 ]]; then
     if [[ "${SUGGEST_ONLY_SEEN}" -eq 1 ]]; then
-        echo "  ✗ Omni verification FAILED: only SUGGEST_REMEDIATION observed (no VERIFIED_SUCCESS)."
+        echo "  ✗ Omni verification FAILED: only SUGGEST_REMEDIATION observed (no STATE_MACHINE_VERIFIED)."
         kubectl logs -n "${NAMESPACE}" -l app=omni-executor --since-time="${VERIFY_LOGS_SINCE}" --tail=80 2>/dev/null || true
     fi
-    echo "  ✗ Omni verification FAILED: no transition=VERIFIED_SUCCESS for component=autonomous_feedback_loop within timeout"
+    echo "  ✗ Omni verification FAILED: no transition=STATE_MACHINE_VERIFIED for component=autonomous_feedback_loop within timeout"
     echo "    (executor exit_code=0 alone is not sufficient — need closed-loop verify in analyst logs)"
     kubectl logs -n "${NAMESPACE}" -l app=omni-analyst --since-time="${VERIFY_LOGS_SINCE}" --tail=120 2>/dev/null || true
     exit 1
 fi
 
-echo "  ✓ Detected autonomy closed-loop: VERIFIED_SUCCESS (autonomous_feedback_loop)"
+echo "  ✓ Detected autonomy closed-loop: STATE_MACHINE_VERIFIED (autonomous_feedback_loop)"
 
-section "VERIFY C: Kubernetes — chaos-victim pod Ready (actual state machine)"
-
-VIC_POD="$(
-    kubectl get pods -n "${NAMESPACE}" -l app=chaos-victim \
-        --sort-by='.metadata.creationTimestamp' \
-        -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null || echo ""
-)"
-if [[ -z "${VIC_POD}" ]]; then
-    echo "  ✗ No chaos-victim pod found after remediation"
-    exit 1
-fi
-info "Waiting for pod/${VIC_POD} condition=Ready (workload healthy after credential restore)…"
-if ! kubectl wait --for=condition=Ready "pod/${VIC_POD}" -n "${NAMESPACE}" --timeout=240s 2>/dev/null; then
-    echo "  ✗ Pod ${VIC_POD} did not become Ready within 240s — cluster state does not match success"
+section "VERIFY C: Kubernetes — chaos-victim deployment state machine"
+if ! kubectl rollout status deployment/"${DEPLOYMENT}" -n "${NAMESPACE}" --timeout=60s; then
+    echo "  ✗ rollout status failed for deployment/${DEPLOYMENT}"
     kubectl get pods -n "${NAMESPACE}" -l app=chaos-victim -o wide 2>/dev/null || true
-    kubectl describe pod -n "${NAMESPACE}" "${VIC_POD}" 2>/dev/null | tail -40 || true
     exit 1
 fi
-echo "  ✓ Pod ${VIC_POD} is Ready (K8s state matches healthy workload)"
+AVAILABLE="$(
+    kubectl get deployment "${DEPLOYMENT}" -n "${NAMESPACE}" \
+        -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo ""
+)"
+if [[ "${AVAILABLE}" != "True" ]]; then
+    echo "  ✗ deployment/${DEPLOYMENT} Available condition is not True (got='${AVAILABLE}')"
+    kubectl get deployment "${DEPLOYMENT}" -n "${NAMESPACE}" -o wide 2>/dev/null || true
+    exit 1
+fi
+echo "  ✓ Deployment rollout is healthy and Available=True"
 
 # Analyst / gateway may still show REQUIRES_HUMAN — optional strict check on analyst logs
 ALOG="$(
