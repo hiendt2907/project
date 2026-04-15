@@ -27,6 +27,8 @@ Mục tiêu: **giảm rời rạc** — mọi file dưới đây được xếp 
 | [proactive_state_machine.md](proactive_state_machine.md) | Phase proactive. |
 | [mcp_integration.md](mcp_integration.md) | ADR MCP pilot. |
 | [runbooks/](runbooks/) | Checklist release, trace proof, E2E matrix, test evidence. |
+| [runbooks/e2e_cluster_after_deploy.md](runbooks/e2e_cluster_after_deploy.md) | Checklist sau deploy worker/gateway (Loki trace_id, không false Telegram khi healthy). |
+| [rfc-omni-multicluster.md](rfc-omni-multicluster.md) | RFC ngắn: multi-cluster options + trace_id. |
 | [../tests/integration/README.md](../tests/integration/README.md) | Integration E2E: stateful ReAct harness (`test_e2e_autonomous_loop`), glassbox audit (`OMNI_E2E_AUDIT_JSON`), two-phase planner (mutate not in-process). |
 | [reports/lab_nginx_missing_configmap_e2e.md](reports/lab_nginx_missing_configmap_e2e.md) | Lab một luồng: nginx-test thiếu ConfigMap → gateway → prober evidence FailedMount. |
 | [reports/trace-audit-gw-prom-f58ffe43e85e.md](reports/trace-audit-gw-prom-f58ffe43e85e.md) | Trace audit (Loki + pipeline + fixes) — lab missing ConfigMap. |

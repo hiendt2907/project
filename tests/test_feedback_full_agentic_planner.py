@@ -206,6 +206,10 @@ async def test_emit_agentic_mutate_if_any_passes_attempt_count_to_emit(monkeypat
         omni_diagnostic_react_enabled=False,
         omni_planner_precondition_gate_enabled=False,
         trace_correlation_ping_enabled=True,
+        # Explicit legacy deterministic path (defaults are LLM-first + no legacy fallback).
+        omni_llm_first_autonomy_enabled=False,
+        omni_legacy_deterministic_fallback=True,
+        kafka_topic_actions="omni-actions",
     )
     kafka = MagicMock()
     kafka.send_dict = AsyncMock()
@@ -505,9 +509,14 @@ async def test_pmsv_planner_phase_done_triggers_verified_success():
                 "args": {},
                 "resolution_summary": "Fresh facts show recovery vs initial symptom.",
             }
-            from workers.autonomous_feedback_loop import handle_action_feedback_envelope
+            with patch(
+                "workers.autonomous_feedback_loop.check_deployment_rollout_healthy",
+                new_callable=AsyncMock,
+            ) as m_dep:
+                m_dep.return_value = (True, "ready_replicas=1 desired=1")
+                from workers.autonomous_feedback_loop import handle_action_feedback_envelope
 
-            await handle_action_feedback_envelope(r, _feedback_ok(trace))
+                await handle_action_feedback_envelope(r, _feedback_ok(trace))
 
     m_plan.assert_awaited_once()
     assert r.vector_store.upsert.await_count >= 1
@@ -656,3 +665,111 @@ async def test_precondition_gate_reasks_planner_before_mutate(monkeypatch: pytes
     assert calls["tool"] == "k8s_patch_secret"
     assert calls["args"].get("key") == "APP_PASSWORD"
     assert calls["attempt"] == 2
+
+
+def _make_ctx_telegram_suppress() -> Any:
+    from workers.handler_context import WorkerHandlerContext
+    from rag.pgvector_store import EMBED_DIM
+
+    ws = SimpleNamespace(
+        autonomous_execute_max_attempts=3,
+        autonomous_verify_max_rounds=3,
+        omni_post_mutate_sdk_verify_enabled=True,
+        omni_post_mutate_verify_planner_enabled=False,
+        omni_sdk_verify_max_rounds=3,
+        omni_sdk_verify_initial_delay_sec=0,
+        omni_verify_delay_sec=0,
+        omni_post_verify_deployment_state_enabled=True,
+        omni_telegram_suppress_when_deployment_healthy=True,
+        omni_llm_first_autonomy_enabled=True,
+        omni_legacy_deterministic_fallback=False,
+        omni_feedback_full_agentic_planner_enabled=False,
+        embed_model="nomic-embed-text",
+        kafka_topic_audit_agent="omni-audit",
+        kafka_topic_action_feedback="omni-action-feedback",
+        diag_evidence_llm_model="qwen2.5-coder-3b",
+        model_helper="qwen2.5-coder-3b",
+    )
+    kafka_mock = MagicMock()
+    kafka_mock.send_dict = AsyncMock()
+    r = WorkerHandlerContext(
+        settings=ws,
+        redis=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        llm=AsyncMock(),
+        vector_store=MagicMock(),
+        ledger=MagicMock(),
+        semaphore=AsyncMock(),
+        telegram=None,
+        kafka=kafka_mock,
+    )
+    fixed = [0.1] * EMBED_DIM
+    r.llm.embed = AsyncMock(return_value={"embeddings": [fixed]})
+    r.vector_store.upsert = AsyncMock()
+    return r
+
+
+@pytest.mark.asyncio
+async def test_sdk_verify_no_agentic_suppresses_telegram_when_rollout_healthy():
+    """Deployment rollout healthy → finalize success; no Telegram on SDK_VERIFY_NO_AGENTIC_PLAN."""
+    from workers.autonomy_contract import TRANSITION_STATE_MACHINE_VERIFIED
+
+    trace = "fb-suppress-telegram-healthy"
+    ev = AnomalyEvent(
+        trace_id=trace,
+        canonical_query=json.dumps({"labels": {"namespace": "ns", "alertname": "Test"}}),
+        namespace="ns",
+        deployment="dep",
+    )
+    ctx_obj = {
+        "sanitized_text": "symptom",
+        "symptom_group": "test",
+        "verify_probe_ids": ["k8s_describe_resource"],
+        "anomaly_event_min": ev.model_dump(),
+        "omni_verify_required": True,
+    }
+    r = _make_ctx_telegram_suppress()
+    await r.redis.set(f"omni:autonomous:ctx:{trace}", json.dumps(ctx_obj))
+    await r.redis.set(
+        f"omni:autonomous:state:{trace}",
+        json.dumps({"last_attempt_count": 1, "feedback_failures": 0, "sdk_verify_round": 0}),
+    )
+
+    raw_fail = ProbeRunRaw(
+        probe_name="k8s_describe_resource",
+        status="FAILED",
+        raw_text="stale pod name in promql",
+    )
+
+    with patch(
+        "workers.autonomous_feedback_loop._emit_agentic_mutate_if_any",
+        new_callable=AsyncMock,
+    ) as m_emit_agentic:
+        m_emit_agentic.return_value = False
+        with patch(
+            "workers.autonomous_feedback_loop.run_verify_probes",
+            new_callable=AsyncMock,
+        ) as m_verify:
+            m_verify.return_value = (False, "verify stale pod", [raw_fail])
+            with patch(
+                "workers.autonomous_feedback_loop.check_deployment_rollout_healthy",
+                new_callable=AsyncMock,
+            ) as m_dep:
+                m_dep.return_value = (True, "ready_replicas=1 desired=1")
+                with patch(
+                    "workers.autonomous_feedback_loop.emit_telegram_escalation",
+                    new_callable=AsyncMock,
+                ) as m_tg:
+                    from workers.autonomous_feedback_loop import handle_action_feedback_envelope
+
+                    await handle_action_feedback_envelope(r, _feedback_ok(trace))
+
+    m_tg.assert_not_awaited()
+    audited = [c.args[1] for c in r.kafka.send_dict.await_args_list if c.args]
+    assert any(
+        TRANSITION_STATE_MACHINE_VERIFIED in (json.loads(x.get("data") or "{}") or {}).get("transition", "")
+        for x in audited
+        if isinstance(x, dict)
+    )
+    hot = await r.redis.get(f"omni:autonomous:hot:{trace}")
+    assert hot is not None
+    assert json.loads(hot).get("closed") is True

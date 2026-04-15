@@ -51,8 +51,8 @@ data:
   # Thêm name|instant_promql (tối đa vài dòng) → key q trong JSON; để trống = chỉ built-in
   OMNI_BASELINE_PROMQL: ""
   OMNI_BASELINE_SNAPSHOT_MAX_CHARS: "1800"
-  # Lab / God (mặc định tắt; chaos script --god bật tạm OMNI_GOD_MODE=true)
-  OMNI_GOD_MODE: "true"
+  # Production governance: no god/lab bypass (OMNI_GOD_MODE ignored when OMNI_ENV_MODE=prod in code)
+  OMNI_GOD_MODE: "false"
   # Autonomous Decider (tắt mặc định — bật khi đã có Prometheus + baseline ổn)
   OMNI_AUTONOMOUS_DECIDER_ENABLED: "false"
   OMNI_AUTONOMOUS_DECIDER_INTERVAL_SEC: "300"
@@ -63,11 +63,19 @@ data:
   OMNI_AUTO_EXECUTE_ENABLED: "true"
   # Emit restart mutate khi evidence là fault workload (probe/crashloop/createcontainer/imagepull...).
   OMNI_AUTONOMOUS_ROLLOUT_ON_FAULT_INCIDENT: "true"
-  # In-cluster service URLs & worker runtime (non-secret — override per lab via ConfigMap)
+  # In-cluster service URLs & worker runtime (non-secret — override per cluster via ConfigMap)
   OMNI_REDIS_URL: "redis://redis:6379/0"
   OMNI_REDIS_CLUSTER: "false"
   OMNI_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
-  OMNI_ENV_MODE: "dev"
+  OMNI_ENV_MODE: "prod"
+  # OrbStack chaos-victim inject: LLM cannot know DB password; enable lab autofix + password (see settings validator).
+  OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX_ENABLED: "true"
+  OMNI_CHAOS_PG_APP_PASSWORD: "chaos-app-pass-2025"
+  # Full cluster scope when executor SA is cluster-admin; set "false" for restricted prod.
+  OMNI_CLUSTER_FULL_ACCESS: "true"
+  # Planner-led autonomy (skip deterministic mutate shortcuts; pair with OMNI_LEGACY_DETERMINISTIC_FALLBACK=false)
+  OMNI_LLM_FIRST_AUTONOMY_ENABLED: "true"
+  OMNI_LEGACY_DETERMINISTIC_FALLBACK: "false"
   # Ollama on macOS host (Apple Silicon GPU) — OrbStack DNS routes K8s pods → host.
   OMNI_VLLM_BASE_URL: "http://host.orb.internal:11434/v1"
   OMNI_VLLM_EMBED_URL: "http://host.orb.internal:11434/v1"
@@ -103,11 +111,5 @@ data:
   OMNI_OTEL_TRACING_ENABLED: "false"
   OMNI_OTEL_EXPORTER_OTLP_ENDPOINT: "http://tempo.monitor.svc.cluster.local:4317"
   OMNI_OTEL_SERVICE_NAME: "omni-worker"
-  # Gateway (cùng ConfigMap): chặn flood chaos lab → không produce omni-alerts (agentic_chaos_validation)
-  OMNI_GATEWAY_SILENCE_CHAOS_LAB: "true"
-  # Lab chaos inject (scripts/inject_real_fault.sh): deterministic k8s_patch_secret restores APP_PASSWORD
-  # before LLM when evidence matches chaos victim / chaos-pg (see chaos_credential_lab_autofix_plan_from_batch).
-  OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX_ENABLED: "true"
-  OMNI_CHAOS_PG_APP_PASSWORD: "chaos-app-pass-2025"
-  OMNI_CHAOS_PG_SECRET_NAME: "chaos-pg-secret"
-  OMNI_CHAOS_PG_PASSWORD_KEY: "APP_PASSWORD"
+  # Gateway: do not drop Prometheus chaos-lab test webhooks (lab-only scripts; off for real ingress)
+  OMNI_GATEWAY_SILENCE_CHAOS_LAB: "false"

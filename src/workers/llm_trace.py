@@ -13,7 +13,8 @@ def _cap(s: str, max_chars: int) -> str:
     t = (s or "").strip()
     if len(t) <= max_chars:
         return t
-    return t[: max_chars - 1] + "…"
+    keep = max(0, max_chars - 40)
+    return f"{t[:keep]} [TRUNCATED orig_len={len(t)}]"
 
 
 def llm_trace_enabled(settings: Any) -> bool:

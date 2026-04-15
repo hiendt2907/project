@@ -25,7 +25,8 @@ def _truncate(s: str, limit: int) -> str:
     t = (s or "").strip()
     if len(t) <= limit:
         return t
-    return t[: max(0, limit - 1)] + "…"
+    keep = max(0, limit - 40)
+    return f"{t[:keep]} [TRUNCATED orig_len={len(t)}]"
 
 
 class ActionRecord(BaseModel):

@@ -1,0 +1,58 @@
+{
+  "title": "Omni SLO minimum",
+  "uid": "omni-slo-min",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "tags": ["omni", "slo"],
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Proactive incident duration p95 (s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum(rate(omni_proactive_incident_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Escalate proxy: requires_human rate",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(omni_proactive_requires_human_total[5m]))",
+          "legendFormat": "requires_human/s"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Queue backlog proxy (worker lag + redis stream)",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(omni_worker_lag_size)",
+          "legendFormat": "omni_worker_lag_size"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(omni_redis_stream_backlog)",
+          "legendFormat": "omni_redis_stream_backlog"
+        }
+      ]
+    }
+  ]
+}

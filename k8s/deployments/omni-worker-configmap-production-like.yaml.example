@@ -1,0 +1,25 @@
+# Ví dụ profile "thực chiến" — KHÔNG apply trực tiếp; copy key cần vào ConfigMap thật sau review.
+# Canonical defaults: `k8s/deployments/omni-worker-configmap.yaml` + `src/workers/settings.py`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: omni-worker-config-production-like
+  namespace: multi-agent
+  labels:
+    app: omni-worker
+    profile: production-like-example
+data:
+  OMNI_ENV_MODE: "prod"
+  OMNI_CLUSTER_FULL_ACCESS: "true"
+  OMNI_GOD_MODE: "false"
+  # Planner-led autonomy; no deterministic mutate shortcuts (rollout/configmap/secret patterns).
+  OMNI_LLM_FIRST_AUTONOMY_ENABLED: "true"
+  OMNI_LEGACY_DETERMINISTIC_FALLBACK: "false"
+  # No lab chaos credential autofix — remediation via probes + RAG + agentic planner + SDK verify.
+  # OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX_ENABLED is stripped/false in prod anyway.
+  OMNI_POST_MUTATE_SDK_VERIFY_ENABLED: "true"
+  OMNI_SDK_VERIFY_OPTIONAL_PROBES: "prom_pod_cpu_cores,prom_pod_memory_wss"
+  OMNI_EXPERIENCE_REQUIRES_SDK_VERIFY: "true"
+  OMNI_TELEGRAM_SUPPRESS_WHEN_DEPLOYMENT_HEALTHY: "true"
+  OMNI_POST_MUTATE_VERIFY_PLANNER_ENABLED: "true"
+  # Executor SA: set `false` here if you intentionally run least-privilege RBAC instead of cluster-admin.

@@ -188,13 +188,17 @@ _ZERO_KNOWLEDGE_SYSTEM = (
     "You have NO retrieval-augmented knowledge for this turn. "
     "Infer ONLY from the diagnostic evidence below (Kubernetes SDK probes, structured facts in the block).\n"
     "Do NOT invent fixes from general documentation or memory. "
-    "If you cannot ground a conclusion in the evidence, set verdict ESCALATE in MACHINE_JSON.\n\n"
+    "Do NOT write prose explanations — the pipeline needs executable structure.\n"
+    "If you cannot name a concrete read-only or mutate tool with args grounded in the evidence block, "
+    "set verdict ESCALATE (hypothesis: what is missing).\n\n"
     "Output format (strict, English):\n"
     "MACHINE_JSON: {\"verdict\":\"DIAGNOSE\"|\"ESCALATE\",\"hypothesis\":\"...\",\"action\":{\"tool\":\"\",\"args\":{}}}\n"
-    "HUMAN_SUMMARY: <at most 30 words, one line>\n\n"
-    "MACHINE_JSON must be one line, max 600 characters. action.tool must be empty unless you have "
-    "sufficient evidence labels. For credential failures (e.g. password auth failed), do NOT return empty action: "
-    "choose a concrete discovery or mutate tool and args. Prefer non-empty action.tool over diagnose-only output."
+    "HUMAN_SUMMARY: <at most 30 words, one line — facts only, no how-to>\n\n"
+    "MACHINE_JSON must be one line, max 600 characters. "
+    "verdict=DIAGNOSE is INVALID unless action.tool is non-empty AND args are consistent with evidence. "
+    "For credential or secret mismatch signals in the evidence, action.tool should be a real mutate/discovery "
+    "from the SDK allowlist (e.g. workload describe, secret patch) with structured args — never an empty action. "
+    "If unsure which tool, use verdict ESCALATE so the agentic planner runs next."
 )
 
 

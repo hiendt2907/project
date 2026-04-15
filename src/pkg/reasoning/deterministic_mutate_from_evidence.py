@@ -240,13 +240,20 @@ def _validate_tool_args(
         val = args.get("value")
         if val is None:
             return None
-        return {
+        out: dict[str, Any] = {
             "name": name,
             "namespace": ns,
             "key": key,
             "value": str(val),
             "reasoning": str(args.get("reasoning") or "")[:500],
         }
+        vs = str(args.get("value_source") or "").strip()
+        vr = str(args.get("value_source_ref") or "").strip()
+        if vs:
+            out["value_source"] = vs
+        if vr:
+            out["value_source_ref"] = vr
+        return out
     return None
 
 
@@ -416,6 +423,8 @@ def chaos_credential_lab_autofix_plan_from_batch(
             "name": secret_name,
             "key": key,
             "value": pwd,
+            "value_source": "lab_chaos_autofix",
+            "value_source_ref": "OMNI_CHAOS_PG_APP_PASSWORD",
             "reasoning": (
                 "Lab chaos_credential_autofix: restore Secret key after password authentication "
                 "failure in logs (OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX + OMNI_CHAOS_PG_APP_PASSWORD)."

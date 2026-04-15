@@ -43,12 +43,18 @@ class WorkerSettings(BaseSettings):
             self.lab_unchained = True
         if self.env_mode == "prod":
             # Prod is fail-closed: never allow lab/god bypass flags.
+            # Cluster scope is operator-controlled: set OMNI_CLUSTER_FULL_ACCESS=false for least-privilege;
+            # leave true (Field default) when the executor SA is intentionally cluster-admin.
             self.god_mode = False
             self.lab_unchained = False
-            self.cluster_full_access = False
             self.proactive_fallback_bypass_policy_in_god_mode = False
-            self.lab_chaos_credential_autofix_enabled = False
-            self.chaos_pg_app_password = ""
+            # Chaos credential lab (OrbStack inject): allow only when explicitly enabled **and**
+            # OMNI_CHAOS_PG_APP_PASSWORD is set in the overlay — otherwise strip (fail-closed).
+            lab_chaos = bool(self.lab_chaos_credential_autofix_enabled)
+            pwd_chaos = str(self.chaos_pg_app_password or "").strip()
+            if not lab_chaos or not pwd_chaos:
+                self.lab_chaos_credential_autofix_enabled = False
+                self.chaos_pg_app_password = ""
         return self
 
     @model_validator(mode="after")
@@ -128,6 +134,14 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_AUTO_EXECUTE_ENABLED"),
         description="Lab: EXECUTE_MUTATE runs after Pre-apply without Telegram/Redis confirm.",
     )
+    omni_shadow_os_mode: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_SHADOW_OS_MODE"),
+        description=(
+            "Shadow OS governance mode: block SDK mutate execution and route to "
+            "SUGGEST_OS_RUNBOOK / escalation path."
+        ),
+    )
     omni_autonomous_rollout_on_cpu_incident: bool = Field(
         default=True,
         validation_alias=AliasChoices("OMNI_AUTONOMOUS_ROLLOUT_ON_CPU_INCIDENT"),
@@ -173,6 +187,22 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_SDK_VERIFY_INITIAL_DELAY_SEC"),
         description="Sleep before re-probe after mutate (API convergence).",
     )
+    omni_sdk_verify_optional_probes: str = Field(
+        default="prom_pod_cpu_cores,prom_pod_memory_wss",
+        validation_alias=AliasChoices("OMNI_SDK_VERIFY_OPTIONAL_PROBES"),
+        description=(
+            "Comma-separated probe IDs allowed to be INCONCLUSIVE without failing post-mutate verify "
+            "(e.g. missing Prom series). FAILED still fails."
+        ),
+    )
+    omni_experience_requires_sdk_verify: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_EXPERIENCE_REQUIRES_SDK_VERIFY"),
+        description=(
+            "When true, RAG action_experience upsert only after SDK-verified success path; "
+            "legacy finalize (verify disabled or no probes) skips upsert unless set false."
+        ),
+    )
     omni_verify_delay_sec: float = Field(
         default=10.0,
         ge=0.0,
@@ -197,8 +227,8 @@ class WorkerSettings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("OMNI_POST_MUTATE_VERIFY_PLANNER_ENABLED"),
         description=(
-            "When true, executor exit_code=0 does not emit VERIFIED_SUCCESS until the LLM planner confirms "
-            "recovery from fresh evidence (state-success), not kubectl success alone."
+            "When true, executor exit_code=0 does not close incident until the LLM planner confirms "
+            "recovery from fresh evidence; terminal close still requires Deployment state-machine healthy."
         ),
     )
     omni_post_mutate_state_verify_max_steps: int = Field(
@@ -214,6 +244,15 @@ class WorkerSettings(BaseSettings):
         description=(
             "After SDK probes pass, re-check Deployment readiness (ready vs desired replicas) "
             "using workload identity — not pod names."
+        ),
+    )
+    omni_telegram_suppress_when_deployment_healthy: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_TELEGRAM_SUPPRESS_WHEN_DEPLOYMENT_HEALTHY"),
+        description=(
+            "When SDK/planner would Telegram-escalate (e.g. SDK_VERIFY_NO_AGENTIC_PLAN, "
+            "MAX_MUTATE_ATTEMPTS) but the alert Deployment rollout is healthy, close as STATE_MACHINE_VERIFIED "
+            "instead (pod rotation / inconclusive PromQL are common false negatives)."
         ),
     )
     omni_post_verify_state_llm_enabled: bool = Field(
@@ -312,11 +351,11 @@ class WorkerSettings(BaseSettings):
         ),
     )
     omni_legacy_deterministic_fallback: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices("OMNI_LEGACY_DETERMINISTIC_FALLBACK"),
         description=(
-            "Keep deterministic fallback paths (rollout/configmap/secret) when planner output is empty. "
-            "Set false for pure LLM-first autonomy mode."
+            "When true: deterministic mutate shortcuts (rollout/configmap/secret patterns) when planner output is empty. "
+            "Default false: planner + SDK-verify path only (no legacy shortcuts)."
         ),
     )
     omni_diagnostic_react_enabled: bool = Field(

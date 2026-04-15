@@ -33,6 +33,7 @@ from workers.promql_presets import (
     build_promql_from_intent,
     resolve_intent_from_keywords,
 )
+from workers.promql_workload_helpers import workload_prefix_from_tool_args
 from workers.telegram_ctx import effective_telegram_chat_id, should_send_telegram_chart
 from workers.metrics_exporter import inc_promql_placeholder_rejected
 from workers.settings import default_prometheus_http_base
@@ -265,19 +266,23 @@ def resolve_promql_for_args(args: dict[str, Any], ctx: Any) -> tuple[str, str]:
     ns = str(args.get("namespace") or "").strip() or _default_namespace(ctx)
     pod_raw = args.get("pod_name") if args.get("pod_name") is not None else args.get("pod")
     pod_s = str(pod_raw).strip() if pod_raw is not None else ""
-    if not pod_s:
+    wl = workload_prefix_from_tool_args(args)
+    if not pod_s and not wl:
         raise ValueError(
-            "Thiếu pod_name — pod (cAdvisor) cần namespace + pod; hoặc dùng "
+            "Thiếu pod_name hoặc deployment/workload — pod (cAdvisor) cần namespace + pod, "
+            "hoặc namespace + deployment/workload; hoặc dùng "
             "target_type=host | kube_deployment | kube_namespace."
         )
     built, note, _meta = build_dynamic_promql(
         "pod",
         intent,
-        pod_name=pod_s,
+        pod_name=pod_s if pod_s else None,
         namespace=ns,
         node=node_s,
+        workload_prefix=wl,
     )
-    return built, f"auto pod {note} ns={ns}"
+    src = "auto pod workload-regex" if wl else "auto pod"
+    return built, f"{src} {note} ns={ns}"
 
 
 async def _vm_instant_scalar(ctx: Any, query: str) -> float | None:

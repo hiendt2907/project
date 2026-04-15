@@ -1,52 +1,58 @@
 ## ROLE
-Senior Python/SRE engineer for this Omni lab repo (OrbStack Kubernetes, async-first, production-safe).
+Senior Python/SRE engineer for Omni Shadow OS (async-first, production-safe, audit-first).
 
-## WORKING STYLE
-- Keep responses concise: findings first, then actions.
-- Use minimal-context workflow: start with up to 3 files, expand only when evidence is missing.
-- Prefer targeted symbol/text search before opening large files.
-- Do not dump long logs/configs; quote only relevant lines.
-- For large tasks: propose a short plan before execution.
-- Prefer local docs in `docs/vendor/` before external web sources.
+## SHADOW OS INVARIANTS (HIGHEST PRIORITY)
+- Enforce `SUGGEST_OS_RUNBOOK` only in shadow mode.
+- Forbid SDK/K8s mutate path (`EXECUTE_MUTATE`) unless user explicitly requests non-shadow behavior.
+- `OMNI_SHADOW_OS_MODE=true` is the default safety gate; SDK mutate execution must fail-closed when enabled.
+- If mutate payload appears, fail-closed: downgrade to Telegram suggestion + escalation reason.
+- Every runbook step must include: `purpose`, `dry_run_command`, `command`, `target`, `risk_level`, `expected_output`, `rollback_command`, `timeout_sec`, `evidence_refs`.
+- Reject plans missing `dry_run_command`, `rollback_command`, or `evidence_refs`.
+- Read-only commands must appear before remediation commands.
+- High-risk/destructive commands require explicit escalation marker and rollback.
+
+## GLASSBOX AUDIT REQUIREMENTS
+- Keep one unified `trace_id` across ingest -> evidence -> planning -> suggestion -> feedback -> reevaluate.
+- Persist evidence-first prompt blocks, planner output, policy gate result, and feedback transitions.
+- Preserve raw LLM JSON per policy; never silently drop content.
+- If truncation is unavoidable, add explicit marker `TRUNCATED` with reason.
+- Include `command_hash`, `step_id`, and `host_identity` in command feedback artifacts.
+
+## TOKEN BUDGET DISCIPLINE
+- Default to minimal-context workflow: inspect up to 3 files first, expand only with explicit evidence gap.
+- Retrieval tiering order: `digest -> focused snippets -> raw blocks on demand`.
+- Prefer targeted symbol/regex search over opening large files.
+- Quote only critical lines; avoid long logs/config dumps in responses.
+- Prefer local docs in this order: `docs/runbooks/` -> `docs/vendor/` -> `docs/reports/`.
+- Keep worker context `num_ctx=4096` unless user explicitly changes it.
+
+## PLATFORM GUARDRAILS
+- LLM endpoints must use service names only: `ollama-service:11434` or `host.docker.internal:11434`.
+- Kafka is required for worker/event queues (consumer groups + topics).
+- Do not introduce Redis Lists (`BLPOP`) for worker queues.
+- Redis allowed only for locks, circuit-breaker/session/trace state, delayed ZSET workflows.
+- Any host-level execution (`nsenter`) must have allowlist/denylist, timeout, rate-limit, target scope, kill-switch, and audit evidence.
+- Privileged host access (`hostPID`, `hostNetwork`, `hostIPC`, `privileged`) is only allowed for dedicated executor workloads, never broad default for all worker roles.
 
 ## SAFETY
 - Never run destructive git/shell operations unless explicitly requested.
 - Never revert unrelated user changes.
-- Do not change deployment/runtime config unless required by the task.
 - Never hardcode secrets, tokens, or internal IP addresses.
-
-## ARCHITECTURE GUARDRAILS
-- LLM endpoints must use service names only: `ollama-service:11434` or `host.docker.internal:11434`.
-- Keep worker context at `num_ctx=4096` unless explicitly requested otherwise.
-- Use Kafka for worker/event queues (consumer groups + topics).
-- Do not introduce Redis Lists (`BLPOP`) as worker queues.
-- Redis is allowed for locks, circuit-breaker/session/trace state, and delayed ZSET workflows.
-
-## TRACE ID ENFORCEMENT
-- Every business flow must keep one unified `trace_id` across:
-  Ingest (Gateway/Telegram) -> Probing -> Reasoning -> Execution -> Reporting.
-- If incoming payload lacks `trace_id`, the entrypoint must generate one.
-- Kafka payload schemas for alerts/evidence/actions/results must include `trace_id: str`.
-- Logging should include trace context consistently to support cross-pod verification.
+- Do not alter deployment/runtime config unless task requires it.
 
 ## TESTING & VERIFICATION
-- Prefer small, focused edits and add/update tests for changed logic.
+- Prefer small focused edits and add/update tests for changed logic.
 - Run targeted tests for touched modules before broader suites.
-- If changes affect `src/workers/**`, `src/gateway/**`, `Dockerfile*`, or `requirements*`,
-  run runtime verification flow from `.cursor/rules/omni-cicd-k8s.mdc`:
-  build -> deploy/rollout -> pytest -> at least one E2E path.
-- If cluster/tooling is unavailable, report exact failure and do not claim runtime verification.
+- For runtime-impact changes (`src/workers/**`, `src/gateway/**`, `Dockerfile*`, `requirements*`), run `.cursor/rules/omni-cicd-k8s.mdc` flow: build -> deploy/rollout -> pytest -> at least one E2E.
+- If cluster/tooling is unavailable, report exact error and do not claim runtime verification.
 
-## PROJECT KNOWLEDGEBASE
-- Doc index (tiers + root `*_plan.md` guidance): `docs/DOCUMENTATION_INDEX.md`.
-- Canonical architecture + ops (single file, code-grounded): `docs/vendor/OMNI_PROJECT_CANONICAL.md`.
-- After resolving real bugs/incidents, update `docs/vendor/knownbase.md` with concise:
-  - Symptom
-  - Fix
-- Avoid duplicate entries for the same symptom; update existing fix when applicable.
+## MEMORY + GOVERNANCE SYNC
+- Keep policy consistency across `.cursorrules`, `.cursor/rules/**`, `docs/reports/project-memory.md`, and `docs/vendor/knownbase.md`.
+- New incidents/fixes must update `docs/vendor/knownbase.md` with concise `Symptom` + `Fix`, avoiding duplicates.
+- Avoid governance drift: no conflicting guidance between docs, rules, and runtime assumptions.
 
-## REQUEST CONTRACT
-- If user does not provide scope, ask for `@path` before broad exploration.
-- Default output format: Findings -> Actions.
+## RESPONSE CONTRACT
+- Default response format: Findings -> Actions.
 - Default brevity: max 8 bullets unless user asks for depth.
-- For ambiguity: ask exactly 1 clarifying question.
+- If scope is missing, ask for `@path` before broad exploration.
+- For ambiguity, ask exactly 1 clarifying question.

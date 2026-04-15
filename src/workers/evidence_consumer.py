@@ -49,7 +49,9 @@ from workers.baseline_snapshot import REDIS_KEY_SNAPSHOT
 from workers.autonomous_execute import MUTATE_TOOL_ALLOWLIST
 from workers.k8s_tools import deployment_evidence_snapshot
 from workers.llm_context_budget import effective_reply_max_words
-from workers.omni_actions_remediation import build_suggest_remediation_body
+from workers.omni_actions_remediation import build_suggest_os_runbook_body, build_suggest_remediation_body
+from workers.os_executor_adapter import wrap_host_command
+from workers.schemas.agentic_planner import validate_suggest_os_runbook_data
 from workers.reasoning_evidence_inbound import (
     reason_diagnostic_evidence_only,
     reason_diagnostic_rag_miss_sdk_only,
@@ -70,6 +72,7 @@ from pkg.reasoning.deterministic_mutate_from_evidence import (
     probe_driven_mutate_tools_for_settings,
 )
 from pkg.reasoning.incident_matrix_profile import alertname_from_batch, resolve_proof_lane
+from pkg.reasoning.preflight_deployment_secret_refs import merge_preflight_deployment_secret_refs
 from workers.log_surge_probe import evaluate_log_surge_sigma_bypass, namespace_pod_from_batch
 from workers.telegram_escalation import emit_telegram_escalation
 from workers.request_trace import pop_trace_id, push_trace_id
@@ -96,6 +99,55 @@ _SECURITY_SELF_REMEDIATION_ALERT_NAMES = frozenset(
     }
 )
 _RAG_SCORE_FLOOR_SECURITY = 0.85
+
+
+def _shadow_os_mode(ctx: WorkerHandlerContext) -> bool:
+    return bool(getattr(ctx.settings, "omni_shadow_os_mode", False))
+
+
+def _derive_shadow_os_commands(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    evidence_refs: list[str],
+    trace: str,
+) -> list[dict[str, Any]]:
+    """Convert mutate intent into human-runnable Shadow OS command steps."""
+    tn = str(tool_name or "").strip()
+    if not tn:
+        return []
+    raw_payload = json.dumps({"tool_name": tn, "args": args}, ensure_ascii=False, sort_keys=True, default=str)
+    inspect_cmd = wrap_host_command(
+        "kubectl get pods -A --field-selector=status.phase!=Running | head -n 30"
+    ).command
+    apply_cmd = wrap_host_command(f"echo {json.dumps(raw_payload)} > /tmp/omni-shadow-{trace[:24]}.json").command
+    rollback_cmd = wrap_host_command(f"rm -f /tmp/omni-shadow-{trace[:24]}.json").command
+    return [
+        {
+            "purpose": "Gather current host and workload state before remediation.",
+            "dry_run_command": inspect_cmd,
+            "command": inspect_cmd,
+            "target": "node:local",
+            "risk_level": "low",
+            "expected_output": "List of unhealthy pods/events for verification baseline.",
+            "rollback_command": "echo 'readonly step - no rollback required'",
+            "timeout_sec": 30,
+            "evidence_refs": evidence_refs or [f"trace:{trace}"],
+            "escalation_required": False,
+        },
+        {
+            "purpose": f"Prepare controlled remediation payload derived from planner tool `{tn}`.",
+            "dry_run_command": wrap_host_command(f"echo {json.dumps(raw_payload)}").command,
+            "command": apply_cmd,
+            "target": "node:local",
+            "risk_level": "medium",
+            "expected_output": "Payload file created for operator-reviewed execution.",
+            "rollback_command": rollback_cmd,
+            "timeout_sec": 45,
+            "evidence_refs": evidence_refs or [f"trace:{trace}"],
+            "escalation_required": True,
+        },
+    ]
 
 
 def _symptom_group_from_batch(batch: list[dict[str, Any]]) -> str:
@@ -554,6 +606,57 @@ async def _emit_suggest_remediation(
         logger.warning("action_emit skip: %s", e)
 
 
+async def _emit_suggest_os_runbook(
+    ctx: WorkerHandlerContext,
+    *,
+    trace: str,
+    diagnosis: str,
+    confidence: float,
+    source: str,
+    runbook_title: str,
+    commands: list[dict[str, Any]],
+    reasoning_chain: dict[str, Any] | None = None,
+    verification_evidence_digest: str = "",
+) -> bool:
+    """Emit Shadow OS runbook action to omni-actions."""
+    if not ctx.settings.trace_correlation_ping_enabled:
+        return False
+    k = ctx.kafka
+    if k is None:
+        return False
+    tid = str(trace or "").strip()
+    if not tid:
+        return False
+    body = build_suggest_os_runbook_body(
+        tid,
+        diagnosis=diagnosis,
+        confidence=confidence,
+        source=source,
+        runbook_title=runbook_title,
+        commands=commands,
+        reasoning_chain=reasoning_chain,
+        verification_evidence_digest=verification_evidence_digest,
+    )
+    try:
+        data_obj = body.get("data") if isinstance(body.get("data"), dict) else {}
+        validate_suggest_os_runbook_data(data_obj)
+    except Exception as e:
+        logger.warning("event=shadow_runbook_invalid trace=%s err=%s", tid, e)
+        return False
+    try:
+        await k.send_dict(ctx.settings.kafka_topic_actions, {"data": json.dumps(body, ensure_ascii=False)})
+        logger.info(
+            "event=action_emitted action=SUGGEST_OS_RUNBOOK trace=%s source=%s steps=%s",
+            tid,
+            source,
+            len(commands),
+        )
+        return True
+    except Exception as e:
+        logger.warning("shadow_runbook_emit skip: %s", e)
+        return False
+
+
 async def _emit_agentic_mutate_if_any(
     ctx: WorkerHandlerContext,
     trace: str,
@@ -576,7 +679,7 @@ async def _emit_agentic_mutate_if_any(
     ac = max(1, int(attempt_count))
     llm_first = bool(getattr(ctx.settings, "omni_llm_first_autonomy_enabled", False))
     unrestricted = bool(getattr(ctx.settings, "omni_unrestricted_tool_execution", True))
-    legacy_det_fallback = bool(getattr(ctx.settings, "omni_legacy_deterministic_fallback", True))
+    legacy_det_fallback = bool(getattr(ctx.settings, "omni_legacy_deterministic_fallback", False))
     # In LLM-first mode, force planner-led diagnose→verify→mutate flow.
     # "unrestricted" controls execution gates, not whether deterministic shortcuts bypass planner.
     allow_det = legacy_det_fallback and not llm_first
@@ -898,6 +1001,33 @@ async def _emit_agentic_mutate_if_any(
                 trace,
                 tn,
             )
+    # Lab: planner may emit k8s_patch_secret with placeholder "value" — substitute settings-backed password.
+    # Mirrors chaos_lab_autofix_veto_rollout_restart: same batch + OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX_ENABLED.
+    if (
+        tn == "k8s_patch_secret"
+        and _evidence_suggests_credential_failure(batch)
+        and bool(getattr(ctx.settings, "lab_chaos_credential_autofix_enabled", False))
+    ):
+        _tools_lab = frozenset(probe_driven_mutate_tools_for_settings(ctx.settings)) | frozenset(
+            {"k8s_patch_secret"}
+        )
+        chaos_patch = chaos_credential_lab_autofix_plan_from_batch(
+            batch,
+            default_ns=default_remediation_namespace(ctx.settings),
+            allowed_tools=_tools_lab,
+            ws=ctx.settings,
+        )
+        if chaos_patch:
+            plan = {**(plan if isinstance(plan, dict) else {}), **chaos_patch}
+            plan["planner_origin"] = "chaos_lab_autofix_override_llm_patch_secret"
+            discovery_steps = list(chaos_patch.get("discovery_steps") or [])
+            tn = str(chaos_patch.get("tool_name") or "").strip()
+            args = dict(chaos_patch.get("args") or {})
+            logger.info(
+                "event=chaos_lab_autofix_override_llm_patch_secret trace=%s tool=%s",
+                trace,
+                tn,
+            )
     plan_origin = str((plan or {}).get("planner_origin") or "llm")
     if (
         plan
@@ -1141,6 +1271,36 @@ async def _emit_agentic_mutate_if_any(
                 args["evidence_snapshot"] = {}
     args["proof_of_fault"] = proof_meta
     exec_rc = plan.get("reasoning_chain") if isinstance(plan, dict) else None
+    if _shadow_os_mode(ctx):
+        evidence_refs = [f"proof_lane:{proof_meta.get('proof_lane')}", f"trace:{trace}"]
+        commands = _derive_shadow_os_commands(
+            tool_name=tn,
+            args=args,
+            evidence_refs=evidence_refs,
+            trace=trace,
+        )
+        emitted = await _emit_suggest_os_runbook(
+            ctx,
+            trace=trace,
+            diagnosis=f"Planner produced mutate intent `{tn}`; converted to Shadow OS runbook.",
+            confidence=0.72,
+            source="SHADOW_OS_FROM_MUTATE_PLAN",
+            runbook_title=f"Shadow remediation for {tn}",
+            commands=commands,
+            reasoning_chain=exec_rc if isinstance(exec_rc, dict) else {},
+            verification_evidence_digest=json.dumps(proof_meta, ensure_ascii=False)[:1500],
+        )
+        if emitted:
+            await emit_transition(
+                ctx,
+                trace_id=trace,
+                transition=TRANSITION_PLAN_EMITTED,
+                component="evidence_consumer",
+                detail=f"shadow_os_runbook_emitted:{tn}",
+                meta={"shadow_os_mode": True, "step_count": len(commands)},
+            )
+            return True
+        return False
     await emit_execute_mutate(
         ctx,
         trace=trace,
@@ -1181,6 +1341,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         batch = await append_evidence_and_take_flush_batch(ctx.redis, trace, ev_doc)
         if batch is None:
             return ""
+        batch = await merge_preflight_deployment_secret_refs(batch, trace=trace)
         await emit_transition(
             ctx,
             trace_id=trace,

@@ -19,7 +19,11 @@ from workers.handler_context import WorkerHandlerContext
 from workers.log_preview import json_obj_preview, log_preview
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.autonomy_contract import (
+    TRANSITION_COMMAND_FEEDBACK_INGESTED,
+    TRANSITION_DRY_RUN_FAILED,
+    TRANSITION_DRY_RUN_PASSED,
     TRANSITION_EXECUTED,
+    TRANSITION_OS_RUNBOOK_EMITTED,
     TRANSITION_PLAN_EMITTED,
     emit_terminal_tombstone,
     emit_transition,
@@ -45,6 +49,12 @@ def _omni_actions_body_preview(body: dict[str, Any]) -> str:
         return (
             f"tool={data.get('tool_name')} attempt_count={data.get('attempt_count')} "
             f"correlation_id={data.get('correlation_id')}"
+        )
+    if act == "suggest_os_runbook" and isinstance(data, dict):
+        cmds = data.get("commands") if isinstance(data.get("commands"), list) else []
+        return (
+            f"title={data.get('runbook_title')} steps={len(cmds)} "
+            f"source={data.get('source')} confidence={data.get('confidence')}"
         )
     return json_obj_preview(body, max_chars=1200)
 
@@ -144,6 +154,16 @@ async def kafka_actions_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
                             "[%s] event=omni_actions_audit_only action=SUGGEST_REMEDIATION (no execute)",
                             trace,
                         )
+                    elif action == "suggest_os_runbook":
+                        await emit_transition(
+                            ctx,
+                            trace_id=trace,
+                            transition=TRANSITION_OS_RUNBOOK_EMITTED,
+                            component="kafka_actions_consumer",
+                            detail="suggest_os_runbook_received",
+                            meta={"step_count": len(data.get("commands") or [])},
+                        )
+                        logger.info("[%s] event=omni_actions_shadow_runbook action=SUGGEST_OS_RUNBOOK", trace)
                     else:
                         logger.warning("[%s] omni-actions unknown action=%s", trace, action)
                     await consumer.commit()
@@ -164,6 +184,35 @@ async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: di
     ws = ctx.settings
     dev_mode = is_dev_mode(ws)
     auto = bool(getattr(ws, "omni_auto_execute_enabled", False) or dev_mode)
+    if bool(getattr(ws, "omni_shadow_os_mode", False)):
+        await publish_action_feedback(
+            ctx,
+            trace_id=trace,
+            tool_name=tool_name or "unknown",
+            correlation_id=correlation_id,
+            stdout="",
+            stderr="",
+            exit_code=-1,
+            status="skipped",
+            skipped_reason="OMNI_SHADOW_OS_MODE=true blocks SDK mutate execution.",
+            mutate_args=args,
+        )
+        await emit_transition(
+            ctx,
+            trace_id=trace,
+            transition=TRANSITION_EXECUTED,
+            status="error",
+            component="kafka_actions_consumer",
+            detail=f"shadow_mode_blocked_mutate tool={tool_name}",
+        )
+        await emit_terminal_tombstone(
+            ctx,
+            trace_id=trace,
+            reason_code="SHADOW_MODE_MUTATE_BLOCKED",
+            component="kafka_actions_consumer",
+            detail=f"tool={tool_name}",
+        )
+        return
 
     if not auto:
         await publish_action_feedback(
@@ -235,4 +284,20 @@ async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: di
         status="ok" if exit_code == 0 else "error",
         component="kafka_actions_consumer",
         detail=f"tool={tool_name} exit_code={exit_code}",
+    )
+    await emit_transition(
+        ctx,
+        trace_id=trace,
+        transition=TRANSITION_COMMAND_FEEDBACK_INGESTED,
+        status="ok" if exit_code == 0 else "error",
+        component="kafka_actions_consumer",
+        detail=f"feedback_published tool={tool_name} exit_code={exit_code}",
+    )
+    await emit_transition(
+        ctx,
+        trace_id=trace,
+        transition=TRANSITION_DRY_RUN_PASSED if exit_code == 0 else TRANSITION_DRY_RUN_FAILED,
+        status="ok" if exit_code == 0 else "error",
+        component="kafka_actions_consumer",
+        detail=f"dry_run_state tool={tool_name}",
     )
