@@ -1275,7 +1275,7 @@ async def tool_postgres_ping(ctx: Any, args: dict[str, Any]) -> str:
 
 async def tool_vendor_knowledge_search(ctx: Any, args: dict[str, Any]) -> str:
     """RAG trên ``vendor_knowledge`` (docs đã ingest). Không thay kubectl/SDK."""
-    from workers.handlers import _embedding_from_ollama
+    from workers.handlers import _embedding_from_response
     from rag.pgvector_store import COLLECTION_VENDOR_KNOWLEDGE
 
     q = str(args.get("query") or "").strip()
@@ -1285,12 +1285,11 @@ async def tool_vendor_knowledge_search(ctx: Any, args: dict[str, Any]) -> str:
     limit = int(args.get("limit") or 5)
     st = args.get("score_threshold")
     score_threshold = float(st) if st is not None else None
-    emb_resp = await ctx.ollama.embed(
+    emb_resp = await ctx.llm.embed(
         model=ctx.settings.embed_model,
         input=q[:8000],
-        keep_alive=ctx.settings.ollama_keep_alive,
     )
-    vec = _embedding_from_ollama(emb_resp)
+    vec = _embedding_from_response(emb_resp)
     pf = None
     if isinstance(layer, str) and layer.strip():
         pf = {"layer": layer.strip()}
@@ -1326,9 +1325,8 @@ async def tool_k8s_expert_search(ctx: Any, args: dict[str, Any]) -> str:
     resp = await ctx.vector_store.similarity_search(
         q,
         coll,
-        ollama=ctx.ollama,
+        llm=ctx.llm,
         embed_model=ctx.settings.embed_model,
-        keep_alive=ctx.settings.ollama_keep_alive,
         limit=limit,
         score_threshold=score_threshold,
     )

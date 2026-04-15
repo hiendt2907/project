@@ -109,13 +109,17 @@ def is_api_web_workload(
     rag_match_text: str | None = None,
 ) -> bool:
     """
-    True if Matrix marks api_web for this alertname OR RAG text matches API/Web heuristics.
+    True if Matrix marks api_web for this alertname, RAG text matches API/Web heuristics,
+    OR the alertname itself signals an HTTP error-rate alert (app_log_heuristic).
     """
     an = alertname_from_batch(batch)
     wp = workload_profile_for_alert(an)
     if wp and wp.lower() == "api_web":
         return True
     if rag_match_text and rag_match_text_implies_api_web(rag_match_text):
+        return True
+    # Alertname-based: HTTP error-rate alerts are always api_web scope.
+    if app_log_heuristic(batch):
         return True
     return False
 
@@ -217,7 +221,7 @@ def proof_lane_from_annotation(batch: list[dict[str, Any]]) -> str | None:
 
 
 _RE_STATE_LANE = re.compile(
-    r"(createcontainerconfigerror|errimagepull|imagepullbackoff|crashloopbackoff|oomkilled|"
+    r"(createcontainerconfigerror|errimagepull|imagepullbackoff|crashloop|oomkilled|"
     r"failedmount|configmap|createcontainer|unschedul|pending|evicted)",
     re.I,
 )
@@ -243,6 +247,33 @@ def state_lane_heuristic(batch: list[dict[str, Any]]) -> bool:
     return False
 
 
+# Alertname / message patterns that indicate HTTP application error rate — route to app_log.
+_RE_APP_LOG_LANE = re.compile(
+    r"(?i)(HttpError|5xx|http[_\-]?error[_\-]?rate|nginx[_\-]?error|error[_\-]?rate|"
+    r"log[_\-]?surge|sustained[_\s]+5\d\d|access[_\-]?log)",
+)
+
+
+def app_log_heuristic(batch: list[dict[str, Any]]) -> bool:
+    """HTTP error-rate / log-surge signals that belong in the app_log lane."""
+    for b in batch:
+        hint = str(b.get("alert_hint") or "")
+        if _RE_APP_LOG_LANE.search(hint):
+            return True
+        snip = str(b.get("canonical_query_snippet") or "").strip()
+        if snip.startswith("{"):
+            try:
+                j = json.loads(snip)
+                labels = j.get("labels") if isinstance(j, dict) else None
+                if isinstance(labels, dict):
+                    for k in ("alertname",):
+                        if _RE_APP_LOG_LANE.search(str(labels.get(k) or "")):
+                            return True
+            except Exception:
+                pass
+    return False
+
+
 def resolve_proof_lane(
     batch: list[dict[str, Any]],
     *,
@@ -250,21 +281,44 @@ def resolve_proof_lane(
     blind_lane_hint: str | None = None,
 ) -> tuple[str, str]:
     """
-    Return (proof_lane, source): annotation > matrix row > blind hint > state heuristic > default resource.
+    Return (proof_lane, source): annotation > probe structured remediate > matrix row >
+    blind hint > state heuristic > default resource.
     """
     pl = proof_lane_from_annotation(batch)
     if pl:
         return pl, "annotation"
+    from pkg.reasoning.deterministic_mutate_from_evidence import (
+        env_default_remediation_namespace,
+        parse_probe_driven_mutate_tools_csv,
+        probe_structured_remediation_ready,
+    )
+
+    # Before matrix/RAG defaults: probe FAILED + full mutate args → state lane (sigma bypass).
+    if probe_structured_remediation_ready(
+        batch,
+        default_ns=env_default_remediation_namespace(),
+        allowed_tools=parse_probe_driven_mutate_tools_csv(""),
+    ):
+        return "state", "probe_structured_remediate"
     row = pick_matrix_row_for_batch(batch, rag_match_text=rag_match_text)
     if row:
         lane = row.get("proof_lane")
         if isinstance(lane, str) and lane.strip().lower() in VALID_PROOF_LANES:
-            return lane.strip().lower(), "matrix"
+            resolved = lane.strip().lower()
+            # State-lane heuristic signals deterministic K8s failures (CreateContainerConfigError,
+            # CrashLoopBackOff, FailedMount, etc.).  When the matrix selected a resource-lane row
+            # via a generic fallback (e.g., a training scenario that re-uses the same alertname),
+            # these signals must override — they carry stronger evidence than a metric-only match.
+            if resolved == "resource" and state_lane_heuristic(batch):
+                return "state", "heuristic_override"
+            return resolved, "matrix"
     bh = (blind_lane_hint or "").strip().lower()
     if bh in VALID_PROOF_LANES:
         return bh, "blind_hint"
     if state_lane_heuristic(batch):
         return "state", "heuristic"
+    if app_log_heuristic(batch):
+        return "app_log", "heuristic"
     return "resource", "default"
 
 

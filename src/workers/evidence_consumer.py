@@ -1,4 +1,8 @@
-"""Consume ``omni-diagnostic-evidence`` — read-only reasoning; emit SUGGEST_REMEDIATION to omni-actions."""
+"""Consume ``omni-diagnostic-evidence`` — read-only reasoning; emit SUGGEST_REMEDIATION to omni-actions.
+
+Planner (`run_agentic_mutate_plan`) may use InitialSymptom + sole-evaluator prompts; deterministic mutate,
+proof-of-fault, and diagnostic policy gates below still apply and are not overridden by the LLM planner alone.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +34,8 @@ from pkg.reasoning.sanitize import (
 )
 from workers.alert_sdk_truth_compare import compare_alert_claim_to_sdk_state
 from workers.analyst_agentic_loop import infer_blind_proof_lane_hint, run_agentic_mutate_plan
+from workers.memory.initial_symptom import initial_symptom_from_evidence_batch
+from workers.memory.trace_memory import load_trace_memory
 from workers.evidence_batch import append_evidence_and_take_flush_batch
 from workers.evidence_mutate_emit import (
     emit_execute_mutate,
@@ -48,6 +54,7 @@ from workers.reasoning_evidence_inbound import (
     reason_diagnostic_evidence_only,
     reason_diagnostic_rag_miss_sdk_only,
 )
+from workers.archivist import build_strong_recall_prefix, recall_playbook_advisory
 from workers.selflearning_shadow import run_shadow_selflearning
 from workers.env_mode import namespace_allowed
 from pkg.reasoning.diagnostic_policy import (
@@ -55,12 +62,19 @@ from pkg.reasoning.diagnostic_policy import (
     evaluate_diagnostic_invariants,
     evidence_suggests_broken_spec,
 )
-from pkg.reasoning.incident_matrix_profile import resolve_proof_lane
+from pkg.reasoning.deterministic_mutate_from_evidence import (
+    _evidence_suggests_credential_failure,
+    chaos_credential_lab_autofix_plan_from_batch,
+    deterministic_mutate_plan_from_batch,
+    default_remediation_namespace,
+    probe_driven_mutate_tools_for_settings,
+)
+from pkg.reasoning.incident_matrix_profile import alertname_from_batch, resolve_proof_lane
 from workers.log_surge_probe import evaluate_log_surge_sigma_bypass, namespace_pod_from_batch
 from workers.telegram_escalation import emit_telegram_escalation
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.telegram_outbound import send_telegram_out_for_inbound
-from workers import ollama_prompts_en as ope
+from workers import llm_prompts_en as ope
 from workers.metrics_exporter import inc_evidence_llm_contradiction
 from workers.autonomy_contract import (
     TRANSITION_CONTEXT_READY,
@@ -69,8 +83,28 @@ from workers.autonomy_contract import (
     emit_terminal_tombstone,
     emit_transition,
 )
+from workers.tool_registry import get_tool_registry
 
 logger = logging.getLogger(__name__)
+
+# Self-remediation lab alerts: do not trust low-score RAG chunks as final diagnosis.
+_SECURITY_SELF_REMEDIATION_ALERT_NAMES = frozenset(
+    {
+        "OmniRbacClusterAdminViolation",
+        "OmniConfigMapGodModeProd",
+        "OmniOomKilledPodNoRecovery",
+    }
+)
+_RAG_SCORE_FLOOR_SECURITY = 0.85
+
+
+def _symptom_group_from_batch(batch: list[dict[str, Any]]) -> str:
+    """First non-empty symptom_group from diagnostic evidence batch (dispatcher sets per trace)."""
+    for b in batch:
+        sg = str(b.get("symptom_group") or "").strip()
+        if sg:
+            return sg
+    return ""
 
 
 def _rag_search_failed(detail: Any) -> bool:
@@ -304,6 +338,41 @@ def _hints_from_evidence_text(text: str) -> dict[str, str] | None:
     return h if h else None
 
 
+def _oom_memory_planner_note_from_batch(batch: list[dict[str, Any]]) -> str | None:
+    """When pod is OOMKilled and we have a memory figure (spec fallback or PodMetrics), nudge planner past empty Prom."""
+    has_oom = False
+    mem_line = ""
+    for b in batch:
+        ef = b.get("extracted_fact")
+        if not isinstance(ef, dict):
+            continue
+        probe = str(b.get("probe") or "")
+        if probe == "k8s_clinical_pod_status" and ef.get("has_oom_killed") is True:
+            has_oom = True
+        if probe != "k8s_clinical_pod_metrics":
+            continue
+        kind = str(ef.get("kind") or "")
+        ctrs = ef.get("containers")
+        if not isinstance(ctrs, list):
+            continue
+        for c in ctrs:
+            if not isinstance(c, dict):
+                continue
+            m = c.get("memory")
+            if m:
+                mem_line = str(m).strip()
+                break
+        if mem_line and kind in ("PodMetricsSpecFallback", "PodMetrics"):
+            break
+    if has_oom and mem_line:
+        return (
+            "OOMKilled; last known container memory from SDK: "
+            f"{mem_line}. prom_pod_memory_wss may be empty after termination — "
+            "raise Deployment memory via k8s_patch_resource using this baseline."
+        )
+    return None
+
+
 def _hints_from_evidence_batch(batch: list[dict[str, Any]], text: str) -> dict[str, str] | None:
     """Merge structured hints from evidence dicts + sanitized analyst text."""
     from pkg.reasoning.incident_matrix_profile import pick_matrix_row_for_batch
@@ -321,11 +390,123 @@ def _hints_from_evidence_batch(batch: list[dict[str, Any]], text: str) -> dict[s
             dp = row.get("diagnostic_pattern")
             if isinstance(dp, str) and dp.strip():
                 h.setdefault("diagnostic_pattern", dp.strip()[:240])
+        oom_note = _oom_memory_planner_note_from_batch(batch)
+        if oom_note:
+            h.setdefault("oom_memory_planner_note", oom_note[:1200])
     return h if h else None
 
 
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
+
+
+def _planner_phase_done_diagnosis(fa: str, rs: str) -> str:
+    """Prefer resolution_summary for PLANNER_PHASE_DONE; merge with final_analysis when both differ."""
+    fa_s = (fa or "").strip()
+    rs_s = (rs or "").strip()
+    if rs_s and fa_s and rs_s != fa_s:
+        return f"{rs_s}\n\n{fa_s}"
+    return rs_s or fa_s or "Planner concluded diagnostic session; see reasoning_chain."
+
+
+async def _planner_missing_preconditions(
+    ctx: WorkerHandlerContext,
+    *,
+    trace: str,
+    tool_name: str,
+    args: dict[str, Any],
+    discovery_steps: list[str],
+    planner_missing: list[str] | None = None,
+) -> list[str]:
+    """Validate mutate preconditions from tool metadata + planner-declared gaps."""
+    if not bool(getattr(ctx.settings, "omni_planner_precondition_gate_enabled", True)):
+        return []
+    reg = get_tool_registry()
+    if not reg.has(tool_name):
+        return [f"unknown_tool:{tool_name}"]
+    meta = reg.metadata_for(tool_name)
+    schema = reg.json_schema_for(tool_name)
+    schema_props = schema.get("properties") if isinstance(schema, dict) else {}
+    schema_props = schema_props if isinstance(schema_props, dict) else {}
+    missing: list[str] = []
+    mem = await load_trace_memory(
+        ctx.redis,
+        trace,
+        initial_symptoms="",
+        initial_symptom=None,
+    )
+    readonly_ok_actions = [
+        a
+        for a in (mem.action_history or [])
+        if str(a.kind) == "readonly_executed" and not bool(a.is_error)
+    ]
+    has_discovery = bool(discovery_steps) or bool(readonly_ok_actions)
+
+    def _has_field_value(field_name: str) -> bool:
+        if field_name == "value":
+            return "value" in args
+        raw = args.get(field_name)
+        if isinstance(raw, str):
+            if raw.strip():
+                return True
+        elif raw is not None:
+            return True
+        prop = schema_props.get(field_name) if isinstance(schema_props, dict) else None
+        if isinstance(prop, dict) and "default" in prop:
+            default_v = prop.get("default")
+            if isinstance(default_v, str):
+                return bool(default_v.strip())
+            return default_v is not None
+        return False
+
+    for fld in [str(x) for x in (meta.get("required_fields") or []) if str(x).strip()]:
+        if not _has_field_value(fld):
+            missing.append(f"arg:{fld}")
+    if bool(meta.get("requires_readonly_before_mutate", False)) and not has_discovery:
+        missing.append("readonly_discovery_evidence")
+
+    def _evidence_satisfied(tag: str) -> bool:
+        t = str(tag or "").strip().lower()
+        if not t:
+            return True
+        if t == "secret_ref_confirmed":
+            if "k8s_get_pod_secret_refs" in discovery_steps:
+                return True
+            return any(str(a.tool_name) == "k8s_get_pod_secret_refs" for a in readonly_ok_actions)
+        if t == "credential_source_of_truth":
+            src = str(args.get("value_source") or "").strip()
+            src_ref = str(args.get("value_source_ref") or "").strip()
+            return bool(src and src_ref)
+        if t == "target_workload_identity":
+            return bool(
+                str(args.get("deployment") or "").strip()
+                or str(args.get("pod_name") or "").strip()
+                or str(args.get("name") or "").strip()
+            )
+        if t == "patch_target_confirmed":
+            return has_discovery
+        if t == "rbac_drift_signal":
+            return has_discovery
+        return has_discovery
+
+    for ev in [str(x).strip() for x in (meta.get("required_evidence") or []) if str(x).strip()]:
+        if not _evidence_satisfied(ev):
+            missing.append(f"evidence:{ev}")
+
+    for item in [str(x).strip() for x in (planner_missing or []) if str(x).strip()]:
+        if item.startswith("arg:"):
+            fld = item.split(":", 1)[1].strip()
+            if fld and _has_field_value(fld):
+                continue
+        if item == "readonly_discovery_evidence" and has_discovery:
+            continue
+        if item.startswith("evidence:"):
+            ev = item.split(":", 1)[1].strip()
+            if ev and _evidence_satisfied(ev):
+                continue
+        if item not in missing:
+            missing.append(item)
+    return missing
 
 
 async def _emit_suggest_remediation(
@@ -381,41 +562,135 @@ async def _emit_agentic_mutate_if_any(
     sanitized_text: str,
     rag_match_text: str | None = None,
     rag_reasoning_hints: str | None = None,
-) -> None:
+    attempt_count: int = 1,
+) -> bool:
     """
     Planner-first mutate emission:
     - optional blind proof_lane hint (matrix miss) before planner
     - always ask LLM planner (max N steps) using Fact Table + sanitized context
     - proof_of_fault gate (with blind lane hint)
     - diagnostic invariant gate (INV_*) before EXECUTE_MUTATE
+
+    Returns True if EXECUTE_MUTATE was emitted; False otherwise (suggest-only, blocked, or no plan).
     """
+    ac = max(1, int(attempt_count))
+    llm_first = bool(getattr(ctx.settings, "omni_llm_first_autonomy_enabled", False))
+    unrestricted = bool(getattr(ctx.settings, "omni_unrestricted_tool_execution", True))
+    legacy_det_fallback = bool(getattr(ctx.settings, "omni_legacy_deterministic_fallback", True))
+    # In LLM-first mode, force planner-led diagnose→verify→mutate flow.
+    # "unrestricted" controls execution gates, not whether deterministic shortcuts bypass planner.
+    allow_det = legacy_det_fallback and not llm_first
     blind_pre = await infer_blind_proof_lane_hint(
         ctx, batch, sanitized_text=sanitized_text, rag_match_text=rag_match_text
     )
-    lane_for_mx, _ls = resolve_proof_lane(batch, rag_match_text=rag_match_text)
-    mx = int(getattr(ctx.settings, "autonomous_agentic_max_steps", 5) or 5)
-    if lane_for_mx == "state":
-        mx = max(mx, 8)
-    plan = await run_agentic_mutate_plan(
-        ctx,
-        trace=trace,
-        sanitized_text=sanitized_text,
-        batch=batch,
-        max_steps=mx,
-        rag_reasoning_hints=rag_reasoning_hints,
-    )
-    discovery_steps: list[str] = list(plan.get("discovery_steps") or []) if plan else []
+    initial_symptom = initial_symptom_from_evidence_batch(batch)
+    det_plan = None
+    if allow_det:
+        det_plan = deterministic_mutate_plan_from_batch(
+            batch,
+            default_ns=default_remediation_namespace(ctx.settings),
+            allowed_tools=probe_driven_mutate_tools_for_settings(ctx.settings),
+            ws=ctx.settings,
+        )
+    if det_plan:
+        logger.info(
+            "event=probe_deterministic_mutate trace=%s tool=%s",
+            trace,
+            det_plan.get("tool_name"),
+        )
+        plan = det_plan
+        plan["planner_origin"] = "deterministic"
+        discovery_steps: list[str] = list(det_plan.get("discovery_steps") or [])
+    else:
+        lane_for_mx, _ls = resolve_proof_lane(batch, rag_match_text=rag_match_text)
+        mx = int(getattr(ctx.settings, "autonomous_agentic_max_steps", 5) or 5)
+        if lane_for_mx == "state":
+            mx = max(mx, 8)
+        # Recall similar verified playbooks from pgvector (advisory only; no secret values injected).
+        recall_result = await recall_playbook_advisory(
+            ctx, query_text=sanitized_text, trace=trace
+        )
+        strong_prefix: str | None = None
+        if recall_result:
+            # Suppress strong recall prefix when evidence clearly shows credential failure.
+            # The recalled playbook may be from a different incident type (e.g. ConfigMap fix vs.
+            # credential patch) — injecting it as a priority prefix would mislead the LLM.
+            # The credential_hint in analyst_agentic_loop will handle this case instead.
+            recall_is_wrong_type = (
+                recall_result.strong
+                and _evidence_suggests_credential_failure(batch)
+                and recall_result.top_tool != "k8s_patch_secret"
+            )
+            if recall_result.strong and not recall_is_wrong_type:
+                # High-confidence hit (>= 0.85): inject as priority prefix before Fact Table.
+                strong_prefix = build_strong_recall_prefix(recall_result)
+                logger.info(
+                    "event=archivist_strong_recall_injected trace=%s top_tool=%s score=%.3f",
+                    trace, recall_result.top_tool, recall_result.top_score,
+                )
+            else:
+                # Low-confidence or suppressed: soft advisory appended to rag_reasoning_hints.
+                if recall_is_wrong_type:
+                    logger.info(
+                        "event=archivist_strong_recall_suppressed trace=%s top_tool=%s score=%.3f reason=credential_failure_mismatch",
+                        trace, recall_result.top_tool, recall_result.top_score,
+                    )
+                soft = recall_result.advisory
+                if not rag_reasoning_hints:
+                    rag_reasoning_hints = soft
+                else:
+                    rag_reasoning_hints = f"{rag_reasoning_hints}\n\n{soft}"
+        plan = await run_agentic_mutate_plan(
+            ctx,
+            trace=trace,
+            sanitized_text=sanitized_text,
+            batch=batch,
+            max_steps=mx,
+            rag_reasoning_hints=rag_reasoning_hints,
+            recall_prefix=strong_prefix,
+            initial_symptom=initial_symptom,
+        )
+        discovery_steps = list(plan.get("discovery_steps") or []) if plan else []
+        # LLM-first skips deterministic_mutate_plan_from_batch (including chaos lab autofix).
+        # When the planner exhausts without a mutate tool (None, escalate, loop abort), retry the
+        # lab-only k8s_patch_secret plan so credential chaos can still self-heal without escalation.
+        rc_pre = str((plan or {}).get("reason_code") or "")
+        tn_pre = str((plan or {}).get("tool_name") or "").strip()
+        if (
+            rc_pre != PLANNER_PHASE_DONE
+            and (plan is None or not tn_pre)
+            and bool(getattr(ctx.settings, "lab_chaos_credential_autofix_enabled", False))
+        ):
+            _tools_cf = probe_driven_mutate_tools_for_settings(ctx.settings)
+            _tools_cf = frozenset(_tools_cf) | frozenset({"k8s_patch_secret"})
+            chaos_p = chaos_credential_lab_autofix_plan_from_batch(
+                batch,
+                default_ns=default_remediation_namespace(ctx.settings),
+                allowed_tools=_tools_cf,
+                ws=ctx.settings,
+            )
+            if chaos_p:
+                plan = chaos_p
+                plan["planner_origin"] = "chaos_lab_autofix_after_planner"
+                discovery_steps = list(chaos_p.get("discovery_steps") or [])
+                logger.info(
+                    "event=chaos_lab_autofix_after_planner trace=%s tool=%s",
+                    trace,
+                    chaos_p.get("tool_name"),
+                )
     if plan and str(plan.get("reason_code") or "") == PLANNER_PHASE_DONE:
         fa = str(plan.get("final_analysis") or "").strip()
+        rs = str(plan.get("resolution_summary") or "").strip()
         rc = plan.get("reasoning_chain") if isinstance(plan.get("reasoning_chain"), dict) else None
         tp_done: list[str] = []
         if rc and isinstance(rc.get("thought_process"), list):
             tp_done = [str(x) for x in rc["thought_process"]][:32]
         lane_g = str(rc.get("lane") or "state") if isinstance(rc, dict) else "state"
+        diag_done = _planner_phase_done_diagnosis(fa, rs)
         await _emit_suggest_remediation(
             ctx,
             trace=trace,
-            diagnosis=fa or "Planner concluded diagnostic session; see reasoning_chain.",
+            diagnosis=diag_done,
             confidence=0.78,
             source="PLANNER_DIAGNOSTIC_DONE",
             suggested_tool="k8s_describe_resource",
@@ -430,10 +705,14 @@ async def _emit_agentic_mutate_if_any(
             transition=TRANSITION_PLAN_EMITTED,
             component="evidence_consumer",
             detail="planner_phase_done_suggest",
-            meta={"phase": "done", "reason_code": PLANNER_PHASE_DONE},
+            meta={
+                "phase": "done",
+                "reason_code": PLANNER_PHASE_DONE,
+                "resolution_summary": rs,
+            },
         )
         logger.info("event=planner_phase_done_emitted trace=%s", trace)
-        return
+        return False
     if plan and str(plan.get("reason_code") or "") == ERR_SEM_CHANNEL_MISMATCH:
         suggested = str(plan.get("suggested_tool") or "").strip() or "inspect_pod_details"
         rc = plan.get("reasoning_chain") if isinstance(plan.get("reasoning_chain"), dict) else None
@@ -457,14 +736,20 @@ async def _emit_agentic_mutate_if_any(
             detail=f"planner_readonly_routed:{suggested}",
             meta={"reason_code": ERR_SEM_CHANNEL_MISMATCH},
         )
-        # Continue: synthesize rollout restart from evidence so proof-of-fault + INV_* gates still run
-        # (hard-fail / broken-spec path must reach evaluate_diagnostic_invariants).
+        if not allow_det:
+            logger.info(
+                "event=planner_readonly_route_no_deterministic_fallback trace=%s llm_first=%s",
+                trace,
+                llm_first,
+            )
+            return False
+        # Legacy continue path: synthesize rollout restart from evidence so proof-of-fault + INV_* gates still run.
         lane_saved = plan.get("lane_hint") if isinstance(plan.get("lane_hint"), str) else None
         rr = rollout_args_from_evidence_batch(batch)
         is_fault = workload_fault_incident_rollout_eligible(batch)
         is_cpu = workload_cpu_incident_rollout_eligible(batch)
         if not rr or not (is_fault or is_cpu):
-            return
+            return False
         plan = {
             "tool_name": "k8s_rollout_restart",
             "args": dict(rr),
@@ -476,31 +761,241 @@ async def _emit_agentic_mutate_if_any(
             "event=agentic_mutate_fallback_after_readonly_mismatch trace=%s tool=k8s_rollout_restart",
             trace,
         )
+    fallback_lane_override: str | None = None
     if not plan:
+        if not allow_det:
+            await _emit_suggest_remediation(
+                ctx,
+                trace=trace,
+                diagnosis=(
+                    "Planner did not emit a mutate plan and deterministic fallback is disabled "
+                    "(LLM-first mode). Continue discovery or escalate."
+                ),
+                confidence=0.4,
+                source="PLANNER_UNAVAILABLE_NO_LEGACY_FALLBACK",
+                suggested_tool="k8s_describe_resource",
+            )
+            await emit_transition(
+                ctx,
+                trace_id=trace,
+                transition=TRANSITION_PLAN_EMITTED,
+                component="evidence_consumer",
+                detail="planner_unavailable_no_legacy_fallback",
+            )
+            return False
         # Planner-first failed (LLM unavailable/invalid JSON): safe deterministic fallback
         # only for clearly identified workload incidents.
         rr = rollout_args_from_evidence_batch(batch)
         if not rr:
-            return
+            return False
         is_fault = workload_fault_incident_rollout_eligible(batch)
         is_cpu = workload_cpu_incident_rollout_eligible(batch)
         if not (is_fault or is_cpu):
-            return
-        tn = "k8s_rollout_restart"
-        args = dict(rr)
-        logger.warning(
-            "event=agentic_mutate_fallback trace=%s tool=%s reason=planner_unavailable cpu=%s fault=%s",
-            trace,
-            tn,
-            is_cpu,
-            is_fault,
+            return False
+
+        # INV_NO_RESTART_ON_BROKEN_SPEC: route based on missing resource type.
+        # ConfigMap absent  → k8s_create_or_patch_configmap (idempotent placeholder creation).
+        # Secret absent     → k8s_rollout_restart kept; INV_NO_RESTART_ON_BROKEN_SPEC will block
+        #                     it and emit SUGGEST_REMEDIATION with invariant context (Secrets need
+        #                     real values; automation cannot supply them safely).
+        # Both cases set fallback_lane_override="state" so the proof gate fast-tracks without
+        # requiring metric sigma (broken-spec is a deterministic K8s failure, not a metric spike).
+        _cm_re = re.compile(r'configmap\s+"([^"]+)"\s+not\s+found', re.IGNORECASE)
+        _sec_re = re.compile(r'secret\s+"([^"]+)"\s+not\s+found', re.IGNORECASE)
+        _batch_blob = " ".join(
+            str(b.get("raw") or "") + " " + json.dumps(b.get("extracted_fact") or "")
+            for b in batch
         )
+        _cm_match = _cm_re.search(_batch_blob)
+        _sec_match = _sec_re.search(_batch_blob)
+        if evidence_suggests_broken_spec(batch) and _cm_match:
+            cm_name = _cm_match.group(1)
+            tn = "k8s_create_or_patch_configmap"
+            args = {
+                "namespace": rr["namespace"],
+                "name": cm_name,
+                "key": "placeholder",
+                "value": "created-by-omni",
+                "reasoning": (
+                    f"ConfigMap '{cm_name}' absent (FailedMount/CreateContainerConfigError); "
+                    "creating with placeholder key to unblock pod volume mount."
+                ),
+            }
+            fallback_lane_override = "state"
+            logger.warning(
+                "event=agentic_mutate_fallback trace=%s tool=%s reason=broken_spec_cm_absent cm=%s",
+                trace,
+                tn,
+                cm_name,
+            )
+        elif evidence_suggests_broken_spec(batch) and _sec_match:
+            # Secret absent: do NOT emit rollout_restart (meaningless for source-of-truth fault).
+            # Fail closed to suggest/escalate with explicit source-fix requirement.
+            sec_name = _sec_match.group(1)
+            await _emit_suggest_remediation(
+                ctx,
+                trace=trace,
+                diagnosis=(
+                    f"Secret '{sec_name}' is absent (broken spec). Rollout restart is not a fix. "
+                    "Provide/restore secret data, then re-run verify."
+                ),
+                confidence=0.65,
+                source="BROKEN_SPEC_SECRET_ABSENT",
+                suggested_tool="k8s_describe_resource",
+            )
+            await emit_transition(
+                ctx,
+                trace_id=trace,
+                transition=TRANSITION_PLAN_EMITTED,
+                component="evidence_consumer",
+                detail="broken_spec_secret_absent_no_rollout",
+                meta={"secret": sec_name, "reason_code": "BROKEN_SPEC_SECRET_ABSENT"},
+            )
+            logger.warning(
+                "event=agentic_mutate_fallback trace=%s reason=broken_spec_secret_absent_no_rollout secret=%s",
+                trace,
+                sec_name,
+            )
+            return False
+        else:
+            tn = "k8s_rollout_restart"
+            args = dict(rr)
+            logger.warning(
+                "event=agentic_mutate_fallback trace=%s tool=%s reason=planner_unavailable cpu=%s fault=%s",
+                trace,
+                tn,
+                is_cpu,
+                is_fault,
+            )
     else:
         tn = str(plan.get("tool_name") or "").strip()
         args = dict(plan.get("args") or {})
         if not tn:
-            return
-    if tn not in MUTATE_TOOL_ALLOWLIST:
+            return False
+    # Rollout cannot fix DB/API password drift; LLM or legacy fault fallback may still pick it.
+    if (
+        tn == "k8s_rollout_restart"
+        and _evidence_suggests_credential_failure(batch)
+        and bool(getattr(ctx.settings, "lab_chaos_credential_autofix_enabled", False))
+    ):
+        _tools_veto = frozenset(probe_driven_mutate_tools_for_settings(ctx.settings)) | frozenset(
+            {"k8s_patch_secret"}
+        )
+        chaos_swap = chaos_credential_lab_autofix_plan_from_batch(
+            batch,
+            default_ns=default_remediation_namespace(ctx.settings),
+            allowed_tools=_tools_veto,
+            ws=ctx.settings,
+        )
+        if chaos_swap:
+            plan = chaos_swap
+            plan["planner_origin"] = "chaos_lab_autofix_veto_rollout_restart"
+            discovery_steps = list(chaos_swap.get("discovery_steps") or [])
+            tn = str(chaos_swap.get("tool_name") or "").strip()
+            args = dict(chaos_swap.get("args") or {})
+            logger.info(
+                "event=chaos_lab_autofix_veto_rollout_restart trace=%s tool=%s",
+                trace,
+                tn,
+            )
+    plan_origin = str((plan or {}).get("planner_origin") or "llm")
+    if (
+        plan
+        and bool(getattr(ctx.settings, "omni_planner_precondition_gate_enabled", True))
+        and (not unrestricted)
+        and plan_origin != "deterministic"
+    ):
+        planner_missing = (
+            [str(x).strip() for x in (plan.get("missing_preconditions") or []) if str(x).strip()]
+            if isinstance(plan.get("missing_preconditions"), list)
+            else []
+        )
+        missing = await _planner_missing_preconditions(
+            ctx,
+            trace=trace,
+            tool_name=tn,
+            args=args,
+            discovery_steps=discovery_steps,
+            planner_missing=planner_missing,
+        )
+        if missing:
+            retry_steps = max(1, min(4, int(getattr(ctx.settings, "autonomous_agentic_max_steps", 5) or 5)))
+            retry_hints = (
+                f"{rag_reasoning_hints or ''}\n\n"
+                "[precondition_gate_reask]\n"
+                f"Rejected mutate tool={tn} due to missing preconditions: {', '.join(missing)}.\n"
+                "Choose discovery action to collect missing evidence, or escalate if blocked."
+            ).strip()
+            plan_retry = await run_agentic_mutate_plan(
+                ctx,
+                trace=trace,
+                sanitized_text=sanitized_text,
+                batch=batch,
+                max_steps=retry_steps,
+                rag_reasoning_hints=retry_hints,
+                recall_prefix=None,
+                initial_symptom=initial_symptom,
+            )
+            if plan_retry and str(plan_retry.get("reason_code") or "") == PLANNER_PHASE_DONE:
+                diag_done = _planner_phase_done_diagnosis(
+                    str(plan_retry.get("final_analysis") or ""),
+                    str(plan_retry.get("resolution_summary") or ""),
+                )
+                await _emit_suggest_remediation(
+                    ctx,
+                    trace=trace,
+                    diagnosis=diag_done,
+                    confidence=0.6,
+                    source="PLANNER_PRECONDITION_REASK_DONE",
+                    suggested_tool="k8s_describe_resource",
+                )
+                await emit_transition(
+                    ctx,
+                    trace_id=trace,
+                    transition=TRANSITION_PLAN_EMITTED,
+                    component="evidence_consumer",
+                    detail="planner_precondition_reask_done",
+                )
+                return False
+            if plan_retry:
+                plan = plan_retry
+                discovery_steps = list(plan_retry.get("discovery_steps") or [])
+                tn = str(plan_retry.get("tool_name") or "").strip()
+                args = dict(plan_retry.get("args") or {})
+                missing = await _planner_missing_preconditions(
+                    ctx,
+                    trace=trace,
+                    tool_name=tn,
+                    args=args,
+                    discovery_steps=discovery_steps,
+                    planner_missing=(
+                        [str(x).strip() for x in (plan_retry.get("missing_preconditions") or []) if str(x).strip()]
+                        if isinstance(plan_retry.get("missing_preconditions"), list)
+                        else []
+                    ),
+                )
+            if missing:
+                await _emit_suggest_remediation(
+                    ctx,
+                    trace=trace,
+                    diagnosis=(
+                        "Mutate blocked by planner precondition gate. Missing: "
+                        + ", ".join(missing[:8])
+                    ),
+                    confidence=0.45,
+                    source="PLANNER_PRECONDITION_GATE",
+                    suggested_tool="k8s_describe_resource",
+                )
+                await emit_transition(
+                    ctx,
+                    trace_id=trace,
+                    transition=TRANSITION_PLAN_EMITTED,
+                    component="evidence_consumer",
+                    detail="planner_precondition_gate_blocked",
+                    meta={"missing_preconditions": missing[:12], "tool": tn},
+                )
+                return False
+    if (not unrestricted) and tn not in MUTATE_TOOL_ALLOWLIST:
         await _emit_suggest_remediation(
             ctx,
             trace=trace,
@@ -520,63 +1015,71 @@ async def _emit_agentic_mutate_if_any(
             detail=f"planner_tool_rejected:{tn or 'unknown'}",
             meta={"reason_code": ERR_SEM_CHANNEL_MISMATCH},
         )
-        return
+        return False
     blind_lane_eff: str | None = blind_pre
     if plan:
         lh_raw = plan.get("lane_hint")
         if isinstance(lh_raw, str) and lh_raw.strip():
             blind_lane_eff = lh_raw.strip()
-    proof_ok, reason_code, proof_meta = await _proof_of_fault_gate(
-        ctx,
-        trace=trace,
-        batch=batch,
-        rag_match_text=rag_match_text,
-        blind_lane_hint=blind_lane_eff,
-    )
-    if not proof_ok:
-        if reason_code == ERR_REA_LOG_SOURCE_UNAVAILABLE:
-            await emit_telegram_escalation(
-                ctx,
-                trace,
-                "Sigma blocked & Log source unavailable",
-                reason="SIGMA_LOG_UNAVAILABLE",
-            )
-            await emit_terminal_tombstone(
-                ctx,
-                trace_id=trace,
-                reason_code=ERR_REA_LOG_SOURCE_UNAVAILABLE,
-                component="evidence_consumer",
-                detail="Sigma blocked & Log source unavailable",
-                meta=proof_meta,
-            )
-            return
-        await _emit_suggest_remediation(
+    elif fallback_lane_override:
+        blind_lane_eff = fallback_lane_override
+    if unrestricted:
+        proof_ok, reason_code, proof_meta = True, "", {"proof_lane": blind_lane_eff or "unknown"}
+    else:
+        proof_ok, reason_code, proof_meta = await _proof_of_fault_gate(
             ctx,
             trace=trace,
-            diagnosis=f"Mutate blocked by evidence gate. reason_code={reason_code}",
-            confidence=0.4,
-            source="PROOF_OF_FAULT_GATE",
-            suggested_tool="inspect_pod_details",
+            batch=batch,
+            rag_match_text=rag_match_text,
+            blind_lane_hint=blind_lane_eff,
         )
-        await emit_transition(
-            ctx,
-            trace_id=trace,
-            transition=TRANSITION_PLAN_EMITTED,
-            component="evidence_consumer",
-            detail=f"proof_gate_blocked:{reason_code}",
-            meta={"reason_code": reason_code, "proof_of_fault": proof_meta},
-        )
-        return
+        if not proof_ok:
+            if reason_code == ERR_REA_LOG_SOURCE_UNAVAILABLE:
+                await emit_telegram_escalation(
+                    ctx,
+                    trace,
+                    "Sigma blocked & Log source unavailable",
+                    reason="SIGMA_LOG_UNAVAILABLE",
+                )
+                await emit_terminal_tombstone(
+                    ctx,
+                    trace_id=trace,
+                    reason_code=ERR_REA_LOG_SOURCE_UNAVAILABLE,
+                    component="evidence_consumer",
+                    detail="Sigma blocked & Log source unavailable",
+                    meta=proof_meta,
+                )
+                return False
+            await _emit_suggest_remediation(
+                ctx,
+                trace=trace,
+                diagnosis=f"Mutate blocked by evidence gate. reason_code={reason_code}",
+                confidence=0.4,
+                source="PROOF_OF_FAULT_GATE",
+                suggested_tool="inspect_pod_details",
+            )
+            await emit_transition(
+                ctx,
+                trace_id=trace,
+                transition=TRANSITION_PLAN_EMITTED,
+                component="evidence_consumer",
+                detail=f"proof_gate_blocked:{reason_code}",
+                meta={"reason_code": reason_code, "proof_of_fault": proof_meta},
+            )
+            return False
     pl_inv = proof_meta.get("proof_lane")
     proof_lane_for_inv = str(pl_inv).strip() if isinstance(pl_inv, str) and pl_inv.strip() else None
-    inv_ok, inv_reason, inv_meta = evaluate_diagnostic_invariants(
-        ctx.settings,
-        tool_name=tn,
-        args=args,
-        batch=batch,
-        discovery_tool_names=discovery_steps,
-        proof_lane=proof_lane_for_inv,
-    )
+    if unrestricted:
+        inv_ok, inv_reason, inv_meta = True, "", {}
+    else:
+        inv_ok, inv_reason, inv_meta = evaluate_diagnostic_invariants(
+            ctx.settings,
+            tool_name=tn,
+            args=args,
+            batch=batch,
+            discovery_tool_names=discovery_steps,
+            proof_lane=proof_lane_for_inv,
+        )
     if not inv_ok:
         lane_guess = str(proof_meta.get("proof_lane") or "unknown")
         tp: list[str] = []
@@ -627,7 +1130,7 @@ async def _emit_agentic_mutate_if_any(
             detail=f"diagnostic_invariant_blocked:{inv_reason}",
             meta={"invariant_id": inv_reason, "inv_meta": inv_meta},
         )
-        return
+        return False
     if tn == "k8s_rollout_restart":
         ns = str(args.get("namespace") or "").strip()
         dep = str(args.get("deployment") or "").strip()
@@ -643,9 +1146,10 @@ async def _emit_agentic_mutate_if_any(
         trace=trace,
         tool_name=tn,
         args=args,
-        attempt_count=1,
+        attempt_count=ac,
         reasoning_chain=exec_rc if isinstance(exec_rc, dict) else None,
     )
+    return True
 
 
 async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dict[str, str]) -> str:
@@ -769,7 +1273,33 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             rag_txt = (gate_out.match_text_en or gate_out.formatted or "").strip() or None
             proof_lane_pre, lane_src = resolve_proof_lane(batch, rag_match_text=rag_txt)
             broken = evidence_suggests_broken_spec(batch)
-            intercept_rag_suggest = (proof_lane_pre == "state") or broken
+            an = alertname_from_batch(batch)
+            score = gate_out.best_score
+            rag_low_for_security = (
+                an in _SECURITY_SELF_REMEDIATION_ALERT_NAMES
+                and score is not None
+                and float(score) < _RAG_SCORE_FLOOR_SECURITY
+            )
+            if rag_low_for_security:
+                logger.info(
+                    "event=rag_security_score_floor trace=%s alertname=%s score=%s floor=%s",
+                    trace,
+                    an,
+                    score,
+                    _RAG_SCORE_FLOOR_SECURITY,
+                )
+            security_hardening = _symptom_group_from_batch(batch) == "security_hardening"
+            if security_hardening:
+                logger.info(
+                    "event=rag_security_hardening_bypass trace=%s symptom_group=security_hardening",
+                    trace,
+                )
+            intercept_rag_suggest = (
+                (proof_lane_pre == "state")
+                or broken
+                or rag_low_for_security
+                or security_hardening
+            )
 
             if intercept_rag_suggest:
                 hints_body = (
@@ -878,20 +1408,30 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
 
             verdict = str(machine.get("verdict") or "").upper()
             if verdict == "ESCALATE" or "ESCALATE" in human.upper():
+                # Run full ReAct + CoT + mutate pipeline before any human escalation. SDK-only LLM
+                # may return ESCALATE when it cannot name a tool; the agentic planner may still proceed.
+                planner_emitted = await _emit_agentic_mutate_if_any(
+                    ctx, trace, batch, sanitized_text=sanitized_text
+                )
+                if planner_emitted:
+                    return display_out
+
                 await emit_telegram_escalation(
                     ctx,
                     trace,
                     f"human={human}\nmachine={json.dumps(machine)}\nraw={raw_llm[:2000]}",
                     reason="RAG_MISS_SDK_ESCALATE",
                 )
-                await _emit_suggest_remediation(
-                    ctx,
-                    trace=trace,
-                    diagnosis=human[:2000],
-                    confidence=0.0,
-                    source="SDK_FACTS_ONLY_ESCALATE" if rag_gate_failed else "SDK_ONLY_ESCALATE",
-                    suggested_tool="escalate_to_human",
-                )
+                # Auto-execute lab: suggest path only when planner also failed to emit mutate.
+                if not bool(getattr(ctx.settings, "omni_auto_execute_enabled", False)):
+                    await _emit_suggest_remediation(
+                        ctx,
+                        trace=trace,
+                        diagnosis=human[:2000],
+                        confidence=0.0,
+                        source="SDK_FACTS_ONLY_ESCALATE" if rag_gate_failed else "SDK_ONLY_ESCALATE",
+                        suggested_tool="escalate_to_human",
+                    )
                 if chat_id is not None:
                     pld = {
                         "trace_id": trace,
@@ -900,7 +1440,6 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                         "diagnostic_evidence_sanitized": True,
                     }
                     await send_telegram_out_for_inbound(ctx, pld, trace, human)
-                await _emit_agentic_mutate_if_any(ctx, trace, batch, sanitized_text=sanitized_text)
                 await emit_terminal_tombstone(
                     ctx,
                     trace_id=trace,
@@ -913,15 +1452,6 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             hyp = str(machine.get("hypothesis") or "")
             action = machine.get("action") if isinstance(machine.get("action"), dict) else {}
             tool = str((action or {}).get("tool") or "").strip()
-
-            await _emit_suggest_remediation(
-                ctx,
-                trace=trace,
-                diagnosis=f"{human}\n[{hyp}]"[:4000],
-                confidence=0.55,
-                source="SDK_FACTS_ONLY" if rag_gate_failed else "SDK_ONLY_DIAGNOSE",
-                suggested_tool=tool or "inspect_pod_logs",
-            )
             await store_autonomous_trace_context(ctx.redis, trace, batch=batch, sanitized_text=sanitized_text)
             await emit_transition(
                 ctx,
@@ -930,8 +1460,16 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 component="evidence_consumer",
                 detail=f"sdk_only_plan:{tool or 'none'}",
             )
-
-            await _emit_agentic_mutate_if_any(ctx, trace, batch, sanitized_text=sanitized_text)
+            planner_emitted = await _emit_agentic_mutate_if_any(ctx, trace, batch, sanitized_text=sanitized_text)
+            if not planner_emitted:
+                await _emit_suggest_remediation(
+                    ctx,
+                    trace=trace,
+                    diagnosis=f"{human}\n[{hyp}]"[:4000],
+                    confidence=0.55,
+                    source="SDK_FACTS_ONLY" if rag_gate_failed else "SDK_ONLY_DIAGNOSE",
+                    suggested_tool=tool or "inspect_pod_logs",
+                )
 
             if chat_id is not None:
                 pld = {

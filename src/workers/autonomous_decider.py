@@ -148,7 +148,7 @@ def _system_prompt_react(safe_tools: set[str], allowed_ns: set[str], schema_snip
         f"Allowed tools: {tools_csv}.\n"
         f"k8s_rollout_restart: args.namespace must be one of: {ns_csv}.\n"
         "If uncertain, use action CLEAR.\n"
-        f"Tool JSON Schemas (subset):\n{schema_snippet[:6000]}"
+        f"Tool catalog with preconditions (subset):\n{schema_snippet[:6000]}"
     )
 
 
@@ -158,7 +158,11 @@ def _schemas_for_safe_tools(safe: set[str]) -> str:
     for name in sorted(safe):
         if reg.has(name):
             try:
-                parts.append(f"{name}: {json.dumps(reg.json_schema_for(name), ensure_ascii=False)[:1500]}")
+                meta = reg.metadata_for(name)
+                parts.append(
+                    f"{name}: "
+                    f"{json.dumps({'args_schema': reg.json_schema_for(name), 'metadata': meta}, ensure_ascii=False)[:1800]}"
+                )
             except Exception as e:
                 logger.debug("schema for %s: %s", name, e)
     return "\n".join(parts) if parts else "(no typed tools in allowlist)"
@@ -281,14 +285,13 @@ async def _tick_legacy(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None
     try:
         ctx.inbound_proactive = True
         ctx.inbound_trace_id = f"autonomous-decider-{fp}"
-        resp = await ctx.ollama.chat(
+        resp = await ctx.llm.chat(
             model=model,
             messages=[
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             options={"temperature": 0.1, "num_ctx": 4096},
-            keep_alive=ws.ollama_keep_alive,
         )
     finally:
         await ctx.semaphore.release(token)
@@ -480,11 +483,10 @@ async def _tick_react(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None:
         try:
             ctx.inbound_proactive = True
             ctx.inbound_trace_id = f"autonomous-decider-react-{fp}-t{turn}"
-            resp = await ctx.ollama.chat(
+            resp = await ctx.llm.chat(
                 model=model,
                 messages=messages,
                 options={"temperature": 0.1, "num_ctx": 4096},
-                keep_alive=ws.ollama_keep_alive,
             )
         finally:
             await ctx.semaphore.release(token)

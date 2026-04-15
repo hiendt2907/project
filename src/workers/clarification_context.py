@@ -46,12 +46,11 @@ async def interpret_monitoring_followup_llm(
     Dùng model_helper (~1.5B) đọc **ngữ cảnh** (mục tiêu ban đầu + hội thoại gần + câu trả lời).
     Không dùng danh sách từ khóa cứng.
     """
-    ollama = getattr(ctx, "ollama", None)
+    llm = getattr(ctx, "llm", None)
     settings = getattr(ctx, "settings", None)
-    if ollama is None or settings is None:
+    if llm is None or settings is None:
         return None
-    model = getattr(settings, "model_helper", None) or "qwen2.5:1.5b"
-    keep = getattr(settings, "ollama_keep_alive", "5m")
+    model = getattr(settings, "model_helper", None) or "qwen2.5-coder-3b"
 
     snippet = (recent_dialog_snippet or "").strip()
     if len(snippet) > 2000:
@@ -72,7 +71,7 @@ async def interpret_monitoring_followup_llm(
     )
 
     try:
-        resp = await ollama.chat(
+        resp = await llm.chat(
             model=model,
             messages=[
                 {
@@ -87,7 +86,6 @@ async def interpret_monitoring_followup_llm(
                 {"role": "user", "content": user_block[:12000]},
             ],
             options={"temperature": 0.0},
-            keep_alive=keep,
         )
         raw = (resp.get("message") or {}).get("content") or ""
         cleaned = _strip_json_fence(raw)

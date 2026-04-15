@@ -42,6 +42,8 @@ import os
 import re
 
 _RE_TOPIC = re.compile(r"^[a-zA-Z0-9._-]+$")
+# Client-supplied trace (header X-Omni-Trace-Id or query trace_id): alphanumeric + _ - , length 8–128.
+_TRACE_ID_CLIENT = re.compile(r"^[a-zA-Z0-9_-]{8,128}$")
 
 
 def _kafka_topic_from_env() -> str:
@@ -62,6 +64,52 @@ SILENCE_CHAOS_LAB = os.getenv("OMNI_GATEWAY_SILENCE_CHAOS_LAB", "false").strip()
     "true",
     "yes",
 )
+
+
+def _str_header(request: Request, name: str) -> str | None:
+    """Safe header read: ignore MagicMock / non-str (tests)."""
+    try:
+        h = request.headers
+        if h is None or not hasattr(h, "get"):
+            return None
+        v = h.get(name)
+        return v.strip() if isinstance(v, str) else None
+    except Exception:
+        return None
+
+
+def _str_query(request: Request, name: str) -> str | None:
+    try:
+        qp = request.query_params
+        if qp is None or not hasattr(qp, "get"):
+            return None
+        v = qp.get(name)
+        return v.strip() if isinstance(v, str) else None
+    except Exception:
+        return None
+
+
+def _pick_valid_client_trace_id(header_val: str | None, query_val: str | None) -> str | None:
+    """First valid wins: header ``X-Omni-Trace-Id``, then ``trace_id`` query param."""
+    for raw in (header_val, query_val):
+        if not raw:
+            continue
+        s = raw.strip()
+        if _TRACE_ID_CLIENT.fullmatch(s):
+            return s
+    return None
+
+
+def _resolve_prometheus_trace_id(request: Request) -> str:
+    hv = _str_header(request, "x-omni-trace-id")
+    qv = _str_query(request, "trace_id")
+    picked = _pick_valid_client_trace_id(hv, qv)
+    if picked:
+        logger.info("[GATEWAY] trace_id=honor_client id=%s", picked)
+        return picked
+    tid = f"gw-prom-{uuid.uuid4().hex[:12]}"
+    logger.info("[GATEWAY] trace_id=generated id=%s", tid)
+    return tid
 
 
 def _is_chaos_lab_prometheus_webhook(body: Any) -> bool:
@@ -160,8 +208,15 @@ class GatewayTraceMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(GatewayTraceMiddleware)
 
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
-gw_requests = Counter("omni_gateway_requests_total", "Total requests received by gateway", ["status"])
+from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
+
+def _get_or_create_counter(name: str, doc: str, labels: list[str]) -> Counter:
+    try:
+        return Counter(name, doc, labels)
+    except ValueError:
+        return REGISTRY._names_to_collectors.get(name)  # type: ignore[return-value]
+
+gw_requests = _get_or_create_counter("omni_gateway_requests_total", "Total requests received by gateway", ["status"])
 
 @app.get("/metrics")
 async def metrics():
@@ -175,8 +230,8 @@ async def health():
 @app.post("/webhook/prometheus")
 async def prometheus_webhook(request: Request) -> JSONResponse:
     """Nhận Alert từ Prometheus/Alertmanager → produce Kafka topic ``OMNI_KAFKA_TOPIC_ALERTS``."""
-    # Trace ngay đầu luồng — ContextVar + filter: asyncio/uvicorn log cùng trace_id.
-    trace_id = f"gw-prom-{uuid.uuid4().hex[:12]}"
+    # Trace: optional ``X-Omni-Trace-Id`` / ``?trace_id=`` (validated); else ``gw-prom-…``.
+    trace_id = _resolve_prometheus_trace_id(request)
     request.state.trace_id = trace_id
     tok_gw = push_gateway_trace_id(trace_id)
     try:

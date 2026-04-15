@@ -1,0 +1,35 @@
+# Omni label schema — keys only; full tables: docs/vendor/OMNI_LABEL_SCHEMA.md
+version: 1
+
+resource_dna:
+  - app.kubernetes.io/name
+  - app.kubernetes.io/part-of
+  - omni.io/managed
+  - omni.io/symptom-group
+  - omni.io/criticality
+  - omni.io/team
+
+signal_dna:
+  - alertname
+  - severity
+  - namespace
+  - deployment
+  - drift_type
+  - omni_verify_required
+
+telemetry_dna:
+  - trace_id
+  - event_type
+  - symptom_group
+
+incident_lifecycle:
+  - omni.io/incident-id
+  - omni.io/incident-state
+  - omni.io/symptom-group
+  - omni.io/layer
+
+resolution_dna:
+  - omni.io/root-cause-id
+  - omni.io/root-cause-desc
+  - omni.io/resolution-tool
+  - omni.io/verify-method

@@ -1,0 +1,3 @@
+# Auto-nav for MkDocs (wiki embeds this tree via wiki/docs/library/project-docs symlink)
+nav:
+  - ...

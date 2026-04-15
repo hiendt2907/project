@@ -95,8 +95,13 @@ async def append_evidence_and_take_flush_batch(
         else:
             ready = _WORKLOAD_FULL_PROBE_SET <= keys or elapsed >= AGG_TIMEOUT_SEC
     else:
-        # Matrix / khác: gom tối đa 3s hoặc ≥2 probe (thường redis+kafka)
-        ready = elapsed >= AGG_TIMEOUT_SEC or len(keys) >= 2
+        # Security / matrix: khi dispatcher đã register_diag_expected_probes (vd. ['rbac_drift']),
+        # flush ngay khi đủ probe — tránh deadlock một message / một probe.
+        if expected_set is not None:
+            ready = expected_set <= keys or elapsed >= AGG_TIMEOUT_SEC
+        else:
+            # Không có expected: gom tối đa 3s hoặc ≥2 probe (thường redis+kafka)
+            ready = elapsed >= AGG_TIMEOUT_SEC or len(keys) >= 2
 
     if not ready:
         return None

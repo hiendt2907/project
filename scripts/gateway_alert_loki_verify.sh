@@ -13,8 +13,10 @@
 #   E2E_EXEC_DEPLOY=omni-prober          # Pod chạy python3 để POST tới gateway
 #   E2E_TRACE_LOG_DEPLOYS="omni-prober …" # override danh sách grep log theo trace
 #   E2E_NGINX_POD_AUTO=1                 # (default) với alertmanager_nginx_cpu_high.json: patch labels.pod = pod app=nginx-test hiện tại
+#   E2E_REDIS_POD_AUTO=1                 # (default) với alertmanager_business_sane.json: patch labels.pod = live app=redis-exporter
 #   STRICT_ASSERT=1                     # trace in >=3 worker deploy logs + action marker
 #   E2E_ASSERT_DIAGNOSTIC_POLICY=1        # optional: INV_/DIAGNOSTIC_* or agentic/discovery (agentic_mutate_plan|readonly_discovery_redirect|k8s_args_coerced); SLEEP_SEC>=120 if Ollama slow
+#   E2E_EXTRA_AGENTIC_SLEEP=0           # After first SLEEP_SEC, wait N more seconds then re-grep logs (agentic loop: first LLM step can be 60–120s after PLAN_EMITTED; multi-step needs longer). Use with waiting_fault / broken_spec (e.g. 180–300).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,6 +26,7 @@ PATCHED_PAYLOAD=""
 GW_INTERNAL="${GW_INTERNAL:-http://omni-gateway.multi-agent.svc.cluster.local}"
 LOKI_URL="${LOKI_URL:-http://loki.monitor.svc.cluster.local:3100}"
 SLEEP_SEC="${SLEEP_SEC:-25}"
+E2E_EXTRA_AGENTIC_SLEEP="${E2E_EXTRA_AGENTIC_SLEEP:-0}"
 NS="${NS:-multi-agent}"
 STRICT_ASSERT="${STRICT_ASSERT:-1}"
 
@@ -94,6 +97,33 @@ with open(dst, 'w') as f:
   echo "=== 0a) E2E_NGINX_POD_AUTO: alert labels.pod=${NGINX_POD} (live app=nginx-test) ==="
 fi
 
+if [[ "${E2E_REDIS_POD_AUTO:-1}" == "1" ]] && [[ "$(basename "$PAYLOAD")" == "alertmanager_business_sane.json" ]]; then
+  if [[ -n "${E2E_REDIS_POD:-}" ]]; then
+    REDIS_POD="${E2E_REDIS_POD}"
+  else
+    REDIS_POD="$("${KUBE}" get pods -n "$NS" -l app=redis-exporter -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  fi
+  if [[ -z "$REDIS_POD" ]]; then
+    echo "FAIL: E2E_REDIS_POD_AUTO: no pod with label app=redis-exporter in namespace ${NS}" >&2
+    exit 1
+  fi
+  PATCHED_PAYLOAD_REDIS="$(mktemp "${TMPDIR:-/tmp}/e2e-gw-alert-redis.XXXXXX.json")"
+  python3 -c "
+import json, sys
+pod, src, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src) as f:
+    d = json.load(f)
+for a in d.get('alerts', []):
+    if (a.get('labels') or {}).get('deployment') == 'redis-exporter':
+        a['labels']['pod'] = pod
+with open(dst, 'w') as f:
+    json.dump(d, f, indent=2)
+" "$REDIS_POD" "$PAYLOAD" "$PATCHED_PAYLOAD_REDIS"
+  PAYLOAD="${PATCHED_PAYLOAD_REDIS}"
+  trap '[[ -n "${PATCHED_PAYLOAD_REDIS:-}" && -f "${PATCHED_PAYLOAD_REDIS}" ]] && rm -f "${PATCHED_PAYLOAD_REDIS}"' EXIT
+  echo "=== 0b) E2E_REDIS_POD_AUTO: alert labels.pod=${REDIS_POD} (live app=redis-exporter) ==="
+fi
+
 if ! "${KUBE}" get deploy "$EXEC_DEPLOY" -n "$NS" &>/dev/null; then
   echo "FAIL: no deployment/$EXEC_DEPLOY in $NS (set E2E_EXEC_DEPLOY to a running worker pod, e.g. omni-prober)." >&2
   exit 1
@@ -148,13 +178,45 @@ ${chunk}
 "
   fi
 done
-if [[ -z "$WR_LINES" ]]; then
-  echo "(no lines in omni-prober/analyst/core/executor[/worker] — tăng SLEEP_SEC hoặc kiểm tra consumer Kafka)"
-else
-  echo "$WR_LINES" | tail -n 120
+
+_collect_trace_logs() {
+  WR_LINES=""
+  for dep in $TRACE_LOG_DEPLOYS; do
+    r="$("${KUBE}" get deploy "$dep" -n "$NS" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)"
+    if [[ "${r:-0}" == "0" ]]; then
+      continue
+    fi
+    chunk="$("${KUBE}" logs -n "$NS" "deploy/${dep}" --since=15m --tail=8000 2>/dev/null | grep -F "$TRACE" || true)"
+    if [[ -n "$chunk" ]]; then
+      WR_LINES+="--- deploy/${dep} ---
+${chunk}
+"
+    fi
+  done
+}
+
+_print_wr_tail() {
+  if [[ -z "$WR_LINES" ]]; then
+    echo "(no lines in omni-prober/analyst/core/executor[/worker] — tăng SLEEP_SEC hoặc kiểm tra consumer Kafka)"
+  else
+    echo "$WR_LINES" | tail -n 120
+    echo ""
+    echo "--- grep handler_done (gợi ý kết quả nghiệp vụ) ---"
+    echo "$WR_LINES" | grep -F "handler_done" || echo "(chưa có handler_done — pipeline còn xử lý hoặc chỉ stream_consumer)"
+    echo ""
+    echo "(Nếu mới chỉ thấy readonly_discovery_redirect step=1: agentic/Ollama còn bước sau — tăng SLEEP_SEC hoặc đặt E2E_EXTRA_AGENTIC_SLEEP=180–300.)"
+  fi
+}
+
+_print_wr_tail
+
+if [[ "${E2E_EXTRA_AGENTIC_SLEEP}" =~ ^[0-9]+$ ]] && [[ "${E2E_EXTRA_AGENTIC_SLEEP}" -gt 0 ]]; then
   echo ""
-  echo "--- grep handler_done (gợi ý kết quả nghiệp vụ) ---"
-  echo "$WR_LINES" | grep -F "handler_done" || echo "(chưa có handler_done — pipeline còn xử lý hoặc chỉ stream_consumer)"
+  echo "=== 3a) Chờ thêm ${E2E_EXTRA_AGENTIC_SLEEP}s (E2E_EXTRA_AGENTIC_SLEEP) — vòng agentic nhiều bước / Ollama ==="
+  sleep "${E2E_EXTRA_AGENTIC_SLEEP}"
+  _collect_trace_logs
+  echo "--- Log worker sau chờ thêm (tail) ---"
+  _print_wr_tail
 fi
 
 if [[ "${STRICT_ASSERT}" == "1" ]]; then

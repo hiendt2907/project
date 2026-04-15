@@ -4,6 +4,8 @@
 
 **Mục đích:** Một file duy nhất để kiểm tra kiến trúc vận hành thật (split MPV3), Kafka, RAG, feedback, verify. Các doc khác chỉ bổ sung chi tiết hoặc lịch sử phase.
 
+**Label schema (Golden Link):** [OMNI_LABEL_SCHEMA.md](OMNI_LABEL_SCHEMA.md) — Resource / Signal / Telemetry / Incident / Resolution; machine-readable list: [`config/omni_label_schema.yaml`](../../config/omni_label_schema.yaml).
+
 ---
 
 ## 1. Chuẩn lab: split topology (Master Plan V3)
@@ -52,15 +54,19 @@ Deployment tên: `omni-prober`, `omni-analyst`, `omni-core`, `omni-executor` —
 
 ---
 
-## 3. Feedback loop thực thi → RAG (pgvector)
+## 3. Feedback loop thực thi → SDK verify → RAG (pgvector)
 
 | Bước | File / hành động |
 |------|------------------|
 | Publish sau `EXECUTE_MUTATE` | [src/workers/autonomous_execute.py](../../src/workers/autonomous_execute.py) `publish_action_feedback` |
 | Topic | `kafka_topic_action_feedback` → **`omni-action-feedback`** |
 | Consume | [src/workers/autonomous_feedback_loop.py](../../src/workers/autonomous_feedback_loop.py) `kafka_action_feedback_loop` → `handle_action_feedback_envelope` (role `analyst` hoặc `full`) |
-| Thành công | `_upsert_action_experience_on_success` → collection **`action_experience`** ([COLLECTION_ACTION_EXPERIENCE](../../src/rag/pgvector_store.py)) |
-| Thất bại | Replan LLM, `emit_execute_mutate` lặp, giới hạn trong settings; escalate / tombstone |
+| Context cho verify | [src/workers/evidence_mutate_emit.py](../../src/workers/evidence_mutate_emit.py) `store_autonomous_trace_context` — lưu `verify_probe_ids`, `anomaly_event_min`, `alertname`, `symptom_group` (Redis `omni:autonomous:ctx:{trace}`) |
+| Sau `exit_code=0` | [src/workers/post_mutate_sdk_verify.py](../../src/workers/post_mutate_sdk_verify.py) `run_verify_probes` — chạy lại cùng probe (SDK) khi `OMNI_POST_MUTATE_SDK_VERIFY_ENABLED=true` và context đủ |
+| Verify PASSED | `_upsert_action_experience_on_success` (có `sdk_verify_summary`) → **`action_experience`**; `TRANSITION_VERIFIED_SUCCESS` |
+| Verify FAILED | `deterministic_mutate_plan_from_batch` từ kết quả probe → `emit_execute_mutate` lần nữa trong `OMNI_SDK_VERIFY_MAX_ROUNDS` × `autonomous_execute_max_attempts`; tombstone `SDK_VERIFY_EXHAUSTED` / `SDK_VERIFY_NO_PLAN` |
+| Tắt verify (rollback) | `OMNI_POST_MUTATE_SDK_VERIFY_ENABLED=false` — hành vi cũ: upsert ngay khi executor exit 0 |
+| Thất bại mutate (exit≠0) | Replan LLM (`k8s_rollout_restart`), `emit_execute_mutate` lặp; escalate / tombstone |
 
 Payload: [src/pkg/autonomous_actions.py](../../src/pkg/autonomous_actions.py).
 

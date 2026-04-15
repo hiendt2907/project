@@ -47,6 +47,8 @@ def _batch_text_blob(batch: list[dict[str, Any]]) -> str:
         elif isinstance(ef, str):
             parts.append(ef)
         parts.append(str(b.get("canonical_query_snippet") or ""))
+        # Pod events / probe raw (FailedMount, missing ConfigMap) often live only here.
+        parts.append(str(b.get("raw") or ""))
     return "\n".join(parts)
 
 

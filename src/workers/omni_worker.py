@@ -13,7 +13,7 @@ import redis.asyncio as redis
 from init.deep_scout import DeepScoutSummary, deep_scout_periodic_loop, run_deep_scout
 from init.deep_scout_autonomous import run_deep_scout_autonomous
 from ingest.telegram import TelegramBotSettings, TelegramClient, summarize_message_update
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
 from rag.error_ledger import ErrorLedger
 from rag.pgvector_store import (
     init_pg_pool, 
@@ -47,7 +47,7 @@ from workers.metrics_exporter import (
     start_prometheus_server,
 )
 from workers.otel_tracing import setup_otel_tracing, shutdown_otel_tracing
-from workers.ollama_semaphore import RedisOllamaSemaphore
+from workers.llm_semaphore import LLMSemaphore
 from workers.settings import WorkerSettings
 from workers.redis_client import connect_redis
 from workers.telegram_outbound import send_telegram_out_for_inbound
@@ -288,7 +288,7 @@ async def _process_stream_entry(
             logger.error("[%s] Fatal Retry >=3. Sending to DLQ.", trace)
             error_ctx = {
                 "error_type": type(e).__name__,
-                "component": "LLM_or_Tools" if "ollama" in str(e).lower() else "omni_worker",
+                "component": "LLM_or_Tools" if "vllm" in str(e).lower() else "omni_worker",
                 "message": str(e),
                 "trace_id": dlq_trace
             }
@@ -455,15 +455,15 @@ async def telegram_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
 async def build_context() -> WorkerHandlerContext:
     ws = WorkerSettings()
     r = await connect_redis(ws)
-    ollama = OllamaClient(base_url=ws.ollama_base_url)
+    llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url)
     pg_settings = PostgresRAGSettings()
     pg_pool = await init_pg_pool(pg_settings)
     vector_store = PGVectorStore(pg_pool)
     ledger = ErrorLedger(pg_pool, owns_pool=False)
-    sem = RedisOllamaSemaphore(
+    sem = LLMSemaphore(
         r,
-        max_slots=ws.ollama_num_parallel,
-        lease_ttl_sec=ws.ollama_lease_ttl_sec,
+        max_slots=ws.llm_num_parallel,
+        lease_ttl_sec=ws.llm_lease_ttl_sec,
     )
     await sem.init_pool()
     await ledger.ensure_ready()
@@ -483,7 +483,7 @@ async def build_context() -> WorkerHandlerContext:
     return WorkerHandlerContext(
         settings=ws,
         redis=r,
-        ollama=ollama,
+        llm=llm,
         vector_store=vector_store,
         ledger=ledger,
         semaphore=sem,
@@ -579,7 +579,7 @@ async def run_worker() -> None:
         observability_metrics_loop(
             redis=ctx.redis,
             kill_switch_key=ctx.settings.proactive_kill_switch_key,
-            ollama_base_url=ctx.settings.ollama_base_url,
+            llm_base_url=ctx.settings.vllm_base_url,
             stop=stop,
             stream_keys=(),
             interval_sec=15.0,
@@ -633,7 +633,7 @@ async def run_worker() -> None:
     finally:
         stop.set()
         shutdown_otel_tracing()
-        await ctx.ollama.aclose()
+        await ctx.llm.aclose()
         if ctx.telegram:
             await ctx.telegram.aclose()
         if ctx.kafka:

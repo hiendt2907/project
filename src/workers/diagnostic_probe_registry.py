@@ -21,6 +21,10 @@ from workers.diagnostic_resource import pod_identity_from_event
 from workers.k8s_tools import _load_k8s_config
 from workers.proactive_models import AnomalyEvent
 from workers.handlers import WorkerHandlerContext
+from workers.security_probes import (
+    probe_k8s_configmap_security_drift,
+    probe_k8s_rbac_drift,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +207,10 @@ PROBE_REGISTRY: dict[str, ProbeFn] = {
     "k8s_resource_quota_probe": probe_k8s_resource_quota_probe,
     "prom_pod_cpu_cores": probe_prom_pod_cpu_cores,
     "prom_pod_memory_wss": probe_prom_pod_memory_wss,
+    # Security drift probes — wired for OmniRbacClusterAdminViolation /
+    # OmniConfigMapGodModeProd alert types.
+    "rbac_drift": probe_k8s_rbac_drift,
+    "configmap_security_drift": probe_k8s_configmap_security_drift,
 }
 
 

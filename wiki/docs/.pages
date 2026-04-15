@@ -1,0 +1,19 @@
+nav:
+  - Home: index.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - Three evidence lanes: architecture/three-lanes.md
+  - Module map: modules/module-map.md
+  - API:
+      - Gateway (FastAPI): api/gateway.md
+  - Runbooks:
+      - Evidence lanes & sigma: runbooks/evidence-and-sigma.md
+      - Gateway & ingest: runbooks/gateway-ops.md
+  - Knowledge base (tri thức hệ thống):
+      - Hub: knowledge-base/index.md
+      - System contract: knowledge-base/system-contract.md
+      - Invariants & memory: knowledge-base/invariants.md
+      - Guardrails for agents: knowledge-base/guardrails-for-agents.md
+      - Reason codes: knowledge-base/reason-codes.md
+      - Verification & gates: knowledge-base/verification-matrix.md
+  - ...

@@ -38,6 +38,18 @@ def _labels_from_canonical(ev: AnomalyEvent) -> dict[str, Any]:
         return {}
 
 
+def canonical_flat_labels(ev: AnomalyEvent) -> dict[str, str]:
+    """String labels from canonical_query JSON (alert / kube-state / Prom). Used when the alert pod is already gone."""
+    out: dict[str, str] = {}
+    for k, v in _labels_from_canonical(ev).items():
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            out[str(k)] = s
+    return out
+
+
 def _is_kube_state_pod_metric(labels: dict[str, Any]) -> bool:
     """Alert kube-state-metrics (pod/container state) — không phải usage rate cAdvisor."""
     name = str(labels.get("__name__") or "")
@@ -48,6 +60,22 @@ def _is_kube_state_pod_metric(labels: dict[str, Any]) -> bool:
     if "kube_pod_container_state" in name:
         return True
     return False
+
+
+def deployment_workload_from_event(ev: AnomalyEvent) -> tuple[str, str]:
+    """
+    namespace + stable workload name for gates and LLM — prefer Deployment identity.
+
+    Does **not** derive deployment from pod name; use labels (deployment, workload, …) only.
+    """
+    labels = canonical_flat_labels(ev)
+    ns = (ev.namespace or "").strip() or str(labels.get("namespace") or "").strip()
+    dep = (ev.deployment or "").strip()
+    if not dep:
+        dep = str(labels.get("deployment") or labels.get("deployment_name") or "").strip()
+    if not dep:
+        dep = str(labels.get("workload") or "").strip()
+    return ns, dep
 
 
 def pod_identity_from_event(ev: AnomalyEvent) -> tuple[str, str, str]:

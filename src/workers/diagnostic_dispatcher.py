@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from workers.diagnostic_evidence import evidence_from_probe
-from workers.diagnostic_mapping import classify_event, load_diagnostic_matrix
+from workers.diagnostic_mapping import alertname_from_anomaly_event, classify_event, load_diagnostic_matrix
 from workers.diagnostic_pod_plan import get_smart_diagnostic_plan, snapshot_from_structured_hint
 from workers.diagnostic_probe_registry import run_probe
 from workers.diagnostic_resource import (
@@ -28,6 +28,20 @@ _LEGACY_TIER2: list[str] = [
     "prom_pod_cpu_cores",
     "prom_pod_memory_wss",
 ]
+
+# Prometheus alertname → security probes (bypass generic matrix catch-all).
+_ALERTNAME_PROBE_MAP: dict[str, list[str]] = {
+    "OmniRbacClusterAdminViolation": ["rbac_drift"],  # RBAC drift / cluster-admin binding
+    "OmniConfigMapGodModeProd": ["configmap_security_drift"],  # dangerous ConfigMap keys
+}
+
+
+def probe_ids_for_alertname(alertname: str) -> list[str]:
+    """Probes used for alertname (security self-remediation) — same as dispatcher plan."""
+    an = (alertname or "").strip()
+    if not an:
+        return []
+    return list(_ALERTNAME_PROBE_MAP.get(an, []))
 
 
 def _evidence_source_for_probe(probe_id: str) -> str:
@@ -64,7 +78,7 @@ async def _publish_diagnostic_evidence(
         "ts": str(int(time.time())),
         "alert_rule": getattr(ev, "rule_name", "") or "",
         "alert_hint": redact(ev.error_hint or "")[:800],
-        "canonical_query_snippet": redact(ev.canonical_query or "")[:500],
+        "canonical_query_snippet": redact(ev.canonical_query or "")[:1000],
         "evidence_source": _evidence_source_for_probe(pid),
         "clinical_priority_note": (
             "Primary: real-time Kubernetes API (SDK)."
@@ -138,6 +152,34 @@ async def run_diagnostic_pipeline(ctx: WorkerHandlerContext, ev: AnomalyEvent) -
         )
 
         for pid in plan:
+            raw = await run_probe(pid, ctx, ev)
+            await _publish_diagnostic_evidence(
+                ctx,
+                ev,
+                trace=trace,
+                pid=pid,
+                symptom_group=symptom_group,
+                layer=layer,
+                raw=raw,
+            )
+            if stop_on_first_failure and raw.status == "FAILED":
+                break
+        return
+
+    alertname = alertname_from_anomaly_event(ev)
+    if alertname in _ALERTNAME_PROBE_MAP:
+        probe_ids = _ALERTNAME_PROBE_MAP[alertname]
+        symptom_group = "security_hardening"
+        layer = "security"
+        stop_on_first_failure = False
+        await register_diag_expected_probes(ctx.redis, trace, list(probe_ids))
+        logger.info(
+            "[%s] event=diagnostic_dispatcher_plan kind=alertname_probe_map alertname=%s plan=%s",
+            trace,
+            alertname,
+            probe_ids,
+        )
+        for pid in probe_ids:
             raw = await run_probe(pid, ctx, ev)
             await _publish_diagnostic_evidence(
                 ctx,

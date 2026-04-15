@@ -1,0 +1,93 @@
+# Wave A1 — Executor least-privilege RBAC (replaces cluster-admin).
+#
+# Scope: multi-agent and lab-test namespaces only.
+# SA:    omni-executor (NOT omni-worker).
+#
+# Verb matrix derived from codebase scan of:
+#   src/workers/k8s_cluster_tools.py — all @register_tool handlers
+#   scripts/mvp_api.py              — _kubectl_from_tool_call()
+#
+# Verification after apply:
+#   kubectl auth can-i '*' '*' --all-namespaces \
+#     --as=system:serviceaccount:multi-agent:omni-executor          # → no
+#   kubectl auth can-i patch deployments -n multi-agent \
+#     --as=system:serviceaccount:multi-agent:omni-executor          # → yes
+#   kubectl auth can-i patch deployments -n production \
+#     --as=system:serviceaccount:multi-agent:omni-executor          # → no
+#   kubectl auth can-i delete nodes \
+#     --as=system:serviceaccount:multi-agent:omni-executor          # → no
+#
+# E2E re-validation after apply:
+#   bash scripts/e2e_incident_matrix.sh
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omni-executor
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/name: omni-executor
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/security-tier: "least-privilege"
+---
+# ClusterRole: minimal verb set derived from codebase API call scan.
+# Bound only via namespace-scoped RoleBindings — never ClusterRoleBinding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-executor-least-privilege
+  labels:
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+rules:
+  # Workload mutations: rollout_restart (patch annotation), patch_deployment_resource,
+  # scale_deployment (replace), patch_resource.
+  # apps/statefulsets needed for kubectl patch statefulset in mvp_api._kubectl_from_tool_call.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+
+  # Pod reads: k8s_describe_resource, k8s_tail_logs, INV_READ_BEFORE_MUTATE evidence.
+  # pod delete kept for scale-to-zero eviction path (k8s_scale_deployment).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  # Event reads: k8s_describe_resource, INV_NO_RESTART_ON_BROKEN_SPEC evidence.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+
+  # ConfigMap patch: patch_configmap_key action (k8s_patch_configmap).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "patch"]
+
+  # Endpoint reads: k8s_check_endpoints readiness probe.
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list"]
+---
+# RoleBinding: multi-agent (executor home namespace)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omni-executor-least-privilege
+  namespace: multi-agent
+  labels:
+    omni.io/managed: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-executor-least-privilege
+subjects:
+  - kind: ServiceAccount
+    name: omni-executor
+    namespace: multi-agent
+# NOTE: Add a RoleBinding for lab-test namespace once it exists:
+#   kubectl create namespace lab-test
+#   kubectl apply -f k8s/rbac-executor-least-privilege.yaml

@@ -101,19 +101,18 @@ async def run_gated_allowlisted_execute(ctx: Any, args: dict[str, Any]) -> str:
         "confidence là độ tin cậy của bạn."
     )
 
-    slot_held = bool(getattr(ctx, "ollama_slot_held", False))
+    slot_held = bool(getattr(ctx, "llm_slot_held", False))
     val_token: str | None = None
     if not slot_held:
         val_token = await ctx.semaphore.acquire()
     try:
-        oresp = await ctx.ollama.chat(
+        oresp = await ctx.llm.chat(
             model=ws.model_reasoning_engine,
             messages=[
                 {"role": "system", "content": "Chỉ JSON, không markdown."},
                 {"role": "user", "content": val_prompt},
             ],
             options={"temperature": 0.1, "num_predict": 256},
-            keep_alive=ws.ollama_keep_alive,
         )
         vraw = ((oresp.get("message") or {}).get("content") or "").strip()
         try:

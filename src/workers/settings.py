@@ -47,6 +47,8 @@ class WorkerSettings(BaseSettings):
             self.lab_unchained = False
             self.cluster_full_access = False
             self.proactive_fallback_bypass_policy_in_god_mode = False
+            self.lab_chaos_credential_autofix_enabled = False
+            self.chaos_pg_app_password = ""
         return self
 
     @model_validator(mode="after")
@@ -149,11 +151,123 @@ class WorkerSettings(BaseSettings):
         le=10,
         description="Max verify rounds (feedback loop) before escalate.",
     )
+    omni_post_mutate_sdk_verify_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_POST_MUTATE_SDK_VERIFY_ENABLED"),
+        description=(
+            "After executor exit 0, re-run verify probes (SDK) before RAG VERIFIED; "
+            "if FAILED, retry mutate within omni_sdk_verify_max_rounds / autonomous_execute_max_attempts."
+        ),
+    )
+    omni_sdk_verify_max_rounds: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        validation_alias=AliasChoices("OMNI_SDK_VERIFY_MAX_ROUNDS"),
+        description="Max post-mutate SDK verify cycles (drift still present → retry mutate).",
+    )
+    omni_sdk_verify_initial_delay_sec: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=120.0,
+        validation_alias=AliasChoices("OMNI_SDK_VERIFY_INITIAL_DELAY_SEC"),
+        description="Sleep before re-probe after mutate (API convergence).",
+    )
+    omni_verify_delay_sec: float = Field(
+        default=10.0,
+        ge=0.0,
+        le=600.0,
+        validation_alias=AliasChoices("OMNI_VERIFY_DELAY_SEC"),
+        description=(
+            "Cooldown after executor exit 0 before post-mutate re-probe (Kubernetes rollout/restart convergence). "
+            "Used when OMNI_POST_MUTATE_VERIFY_PLANNER_ENABLED is true."
+        ),
+    )
+    omni_state_verify_max_attempts: int = Field(
+        default=2,
+        ge=1,
+        le=20,
+        validation_alias=AliasChoices("OMNI_STATE_VERIFY_MAX_ATTEMPTS", "MAX_VERIFY_ATTEMPTS"),
+        description=(
+            "Max post-mutate state-verification cycles per trace (exit 0 → re-probe → planner gate). "
+            "Above this → ESCALATE_TO_HUMAN."
+        ),
+    )
+    omni_post_mutate_verify_planner_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_POST_MUTATE_VERIFY_PLANNER_ENABLED"),
+        description=(
+            "When true, executor exit_code=0 does not emit VERIFIED_SUCCESS until the LLM planner confirms "
+            "recovery from fresh evidence (state-success), not kubectl success alone."
+        ),
+    )
+    omni_post_mutate_state_verify_max_steps: int = Field(
+        default=6,
+        ge=1,
+        le=24,
+        validation_alias=AliasChoices("OMNI_POST_MUTATE_STATE_VERIFY_MAX_STEPS"),
+        description="Max planner steps in the post-mutate state verification session.",
+    )
+    omni_post_verify_deployment_state_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_POST_VERIFY_DEPLOYMENT_STATE_ENABLED"),
+        description=(
+            "After SDK probes pass, re-check Deployment readiness (ready vs desired replicas) "
+            "using workload identity — not pod names."
+        ),
+    )
+    omni_post_verify_state_llm_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_POST_VERIFY_STATE_LLM_ENABLED"),
+        description=(
+            "If Deployment rollout still unhealthy after SDK probes OK, run local LLM CoT/ReAct "
+            "with namespace+deployment context (pod names redacted): RETRY_ROLLOUT or fail closed."
+        ),
+    )
+    omni_post_verify_react_max_steps: int = Field(
+        default=6,
+        ge=1,
+        le=24,
+        validation_alias=AliasChoices("OMNI_POST_VERIFY_REACT_MAX_STEPS"),
+        description="Post-verify ReAct+CoT loop: max LLM rounds (read-only + mutate).",
+    )
+    omni_post_verify_react_readonly_max: int = Field(
+        default=4,
+        ge=0,
+        le=16,
+        validation_alias=AliasChoices("OMNI_POST_VERIFY_REACT_READONLY_MAX"),
+        description="Max read-only discovery tool executions inside post-verify ReAct loop.",
+    )
+    omni_oom_deterministic_remediate_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_OOM_DETERMINISTIC_REMEDIATE_ENABLED"),
+        description=(
+            "Lab: emit k8s_patch_resource for OmniOomKilledPodNoRecovery when namespace+deployment "
+            "labels exist (no probe extracted_fact required)."
+        ),
+    )
     autonomous_execute_max_attempts: int = Field(
         default=3,
         ge=1,
         le=20,
         description="Max attempt_count (mutate + retries); above → ESCALATE_TO_HUMAN.",
+    )
+    omni_feedback_full_agentic_planner_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_FEEDBACK_FULL_AGENTIC_PLANNER_ENABLED"),
+        description=(
+            "After omni-action-feedback (SDK verify fail or mutate fail), run the same "
+            "_emit_agentic_mutate_if_any pipeline on a fresh probe batch (same trace_id) before "
+            "deterministic replan / one-shot LLM replan. Lab-only recommended."
+        ),
+    )
+    omni_llm_trace_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_LLM_TRACE_ENABLED"),
+        description=(
+            "INFO logs: raw LLM body + parse_ok / reject_reason for agentic planner, RAG-miss SDK-only, "
+            "post-verify ReAct. Use for debugging Ollama output vs tool JSON contract."
+        ),
     )
     executor_action_rate_limit_burst: int = Field(
         default=6,
@@ -173,6 +287,38 @@ class WorkerSettings(BaseSettings):
         le=20,
         description="Max LLM agentic steps when RAG does not hit.",
     )
+    omni_llm_first_autonomy_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_LLM_FIRST_AUTONOMY_ENABLED"),
+        description=(
+            "Enable LLM-first autonomy: discovery->precondition gate->mutate, "
+            "without deterministic mutate shortcuts in the mainline."
+        ),
+    )
+    omni_unrestricted_tool_execution: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_UNRESTRICTED_TOOL_EXECUTION"),
+        description=(
+            "When true, do not block EXECUTE_MUTATE by tool allowlist/proof/invariant gates; "
+            "executor may run any registered tool."
+        ),
+    )
+    omni_planner_precondition_gate_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_PLANNER_PRECONDITION_GATE_ENABLED"),
+        description=(
+            "Validate mutate tool preconditions (from ToolRegistry metadata + trace evidence) "
+            "before EXECUTE_MUTATE emission. Missing prerequisites trigger planner re-ask."
+        ),
+    )
+    omni_legacy_deterministic_fallback: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_LEGACY_DETERMINISTIC_FALLBACK"),
+        description=(
+            "Keep deterministic fallback paths (rollout/configmap/secret) when planner output is empty. "
+            "Set false for pure LLM-first autonomy mode."
+        ),
+    )
     omni_diagnostic_react_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("OMNI_DIAGNOSTIC_REACT_ENABLED"),
@@ -184,6 +330,44 @@ class WorkerSettings(BaseSettings):
         le=12,
         validation_alias=AliasChoices("OMNI_DIAGNOSTIC_REACT_READONLY_MAX"),
         description="Max read-only tool rounds per agentic plan when react enabled.",
+    )
+    omni_planner_llm_sole_evaluator: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_PLANNER_LLM_SOLE_EVALUATOR"),
+        description=(
+            "When true: LLM alone judges resolution vs InitialSymptom/HISTORY; disable regex-based "
+            "planner hints (_general_credential_failure_hint, _broken_spec_first_round_instruction)."
+        ),
+    )
+    omni_trace_memory_tool_output_max_chars: int = Field(
+        default=4000,
+        ge=400,
+        le=16000,
+        validation_alias=AliasChoices("OMNI_TRACE_MEMORY_TOOL_OUTPUT_MAX_CHARS"),
+        description="Max chars stored per ActionRecord.result_summary in Redis trace memory (planner read-only output).",
+    )
+    lab_chaos_credential_autofix_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX_ENABLED"),
+        description=(
+            "Lab: chaos DB password auth failure → deterministic k8s_patch_secret using "
+            "chaos_pg_app_password. Disable in prod; pair with OMNI_CHAOS_PG_APP_PASSWORD in ConfigMap."
+        ),
+    )
+    chaos_pg_app_password: str = Field(
+        default="",
+        validation_alias=AliasChoices("OMNI_CHAOS_PG_APP_PASSWORD"),
+        description="Lab chaos-pg: plain APP_PASSWORD value for autofix (omit in prod).",
+    )
+    chaos_pg_secret_name: str = Field(
+        default="chaos-pg-secret",
+        validation_alias=AliasChoices("OMNI_CHAOS_PG_SECRET_NAME"),
+        description="Secret name for chaos credential lab autofix.",
+    )
+    chaos_pg_password_key: str = Field(
+        default="APP_PASSWORD",
+        validation_alias=AliasChoices("OMNI_CHAOS_PG_PASSWORD_KEY"),
+        description="Secret data key patched by chaos credential lab autofix.",
     )
     omni_blind_lane_llm_enabled: bool = Field(
         default=False,
@@ -333,22 +517,23 @@ class WorkerSettings(BaseSettings):
     idempotency_ttl_sec: int = Field(default=120, ge=30, le=3600, description="TTL cho Atomic PENDING Lock của Action Guard.")
     gateway_rate_limit_tps: int = Field(default=1000, ge=10, le=10_000, description="Maximum TPS cho Gateway Ingress /webhook/prometheus.")
 
-    ollama_num_parallel: int = Field(default=2, ge=1, le=32)
-    ollama_base_url: str = Field(default="http://ollama-service:11434")
+    llm_num_parallel: int = Field(default=2, ge=1, le=32)
+    # OrbStack DNS: pods reach Ollama on macOS host via host.orb.internal (see omni-worker-configmap).
+    vllm_base_url: str = Field(default="http://host.orb.internal:11434/v1")
+    vllm_embed_url: str = Field(default="http://host.orb.internal:11434/v1")
     # Tier-1 DEFAULT_WORKER — SDK tool JSON, status, chart
-    chat_model: str = Field(default="qwen2.5:7b")
-    model_reasoning_engine: str = Field(default="deepseek-r1:8b")
-    model_heavy_lifter: str = Field(default="gemma3:27b")
-    model_helper: str = Field(default="qwen2.5:1.5b")
-    ollama_keep_alive: str = Field(default="5m")
-    embed_model: str = Field(default="nomic-embed-text:latest")
-    #: Cùng chiều vector (768) với `embed_model` nếu dùng — khi 400, thử model này sau khi cắt ngắn.
+    chat_model: str = Field(default="qwen2.5-coder:7b")
+    model_reasoning_engine: str = Field(default="qwen2.5-coder:7b")
+    model_heavy_lifter: str = Field(default="qwen2.5-coder:7b")
+    model_helper: str = Field(default="qwen2.5-coder:7b")
+    embed_model: str = Field(default="nomic-embed-text")
+    #: Fallback embed model; empty = chỉ retry truncate khi error.
     embed_model_fallback: str = Field(
         default="",
-        description="Optional 768-dim Ollama embed model; empty = chỉ retry truncate khi 400.",
+        description="Optional fallback embed model; empty = no fallback.",
     )
     rag_embed_max_tokens: int = Field(default=512, ge=64, le=2048)
-    ollama_lease_ttl_sec: int = Field(default=120, ge=10)
+    llm_lease_ttl_sec: int = Field(default=120, ge=10)
 
     # --- pgvector: một bảng rag_documents, phân vùng theo collection_name (API gọi là collection_id) ---
     pgvector_collection_k8s_expert: str = Field(
@@ -666,6 +851,14 @@ class WorkerSettings(BaseSettings):
         default="multi-agent",
         description="CSV — k8s_rollout_restart chỉ khi namespace thuộc danh sách.",
     )
+    omni_probe_driven_mutate_tools: str = Field(
+        default="k8s_apply_rbac_least_privilege,k8s_patch_configmap",
+        validation_alias=AliasChoices("OMNI_PROBE_DRIVEN_MUTATE_TOOLS"),
+        description=(
+            "CSV — probe FAILED + structured_hint may skip LLM for these tools when args are complete. "
+            "Intersected with EXECUTE_MUTATE allowlist."
+        ),
+    )
     baseline_warning_events_max: int = Field(default=5, ge=1, le=20)
     baseline_warning_events_fetch_limit: int = Field(default=400, ge=50, le=2000)
     baseline_k8s_events_timeout_sec: float = Field(default=20.0, ge=3.0, le=120.0)
@@ -827,8 +1020,10 @@ class WorkerSettings(BaseSettings):
         default=(
             "promql_instant,query_prometheus_metrics,k8s_list_pods,inspect_pod_deep,inspect_pod_details,"
             "list_namespace_pods,list_all_pods_sdk,resolve_pod_identity,resolve_deployment_identity,"
-            "redis_health,redis_info,k8s_rollout_restart,k8s_scale_deployment,k8s_patch_resource,"
-            "k8s_describe_resource,k8s_tail_logs,k8s_check_endpoints,kubectl_cluster,"
+            "redis_health,redis_info,k8s_rollout_restart,k8s_scale_deployment,k8s_scale_resource,"
+            "k8s_patch_resource,k8s_patch_configmap,k8s_patch_secret,k8s_create_or_patch_configmap,k8s_apply_rbac_least_privilege,k8s_delete_pod,"
+            "k8s_describe_resource,k8s_tail_logs,k8s_get_logs,k8s_get_events,k8s_list_resources,k8s_check_endpoints,"
+            "k8s_get_deployment_state,k8s_list_workload_pods,k8s_verify_rollout,kubectl_cluster,"
             "k8s_list_nodes,k8s_list_services,vendor_knowledge_search,k8s_expert_search"
         ),
         description="CSV tool allowlist khi OMNI_CLUSTER_FULL_ACCESS=false (mặc định true dùng full TOOL_REGISTRY).",
@@ -1039,7 +1234,7 @@ class WorkerSettings(BaseSettings):
     )
     scout_synth_backend: str = Field(
         default="ollama",
-        description="autonomous scout synthesize: ollama | gemini (bulk dùng Ollama khi 429).",
+        description="autonomous scout synthesize: ollama | gemini.",
     )
     agent_reasoning_backend: str = Field(
         default="ollama",
@@ -1047,7 +1242,7 @@ class WorkerSettings(BaseSettings):
     )
     fallback_llm_backend: str = Field(
         default="ollama",
-        description="conversational_fallback: ollama | gemini (retry + spillover Ollama).",
+        description="conversational_fallback: ollama | gemini.",
     )
     gemini_model: str = Field(default="gemini-2.0-flash", description="Model id Gemini Developer API.")
     gemini_max_retries: int = Field(default=4, ge=1, le=12)
@@ -1080,7 +1275,7 @@ class WorkerSettings(BaseSettings):
         description="Namespace hosting Prometheus/Loki/Grafana (audit_observability_stack).",
     )
 
-    # SOP bulk ingest (`python -m training.sop_ingest`) — seed → Ollama embed → Postgres
+    # SOP bulk ingest (`python -m training.sop_ingest`) — seed → vLLM embed → Postgres
     max_sop_contexts: int = Field(
         default=10_000,
         ge=1,
@@ -1095,7 +1290,7 @@ class WorkerSettings(BaseSettings):
         default=None,
         description="Optional RNG seed — shuffle thứ tự ingest (id point không đổi).",
     )
-    training_ollama_concurrency: int = Field(default=2, ge=1, le=8)
+    training_llm_concurrency: int = Field(default=2, ge=1, le=8)
     sop_ingest_upsert_batch: int = Field(default=128, ge=8, le=512)
     sop_ingest_embed_batch: int = Field(default=32, ge=1, le=128)
     sop_ingest_log_every: int = Field(default=500, ge=1, le=50_000)

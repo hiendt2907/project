@@ -28,8 +28,8 @@ spec:
                   value: /app/src
                 - name: OMNI_KNOWLEDGE_SOURCES
                   value: /app/config/knowledge_sources.yaml
-                - name: OMNI_OLLAMA_BASE_URL
-                  value: http://ollama-service:11434
+                - name: OMNI_VLLM_BASE_URL
+                  value: http://host.orb.internal:11434/v1
               volumeMounts:
                 - name: knowledge-sources
                   mountPath: /app/config/knowledge_sources.yaml
