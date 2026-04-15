@@ -7,3 +7,4 @@ __pycache__/
 
 # MkDocs output (built site; CI uploads artifact)
 wiki/site/
+tests/
