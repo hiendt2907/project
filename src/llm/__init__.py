@@ -1,3 +1,3 @@
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
 
-__all__ = ["OllamaClient"]
+__all__ = ["VLLMClient"]

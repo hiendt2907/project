@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tee /tmp/analyst_full.log)",
+      "Bash(tee /tmp/prober_full.log)",
+      "Bash(tee /tmp/executor_full.log)",
+      "Bash(.venv/bin/python3 -c ':*)"
+    ]
+  }
+}

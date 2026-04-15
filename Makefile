@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: test-evidence docker-worker docker-gateway deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit
+.PHONY: test-evidence docker-worker docker-gateway deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit
 
 test-evidence:
 	bash scripts/run_test_evidence.sh
@@ -11,6 +11,10 @@ lab-nginx-cpu:
 # Tải in-cluster + giữ load khi POST (true alarm path; LOAD_CONCURRENCY an toàn, không 10k process).
 lab-nginx-cpu-overlap:
 	STRESS_OVERLAP_ALERT=1 WARMUP_SEC=15 OVERLAP_STRESS_SEC=120 LOAD_CONCURRENCY=256 WAIT_PROM_CPU=1 SLEEP_SEC=45 bash scripts/nginx_test_cpu_alert_lab.sh
+
+# nginx-test: patch envFrom → ConfigMap rồi xóa CM (CreateContainerConfigError) + gateway trace (fault thật).
+e2e-nginx-missing-configmap:
+	bash scripts/e2e_nginx_missing_configmap.sh
 
 docker-worker:
 	docker build -t multi-agent-system:latest -f Dockerfile .

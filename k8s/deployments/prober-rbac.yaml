@@ -1,4 +1,7 @@
 # Master Plan V3 — ServiceAccount omni-prober: read-only Pods + pods/log (no delete/patch).
+# Security probes (rbac_drift, configmap_security_drift) require:
+#   - get clusterrolebindings/omni-worker-cluster-admin (cluster)
+#   - get/list configmaps in multi-agent (e.g. omni-worker-config)
 # Verify: kubectl --as=system:serviceaccount:multi-agent:omni-prober delete pod -n multi-agent --all → Forbidden
 ---
 apiVersion: v1
@@ -28,6 +31,9 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -38,6 +44,29 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: omni-prober-read
+subjects:
+  - kind: ServiceAccount
+    name: omni-prober
+    namespace: multi-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-prober-security-read
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    resourceNames: ["omni-worker-cluster-admin"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: omni-prober-security-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-prober-security-read
 subjects:
   - kind: ServiceAccount
     name: omni-prober

@@ -58,6 +58,11 @@ data:
     global:
       scrape_interval: 15s
       evaluation_interval: 15s
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ["alertmanager.monitor.svc.cluster.local:9093"]
+          timeout: 10s
     remote_write:
       - url: http://mimir.monitor.svc.cluster.local:9009/api/v1/push
         queue_config:
@@ -549,6 +554,26 @@ data:
             annotations:
               summary: "Pod container filesystem read+write throughput high (multi-agent)"
               description: "read+write bytes/s > 50 MiB/s for 5m (cAdvisor). namespace={{ $labels.namespace }} pod={{ $labels.pod }} container={{ $labels.container }}."
+      # Chaos Engineering: organic fault injection victim — routes to Omni Gateway via alertmanager omni-webhook receiver.
+      - name: omni_chaos_victim
+        rules:
+          - alert: KubePodCrashLoopVictim
+            expr: |
+              max by (namespace, pod, container, reason) (
+                kube_pod_container_status_waiting_reason{
+                  namespace="multi-agent",
+                  pod=~"chaos-victim-.*",
+                  reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull"
+                }
+              ) > 0
+            for: 30s
+            labels:
+              severity: critical
+              domain: chaos
+              workload: chaos-victim
+            annotations:
+              summary: "chaos-victim pod in fault state (chaos engineering)"
+              description: "Pod {{ $labels.pod }} in {{ $labels.namespace }} waiting: reason={{ $labels.reason }} container={{ $labels.container }}. Organic chaos test — Omni Analyst ReAct loop expected."
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

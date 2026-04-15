@@ -95,7 +95,7 @@ class QueryResponse(BaseModel):
     points: list[PointStruct]
 
 
-def _is_ollama_embed_bad_request(e: BaseException) -> bool:
+def _is_embed_bad_request(e: BaseException) -> bool:
     try:
         import httpx
 
@@ -107,8 +107,8 @@ def _is_ollama_embed_bad_request(e: BaseException) -> bool:
     return "400" in msg or "bad request" in msg or "status code 400" in msg
 
 
-async def _ollama_embed_query_robust(
-    ollama: Any,
+async def _embed_query_robust(
+    llm: Any,
     query: str,
     *,
     embed_model: str,
@@ -131,28 +131,28 @@ async def _ollama_embed_query_robust(
         for tier in tiers:
             chunk = truncate_for_embedding(base, max_tokens=tier)
             try:
-                emb_resp = await ollama.embed(
+                emb_resp = await llm.embed(
                     model=model,
                     input=chunk,
                     keep_alive=keep_alive,
                 )
-                return _embedding_vector_from_ollama_response(emb_resp)
+                return _embedding_vector_from_response(emb_resp)
             except Exception as e:
                 last_err = e
-                if _is_ollama_embed_bad_request(e):
+                if _is_embed_bad_request(e):
                     logger.warning(
-                        "event=rag_ollama_embed_failed model=%s tier_tokens=%s ollama_400_retry err=%s",
+                        "event=rag_llm_embed_failed model=%s tier_tokens=%s embed_400_retry err=%s",
                         model,
                         tier,
                         str(e)[:220],
                     )
                     continue
-                logger.warning("event=rag_ollama_embed_failed model=%s err=%s", model, e)
-                raise RuntimeError(f"rag_ollama_embed_failed:{e!s}") from e
-    raise RuntimeError(f"rag_ollama_embed_failed:{last_err!s}") from last_err
+                logger.warning("event=rag_llm_embed_failed model=%s err=%s", model, e)
+                raise RuntimeError(f"rag_llm_embed_failed:{e!s}") from e
+    raise RuntimeError(f"rag_llm_embed_failed:{last_err!s}") from last_err
 
 
-def _embedding_vector_from_ollama_response(resp: dict[str, Any]) -> list[float]:
+def _embedding_vector_from_response(resp: dict[str, Any]) -> list[float]:
     if "embedding" in resp:
         emb = resp["embedding"]
         return list(emb) if isinstance(emb, list) else list(emb or [])
@@ -240,7 +240,7 @@ class PGVectorStore:
         query: str,
         collection_id: str,
         *,
-        ollama: Any,
+        llm: Any,
         embed_model: str,
         embed_model_fallback: str | None = None,
         keep_alive: str = "5m",
@@ -253,10 +253,10 @@ class PGVectorStore:
         Analyst / tools: embed ``query`` rồi cosine search trên ``rag_documents`` (cột ``collection_name`` = ``collection_id``).
         Không hardcode collection — truyền ``collection_id`` từ WorkerSettings.
         """
-        if ollama is None:
-            raise TypeError("similarity_search requires ollama client")
-        vector = await _ollama_embed_query_robust(
-            ollama,
+        if llm is None:
+            raise TypeError("similarity_search requires llm client")
+        vector = await _embed_query_robust(
+            llm,
             query,
             embed_model=embed_model,
             embed_model_fallback=embed_model_fallback,
@@ -360,7 +360,7 @@ class PGVectorStore:
         query: str,
         collection_id: str,
         *,
-        ollama: Any,
+        llm: Any,
         embed_model: str,
         embed_model_fallback: str | None = None,
         keep_alive: str = "5m",
@@ -371,10 +371,10 @@ class PGVectorStore:
         hybrid_vector_weight: float = 0.65,
     ) -> QueryResponse:
         """Dense + sparse merge (RRF), then apply score_threshold to best dense score per id."""
-        if ollama is None:
-            raise TypeError("similarity_search_hybrid requires ollama client")
-        vector = await _ollama_embed_query_robust(
-            ollama,
+        if llm is None:
+            raise TypeError("similarity_search_hybrid requires llm client")
+        vector = await _embed_query_robust(
+            llm,
             query,
             embed_model=embed_model,
             embed_model_fallback=embed_model_fallback,

@@ -40,7 +40,7 @@ def truncate_lesson_to_budget(text: str, max_chars: int) -> str:
     return t[: max_chars - 3].rstrip() + "..."
 
 
-def _embedding_from_ollama(resp: dict[str, Any]) -> list[float]:
+def _embedding_from_response(resp: dict[str, Any]) -> list[float]:
     if "embedding" in resp:
         emb = resp["embedding"]
         return list(emb) if not isinstance(emb, list) else emb
@@ -64,7 +64,7 @@ class SandboxLessonInput:
 
 
 async def synthesize_lesson_text(
-    ollama: Any,
+    llm: Any,
     ws: WorkerSettings,
     inp: SandboxLessonInput,
     *,
@@ -83,7 +83,7 @@ async def synthesize_lesson_text(
         f"user={(inp.user_snippet or '')[:500]}"
     )
     try:
-        resp = await ollama.chat(
+        resp = await llm.chat(
             model=ws.model_helper,
             messages=[
                 {
@@ -96,7 +96,6 @@ async def synthesize_lesson_text(
                 {"role": "user", "content": blob[:6000]},
             ],
             options={"temperature": 0.0, "num_predict": 180},
-            keep_alive=ws.ollama_keep_alive,
         )
         raw = ((resp.get("message") or {}).get("content") or "").strip()
     except Exception as e:
@@ -171,17 +170,16 @@ async def record_routing_from_success(
         json.dumps(args_playbook, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
     ).hexdigest()[:24]
     pattern_key = stable_playbook_pattern_key(t, symptom_text, args_playbook)
-    slot_held = bool(getattr(ctx, "ollama_slot_held", False))
+    slot_held = bool(getattr(ctx, "llm_slot_held", False))
     token: str | None = None
     if not slot_held:
         token = await ctx.semaphore.acquire()
     try:
-        emb = await ctx.ollama.embed(
+        emb = await ctx.llm.embed(
             model=ws.embed_model,
             input=match_text[:8000],
-            keep_alive=ws.ollama_keep_alive,
         )
-        vec = _embedding_from_ollama(emb)
+        vec = _embedding_from_response(emb)
         pay: dict[str, Any] = {
             "memory_kind": "playbook",
             "symptom_text": symptom_text[:2000],
@@ -269,17 +267,16 @@ async def record_agent_playbook_from_trajectory(
     ).hexdigest()[:24]
     pattern_key = stable_playbook_pattern_key(tool, symptom_text, args_playbook)
     auto_execute = is_fast_path_auto_allowed(tool, ws)
-    slot_held = bool(getattr(ctx, "ollama_slot_held", False))
+    slot_held = bool(getattr(ctx, "llm_slot_held", False))
     token: str | None = None
     if not slot_held:
         token = await ctx.semaphore.acquire()
     try:
-        emb = await ctx.ollama.embed(
+        emb = await ctx.llm.embed(
             model=ws.embed_model,
             input=match_text[:8000],
-            keep_alive=ws.ollama_keep_alive,
         )
-        vec = _embedding_from_ollama(emb)
+        vec = _embedding_from_response(emb)
         pay: dict[str, Any] = {
             "memory_kind": "playbook",
             "symptom_text": symptom_text[:2000],
@@ -339,17 +336,16 @@ async def record_routing_exhausted_no_data(
             sigs_ordered.append(r.error_signature)
     lesson = f"[không có dữ liệu exit={exit_reason}] {ut[:200]}{'…' if len(ut) > 200 else ''}"
     pid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"slow_exhausted:{ut}"))
-    slot_held = bool(getattr(ctx, "ollama_slot_held", False))
+    slot_held = bool(getattr(ctx, "llm_slot_held", False))
     token: str | None = None
     if not slot_held:
         token = await ctx.semaphore.acquire()
     try:
-        emb = await ctx.ollama.embed(
+        emb = await ctx.llm.embed(
             model=ws.embed_model,
             input=(user_text or "")[:8000],
-            keep_alive=ws.ollama_keep_alive,
         )
-        vec = _embedding_from_ollama(emb)
+        vec = _embedding_from_response(emb)
         pay: dict[str, Any] = {
             "lesson": lesson,
             "routing_source": ROUTING_SOURCE_SLOW_PATH_EXHAUSTED,
@@ -384,18 +380,17 @@ async def record_sandbox_lesson(
     ws: WorkerSettings = ctx.settings
     if not getattr(ws, "action_experience_enabled", True):
         return
-    slot_held = bool(getattr(ctx, "ollama_slot_held", False))
+    slot_held = bool(getattr(ctx, "llm_slot_held", False))
     token: str | None = None
     if not slot_held:
         token = await ctx.semaphore.acquire()
     try:
-        lesson = await synthesize_lesson_text(ctx.ollama, ws, inp, log_clip=ws.sandbox_log_clip_chars)
-        emb = await ctx.ollama.embed(
+        lesson = await synthesize_lesson_text(ctx.llm, ws, inp, log_clip=ws.sandbox_log_clip_chars)
+        emb = await ctx.llm.embed(
             model=ws.embed_model,
             input=lesson[:8000],
-            keep_alive=ws.ollama_keep_alive,
         )
-        vec = _embedding_from_ollama(emb)
+        vec = _embedding_from_response(emb)
         pay = {
             "lesson": lesson,
             "trace_id": inp.trace_id,
@@ -433,12 +428,11 @@ async def fetch_action_experience_context(
         return ""
     token = await ctx.semaphore.acquire()
     try:
-        emb = await ctx.ollama.embed(
+        emb = await ctx.llm.embed(
             model=ws.embed_model,
             input=q,
-            keep_alive=ws.ollama_keep_alive,
         )
-        vec = _embedding_from_ollama(emb)
+        vec = _embedding_from_response(emb)
         resp = await ctx.vector_store.query_points(
             collection_name=COLLECTION_ACTION_EXPERIENCE,
             query=vec,

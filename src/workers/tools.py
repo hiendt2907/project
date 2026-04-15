@@ -96,7 +96,7 @@ async def tool_echo(ctx: Any, args: dict[str, Any]) -> str:
 
 async def tool_reply(ctx: Any, args: dict[str, Any]) -> str:
     """Trả lời text (hội thoại)."""
-    from workers.ollama_prompts_en import truncate_plain_text_to_max_words
+    from workers.llm_prompts_en import truncate_plain_text_to_max_words
 
     t = truncate_plain_text_to_max_words(str(args.get("text") or args.get("message") or ""))
     return t or "(empty)"
@@ -115,7 +115,7 @@ register_tool("escalate_to_human", tool_escalate_to_human)
 
 async def tool_omni_mark_resolved(ctx: Any, args: dict[str, Any]) -> str:
     """Đóng phiên agentic — playbook học từ trajectory (không auto trên fast-path)."""
-    from workers.ollama_prompts_en import truncate_plain_text_to_max_words
+    from workers.llm_prompts_en import truncate_plain_text_to_max_words
 
     summary = truncate_plain_text_to_max_words(str(args.get("summary") or args.get("text") or ""))
     setattr(ctx, "_agentic_session_resolved", True)
@@ -183,10 +183,24 @@ def _bind_registry_tools(names: tuple[str, ...]) -> None:
 _bind_registry_tools(
     (
         "k8s_scale_deployment",
+        "k8s_scale_resource",
         "k8s_describe_resource",
         "k8s_tail_logs",
+        "k8s_get_logs",
+        "k8s_get_events",
+        "k8s_list_resources",
         "k8s_check_endpoints",
+        "k8s_get_deployment_state",
+        "k8s_list_workload_pods",
+        "k8s_get_pod_secret_refs",
+        "k8s_get_secret_keys",
+        "k8s_verify_rollout",
         "k8s_patch_resource",
+        "k8s_patch_configmap",
+        "k8s_patch_secret",
+        "k8s_create_or_patch_configmap",
+        "k8s_apply_rbac_least_privilege",
+        "k8s_delete_pod",
         "k8s_list_nodes",
         "k8s_node_conditions",
         "k8s_list_services",

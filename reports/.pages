@@ -1,0 +1,3 @@
+# Auto-nav for MkDocs (wiki embeds via wiki/docs/library/repo-reports symlink)
+nav:
+  - ...

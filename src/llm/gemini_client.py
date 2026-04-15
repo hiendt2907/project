@@ -10,7 +10,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
 from workers.settings import WorkerSettings
 
 logger = logging.getLogger(__name__)
@@ -76,15 +76,14 @@ async def gemini_generate_text(
     raise last_err
 
 
-async def gemini_generate_with_ollama_fallback(
+async def gemini_generate_with_llm_fallback(
     *,
     settings: WorkerSettings,
-    ollama: OllamaClient,
+    llm: "VLLMClient",
     system_instruction: str,
     user_text: str,
     trace_id: str,
-    ollama_model: str,
-    ollama_keep_alive: str,
+    llm_model: str,
 ) -> str:
     try:
         return await gemini_generate_text(
@@ -94,14 +93,13 @@ async def gemini_generate_with_ollama_fallback(
             trace_id=trace_id,
         )
     except Exception as e:
-        logger.warning("[%s] gemini failed, spillover ollama: %s", trace_id, e)
-        resp = await ollama.chat(
-            model=ollama_model,
+        logger.warning("[%s] gemini failed, spillover vllm: %s", trace_id, e)
+        resp = await llm.chat(
+            model=llm_model,
             messages=[
                 {"role": "system", "content": system_instruction[:8000]},
                 {"role": "user", "content": user_text[:12000]},
             ],
             options={"temperature": 0.35},
-            keep_alive=ollama_keep_alive,
         )
         return ((resp.get("message") or {}).get("content") or "").strip()

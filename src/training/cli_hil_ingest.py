@@ -60,7 +60,7 @@ def build_run_commands_json(
 ) -> dict[str, Any]:
     """Lệnh mẫu để chạy ingest (local + gợi ý Job K8s)."""
     local = (
-        f"PYTHONPATH=src OMNI_OLLAMA_BASE_URL={settings.ollama_base_url} "
+        f"PYTHONPATH=src OMNI_VLLM_BASE_URL={settings.vllm_base_url} "
         f"POSTGRES_RAG_DSN=${{POSTGRES_RAG_DSN:-postgresql://appuser:${{OMNI_DB_PASSWORD}}@pgpool-gateway:5432/ragdb}} "
         f"CLI_HIL_COLLECTION={collection} "
         f".venv/bin/python -m training.cli_hil_ingest --count {count}"
@@ -119,11 +119,11 @@ async def run_cli_hil_ingest(
         )
         return total_to_process
 
-    ollama = OllamaClient(base_url=settings.ollama_base_url, timeout_s=120.0)
+    llm = VLLMClient(base_url=settings.vllm_base_url, embed_url=settings.vllm_embed_url, timeout_s=120.0)
     pg_settings = PostgresRAGSettings()
     pg_pool = await init_pg_pool(pg_settings)
     vector_store = PGVectorStore(pg_pool)
-    sem = asyncio.Semaphore(settings.training_ollama_concurrency)
+    sem = asyncio.Semaphore(settings.training_llm_concurrency)
     done = 0
 
     try:
@@ -151,10 +151,10 @@ async def run_cli_hil_ingest(
 
             async with sem:
                 vecs = await sop_ingest_mod._embed_batch(
-                    ollama,
+                    llm,
                     model=settings.embed_model,
                     texts=texts,
-                    keep_alive=settings.ollama_keep_alive,
+                    
                 )
 
             for e, vec in zip(entries, vecs, strict=True):
@@ -176,7 +176,7 @@ async def run_cli_hil_ingest(
         logger.info("cli_hil_ingest complete: %s points", done)
         return done
     finally:
-        await ollama.aclose()
+        await llm.aclose()
         await vector_store.close()
 
 

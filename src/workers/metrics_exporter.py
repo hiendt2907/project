@@ -17,7 +17,7 @@ _messages: Any = None
 _scout_ts: Any = None
 _exhausted: Any = None
 _kill_switch: Any = None
-_ollama_up: Any = None
+_llm_up: Any = None
 _semaphore: Any = None
 _anomaly: Any = None
 _baseline_z_cpu: Any = None
@@ -58,7 +58,7 @@ _started = False
 
 def _ensure_metrics() -> None:
     global _build_info, _messages, _scout_ts, _exhausted
-    global _kill_switch, _ollama_up, _semaphore, _anomaly
+    global _kill_switch, _llm_up, _semaphore, _anomaly
     global _baseline_z_cpu, _baseline_z_mem, _baseline_dr
     global _baseline_chs, _baseline_remediation_silent
     global _circuit_breaker, _lag_size, _error_rate, _latency
@@ -91,13 +91,13 @@ def _ensure_metrics() -> None:
         "omni_proactive_kill_switch",
         "Proactive kill switch from Redis: 0=Active running 1=Bypassed",
     )
-    _ollama_up = Gauge(
-        "omni_ollama_up",
-        "Ollama HTTP /api/tags reachable (1=yes 0=no)",
+    _llm_up = Gauge(
+        "omni_llm_up",
+        "vLLM HTTP /health reachable (1=yes 0=no)",
     )
     _semaphore = Gauge(
-        "omni_ollama_semaphore_in_use",
-        "Ollama semaphore slots currently held",
+        "omni_llm_semaphore_in_use",
+        "LLM semaphore slots currently held",
         ["lane"],
     )
     _anomaly = Counter(
@@ -333,28 +333,33 @@ async def sync_proactive_kill_switch_metric(r: Any, key: str) -> None:
     _kill_switch.set(1.0 if engaged else 0.0)
 
 
-async def probe_ollama_up(base_url: str) -> None:
-    """GET {base}/api/tags — set omni_ollama_up 1/0."""
+async def probe_llm_up(base_url: str) -> None:
+    """GET {base}/health — set omni_llm_up 1/0."""
     _ensure_metrics()
-    url = (base_url or "").rstrip("/") + "/api/tags"
+    url = (base_url or "").rstrip("/") + "/health"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(url)
-            _ollama_up.set(1.0 if r.status_code < 500 else 0.0)
+            _llm_up.set(1.0 if r.status_code < 500 else 0.0)
     except Exception:
-        _ollama_up.set(0.0)
+        _llm_up.set(0.0)
 
 
-def ollama_semaphore_inc(lane: str) -> None:
+def llm_semaphore_inc(lane: str) -> None:
     _ensure_metrics()
     ln = lane if lane in ("proactive", "reactive") else "reactive"
     _semaphore.labels(lane=ln).inc()
 
 
-def ollama_semaphore_dec(lane: str) -> None:
+def llm_semaphore_dec(lane: str) -> None:
     _ensure_metrics()
     ln = lane if lane in ("proactive", "reactive") else "reactive"
     _semaphore.labels(lane=ln).dec()
+
+
+# Backwards-compatible aliases kept for any external callers during transition.
+ollama_semaphore_inc = llm_semaphore_inc
+ollama_semaphore_dec = llm_semaphore_dec
 
 
 def inc_anomaly_events() -> None:
@@ -546,16 +551,16 @@ async def observability_metrics_loop(
     *,
     redis: Any,
     kill_switch_key: str,
-    ollama_base_url: str,
+    llm_base_url: str,
     stop: asyncio.Event,
     stream_keys: tuple[str, ...] = (),
     interval_sec: float = 15.0,
 ) -> None:
-    """15s: sync kill switch + ping Ollama /api/tags + lag_size từ Redis."""
+    """15s: sync kill switch + ping vLLM /health + lag_size từ Redis."""
     while not stop.is_set():
         try:
             await sync_proactive_kill_switch_metric(redis, kill_switch_key)
-            await probe_ollama_up(ollama_base_url)
+            await probe_llm_up(llm_base_url)
             # Sync lag_size từ Redis Delayed Queue
             try:
                 lag = await redis.zcard("omni:delayed_queue")

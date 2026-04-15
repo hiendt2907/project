@@ -1,0 +1,116 @@
+# Wave A1 — Least-privilege RBAC for omni-executor (mutate path).
+#
+# Design: ClusterRole defines the verb/resource matrix once; namespace-scoped
+# RoleBindings restrict execution to autonomous_allowed_namespaces only.
+# No ClusterRoleBinding — executor MUST NOT mutate outside these namespaces.
+#
+# Allowed namespaces: multi-agent, production, staging, default
+# (mirrors OMNI_AUTONOMOUS_ALLOWED_NAMESPACES in omni-worker-configmap.yaml)
+#
+# Verify after apply:
+#   kubectl auth can-i patch deployments -n production \
+#     --as=system:serviceaccount:multi-agent:omni-executor    # → yes
+#   kubectl auth can-i '*' '*' --all-namespaces \
+#     --as=system:serviceaccount:multi-agent:omni-executor    # → no
+#   kubectl auth can-i delete deployments -n production \
+#     --as=system:serviceaccount:multi-agent:omni-executor    # → no
+#
+# Re-run e2e after apply:
+#   bash scripts/e2e_incident_matrix.sh
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omni-executor
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/name: omni-executor
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+---
+# ClusterRole: verb/resource matrix for executor mutations.
+# Bound only via RoleBinding (namespace-scoped) — never ClusterRoleBinding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-executor-mutate
+  labels:
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+rules:
+  # Workload mutations: rollout_restart + patch_deployment_resource
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # Read-only: pod identity + event evidence (INV_READ_BEFORE_MUTATE)
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+  # ConfigMap patch + create: k8s_patch_configmap and k8s_create_or_patch_configmap actions
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "patch"]
+  # Secret patch: k8s_patch_secret for credential rotation (e.g. DB password restore)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "patch", "update"]
+---
+# RoleBinding: multi-agent (executor home namespace)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omni-executor-mutate
+  namespace: multi-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-executor-mutate
+subjects:
+  - kind: ServiceAccount
+    name: omni-executor
+    namespace: multi-agent
+---
+# RoleBinding: production
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omni-executor-mutate
+  namespace: production
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-executor-mutate
+subjects:
+  - kind: ServiceAccount
+    name: omni-executor
+    namespace: multi-agent
+---
+# RoleBinding: staging
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omni-executor-mutate
+  namespace: staging
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-executor-mutate
+subjects:
+  - kind: ServiceAccount
+    name: omni-executor
+    namespace: multi-agent
+---
+# RoleBinding: default
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omni-executor-mutate
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-executor-mutate
+subjects:
+  - kind: ServiceAccount
+    name: omni-executor
+    namespace: multi-agent

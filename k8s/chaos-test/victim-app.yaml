@@ -1,0 +1,106 @@
+# Chaos Engineering Victim Application
+# Image: postgres:16-alpine (has psql built-in — no wget needed)
+# Credentials: from Secret chaos-pg-secret (same Secret as chaos-pg StatefulSet)
+#
+# Health loop: pg_isready + psql "SELECT 1" every 15s.
+#   → DB up & creds valid: exit 0 at end of loop iteration (never exits, keeps running)
+#   → Auth failure (wrong password): psql exits non-zero → script exits 1 → CrashLoopBackOff
+#
+# Fault injection (scripts/inject_real_fault.sh):
+#   kubectl patch secret chaos-pg-secret --type=merge \
+#     --patch '{"data":{"APP_PASSWORD":"<base64 wrong-pass>"}}'
+#   kubectl rollout restart deployment/chaos-victim -n multi-agent
+#
+# Cleanup: kubectl delete -f k8s/chaos-test/victim-app.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-victim
+  namespace: multi-agent
+  labels:
+    app: chaos-victim
+    chaos: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chaos-victim
+  template:
+    metadata:
+      labels:
+        app: chaos-victim
+        chaos: "true"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: app
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "[chaos-victim] Starting. Connecting to ${PGHOST}:${PGPORT}/${PGDATABASE} as ${PGUSER}"
+
+              # Wait for PG to be reachable before entering loop
+              RETRIES=0
+              until pg_isready -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -q; do
+                RETRIES=$((RETRIES + 1))
+                if [ "${RETRIES}" -ge 12 ]; then
+                  echo "[chaos-victim] FATAL: PostgreSQL at ${PGHOST}:${PGPORT} unreachable after 60s" >&2
+                  exit 1
+                fi
+                echo "[chaos-victim] Waiting for DB... attempt ${RETRIES}/12"
+                sleep 5
+              done
+
+              echo "[chaos-victim] DB reachable. Starting health loop."
+
+              while true; do
+                # Attempt real authentication + query
+                RESULT=$(PGPASSWORD="${PGPASSWORD}" psql \
+                  -h "${PGHOST}" -p "${PGPORT}" \
+                  -U "${PGUSER}" -d "${PGDATABASE}" \
+                  -c "SELECT 1 AS liveness;" \
+                  -t -A 2>&1)
+                EXIT_CODE=$?
+
+                if [ "${EXIT_CODE}" -ne 0 ]; then
+                  echo "[chaos-victim] FATAL: password authentication failed for user ${PGUSER}" >&2
+                  echo "[chaos-victim] FATAL: psql error: ${RESULT}" >&2
+                  exit 1
+                fi
+
+                echo "[chaos-victim] heartbeat OK db=${PGHOST}/${PGDATABASE} user=${PGUSER} result=${RESULT}"
+                sleep 15
+              done
+          env:
+            - name: PGHOST
+              value: "chaos-pg-0.chaos-pg.multi-agent.svc.cluster.local"
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: chaos-pg-secret
+                  key: APP_DB
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: chaos-pg-secret
+                  key: APP_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: chaos-pg-secret
+                  key: APP_PASSWORD
+          resources:
+            requests:
+              cpu: "5m"
+              memory: 16Mi
+            limits:
+              cpu: "50m"
+              memory: 64Mi

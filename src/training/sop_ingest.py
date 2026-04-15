@@ -16,7 +16,7 @@ from rag.pgvector_store import (
     init_pg_pool
 )
 from rag.sop_ledger import SOP_COLLECTION, sop_payload_for_fast_path
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
 from training.sop_expand import expand_entries, load_seed_path
 from workers.settings import WorkerSettings
 
@@ -44,13 +44,13 @@ def _pad_vec(v: list[float]) -> list[float]:
 
 
 async def _embed_batch(
-    ollama: OllamaClient,
+    llm: VLLMClient,
     *,
     model: str,
     texts: list[str],
     keep_alive: str | None,
 ) -> list[list[float]]:
-    resp = await ollama.embed(
+    resp = await llm.embed(
         model=model,
         input=texts,
         keep_alive=keep_alive,
@@ -83,11 +83,11 @@ async def run_ingest(
     if limit is not None:
         entries = entries[: max(0, limit)]
 
-    ollama = OllamaClient(base_url=settings.ollama_base_url, timeout_s=120.0)
+    llm = VLLMClient(base_url=settings.vllm_base_url, embed_url=settings.vllm_embed_url, timeout_s=120.0)
     pg_settings = PostgresRAGSettings()
     pg_pool = await init_pg_pool(pg_settings)
     vector_store = PGVectorStore(pg_pool)
-    sem = asyncio.Semaphore(settings.training_ollama_concurrency)
+    sem = asyncio.Semaphore(settings.training_llm_concurrency)
     upsert_batch = settings.sop_ingest_upsert_batch
     embed_batch = settings.sop_ingest_embed_batch
     log_every = settings.sop_ingest_log_every
@@ -116,10 +116,10 @@ async def run_ingest(
 
             async with sem:
                 vecs = await _embed_batch(
-                    ollama,
+                    llm,
                     model=settings.embed_model,
                     texts=texts,
-                    keep_alive=settings.ollama_keep_alive,
+                    
                 )
 
             for e, vec in zip(chunk, vecs, strict=True):
@@ -144,7 +144,7 @@ async def run_ingest(
         logger.info("sop_ingest complete: %s points", done)
         return done
     finally:
-        await ollama.aclose()
+        await llm.aclose()
         await vector_store.close()
 
 

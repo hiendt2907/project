@@ -6,6 +6,10 @@ metadata:
   namespace: multi-agent
   labels:
     app: omni-executor
+    app.kubernetes.io/name: omni-executor
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/criticality: "P1"
 spec:
   replicas: 1
   selector:
@@ -15,12 +19,16 @@ spec:
     metadata:
       labels:
         app: omni-executor
+        app.kubernetes.io/name: omni-executor
+        app.kubernetes.io/part-of: omni-platform
+        omni.io/managed: "true"
+        omni.io/criticality: "P1"
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
         prometheus.io/path: "/metrics"
     spec:
-      serviceAccountName: omni-worker
+      serviceAccountName: omni-executor
       automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true

@@ -317,3 +317,47 @@ scenarios:
     description: "Detect deleted-but-open file descriptor leak."
     expected_channel: SUGGEST_REMEDIATION
     expected_reason_codes: []
+  - id: rbac_cluster_admin_violation
+    group: security_hardening
+    runner: gateway_payload
+    prometheus_alert: OmniRbacClusterAdminViolation
+    proof_lane: state
+    expected_stage: state_confirm
+    summary: "P0: omni-executor SA holds cluster-admin — Zero-Trust violation."
+    description: >
+      The omni-worker ClusterRoleBinding grants cluster-admin to the shared
+      service account used by omni-executor. Probe rbac_drift to confirm,
+      then apply k8s_apply_rbac_least_privilege to create a scoped Role and
+      RoleBinding and remove the cluster-admin binding.
+    expected_channel: EXECUTE_MUTATE
+    expected_tool: k8s_apply_rbac_least_privilege
+    expected_reason_codes: []
+  - id: configmap_god_mode_prod
+    group: security_hardening
+    runner: gateway_payload
+    prometheus_alert: OmniConfigMapGodModeProd
+    proof_lane: state
+    expected_stage: state_confirm
+    summary: "P0: OMNI_GOD_MODE=true in prod ConfigMap — privilege escalation risk."
+    description: >
+      The omni-worker-config ConfigMap has OMNI_GOD_MODE=true while
+      OMNI_ENV_MODE=prod. Probe configmap_security_drift to confirm,
+      then patch the ConfigMap key to false via k8s_patch_configmap.
+    expected_channel: EXECUTE_MUTATE
+    expected_tool: k8s_patch_configmap
+    expected_reason_codes: []
+  - id: oom_killed_pod_no_recovery
+    group: ops_self_healing
+    runner: gateway_payload
+    prometheus_alert: OmniOomKilledPodNoRecovery
+    proof_lane: state
+    expected_stage: state_confirm
+    summary: "P1: Pod OOMKilled with no auto-recovery — memory limit too low."
+    description: >
+      A pod has been in OOMKilled state without recovery. Probe
+      k8s_clinical_pod_status and k8s_clinical_pod_events to confirm OOM
+      cause, then patch the deployment memory limit via k8s_patch_resource
+      to restore the workload.
+    expected_channel: EXECUTE_MUTATE
+    expected_tool: k8s_patch_resource
+    expected_reason_codes: []

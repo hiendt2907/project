@@ -1,23 +1,69 @@
 {
-  "schema_version": "1",
-  "started_at": 1775638206,
-  "ended_at": 1775638420,
-  "duration_sec": 214,
-  "git_sha": "2e74974a8b28a6c2cab59c28cda94679135eee6d",
-  "config_sha256_primary_matrix": "4c209d4b4a0add86dc54e0596ba762d2fb1c1113ee7e6d4696a998057b17e769",
-  "matrix_paths": "/Users/hiendang/project/config/incident_training_matrix.yaml:/Users/hiendang/project/config/prometheus_firing_simulation.yaml",
+  "schema_version": "2",
+  "wave": "A1+PhaseB",
+  "started_at": 1775804219,
+  "ended_at": 1775804248,
+  "duration_sec": 29,
+  "git_sha": "4919c1d083d4b08d2329773d9fca61812e72f3a4",
   "summary": {
-    "total": 1,
-    "passed": 1,
+    "total": 9,
+    "passed": 9,
     "failed": 0,
     "ok": true
   },
   "scenarios": [
     {
+      "scenario": "wave_a1_rbac_manifest",
+      "status": "passed",
+      "duration_sec": 0,
+      "note": ""
+    },
+    {
+      "scenario": "wave_a1_rbac_permissions",
+      "status": "passed",
+      "duration_sec": 0,
+      "note": ""
+    },
+    {
+      "scenario": "phase_b_pytest",
+      "status": "passed",
+      "duration_sec": 2,
+      "note": ""
+    },
+    {
+      "scenario": "phase_b_unit_full",
+      "status": "passed",
+      "duration_sec": 2,
+      "note": ""
+    },
+    {
+      "scenario": "phase_b_api_resource",
+      "status": "passed",
+      "duration_sec": 6,
+      "note": ""
+    },
+    {
+      "scenario": "phase_b_api_state",
+      "status": "passed",
+      "duration_sec": 3,
+      "note": ""
+    },
+    {
+      "scenario": "phase_b_api_app_log_fc",
+      "status": "passed",
+      "duration_sec": 0,
+      "note": ""
+    },
+    {
+      "scenario": "phase_b_sec_audit",
+      "status": "passed",
+      "duration_sec": 3,
+      "note": ""
+    },
+    {
       "scenario": "nginx_waiting_fault",
       "status": "passed",
-      "duration_sec": 213,
-      "trace_id": "gw-prom-47821021456e",
+      "duration_sec": 13,
       "note": ""
     }
   ]

@@ -1,0 +1,50 @@
+# Omni internal wiki — build: pip install -r wiki/requirements-docs.txt && mkdocs build -f wiki/mkdocs.yml
+site_name: Omni Lab Wiki
+site_description: Architecture, knowledge base (invariants, guardrails), module map, API, runbooks, embedded repo docs
+site_url: https://omni-wiki.internal/   # override when hosting
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Dark mode
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Light mode
+  features:
+    - navigation.tabs
+    - navigation.expand
+    - content.code.copy
+
+markdown_extensions:
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - admonition
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - awesome-pages
+
+# Nhúng symlink docs/ + reports/: link trỏ ../src/, ../k8s/ — không có trong site; tắt validate để serve/build sạch.
+# Wiki-only pages: vẫn nên kiểm tra link thủ công hoặc bật WIKI_STRICT + chỉnh validation tạm.
+validation:
+  nav:
+    omitted_files: ignore
+  links:
+    not_found: ignore
+    unrecognized_links: ignore
+    anchors: ignore
+
+docs_dir: docs
+
+# Default preview port (override: mkdocs serve -a 127.0.0.1:PORT)
+dev_addr: 127.0.0.1:9001

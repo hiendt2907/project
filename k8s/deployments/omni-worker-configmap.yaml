@@ -12,6 +12,8 @@ metadata:
   labels:
     app: omni-worker
 data:
+  OMNI_OOM_DETERMINISTIC_REMEDIATE_ENABLED: "false"
+  # Lab: deterministic OOM memory patch (requires alert labels + flag)
   OMNI_PROMETHEUS_URL: "prometheus.monitor.svc.cluster.local:9090"
   OMNI_VMAGENT_URL: "prometheus.monitor.svc.cluster.local:9090"
   # Autonomous forecast (Prophet / fallback → Telegram khi vượt ngưỡng). 1h/lần để nhẹ M4.
@@ -65,11 +67,14 @@ data:
   OMNI_REDIS_URL: "redis://redis:6379/0"
   OMNI_REDIS_CLUSTER: "false"
   OMNI_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
-  OMNI_ENV_MODE: "prod"
-  OMNI_OLLAMA_BASE_URL: "http://ollama-service:11434"
-  OMNI_OLLAMA_NUM_PARALLEL: "1"
-  OMNI_OLLAMA_HTTP_TIMEOUT_SEC: "600"
-  OMNI_OLLAMA_HTTP_CONNECT_TIMEOUT_SEC: "15"
+  OMNI_ENV_MODE: "dev"
+  # Ollama on macOS host (Apple Silicon GPU) — OrbStack DNS routes K8s pods → host.
+  OMNI_VLLM_BASE_URL: "http://host.orb.internal:11434/v1"
+  OMNI_VLLM_EMBED_URL: "http://host.orb.internal:11434/v1"
+  VLLM_BASE_URL: "http://host.orb.internal:11434/v1"
+  VLLM_EMBED_URL: "http://host.orb.internal:11434/v1"
+  VLLM_MODEL: "qwen2.5-coder:7b"
+  OMNI_LLM_NUM_PARALLEL: "2"
   OMNI_TELEGRAM_ENABLED: "true"
   # Model profile (go-prod baseline on current Ollama inventory)
   # - chat_model: fast/robust interactive + tool JSON
@@ -78,13 +83,13 @@ data:
   # - helper: JSON repair / lightweight transforms
   # - diag_evidence_llm_model: planner in evidence_consumer (pin to avoid fallback drift)
   # - autonomous_decider_model: autonomous decider loop
-  OMNI_CHAT_MODEL: "qwen2.5:7b"
-  OMNI_MODEL_REASONING_ENGINE: "deepseek-r1:8b"
-  OMNI_MODEL_HEAVY_LIFTER: "gemma3:27b"
-  OMNI_MODEL_HELPER: "qwen2.5:1.5b"
-  OMNI_DIAG_EVIDENCE_LLM_MODEL: "deepseek-r1:8b"
-  OMNI_AUTONOMOUS_DECIDER_MODEL: "deepseek-r1:8b"
-  OMNI_EMBED_MODEL: "nomic-embed-text:latest"
+  OMNI_CHAT_MODEL: "qwen2.5-coder:7b"
+  OMNI_MODEL_REASONING_ENGINE: "qwen2.5-coder:7b"
+  OMNI_MODEL_HEAVY_LIFTER: "qwen2.5-coder:7b"
+  OMNI_MODEL_HELPER: "qwen2.5-coder:7b"
+  OMNI_DIAG_EVIDENCE_LLM_MODEL: "qwen2.5-coder:7b"
+  OMNI_AUTONOMOUS_DECIDER_MODEL: "qwen2.5-coder:7b"
+  OMNI_EMBED_MODEL: "nomic-embed-text"
   OMNI_DEEP_SCOUT_INTERVAL_SEC: "1800"
   OMNI_METRICS_LISTEN_PORT: "9090"
   OMNI_OPENSANDBOX_ENABLED: "true"
@@ -100,3 +105,9 @@ data:
   OMNI_OTEL_SERVICE_NAME: "omni-worker"
   # Gateway (cùng ConfigMap): chặn flood chaos lab → không produce omni-alerts (agentic_chaos_validation)
   OMNI_GATEWAY_SILENCE_CHAOS_LAB: "true"
+  # Lab chaos inject (scripts/inject_real_fault.sh): deterministic k8s_patch_secret restores APP_PASSWORD
+  # before LLM when evidence matches chaos victim / chaos-pg (see chaos_credential_lab_autofix_plan_from_batch).
+  OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX_ENABLED: "true"
+  OMNI_CHAOS_PG_APP_PASSWORD: "chaos-app-pass-2025"
+  OMNI_CHAOS_PG_SECRET_NAME: "chaos-pg-secret"
+  OMNI_CHAOS_PG_PASSWORD_KEY: "APP_PASSWORD"

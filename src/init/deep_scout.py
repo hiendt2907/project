@@ -66,7 +66,7 @@ async def _kube_load() -> None:
         await config.load_kube_config()
 
 
-def _embedding_from_ollama(resp: dict[str, Any]) -> list[float]:
+def _embedding_from_response(resp: dict[str, Any]) -> list[float]:
     if "embedding" in resp:
         emb = resp["embedding"]
         return list(emb) if not isinstance(emb, list) else emb
@@ -300,7 +300,7 @@ async def _layer_cluster_state(ws: WorkerSettings) -> tuple[dict[str, Any], str]
 
 
 async def _embed_and_upsert(
-    ollama: OllamaClient,
+    llm: VLLMClient,
     ws: WorkerSettings,
     vector_store: Any,
     chunks: list[tuple[str, str, dict[str, Any]]],
@@ -312,12 +312,11 @@ async def _embed_and_upsert(
     async def one(cid: str, text: str, payload: dict[str, Any]) -> None:
         async with sem:
             try:
-                resp = await ollama.embed(
+                resp = await llm.embed(
                     model=ws.embed_model,
                     input=text[:8000],
-                    keep_alive=ws.ollama_keep_alive,
                 )
-                vec = _embedding_from_ollama(resp)
+                vec = _embedding_from_response(resp)
             except Exception as e:
                 logger.warning("deep_scout embed fail %s: %s", cid, e)
                 return
@@ -341,7 +340,7 @@ async def run_deep_scout(ctx: Any, *, periodic: bool = False) -> DeepScoutSummar
     summary = DeepScoutSummary(vm_url=ctx.settings.prometheus_url)
     ws: WorkerSettings = ctx.settings
     r = ctx.redis
-    ollama: OllamaClient = ctx.ollama
+    llm: VLLMClient = ctx.llm
     vector_store = ctx.vector_store
 
     host_d, host_txt = await _layer_host_node(ws)
@@ -386,7 +385,7 @@ async def run_deep_scout(ctx: Any, *, periodic: bool = False) -> DeepScoutSummar
 
     sem = asyncio.Semaphore(ws.deep_scout_embed_concurrency)
     try:
-        await _embed_and_upsert(ollama, ws, vector_store, chunks, sem)
+        await _embed_and_upsert(llm, ws, vector_store, chunks, sem)
     except Exception as e:
         summary.errors.append(f"rag_embed:{e!s}")
         logger.exception("deep_scout embed pipeline")

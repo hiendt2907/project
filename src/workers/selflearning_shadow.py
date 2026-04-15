@@ -45,9 +45,9 @@ async def _generate_three_hypotheses(
     trace: str,
     sanitized_text: str,
 ) -> list[dict[str, Any]]:
-    ollama = getattr(ctx, "ollama", None)
+    llm = getattr(ctx, "llm", None)
     ws = getattr(ctx, "settings", None)
-    if ollama is None or ws is None:
+    if llm is None or ws is None:
         return []
     model = (
         str(getattr(ws, "diag_evidence_llm_model", "") or "").strip()
@@ -63,7 +63,7 @@ async def _generate_three_hypotheses(
     )
     user = f"trace={trace}\nEvidence:\n{sanitized_text[:8000]}"
     try:
-        resp = await ollama.chat(
+        resp = await llm.chat(
             model=model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             stream=False,

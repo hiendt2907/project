@@ -24,8 +24,8 @@ spec:
               value: /app/data/sop/sop_templates.yaml
             - name: OMNI_MAX_SOP_CONTEXTS
               value: "10000"
-            - name: OMNI_OLLAMA_BASE_URL
-              value: http://ollama-service:11434
+            - name: OMNI_VLLM_BASE_URL
+              value: http://host.orb.internal:11434/v1
           resources:
             requests:
               cpu: "250m"

@@ -164,7 +164,7 @@ def _format_hits(
     max_words: int,
     max_block_chars: int,
 ) -> tuple[str, list[str]]:
-    from workers.ollama_prompts_en import truncate_plain_text_to_max_words
+    from workers.llm_prompts_en import truncate_plain_text_to_max_words
 
     lines: list[str] = []
     chunk_ids: list[str] = []
@@ -291,10 +291,9 @@ async def evaluate_rag_gate(
             resp = await ctx.vector_store.similarity_search_hybrid(
                 q,
                 collection,
-                ollama=ctx.ollama,
+                llm=ctx.llm,
                 embed_model=ws.embed_model,
                 embed_model_fallback=emb_fb_s or None,
-                keep_alive=ws.ollama_keep_alive,
                 limit=limit,
                 score_threshold=thr,
                 query_max_chars=qmax,
@@ -304,18 +303,17 @@ async def evaluate_rag_gate(
             resp = await ctx.vector_store.similarity_search(
                 q,
                 collection,
-                ollama=ctx.ollama,
+                llm=ctx.llm,
                 embed_model=ws.embed_model,
                 embed_model_fallback=emb_fb_s or None,
-                keep_alive=ws.ollama_keep_alive,
                 limit=limit,
                 score_threshold=thr,
                 query_max_chars=qmax,
             )
     except Exception as e:
         msg = str(e)
-        if "rag_ollama_embed_failed" in msg:
-            phase = "ollama_embed"
+        if "rag_llm_embed_failed" in msg:
+            phase = "llm_embed"
         elif "rag_pgvector_query_failed" in msg:
             phase = "pgvector_query"
         else:

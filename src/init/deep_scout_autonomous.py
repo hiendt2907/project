@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
 from kubernetes_asyncio import client, config
 from rag.pgvector_store import (
     COLLECTION_INFRA_TOPOLOGY, 
@@ -50,7 +50,7 @@ async def _kube_load() -> None:
         await config.load_kube_config()
 
 
-def _embedding_from_ollama(resp: dict[str, Any]) -> list[float]:
+def _embedding_from_response(resp: dict[str, Any]) -> list[float]:
     if "embedding" in resp:
         emb = resp["embedding"]
         return list(emb) if not isinstance(emb, list) else emb
@@ -140,7 +140,7 @@ def _pod_containers(p: Any) -> list[dict[str, str]]:
 
 
 async def _synthesize_one(
-    ollama: OllamaClient,
+    llm: VLLMClient,
     ws: WorkerSettings,
     entity_json: dict[str, Any],
     sem: asyncio.Semaphore,
@@ -149,13 +149,12 @@ async def _synthesize_one(
     user = f"JSON:\n{payload}"
     async with sem:
         try:
-            resp = await ollama.chat(
+            resp = await llm.chat(
                 model=ws.model_helper,
                 messages=[
                     {"role": "system", "content": SYNTH_SYSTEM_VI},
                     {"role": "user", "content": user},
                 ],
-                keep_alive=ws.ollama_keep_alive,
             )
             return ((resp.get("message") or {}).get("content") or "").strip()[:4000]
         except Exception as e:
@@ -164,7 +163,7 @@ async def _synthesize_one(
 
 
 async def _embed_upsert_one(
-    ollama: OllamaClient,
+    llm: VLLMClient,
     ws: WorkerSettings,
     vector_store: Any,
     *,
@@ -173,12 +172,11 @@ async def _embed_upsert_one(
     payload: dict[str, Any],
 ) -> None:
     try:
-        resp = await ollama.embed(
+        resp = await llm.embed(
             model=ws.embed_model,
             input=summary[:8000],
-            keep_alive=ws.ollama_keep_alive,
         )
-        vec = _embedding_from_ollama(resp)
+        vec = _embedding_from_response(resp)
         if len(vec) != EMBED_DIM:
             vec = (vec + [0.0] * EMBED_DIM)[:EMBED_DIM]
     except Exception as e:
@@ -198,7 +196,7 @@ _CHUNK = 115_000
 
 async def _synthesize_bigbang_chunk(
     ws: WorkerSettings,
-    ollama: OllamaClient,
+    llm: VLLMClient,
     chunk: str,
     idx: int,
     cluster_digest: dict[str, Any],
@@ -209,32 +207,30 @@ async def _synthesize_bigbang_chunk(
     backend = (ws.scout_synth_backend or "ollama").strip().lower()
     async with sem:
         if backend == "gemini":
-            from llm.gemini_client import gemini_generate_with_ollama_fallback
+            from llm.gemini_client import gemini_generate_with_llm_fallback
 
             return (
-                await gemini_generate_with_ollama_fallback(
+                await gemini_generate_with_llm_fallback(
                     settings=ws,
-                    ollama=ollama,
+                    llm=llm,
                     system_instruction=BIGBANG_SYNTH_SYSTEM_VI,
                     user_text=user[:1_050_000],
                     trace_id=f"bigbang-{idx}",
-                    ollama_model=ws.model_helper,
-                    ollama_keep_alive=ws.ollama_keep_alive,
+                    llm_model=ws.model_helper,
                 )
             ).strip()[:4000]
-        resp = await ollama.chat(
+        resp = await llm.chat(
             model=ws.model_helper,
             messages=[
                 {"role": "system", "content": BIGBANG_SYNTH_SYSTEM_VI},
                 {"role": "user", "content": user[:12000]},
             ],
-            keep_alive=ws.ollama_keep_alive,
         )
         return ((resp.get("message") or {}).get("content") or "").strip()[:4000]
 
 
 async def _run_bigbang_cluster_ingest(
-    ollama: OllamaClient,
+    llm: VLLMClient,
     periodic: bool,
     sem: asyncio.Semaphore,
     cluster_digest: dict[str, Any],
@@ -274,7 +270,7 @@ async def _run_bigbang_cluster_ingest(
     n_done = 0
     for idx, ch in enumerate(chunks):
         try:
-            summary_text = await _synthesize_bigbang_chunk(ws, ollama, ch, idx, cluster_digest, sem)
+            summary_text = await _synthesize_bigbang_chunk(ws, llm, ch, idx, cluster_digest, sem)
             if not summary_text.strip():
                 continue
             h = hashlib.sha256(ch.encode("utf-8", errors="replace")).hexdigest()[:24]
@@ -292,7 +288,7 @@ async def _run_bigbang_cluster_ingest(
                 "chunk_index": idx,
                 "ingest_secrets_raw": ws.ingest_secrets_raw,
             }
-            await _embed_upsert_one(ollama, ws, vector_store, point_id=pid, summary=summary_text, payload=pay)
+            await _embed_upsert_one(llm, ws, vector_store, point_id=pid, summary=summary_text, payload=pay)
             n_done += 1
         except Exception as e:
             logger.warning("bigbang chunk %s: %s", idx, e)
@@ -305,14 +301,14 @@ async def run_deep_scout_autonomous(ctx: Any, *, periodic: bool = False) -> Auto
     ws: WorkerSettings = ctx.settings
     vector_store = ctx.vector_store
 
-    local_ollama = OllamaClient(base_url=ws.ollama_base_url)
+    local_llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url)
     try:
-        ollama = local_ollama
+        llm = local_llm
         return await _run_deep_scout_autonomous_body(
-            periodic=periodic, summary=summary, ws=ws, vector_store=vector_store, ollama=ollama
+            periodic=periodic, summary=summary, ws=ws, vector_store=vector_store, llm=llm
         )
     finally:
-        await local_ollama.aclose()
+        await local_llm.aclose()
 
 
 async def _run_deep_scout_autonomous_body(
@@ -321,7 +317,7 @@ async def _run_deep_scout_autonomous_body(
     summary: AutonomousScoutSummary,
     ws: WorkerSettings,
     vector_store: Any,
-    ollama: OllamaClient,
+    llm: VLLMClient,
 ) -> AutonomousScoutSummary:
     sem = asyncio.Semaphore(ws.autonomous_synth_concurrency)
     series_ok, vm_ns = await _vm_namespace_baselines(ws)
@@ -399,7 +395,7 @@ async def _run_deep_scout_autonomous_body(
             "namespace_cpu_rate_sample": (vm_ns.get("namespaces_cpu") or {}).get(ns),
             "namespace_mem_sample": (vm_ns.get("namespaces_mem") or {}).get(ns),
         }
-        text = await _synthesize_one(ollama, ws, entity, sem)
+        text = await _synthesize_one(llm, ws, entity, sem)
         pid = _point_id_autonomous("pod", ns, pn)
         pay = {
             "entity_type": "pod",
@@ -412,7 +408,7 @@ async def _run_deep_scout_autonomous_body(
             "source": "autonomous_scout",
             "periodic": periodic,
         }
-        await _embed_upsert_one(ollama, ws, vector_store, point_id=pid, summary=text, payload=pay)
+        await _embed_upsert_one(llm, ws, vector_store, point_id=pid, summary=text, payload=pay)
         summary.pods_processed += 1
 
     svc_seen: set[tuple[str, str]] = set()
@@ -438,7 +434,7 @@ async def _run_deep_scout_autonomous_body(
             "namespace_cpu_rate_sample": (vm_ns.get("namespaces_cpu") or {}).get(ns),
             "namespace_mem_sample": (vm_ns.get("namespaces_mem") or {}).get(ns),
         }
-        text = await _synthesize_one(ollama, ws, entity, sem)
+        text = await _synthesize_one(llm, ws, entity, sem)
         pid = _point_id_autonomous("svc", ns, sn)
         pay = {
             "entity_type": "service",
@@ -451,7 +447,7 @@ async def _run_deep_scout_autonomous_body(
             "source": "autonomous_scout",
             "periodic": periodic,
         }
-        await _embed_upsert_one(ollama, ws, vector_store, point_id=pid, summary=text, payload=pay)
+        await _embed_upsert_one(llm, ws, vector_store, point_id=pid, summary=text, payload=pay)
         summary.services_processed += 1
 
     if ws.autonomous_probe_enabled and ws.opensandbox_enabled:

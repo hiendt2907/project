@@ -37,6 +37,25 @@ _EPHEMERAL_ARG_KEYS = frozenset(
     }
 )
 
+# Keys whose values must never be stored in vectors or post-mortems.
+_SENSITIVE_ARG_KEYS = frozenset(
+    {
+        "value",
+        "password",
+        "secret",
+        "token",
+        "credential",
+        "credentials",
+        "api_key",
+        "apikey",
+        "auth",
+        "authorization",
+        "private_key",
+        "cert",
+        "certificate",
+    }
+)
+
 
 def strip_ephemeral_from_args(args: dict[str, Any] | None) -> dict[str, Any]:
     """Remove or redact volatile identifiers from tool args for stable playbook storage."""
@@ -47,6 +66,8 @@ def strip_ephemeral_from_args(args: dict[str, Any] | None) -> dict[str, Any]:
         lk = str(k).lower()
         if lk in _EPHEMERAL_ARG_KEYS:
             out[k] = "<ephemeral>"
+        elif lk in _SENSITIVE_ARG_KEYS:
+            out[k] = "<redacted>"
         elif isinstance(v, dict):
             out[k] = strip_ephemeral_from_args(v)
         elif isinstance(v, list):

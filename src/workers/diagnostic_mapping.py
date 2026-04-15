@@ -115,6 +115,24 @@ def _row_matches(row: MatrixRow, ev: AnomalyEvent) -> bool:
     return False
 
 
+def alertname_from_anomaly_event(ev: AnomalyEvent) -> str:
+    """Return ``labels.alertname`` from JSON ``canonical_query`` when present."""
+    cq = ev.canonical_query or ""
+    if not cq.strip().startswith("{"):
+        return ""
+    try:
+        obj = json.loads(cq)
+        if not isinstance(obj, dict):
+            return ""
+        labels = obj.get("labels")
+        if isinstance(labels, dict):
+            an = str(labels.get("alertname") or "").strip()
+            return an
+    except Exception:
+        return ""
+    return ""
+
+
 def classify_event(ev: AnomalyEvent, matrix: DiagnosticMatrixFile) -> MatrixRow | None:
     """Return the first matching matrix row.
 

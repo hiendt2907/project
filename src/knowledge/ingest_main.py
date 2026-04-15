@@ -10,7 +10,7 @@ from pathlib import Path
 
 from knowledge.config import load_knowledge_sources
 from knowledge.pipeline import run_pipeline_for_entry
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
 from rag.pgvector_store import COLLECTION_VENDOR_KNOWLEDGE, PGVectorStore, PostgresRAGSettings, init_pg_pool
 from training.sop_ingest import _embed_batch  # noqa: PLC2701 — shared embed helper
 from workers.settings import WorkerSettings
@@ -22,14 +22,13 @@ async def _run(sources_path: str, *, dry_run: bool, limit_sources: int | None) -
     logging.basicConfig(level=logging.INFO)
     cfg = load_knowledge_sources(sources_path)
     ws = WorkerSettings()
-    ollama = OllamaClient(base_url=ws.ollama_base_url, timeout_s=120.0)
+    llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url, timeout_s=120.0)
 
     async def embed_fn(texts: list[str]) -> list[list[float]]:
         return await _embed_batch(
             ollama,
             model=ws.embed_model,
             texts=texts,
-            keep_alive=ws.ollama_keep_alive,
         )
 
     entries = cfg.sources

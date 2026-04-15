@@ -177,7 +177,7 @@ async def agentic_slow_path_with_llm_and_tools(
     actx = await fetch_action_experience_context(ctx, user_text)
     logger.info("[%s] agentic_acquire", trace)
     token = await ctx.semaphore.acquire()
-    ctx.ollama_slot_held = True
+    ctx.llm_slot_held = True
     ctx._agentic_session_resolved = False
     ctx._agentic_resolve_summary = ""
 
@@ -254,11 +254,11 @@ async def agentic_slow_path_with_llm_and_tools(
                     )
                 inc_llm_requests()
                 with _agentic_span("llm_generate"):
-                    resp = await ctx.ollama.chat(
+                    resp = await ctx.llm.chat(
                         model=model,
                         messages=messages,
                         options={"temperature": 0.1, "num_ctx": 4096},
-                        keep_alive=ctx.settings.ollama_keep_alive,
+                        format="json",
                     )
                 content = (resp.get("message") or {}).get("content") or ""
                 if getattr(ctx.settings, "agentic_debug_io", False):
@@ -628,5 +628,5 @@ async def agentic_slow_path_with_llm_and_tools(
         )
         raise
     finally:
-        ctx.ollama_slot_held = False
+        ctx.llm_slot_held = False
         await ctx.semaphore.release(token)

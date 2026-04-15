@@ -12,7 +12,7 @@ from workers.clarification import is_scope_ambiguous_cpu_ram
 logger = logging.getLogger(__name__)
 
 
-def _embedding_from_ollama(resp: dict[str, Any]) -> list[float]:
+def _embedding_from_response(resp: dict[str, Any]) -> list[float]:
     if "embedding" in resp:
         emb = resp["embedding"]
         return list(emb) if not isinstance(emb, list) else emb
@@ -104,12 +104,11 @@ async def preflight_infra_kb(
         return learned
 
     try:
-        emb_resp = await ctx.ollama.embed(
+        emb_resp = await ctx.llm.embed(
             model=ctx.settings.embed_model,
             input=raw[:2000],
-            keep_alive=ctx.settings.ollama_keep_alive,
         )
-        vector = _embedding_from_ollama(emb_resp)
+        vector = _embedding_from_response(emb_resp)
         learned.embed_vector = vector
         learned.had_vector_search = True
 
