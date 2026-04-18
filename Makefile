@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: test-evidence docker-worker docker-gateway deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit
+.PHONY: test-evidence docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate migrate-playbook-schema prove-siem-capabilities siem-proof-3x siem-lab-gate
 
 test-evidence:
 	bash scripts/run_test_evidence.sh
@@ -21,6 +21,14 @@ docker-worker:
 
 docker-gateway:
 	docker build -t omni-gateway:latest -f Dockerfile.gateway .
+
+# Builds finguard-hitl-api binary from smart-siem monorepo.
+# Build context is smart-siem/ so go.work + vendor are on PATH.
+# Tag: finguard-hitl-api:lab  (override with IMAGE_TAG=prod make docker-hitl-api)
+docker-hitl-api:
+	docker build -t finguard-hitl-api:$${IMAGE_TAG:-lab} \
+	  -f smart-siem/Dockerfile.hitl-api \
+	  smart-siem/
 
 # Master Plan V3: omni-prober (alerts+diagnostic) + omni-analyst (evidence) + omni-core (periodic/proactive).
 deploy-worker:
@@ -118,4 +126,64 @@ autonomy-gate:
 	.venv/bin/python scripts/validate_nonimpact_guards_gate.py
 	.venv/bin/python scripts/validate_learning_loop_gate.py
 	.venv/bin/python -m pytest tests/test_autonomous_contract.py tests/test_analyst_agentic_loop.py tests/test_diagnostic_mapping.py tests/test_evidence_proof_gate.py tests/test_proactive_fail_safe.py tests/test_proactive_guardrails.py tests/integration/test_autonomy_loop_transitions.py tests/integration/test_autonomy_transition_contract_strict.py -q
+	$(MAKE) hitl-gate
 	.venv/bin/python scripts/full_system_audit.py --duration-sec 90 --interval-sec 10 --strict --min-action-experience 0
+
+# SIEM stack: deploy SIEM bridge + HITL dispatcher + EvidenceAdapter (multi-agent namespace).
+# Run `make docker-worker` first to rebuild the image with the new services.
+deploy-siem-stack:
+	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-siem-bridge.yaml
+	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-hitl-dispatcher.yaml
+	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-evidence-adapter.yaml
+	./scripts/with_working_kube.sh rollout restart deployment/omni-siem-bridge deployment/omni-hitl-dispatcher deployment/omni-evidence-adapter -n multi-agent
+	./scripts/with_working_kube.sh rollout status deployment/omni-siem-bridge -n multi-agent --timeout=120s
+	./scripts/with_working_kube.sh rollout status deployment/omni-hitl-dispatcher -n multi-agent --timeout=120s
+	./scripts/with_working_kube.sh rollout status deployment/omni-evidence-adapter -n multi-agent --timeout=120s
+
+# Deploy finguard-hitl-api into finguard-customer namespace via kustomize.
+# Prerequisite: `make docker-hitl-api` and image imported into cluster (k3s ctr import or registry push).
+# Secrets must be pre-created out-of-band; see scripts/rotate_hitl_token.sh.
+deploy-hitl-api:
+	./scripts/with_working_kube.sh apply -k smart-siem/customer/k3s/overlays/lab
+	./scripts/with_working_kube.sh rollout status deployment/finguard-hitl-api -n finguard-customer --timeout=120s
+
+# Run post-deploy production readiness gate for the full HITL path.
+verify-hitl-production:
+	bash scripts/verify_hitl_production.sh
+
+# CI gate: unit tests + token rotation script linting.
+# Safe to run without cluster access; tests use fakeredis/mock Kafka.
+hitl-gate:
+	.venv/bin/python -m pytest tests/test_hitl_dispatcher.py -q --tb=short
+	bash -n scripts/rotate_hitl_token.sh
+	bash -n scripts/verify_hitl_production.sh
+
+# Run full SIEM capability proof (CAP-1 through CAP-6) against live cluster.
+# Requires: cluster port-forwards active (Kafka:29092, Redis:16379/19379, HITL:18081).
+# HITL_TOKEN is read from in-cluster secret; no env var needed when running locally.
+# Output: artifacts/siem_capability_proof_<YYYYMMDD_HHMM>.json
+prove-siem-capabilities:
+	mkdir -p artifacts
+	HITL_TOKEN=$$(./scripts/with_working_kube.sh get secret hitl-dispatcher-secret -n multi-agent \
+	  -o jsonpath='{.data.hitl_api_token}' | base64 -d) \
+	  .venv/bin/python scripts/prove_siem_capabilities.py \
+	    --out artifacts/siem_capability_proof_$$(date +%Y%m%d_%H%M).json
+
+# Run capability proof 3 consecutive times to catch flakes.
+# All 3 must pass; fails fast on first failure.
+siem-proof-3x:
+	@echo "=== siem-proof-3x: run 1/3 ===" && $(MAKE) prove-siem-capabilities
+	@echo "=== siem-proof-3x: run 2/3 ===" && $(MAKE) prove-siem-capabilities
+	@echo "=== siem-proof-3x: run 3/3 ===" && $(MAKE) prove-siem-capabilities
+	@echo "=== siem-proof-3x: all 3 runs passed ==="
+
+# Lab-only gate: full SIEM capability proof + production readiness check.
+# Requires live cluster with port-forwards. NOT run in GitHub CI.
+# To run: make siem-lab-gate
+siem-lab-gate:
+	$(MAKE) verify-hitl-production
+	$(MAKE) prove-siem-capabilities
+
+# Apply Playbook Engine Postgres schema (idempotent — safe to re-run).
+migrate-playbook-schema:
+	PGPASSWORD=$$OMNI_DB_PASSWORD psql -h pgpool-gateway -U appuser -d ragdb -f scripts/migrate_playbook_schema.sql

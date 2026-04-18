@@ -1,0 +1,12 @@
+{
+  "results": {
+    "C1_DETECT": true,
+    "C3_HITL_GATE": true,
+    "C4_APPROVE": true,
+    "C4_REJECT": true,
+    "C5_FAIL_CLOSED": true,
+    "C6_AUDIT": true,
+    "C2_DECIDE": true
+  },
+  "ts": "2026-04-18T04:11:54.795496+00:00"
+}

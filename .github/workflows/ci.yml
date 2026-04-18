@@ -1,4 +1,16 @@
-# Build image + unit tests (runner có sẵn Docker).
+# CI runs two jobs:
+#   test         — Python unit + contract tests (no cluster needed)
+#   docker-image — build validation for worker, gateway, HITL dispatcher, and HITL API images
+#
+# CLUSTER-DEPENDENT GATES (lab-only, NOT run here):
+#   make siem-lab-gate        — full Smart-SIEM capability proof (needs Kafka/Redis/HITL port-forwards)
+#   make prove-siem-capabilities — CAP-1 through CAP-6 live proof
+#   make siem-proof-3x        — 3-run flake burn-in
+#   bash scripts/verify_hitl_production.sh — in-cluster readiness gate
+#   bash scripts/gateway_alert_loki_verify.sh — full pipeline E2E
+#
+# To run lab gates: `make siem-lab-gate` with port-forwards active on the lab cluster.
+# See: docs/runbooks/siem-capability-proof.md
 name: ci
 
 on:
@@ -41,6 +53,17 @@ jobs:
       - name: Contract pytest
         run: pytest -q --tb=short tests/test_autonomous_contract.py tests/test_analyst_agentic_loop.py tests/test_diagnostic_mapping.py tests/test_evidence_proof_gate.py tests/test_proactive_guardrails.py tests/integration/test_autonomy_loop_transitions.py tests/integration/test_autonomy_transition_contract_strict.py
 
+      - name: HITL dispatcher unit gate
+        # Covers: _PartitionTracker watermark, bounded queue back-pressure, hitl_reason propagation.
+        # Full end-to-end proof (CAP-1 through CAP-6) is lab-only — see docs/runbooks/siem-capability-proof.md
+        run: pytest -q --tb=short tests/test_hitl_dispatcher.py
+
+      - name: Script syntax check (SIEM scripts)
+        # Validate scripts are syntactically correct without executing them
+        run: |
+          bash -n scripts/verify_hitl_production.sh
+          bash -n scripts/rotate_hitl_token.sh
+
   docker-image:
     runs-on: ubuntu-latest
     steps:
@@ -66,5 +89,25 @@ jobs:
           file: ./Dockerfile.gateway
           push: false
           tags: omni-gateway:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build HITL dispatcher image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.hitl-dispatcher
+          push: false
+          tags: omni-hitl-dispatcher:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build HITL API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./smart-siem
+          file: ./smart-siem/Dockerfile.hitl-api
+          push: false
+          tags: finguard-hitl-api:lab
           cache-from: type=gha
           cache-to: type=gha,mode=max
