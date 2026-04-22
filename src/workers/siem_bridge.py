@@ -196,8 +196,45 @@ async def run(redis: Redis, producer: AIOKafkaProducer) -> None:
             await asyncio.sleep(2)
 
 
+_SYNTHETIC_REASON_PREFIXES: tuple[str, ...] = (
+    "autonomy_loop",
+    "chaos_test",
+    "synthetic_",
+    "loop_test",
+)
+
+
+def _is_synthetic(fields: dict) -> bool:
+    # Accept both flat shape (finguard native) and nested {"data": "<json>"} (tooling).
+    candidates: list[dict] = [fields]
+    raw = fields.get("data")
+    if isinstance(raw, str):
+        try:
+            inner = json.loads(raw)
+            if isinstance(inner, dict):
+                candidates.append(inner)
+        except Exception:
+            pass
+    for c in candidates:
+        reason = str(c.get("reason") or "").lower()
+        if reason.startswith(_SYNTHETIC_REASON_PREFIXES):
+            return True
+        tenant = str(c.get("tenant_id") or "").lower()
+        if tenant.startswith(("loop-", "chaos", "synthetic-")):
+            return True
+        pod = str(c.get("pod") or "").lower()
+        if pod.startswith(("loop-pod", "chaos-")):
+            return True
+    return False
+
+
 async def _process(redis: Redis, producer: AIOKafkaProducer, msg_id: str, fields: dict) -> None:
     incident_id = fields.get("id", msg_id)
+    if _is_synthetic(fields):
+        # Ack and drop. Do not forward synthetic load-test events to Omni.
+        await redis.xack(STREAM, GROUP, msg_id)
+        log.info('"synthetic_dropped" incident_id="%s" reason="%s"', incident_id, fields.get("reason", ""))
+        return
     try:
         alert = translate_incident(msg_id, fields)
         trace_id = alert["alerts"][0]["labels"].get("trace_id", f"fg-{msg_id[:8]}")

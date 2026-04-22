@@ -81,7 +81,11 @@ from pkg.reasoning.deterministic_mutate_from_evidence import (
 from pkg.reasoning.incident_matrix_profile import alertname_from_batch, resolve_proof_lane
 from pkg.reasoning.preflight_deployment_secret_refs import merge_preflight_deployment_secret_refs
 from workers.log_surge_probe import evaluate_log_surge_sigma_bypass, namespace_pod_from_batch
-from workers.telegram_escalation import emit_telegram_escalation, format_operator_action_card
+from workers.telegram_escalation import (
+    emit_telegram_escalation,
+    format_operator_action_card,
+    format_operator_triage_card,
+)
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.telegram_outbound import send_telegram_out_for_inbound
 from workers import llm_prompts_en as ope
@@ -281,17 +285,15 @@ async def _notify_siem_telegram(
         logger.warning("event=siem_suggest_no_admin_cid trace=%s — set OMNI_TELEGRAM_ADMIN_CHAT_ID", trace)
         return
     siem = _siem_alert_labels(batch)
-    known: dict[str, str] = {
-        "trace": trace,
-        "incident_id": siem.get("siem_incident_id", "n/a"),
-        "severity": siem.get("severity", "n/a"),
-        "category": siem.get("siem_category", "n/a"),
-    }
-    ns = siem.get("namespace") or ""
-    if ns:
-        known["namespace"] = ns
-    # Pull richer fields from siem_incident_context extracted_fact if present.
-    # coerce_evidence_dict serializes extracted_fact → JSON string, so handle both.
+    incident_id = siem.get("siem_incident_id", "n/a")
+    severity = siem.get("severity", "n/a")
+    category = siem.get("siem_category", "n/a")
+    ns = siem.get("namespace") or "?"
+    alert_name = siem.get("alertname") or f"SIEM{category.title().replace('_','')}"
+    affected_ip = ""
+    description = ""
+    suggested_action = siem.get("suggested_action", "")
+    tenant = ""
     for b in batch:
         if b.get("probe") == "siem_incident_context":
             _ef_raw = b.get("extracted_fact")
@@ -305,28 +307,46 @@ async def _notify_siem_telegram(
                         _ef = _parsed
                 except Exception:
                     pass
-            if _ef.get("affected_ip"):
-                known["affected_ip"] = _ef["affected_ip"]
-            if _ef.get("description"):
-                known["description"] = _ef["description"][:200]
+            affected_ip = _ef.get("affected_ip") or ""
+            description = (_ef.get("description") or "")[:200]
             if _ef.get("tenant") and _ef["tenant"] != "unknown":
-                known["tenant"] = _ef["tenant"]
+                tenant = _ef["tenant"]
             break
-    # Extract actionable steps from the diagnosis (lines starting with digit.)
-    step_lines = [
-        ln.strip()
-        for ln in diagnosis.splitlines()
-        if ln.strip() and (ln.strip()[0].isdigit() or ln.strip().startswith("kubectl") or ln.strip().startswith("Review") or ln.strip().startswith("Apply") or ln.strip().startswith("Isolate") or ln.strip().startswith("Rotate") or ln.strip().startswith("Segment") or ln.strip().startswith("Audit") or ln.strip().startswith("Check"))
-    ]
-    if siem.get("suggested_action"):
-        step_lines.append(f"SIEM recommendation: {siem['suggested_action'][:200]}")
-    card_body = format_operator_action_card(
-        known_facts=known,
-        missing_facts=["automated execution blocked — SIEM incidents require human approval"],
-        suggested_steps=step_lines or [f"Review: {diagnosis[:400]}"],
+    problem = f"{alert_name} [{severity}] — incident={incident_id}"
+    if ns and ns != "?":
+        problem += f" ns={ns}"
+    if tenant:
+        problem += f" tenant={tenant}"
+    if affected_ip:
+        problem += f" ip={affected_ip}"
+    reason = description or diagnosis[:300].strip() or f"category={category} — LLM diagnosis absent"
+    chain_items: list[str] = []
+    for b in (batch or [])[:5]:
+        probe = str(b.get("probe") or "").strip()
+        lane = str(b.get("lane") or b.get("evidence_source") or "").strip()
+        hint = str(b.get("alert_hint") or b.get("result") or "").strip()[:80]
+        ts = str(b.get("ts") or b.get("timestamp") or "").strip()[:19]
+        bits = [x for x in (ts, f"[{lane}]" if lane else "", probe, f"— {hint}" if hint else "") if x]
+        if bits:
+            chain_items.append(" ".join(bits))
+    advise: list[str] = []
+    for ln in diagnosis.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if s[0].isdigit() or s.startswith(("kubectl", "Review", "Apply", "Isolate", "Rotate", "Segment", "Audit", "Check")):
+            advise.append(s)
+    if suggested_action:
+        advise.append(f"SIEM recommendation: {suggested_action[:200]}")
+    if not advise:
+        advise.append(f"Review: {diagnosis[:400]}")
+    advise.append("Omni does NOT auto-execute SIEM incidents — human approval required")
+    card_body = format_operator_triage_card(
+        problem=problem, reason=reason, chain=chain_items, advise=advise,
     )
     msg = (
         f"[SIEM] FinGuard incident — human execution required\n"
+        f"trace={trace}\n"
         f"{card_body}"
     )[:4096]
     try:
@@ -1881,41 +1901,72 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 if planner_emitted:
                     return display_out
 
-                _tg_known: dict[str, str] = {}
+                _tg_ns = _batch_identity.get("namespace") or ""
+                _tg_pod = _batch_identity.get("pod") or ""
+                _tg_dep = _batch_identity.get("deployment") or ""
+                _tg_alertname = alertname_from_batch(batch) or "UnknownAlert"
+                _tg_severity = ""
                 if batch:
-                    _ar = str(batch[0].get("alert_rule") or "").strip()[:80]
-                    _ah = str(batch[0].get("alert_hint") or "").strip()[:120]
-                    if _ar:
-                        _tg_known["alert"] = _ar
-                    if _ah:
-                        _tg_known["hint"] = _ah
-                _tg_known.update(_batch_identity)
-                _tg_missing: list[str] = []
-                if not _batch_identity.get("namespace"):
-                    _tg_missing.append("namespace unknown")
-                if not _batch_identity.get("pod"):
-                    _tg_missing.append("pod name")
-                if not _batch_identity.get("deployment"):
-                    _tg_missing.append("deployment name")
-                _tg_missing.append("RAG knowledge: miss — no matching runbook")
+                    _tg_severity = str(batch[0].get("severity") or "").strip()
+                # Problem
+                _resource = _tg_dep or _tg_pod or "?"
+                _ns_disp = _tg_ns or "?"
+                _sev_suf = f" [{_tg_severity}]" if _tg_severity else ""
+                _problem = f"{_tg_alertname} on {_ns_disp}/{_resource}{_sev_suf}"
+                # Reason
+                _gaps: list[str] = []
+                if not _tg_ns:
+                    _gaps.append("namespace")
+                if not _tg_pod:
+                    _gaps.append("pod")
+                if not _tg_dep:
+                    _gaps.append("deployment")
                 if human:
-                    _tg_missing.append(f"LLM: {human[:200]}")
-                _tg_steps: list[str] = []
-                _tg_ns = _batch_identity.get("namespace")
-                _tg_dep = _batch_identity.get("deployment")
+                    _reason = human[:400].strip()
+                elif _gaps:
+                    _reason = "identity incomplete — missing " + ", ".join(_gaps) + "; RAG returned no matching runbook"
+                else:
+                    _reason = "RAG miss — no runbook matched; LLM produced no hypothesis"
+                # Chain: correlated events in this batch (state → app_log → metrics)
+                _chain: list[str] = []
+                for _ev in (batch or [])[:6]:
+                    _ar = str(_ev.get("alert_rule") or "").strip()[:80]
+                    _ah = str(_ev.get("alert_hint") or "").strip()[:100]
+                    _ln = str(_ev.get("lane") or _ev.get("source") or "").strip()
+                    _ts = str(_ev.get("timestamp") or _ev.get("fired_at") or "").strip()[:19]
+                    parts: list[str] = []
+                    if _ts:
+                        parts.append(_ts)
+                    if _ln:
+                        parts.append(f"[{_ln}]")
+                    if _ar:
+                        parts.append(_ar)
+                    if _ah:
+                        parts.append(f"— {_ah}")
+                    if parts:
+                        _chain.append(" ".join(parts))
+                # Advise
+                _advise: list[str] = []
                 if _tg_ns and _tg_dep:
-                    _tg_steps.append(f"kubectl describe deployment {_tg_dep} -n {_tg_ns}")
-                    _tg_steps.append(f"kubectl get pods -n {_tg_ns} -l app={_tg_dep} --show-labels")
+                    _advise.append(f"kubectl describe deployment {_tg_dep} -n {_tg_ns}")
+                    _advise.append(f"kubectl get pods -n {_tg_ns} -l app={_tg_dep} --show-labels")
+                    _advise.append(f"kubectl logs deployment/{_tg_dep} -n {_tg_ns} --tail=100")
+                elif _tg_ns and _tg_pod:
+                    _advise.append(f"kubectl describe pod {_tg_pod} -n {_tg_ns}")
+                    _advise.append(f"kubectl logs {_tg_pod} -n {_tg_ns} --tail=200")
                 elif _tg_ns:
-                    _tg_steps.append(f"kubectl get pods -n {_tg_ns} --show-labels")
-                _tg_steps.append("review runbook or escalate to on-call")
-                _tg_card = format_operator_action_card(
-                    known_facts=_tg_known,
-                    missing_facts=_tg_missing,
-                    suggested_steps=_tg_steps,
+                    _advise.append(f"kubectl get pods -n {_tg_ns} --show-labels --sort-by=.status.startTime")
+                    _advise.append(f"kubectl get events -n {_tg_ns} --sort-by=.lastTimestamp | tail -30")
+                else:
+                    _advise.append("identity missing — confirm source SIEM envelope has namespace/pod labels")
+                _advise.append("if no runbook: add to RAG collection `sop_runbooks` so next occurrence auto-remediates")
+                _tg_card = format_operator_triage_card(
+                    problem=_problem,
+                    reason=_reason,
+                    chain=_chain,
+                    advise=_advise,
                 )
-                _tg_alertname = alertname_from_batch(batch)
-                _SYNTHETIC_ALERTNAMES = {"FullAudit", "ChaosLabAlert"}
+                _SYNTHETIC_ALERTNAMES = {"FullAudit", "ChaosLabAlert", "SIEMUnknown", "GenericAlert"}
                 if _tg_alertname in _SYNTHETIC_ALERTNAMES:
                     logger.info(
                         "event=telegram_escalation_suppressed trace=%s reason=synthetic_audit alertname=%s",
