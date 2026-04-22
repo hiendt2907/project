@@ -10,12 +10,8 @@ redis[hiredis]>=5.0.0
 # Kafka (event bus)
 aiokafka>=0.11.0
 
-# Vector DB (Postgres HA)
-pgvector>=0.2.1
+# Redis Stack vector search (replaces pgvector/Postgres)
 tenacity>=8.3.0
-
-# Postgres (async)
-asyncpg>=0.29.0
 
 # Kubernetes — 100% async SDK (không subprocess)
 kubernetes-asyncio>=30.0.0

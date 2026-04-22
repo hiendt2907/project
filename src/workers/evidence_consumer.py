@@ -39,6 +39,9 @@ from workers.memory.trace_memory import load_trace_memory
 from workers.evidence_batch import append_evidence_and_take_flush_batch
 from workers.evidence_mutate_emit import (
     emit_execute_mutate,
+    emit_hitl_pending,
+    _siem_alert_labels,
+    _siem_hitl_required,
     rollout_args_from_evidence_batch,
     workload_cpu_incident_rollout_eligible,
     workload_fault_incident_rollout_eligible,
@@ -55,8 +58,12 @@ from workers.schemas.agentic_planner import validate_suggest_os_runbook_data
 from workers.reasoning_evidence_inbound import (
     reason_diagnostic_evidence_only,
     reason_diagnostic_rag_miss_sdk_only,
+    _identity_from_batch,
+    _build_identity_prefix,
 )
 from workers.archivist import build_strong_recall_prefix, recall_playbook_advisory
+from services.playbook.store import PlaybookStore
+from services.playbook.matcher import PlaybookMatcher
 from workers.selflearning_shadow import run_shadow_selflearning
 from workers.env_mode import namespace_allowed
 from pkg.reasoning.diagnostic_policy import (
@@ -74,7 +81,7 @@ from pkg.reasoning.deterministic_mutate_from_evidence import (
 from pkg.reasoning.incident_matrix_profile import alertname_from_batch, resolve_proof_lane
 from pkg.reasoning.preflight_deployment_secret_refs import merge_preflight_deployment_secret_refs
 from workers.log_surge_probe import evaluate_log_surge_sigma_bypass, namespace_pod_from_batch
-from workers.telegram_escalation import emit_telegram_escalation
+from workers.telegram_escalation import emit_telegram_escalation, format_operator_action_card
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.telegram_outbound import send_telegram_out_for_inbound
 from workers import llm_prompts_en as ope
@@ -157,6 +164,179 @@ def _symptom_group_from_batch(batch: list[dict[str, Any]]) -> str:
         if sg:
             return sg
     return ""
+
+
+def _is_siem_batch(batch: list[dict[str, Any]]) -> bool:
+    """True when the evidence batch originates from a FinGuard/SIEM source."""
+    return bool(_siem_alert_labels(batch))
+
+
+_SIEM_CATEGORY_STEPS: dict[str, list[str]] = {
+    "ddos": [
+        "kubectl get networkpolicy -n {ns}",
+        "kubectl get ingress -n {ns}",
+        "kubectl get hpa -n {ns}",
+        "Review WAF/ingress rate-limit config; apply IP block for affected_ip={ip}",
+    ],
+    "malware": [
+        "kubectl get pods -n {ns} --show-labels",
+        "kubectl get pods -n {ns} -o wide | grep {ip}",
+        "kubectl get pods -n {ns} -o jsonpath='{{range .items[*]}}{{.metadata.name}}{{\"\\n\"}}{{end}}' | xargs -I{{}} kubectl describe pod {{}} -n {ns}",
+        "Isolate: kubectl cordon <node-hosting-suspect-pod>; collect forensics before delete",
+    ],
+    "data_exfil": [
+        "kubectl get networkpolicy -n {ns}",
+        "kubectl get rolebindings,clusterrolebindings -n {ns}",
+        "kubectl get pods -n {ns} -o wide | grep {ip}",
+        "Audit egress traffic and RBAC; revoke over-permissive roles",
+    ],
+    "k8s_threat": [
+        "kubectl get clusterrolebindings | grep -i admin",
+        "kubectl get pods -n {ns} -o wide --show-labels",
+        "kubectl get pods -n {ns} -o json | grep -E 'hostPID|privileged|hostNetwork'",
+        "Check privilege escalation; review RBAC and pod securityContext",
+    ],
+    "auth_failure": [
+        "kubectl logs -n {ns} -l app=auth --tail=200",
+        "kubectl get serviceaccounts -n {ns}",
+        "kubectl get rolebindings -n {ns}",
+        "Rotate credentials; audit service account tokens",
+    ],
+    "lateral_movement": [
+        "kubectl get networkpolicy -n {ns}",
+        "kubectl get pods -n {ns} -o wide | grep {ip}",
+        "kubectl get pods -n {ns} --show-labels",
+        "Segment namespace: apply network policy deny-all; investigate pod-to-pod traffic",
+    ],
+}
+_SIEM_DEFAULT_STEPS = [
+    "kubectl get pods -n {ns} --show-labels",
+    "kubectl get events -n {ns} --sort-by=.lastTimestamp",
+    "kubectl get pods -n {ns} -o wide | grep {ip}",
+    "Apply remediation from suggested_action below; verify with kubectl rollout status",
+]
+
+
+def _siem_diagnosis_from_batch(
+    batch: list[dict[str, Any]],
+    siem_labels: dict[str, str],
+    sanitized_text: str,
+) -> str:
+    """Build an incident-specific diagnosis string from SIEM synthetic evidence."""
+    ef: dict[str, Any] = {}
+    for b in batch:
+        if b.get("probe") == "siem_incident_context":
+            raw_ef = b.get("extracted_fact")
+            if isinstance(raw_ef, dict):
+                ef = raw_ef
+            elif isinstance(raw_ef, str):
+                try:
+                    ef = json.loads(raw_ef)
+                except Exception:
+                    pass
+            break
+
+    incident_id = ef.get("incident_id") or siem_labels.get("siem_incident_id", "n/a")
+    category = ef.get("category") or siem_labels.get("siem_category", "unknown")
+    severity = ef.get("severity") or siem_labels.get("severity", "")
+    ns = ef.get("namespace") or siem_labels.get("namespace", "multi-agent")
+    affected_ip = ef.get("affected_ip", "")
+    description = ef.get("description", "")
+    suggested = ef.get("suggested_action", "")
+    tenant = ef.get("tenant") or siem_labels.get("siem_tenant", "")
+
+    header = (
+        f"[SIEM_INCIDENT] id={incident_id} category={category} severity={severity}"
+        + (f" tenant={tenant}" if tenant else "")
+        + (f"\naffected_ip: {affected_ip}" if affected_ip else "")
+        + (f"\ndescription: {description}" if description else "")
+        + (f"\nsuggested_action: {suggested}" if suggested else "")
+    )
+
+    raw_steps = _SIEM_CATEGORY_STEPS.get(category, _SIEM_DEFAULT_STEPS)
+    steps = [s.format(ns=ns, ip=affected_ip or "?") for s in raw_steps]
+    steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(steps))
+
+    return (
+        f"{header}\n\n"
+        f"Operator next steps for [{category}] in namespace [{ns}]:\n"
+        f"{steps_text}\n\n"
+        "Omni does NOT auto-execute for SIEM incidents — human approval required."
+    )
+
+
+async def _notify_siem_telegram(
+    ctx: WorkerHandlerContext,
+    *,
+    trace: str,
+    batch: list[dict[str, Any]],
+    diagnosis: str,
+) -> None:
+    """Send SIEM incident summary to the Telegram admin channel (fallback when no inbound chat)."""
+    tg = getattr(ctx, "telegram", None)
+    if tg is None:
+        return
+    admin_cid = getattr(ctx.settings, "telegram_admin_chat_id", None)
+    if admin_cid is None:
+        logger.warning("event=siem_suggest_no_admin_cid trace=%s — set OMNI_TELEGRAM_ADMIN_CHAT_ID", trace)
+        return
+    siem = _siem_alert_labels(batch)
+    known: dict[str, str] = {
+        "trace": trace,
+        "incident_id": siem.get("siem_incident_id", "n/a"),
+        "severity": siem.get("severity", "n/a"),
+        "category": siem.get("siem_category", "n/a"),
+    }
+    ns = siem.get("namespace") or ""
+    if ns:
+        known["namespace"] = ns
+    # Pull richer fields from siem_incident_context extracted_fact if present.
+    # coerce_evidence_dict serializes extracted_fact → JSON string, so handle both.
+    for b in batch:
+        if b.get("probe") == "siem_incident_context":
+            _ef_raw = b.get("extracted_fact")
+            _ef: dict[str, Any] = {}
+            if isinstance(_ef_raw, dict):
+                _ef = _ef_raw
+            elif isinstance(_ef_raw, str):
+                try:
+                    _parsed = json.loads(_ef_raw)
+                    if isinstance(_parsed, dict):
+                        _ef = _parsed
+                except Exception:
+                    pass
+            if _ef.get("affected_ip"):
+                known["affected_ip"] = _ef["affected_ip"]
+            if _ef.get("description"):
+                known["description"] = _ef["description"][:200]
+            if _ef.get("tenant") and _ef["tenant"] != "unknown":
+                known["tenant"] = _ef["tenant"]
+            break
+    # Extract actionable steps from the diagnosis (lines starting with digit.)
+    step_lines = [
+        ln.strip()
+        for ln in diagnosis.splitlines()
+        if ln.strip() and (ln.strip()[0].isdigit() or ln.strip().startswith("kubectl") or ln.strip().startswith("Review") or ln.strip().startswith("Apply") or ln.strip().startswith("Isolate") or ln.strip().startswith("Rotate") or ln.strip().startswith("Segment") or ln.strip().startswith("Audit") or ln.strip().startswith("Check"))
+    ]
+    if siem.get("suggested_action"):
+        step_lines.append(f"SIEM recommendation: {siem['suggested_action'][:200]}")
+    card_body = format_operator_action_card(
+        known_facts=known,
+        missing_facts=["automated execution blocked — SIEM incidents require human approval"],
+        suggested_steps=step_lines or [f"Review: {diagnosis[:400]}"],
+    )
+    msg = (
+        f"[SIEM] FinGuard incident — human execution required\n"
+        f"{card_body}"
+    )[:4096]
+    try:
+        await tg.send_message(int(admin_cid), msg)
+        logger.info(
+            "event=siem_suggest_telegram_sent trace=%s siem_incident=%s",
+            trace, siem.get("siem_incident_id", ""),
+        )
+    except Exception as e:
+        logger.warning("event=siem_suggest_telegram_error trace=%s err=%s", trace, e)
 
 
 def _rag_search_failed(detail: Any) -> bool:
@@ -583,6 +763,26 @@ async def _emit_suggest_remediation(
     tid = str(trace or "").strip()
     if not tid:
         return
+    if _shadow_os_mode(ctx) and suggested_tool in MUTATE_TOOL_ALLOWLIST:
+        commands = _derive_shadow_os_commands(
+            tool_name=suggested_tool,
+            args={},
+            evidence_refs=[f"trace:{tid}", "source:suggest_remediation"],
+            trace=tid,
+        )
+        emitted = await _emit_suggest_os_runbook(
+            ctx,
+            trace=tid,
+            diagnosis=diagnosis,
+            confidence=_clamp01(confidence),
+            source=f"{source}_SHADOW_OS",
+            runbook_title=f"Shadow runbook for {suggested_tool}",
+            commands=commands,
+            reasoning_chain=reasoning_chain if isinstance(reasoning_chain, dict) else {},
+            verification_evidence_digest=str(diagnosis)[:800],
+        )
+        if emitted:
+            return
     body = build_suggest_remediation_body(
         tid,
         diagnosis=diagnosis,
@@ -666,6 +866,7 @@ async def _emit_agentic_mutate_if_any(
     rag_match_text: str | None = None,
     rag_reasoning_hints: str | None = None,
     attempt_count: int = 1,
+    playbook: "Any | None" = None,
 ) -> bool:
     """
     Planner-first mutate emission:
@@ -677,6 +878,36 @@ async def _emit_agentic_mutate_if_any(
     Returns True if EXECUTE_MUTATE was emitted; False otherwise (suggest-only, blocked, or no plan).
     """
     ac = max(1, int(attempt_count))
+
+    # SIEM suggest-only: FinGuard incidents must not enter EXECUTE_MUTATE or HITL pipeline.
+    # Emit SUGGEST_REMEDIATION + Telegram to admin; return False without touching the planner.
+    if bool(getattr(ctx.settings, "omni_siem_suggest_only", True)) and _is_siem_batch(batch):
+        siem = _siem_alert_labels(batch)
+        incident_id = siem.get("siem_incident_id", "")
+        diag = _siem_diagnosis_from_batch(batch, siem, sanitized_text)
+        await _emit_suggest_remediation(
+            ctx,
+            trace=trace,
+            diagnosis=diag,
+            confidence=0.9,
+            source="SIEM_SUGGEST_ONLY",
+            suggested_tool="k8s_describe_resource",
+        )
+        await _notify_siem_telegram(ctx, trace=trace, batch=batch, diagnosis=diag)
+        await emit_transition(
+            ctx,
+            trace_id=trace,
+            transition=TRANSITION_PLAN_EMITTED,
+            component="evidence_consumer",
+            detail="siem_suggest_only",
+            meta={"siem_incident_id": incident_id},
+        )
+        logger.info(
+            "event=siem_suggest_only_emitted trace=%s siem_incident=%s",
+            trace, incident_id,
+        )
+        return True  # handled — caller must not fall through to RAG_MISS escalation
+
     llm_first = bool(getattr(ctx.settings, "omni_llm_first_autonomy_enabled", False))
     unrestricted = bool(getattr(ctx.settings, "omni_unrestricted_tool_execution", True))
     legacy_det_fallback = bool(getattr(ctx.settings, "omni_legacy_deterministic_fallback", False))
@@ -752,6 +983,7 @@ async def _emit_agentic_mutate_if_any(
             rag_reasoning_hints=rag_reasoning_hints,
             recall_prefix=strong_prefix,
             initial_symptom=initial_symptom,
+            playbook=playbook,
         )
         discovery_steps = list(plan.get("discovery_steps") or []) if plan else []
         # LLM-first skips deterministic_mutate_plan_from_batch (including chaos lab autofix).
@@ -1301,14 +1533,29 @@ async def _emit_agentic_mutate_if_any(
             )
             return True
         return False
-    await emit_execute_mutate(
-        ctx,
-        trace=trace,
-        tool_name=tn,
-        args=args,
-        attempt_count=ac,
-        reasoning_chain=exec_rc if isinstance(exec_rc, dict) else None,
-    )
+    # HITL gate: SIEM-sourced critical incidents must pause for human approval.
+    if _siem_hitl_required(batch):
+        await emit_hitl_pending(
+            ctx,
+            trace=trace,
+            tool_name=tn,
+            args=args,
+            attempt_count=ac,
+            reasoning_chain=exec_rc if isinstance(exec_rc, dict) else None,
+            hitl_reason="siem_critical_action_requires_approval",
+            batch=batch,
+            explain=str((plan or {}).get("explain") or ""),
+            advise=str((plan or {}).get("advise") or ""),
+        )
+    else:
+        await emit_execute_mutate(
+            ctx,
+            trace=trace,
+            tool_name=tn,
+            args=args,
+            attempt_count=ac,
+            reasoning_chain=exec_rc if isinstance(exec_rc, dict) else None,
+        )
     return True
 
 
@@ -1342,6 +1589,23 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         if batch is None:
             return ""
         batch = await merge_preflight_deployment_secret_refs(batch, trace=trace)
+
+        # Match a pre-approved playbook for this incident (advisory; None = fall through to generic flow).
+        matched_playbook = None
+        try:
+            _r = getattr(getattr(ctx, "vector_store", None), "_r", None)
+            if _r is not None:
+                _matcher = PlaybookMatcher(PlaybookStore(_r))
+                matched_playbook = await _matcher.match_from_batch(batch)
+                if matched_playbook:
+                    logger.info(
+                        "event=playbook_matched trace=%s playbook_id=%s",
+                        trace,
+                        matched_playbook.playbook_id,
+                    )
+        except Exception as _pm_err:
+            logger.warning("event=playbook_match_error trace=%s err=%s", trace, _pm_err)
+
         await emit_transition(
             ctx,
             trace_id=trace,
@@ -1492,6 +1756,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     sanitized_text=sanitized_text,
                     rag_match_text=rag_txt,
                     rag_reasoning_hints=hints_body,
+                    playbook=matched_playbook,
                 )
                 return f"[trace={trace}] RAG hints absorbed into planner (state/broken-spec intercept)."
 
@@ -1512,7 +1777,8 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 detail="rag_hit_suggested",
             )
             await _emit_agentic_mutate_if_any(
-                ctx, trace, batch, sanitized_text=sanitized_text, rag_match_text=rag_txt
+                ctx, trace, batch, sanitized_text=sanitized_text, rag_match_text=rag_txt,
+                playbook=matched_playbook,
             )
             if chat_id is not None:
                 pld = {
@@ -1526,10 +1792,15 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
 
         if bool(getattr(ctx.settings, "rag_truth_law_enforced", True)):
             # Gap A: RAG miss — do not stop; SDK-only LLM with two-channel contract.
+            # Inject available identity so the model can propose scoped read-only tools
+            # instead of ESCALATE-with-empty-action when namespace/deployment are known.
+            _batch_identity = _identity_from_batch(batch)
+            _id_prefix = _build_identity_prefix(_batch_identity)
+            _sdk_text = (_id_prefix + analyst_text) if _id_prefix else analyst_text
             sdk_payload: dict[str, Any] = {
                 "trace_id": trace,
                 "source": "diagnostic_evidence",
-                "text": analyst_text,
+                "text": _sdk_text,
                 "diagnostic_evidence_sanitized": True,
             }
             if chat_id is not None:
@@ -1569,20 +1840,95 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
 
             verdict = str(machine.get("verdict") or "").upper()
             if verdict == "ESCALATE" or "ESCALATE" in human.upper():
+                # Post-parse guardrail: if namespace is known but action.tool is empty, emit a
+                # scoped read-only suggestion so operators get actionable steps rather than a blank escalate.
+                _action_obj = machine.get("action") if isinstance(machine.get("action"), dict) else {}
+                _action_tool = str((_action_obj or {}).get("tool") or "").strip()
+                if not _action_tool and _batch_identity.get("namespace"):
+                    _ns = _batch_identity["namespace"]
+                    _dep = _batch_identity.get("deployment", "")
+                    _scoped_tool = "k8s_describe_resource"
+                    if _dep:
+                        _scoped_diag = (
+                            f"PARTIAL_IDENTITY_ESCALATE: namespace={_ns} deployment={_dep}\n"
+                            f"Read-only next step: describe deployment then inspect pods.\n"
+                            f"kubectl describe deployment {_dep} -n {_ns}\n"
+                            f"kubectl get pods -n {_ns} -l app={_dep} --show-labels"
+                        )
+                    else:
+                        _scoped_diag = (
+                            f"PARTIAL_IDENTITY_ESCALATE: namespace={_ns}\n"
+                            f"Read-only next step: list pods in known namespace.\n"
+                            f"kubectl get pods -n {_ns} --show-labels"
+                        )
+                    await _emit_suggest_remediation(
+                        ctx,
+                        trace=trace,
+                        diagnosis=_scoped_diag,
+                        confidence=0.25,
+                        source="SDK_PARTIAL_IDENTITY_SUGGEST",
+                        suggested_tool=_scoped_tool,
+                    )
+                    logger.info(
+                        "event=sdk_partial_identity_suggest trace=%s ns=%s dep=%s",
+                        trace, _ns, _dep or "n/a",
+                    )
                 # Run full ReAct + CoT + mutate pipeline before any human escalation. SDK-only LLM
                 # may return ESCALATE when it cannot name a tool; the agentic planner may still proceed.
                 planner_emitted = await _emit_agentic_mutate_if_any(
-                    ctx, trace, batch, sanitized_text=sanitized_text
+                    ctx, trace, batch, sanitized_text=sanitized_text, playbook=matched_playbook,
                 )
                 if planner_emitted:
                     return display_out
 
-                await emit_telegram_escalation(
-                    ctx,
-                    trace,
-                    f"human={human}\nmachine={json.dumps(machine)}\nraw={raw_llm[:2000]}",
-                    reason="RAG_MISS_SDK_ESCALATE",
+                _tg_known: dict[str, str] = {}
+                if batch:
+                    _ar = str(batch[0].get("alert_rule") or "").strip()[:80]
+                    _ah = str(batch[0].get("alert_hint") or "").strip()[:120]
+                    if _ar:
+                        _tg_known["alert"] = _ar
+                    if _ah:
+                        _tg_known["hint"] = _ah
+                _tg_known.update(_batch_identity)
+                _tg_missing: list[str] = []
+                if not _batch_identity.get("namespace"):
+                    _tg_missing.append("namespace unknown")
+                if not _batch_identity.get("pod"):
+                    _tg_missing.append("pod name")
+                if not _batch_identity.get("deployment"):
+                    _tg_missing.append("deployment name")
+                _tg_missing.append("RAG knowledge: miss — no matching runbook")
+                if human:
+                    _tg_missing.append(f"LLM: {human[:200]}")
+                _tg_steps: list[str] = []
+                _tg_ns = _batch_identity.get("namespace")
+                _tg_dep = _batch_identity.get("deployment")
+                if _tg_ns and _tg_dep:
+                    _tg_steps.append(f"kubectl describe deployment {_tg_dep} -n {_tg_ns}")
+                    _tg_steps.append(f"kubectl get pods -n {_tg_ns} -l app={_tg_dep} --show-labels")
+                elif _tg_ns:
+                    _tg_steps.append(f"kubectl get pods -n {_tg_ns} --show-labels")
+                _tg_steps.append("review runbook or escalate to on-call")
+                _tg_card = format_operator_action_card(
+                    known_facts=_tg_known,
+                    missing_facts=_tg_missing,
+                    suggested_steps=_tg_steps,
                 )
+                _tg_alertname = alertname_from_batch(batch)
+                _SYNTHETIC_ALERTNAMES = {"FullAudit", "ChaosLabAlert"}
+                if _tg_alertname in _SYNTHETIC_ALERTNAMES:
+                    logger.info(
+                        "event=telegram_escalation_suppressed trace=%s reason=synthetic_audit alertname=%s",
+                        trace,
+                        _tg_alertname,
+                    )
+                else:
+                    await emit_telegram_escalation(
+                        ctx,
+                        trace,
+                        _tg_card,
+                        reason="RAG_MISS_SDK_ESCALATE",
+                    )
                 # Auto-execute lab: suggest path only when planner also failed to emit mutate.
                 if not bool(getattr(ctx.settings, "omni_auto_execute_enabled", False)):
                     await _emit_suggest_remediation(
@@ -1621,7 +1967,9 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 component="evidence_consumer",
                 detail=f"sdk_only_plan:{tool or 'none'}",
             )
-            planner_emitted = await _emit_agentic_mutate_if_any(ctx, trace, batch, sanitized_text=sanitized_text)
+            planner_emitted = await _emit_agentic_mutate_if_any(
+                ctx, trace, batch, sanitized_text=sanitized_text, playbook=matched_playbook,
+            )
             if not planner_emitted:
                 await _emit_suggest_remediation(
                     ctx,
@@ -1692,7 +2040,9 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 component="evidence_consumer",
                 detail="llm_analyst_plan_ready",
             )
-            await _emit_agentic_mutate_if_any(ctx, trace, batch, sanitized_text=sanitized_text)
+            await _emit_agentic_mutate_if_any(
+                ctx, trace, batch, sanitized_text=sanitized_text, playbook=matched_playbook,
+            )
         if chat_id is not None:
             await send_telegram_out_for_inbound(ctx, payload, trace, out)
         return out

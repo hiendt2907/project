@@ -1,4 +1,4 @@
-"""Ingest 100k cli_hil_context: tiếng Việt + suggested_commands → Ollama embed → Postgres RAG."""
+"""Ingest 100k cli_hil_context: tiếng Việt + suggested_commands → Ollama embed → Redis RAG."""
 
 from __future__ import annotations
 
@@ -11,12 +11,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import redis.asyncio as aioredis
+
+from llm.vllm_client import VLLMClient
+from rag.redis_vector_store import RedisVectorStore, PostgresRAGSettings
 from rag.pgvector_store import (
-    COLLECTION_CLI_HIL_CONTEXT, 
-    PGVectorStore, 
-    PointStruct, 
-    PostgresRAGSettings, 
-    init_pg_pool
+    COLLECTION_CLI_HIL_CONTEXT,
+    PointStruct,
 )
 from training.cli_hil_pools import GENERATOR_VERSION, MAX_COMBINATIONS, cli_hil_payload, generate_cli_hil_entry
 from training import sop_ingest as sop_ingest_mod
@@ -120,9 +121,10 @@ async def run_cli_hil_ingest(
         return total_to_process
 
     llm = VLLMClient(base_url=settings.vllm_base_url, embed_url=settings.vllm_embed_url, timeout_s=120.0)
-    pg_settings = PostgresRAGSettings()
-    pg_pool = await init_pg_pool(pg_settings)
-    vector_store = PGVectorStore(pg_pool)
+    redis_url = os.environ.get("OMNI_REDIS_URL", "redis://redis:6379/0")
+    r = aioredis.from_url(redis_url, decode_responses=False)
+    vector_store = RedisVectorStore(r)
+    await vector_store.ensure_ready()
     sem = asyncio.Semaphore(settings.training_llm_concurrency)
     done = 0
 
@@ -178,10 +180,11 @@ async def run_cli_hil_ingest(
     finally:
         await llm.aclose()
         await vector_store.close()
+        await r.aclose()
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Ingest cli_hil_context (VN + CLI hints) → Postgres")
+    p = argparse.ArgumentParser(description="Ingest cli_hil_context (VN + CLI hints) → Redis RAG")
     p.add_argument("--count", type=int, default=DEFAULT_COUNT, help=f"Số điểm (max {MAX_COMBINATIONS})")
     p.add_argument("--start-index", type=int, default=None, help="Bắt đầu từ index (không dùng checkpoint)")
     p.add_argument("--dry-run", action="store_true", help="Không ghi Postgres RAG")

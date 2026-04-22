@@ -11,7 +11,7 @@ from ingest.telegram import TelegramClient
 from llm.vllm_client import VLLMClient
 from messaging.kafka_bus import KafkaBus
 from rag.error_ledger import ErrorLedger
-from rag.pgvector_store import PGVectorStore
+from rag.redis_vector_store import RedisVectorStore
 
 from workers.llm_semaphore import LLMSemaphore
 from workers.settings import WorkerSettings
@@ -22,7 +22,7 @@ class WorkerHandlerContext:
     settings: WorkerSettings
     redis: redis.Redis
     llm: VLLMClient
-    vector_store: PGVectorStore
+    vector_store: RedisVectorStore
     ledger: ErrorLedger
     semaphore: LLMSemaphore
     telegram: TelegramClient | None

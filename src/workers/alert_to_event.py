@@ -172,6 +172,55 @@ def build_anomaly_event_from_alert_payload(payload: dict[str, Any]) -> AnomalyEv
             gigo_metadata=gigo,
         )
 
+    if source == "siem":
+        body = payload.get("data")
+        if not isinstance(body, dict):
+            body = {}
+        alerts = body.get("alerts") or []
+        a0: dict[str, Any] = alerts[0] if alerts and isinstance(alerts[0], dict) else {}
+        labels = _stringify_labels(a0.get("labels") if isinstance(a0.get("labels"), dict) else None)
+        annot = _stringify_labels(a0.get("annotations") if isinstance(a0.get("annotations"), dict) else None)
+        alertname = labels.get("alertname") or "SIEMUnknown"
+        ns = labels.get("namespace") or ""
+        severity = labels.get("severity") or ""
+        category = labels.get("siem_category") or ""
+        incident_id = labels.get("siem_incident_id") or ""
+        description = annot.get("description") or ""
+        suggested = annot.get("suggested_action") or ""
+        affected_ip = annot.get("affected_ip") or ""
+        parts = [alertname]
+        if severity:
+            parts.append(f"severity={severity}")
+        if category:
+            parts.append(f"category={category}")
+        if incident_id:
+            parts.append(f"incident={incident_id}")
+        if ns:
+            parts.append(f"namespace={ns}")
+        if affected_ip:
+            parts.append(f"affected_ip={affected_ip}")
+        if description:
+            parts.append(description[:400])
+        if suggested:
+            parts.append(f"suggested_action={suggested[:200]}")
+        eh = " | ".join(parts)[:800]
+        cq = _prometheus_canonical_document(labels, annot)
+        gigo = build_gigo_metadata(labels, annot)
+        return AnomalyEvent(
+            trace_id=trace_id,
+            rule_name=alertname,
+            target="cluster",
+            namespace=ns,
+            metric_value=0.0,
+            threshold=0.0,
+            canonical_query=cq,
+            timestamp=str(int(payload.get("received_at") or 0)),
+            trigger_promql="",
+            error_hint=eh,
+            omni_layer="security",
+            gigo_metadata=gigo,
+        )
+
     if source in ("telegram", "telegram_callback"):
         text = str(payload.get("text") or "")
         return AnomalyEvent(

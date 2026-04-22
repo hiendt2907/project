@@ -1,0 +1,3 @@
+[submodule "smart-siem"]
+	path = smart-siem
+	url = https://github.com/hiendt2907/smart-siem.git

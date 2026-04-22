@@ -18,6 +18,7 @@ TOPICS=(
   "omni-audit-proactive"
   "omni-audit-agent"
   "omni-tool-audit"
+  "omni-hitl-pending"
 )
 
 for t in "${TOPICS[@]}"; do

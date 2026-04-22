@@ -6,7 +6,10 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from services.playbook.models import Playbook
 
 from pkg.reasoning.deterministic_mutate_from_evidence import _evidence_suggests_credential_failure
 from pkg.reasoning.diagnostic_policy import DISCOVERY_TOOL_ALIASES, evidence_suggests_broken_spec
@@ -89,6 +92,7 @@ _REACT_SYSTEM = (
     '"phase": "<observe|verify|remediate|done>", '
     '"step": "<readonly|mutate>"}\n'
     "Optional keys: \"working_hypothesis\": \"<short update when your hypothesis changes>\", "
+    '"evidence_refs": ["<required when decision=mutate; exact evidence IDs from Fact Table/TRACE_MEMORY>"], '
     '"missing_preconditions": ["<what evidence is missing before mutate>"], '
     '"resolution_summary": "<required when phase is done — see below>", '
     '"escalation_reason": "<required when decision=escalate>".\n'
@@ -568,6 +572,9 @@ def _reject_reason(parsed: dict[str, Any] | None) -> str:
         args = parsed.get("tool_args")
     if not isinstance(args, dict):
         return ERR_REA_SCHEMA_VIOLATION
+    refs = parsed.get("evidence_refs")
+    if not isinstance(refs, list) or not any(str(x).strip() for x in refs):
+        return ERR_REA_SCHEMA_VIOLATION
     if tn == "k8s_rollout_restart":
         ns = str(args.get("namespace") or "").strip()
         dep = str(args.get("deployment") or "").strip()
@@ -641,6 +648,28 @@ async def _execute_readonly_tool(
     except Exception as e:
         logger.warning("readonly_tool_failed name=%s err=%s", tool_name, e)
         return f"[DATA] error\n[DIAGNOSIS] {e!s}"
+
+
+def _format_playbook_block(playbook: "Playbook") -> str:
+    """Render a matched pre-approved playbook as a prompt guidance block."""
+    lines = [
+        f"[PRE-APPROVED PLAYBOOK: {playbook.name} "
+        f"(id={playbook.playbook_id}, v={playbook.version}, approved_by={playbook.approved_by or 'system'})]",
+        "A pre-approved remediation playbook has been matched for this incident. "
+        "Follow the ordered steps below when selecting mutate actions. "
+        "Each step maps to an exact tool in the mutate allowlist. "
+        "Require HITL approval before executing any step where requires_hitl=true.",
+        "Steps:",
+    ]
+    for s in sorted(playbook.steps, key=lambda x: x.step_order):
+        hitl = "HITL_REQUIRED" if s.requires_hitl else "auto"
+        params_str = json.dumps(s.params, ensure_ascii=False) if s.params else "{}"
+        lines.append(
+            f"  {s.step_order}. tool={s.action_type} target={s.target!r} "
+            f"params={params_str} [{hitl}]"
+        )
+    lines.append("[END PLAYBOOK]")
+    return "\n".join(lines) + "\n\n"
 
 
 async def infer_blind_proof_lane_hint(
@@ -720,6 +749,7 @@ async def run_agentic_mutate_plan(
     recall_prefix: str | None = None,
     initial_symptom: InitialSymptom | None = None,
     post_mutate_verify: dict[str, Any] | None = None,
+    playbook: "Playbook | None" = None,
 ) -> dict[str, Any] | None:
     """
     Returns mutate plan {tool_name, args, discovery_steps?, reasoning_chain?, lane_hint?} or None.
@@ -763,6 +793,7 @@ async def run_agentic_mutate_plan(
     credential_hint = cred_block if cred_block and (legacy_prompt_hints or llm_first) else ""
     # recall_prefix: high-confidence playbook recall takes precedence, then credential hint, then broken_spec
     priority_prefix = recall_prefix or credential_hint or broken_prefix
+    playbook_block = _format_playbook_block(playbook) if playbook else ""
 
     pm_block = _format_post_mutate_verify_user_block(post_mutate_verify) if post_mutate_verify else ""
     repeat_guard_threshold = 2
@@ -772,6 +803,7 @@ async def run_agentic_mutate_plan(
 
     base_user = (
         f"{priority_prefix}"
+        f"{playbook_block}"
         f"{pm_block}"
         f"{fact_block}\n"
         f"{rag_block}"
@@ -782,9 +814,14 @@ async def run_agentic_mutate_plan(
         "not a mutate.\n"
         "Reply with exactly one JSON object per round.\n"
         'For read-only inspection: decision="discovery", "tool_name" (read-only), "args" (object), "step":"readonly".\n'
-        'When ready to mutate after verification: decision="mutate", "tool_name" (mutate allowlist), "args", "step":"mutate".\n'
+        'When ready to mutate after verification: decision="mutate", "tool_name" (mutate allowlist), "args", '
+        '"evidence_refs" (non-empty list of exact FactTable/TRACE_MEMORY IDs), "step":"mutate".\n'
         'If mutate is not yet safe: set decision="discovery" and provide "missing_preconditions".\n'
         'If escalation is required: decision="escalate", empty tool_name/args, include "escalation_reason".\n'
+        "EXPLAIN & ADVISE (required when decision=mutate or decision=escalate):\n"
+        '  "explain": one concise sentence summarising WHY this incident requires action, grounded in Fact Table evidence.\n'
+        '  "advise": one sentence describing WHAT the operator should verify or approve before proceeding.\n'
+        "These fields are surfaced to human operators in the HITL approval UI — be specific and avoid jargon.\n"
         "Evidence-based exit: when read-only verification in <TRACE_MEMORY> / Fact Table shows the issue is "
         "addressed vs initial_symptoms, use phase:\"done\", empty tool_name, and "
         '"resolution_summary" (what evidence proves recovery). Example: '
@@ -792,7 +829,7 @@ async def run_agentic_mutate_plan(
         '"tool_name":"","args":{},"step":"readonly"}.\n'
         "MUTATE PRECONDITION RULE: when decision=mutate you MUST ensure required metadata preconditions "
         "from TOOL_CATALOG_WITH_PRECONDITIONS are present in TRACE_MEMORY/HISTORY or Fact Table; otherwise return "
-        "decision=discovery with missing_preconditions.\n"
+        "decision=discovery with missing_preconditions. Missing evidence_refs is a hard schema violation.\n"
         "WORKLOAD-FIRST DIAGNOSTICS POLICY: infer namespace+deployment/statefulset from alert labels/history and "
         "run only workload-scoped diagnostics. Do NOT call pod-scoped tools "
         "(k8s_get_logs, k8s_get_pod_log_previous, k8s_get_pod_secret_refs, or describe Pod). "
@@ -1279,6 +1316,8 @@ async def run_agentic_mutate_plan(
                 "missing_preconditions": parsed_any.get("missing_preconditions")
                 if isinstance(parsed_any.get("missing_preconditions"), list)
                 else [],
+                "explain": str(parsed_any.get("explain") or "").strip()[:500],
+                "advise": str(parsed_any.get("advise") or "").strip()[:500],
             }
             if lane_hint:
                 out["lane_hint"] = lane_hint

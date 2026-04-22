@@ -7,6 +7,8 @@ import logging
 import time
 from typing import Any
 
+import re
+
 from pkg.reasoning.sre_output import compact_sre_diagnosis
 
 from workers import llm_prompts_en as ope
@@ -23,6 +25,57 @@ from workers.metrics_exporter import inc_llm_requests
 from workers.request_trace import log_end_request_ctx, log_start_request_ctx
 
 logger = logging.getLogger(__name__)
+
+_RE_IDENTITY_HINT = re.compile(
+    r"\bnamespace[=:]\s*([\w.-]+)|\bns[=:]\s*([\w.-]+)|\bpod[=:]\s*([\w.-]+)",
+    re.I,
+)
+
+
+def _identity_from_batch(batch: list[dict[str, Any]]) -> dict[str, str]:
+    """Extract namespace/pod/deployment from batch (top-level fields or canonical_query_snippet)."""
+    ns, pod, dep = "", "", ""
+    for b in batch:
+        ns = ns or str(b.get("namespace") or "").strip()
+        pod = pod or str(b.get("pod") or b.get("pod_name") or "").strip()
+        dep = dep or str(b.get("deployment") or "").strip()
+        snip = str(b.get("canonical_query_snippet") or "").strip()
+        if snip.startswith("{"):
+            try:
+                j = json.loads(snip)
+                labels = j.get("labels") if isinstance(j, dict) else None
+                if isinstance(labels, dict):
+                    ns = ns or str(labels.get("namespace") or "").strip()
+                    pod = pod or str(labels.get("pod") or labels.get("pod_name") or "").strip()
+                    dep = dep or str(
+                        labels.get("deployment")
+                        or labels.get("deployment_name")
+                        or labels.get("workload")
+                        or ""
+                    ).strip()
+            except Exception:
+                pass
+    out: dict[str, str] = {}
+    if ns:
+        out["namespace"] = ns
+    if pod:
+        out["pod"] = pod
+    if dep:
+        out["deployment"] = dep
+    return out
+
+
+def _build_identity_prefix(identity: dict[str, str]) -> str:
+    """Format a compact [AVAILABLE_IDENTITY] block injected before the user text."""
+    if not identity:
+        return ""
+    lines = ["[AVAILABLE_IDENTITY]"]
+    for k in ("namespace", "deployment", "pod"):
+        v = identity.get(k)
+        if v:
+            lines.append(f"  {k}: {v}")
+    lines.append("[END_AVAILABLE_IDENTITY]")
+    return "\n".join(lines) + "\n\n"
 
 
 def _preflight_hints_from_payload(payload: dict[str, Any]) -> dict[str, str] | None:
@@ -188,9 +241,14 @@ _ZERO_KNOWLEDGE_SYSTEM = (
     "You have NO retrieval-augmented knowledge for this turn. "
     "Infer ONLY from the diagnostic evidence below (Kubernetes SDK probes, structured facts in the block).\n"
     "Do NOT invent fixes from general documentation or memory. "
-    "Do NOT write prose explanations — the pipeline needs executable structure.\n"
-    "If you cannot name a concrete read-only or mutate tool with args grounded in the evidence block, "
-    "set verdict ESCALATE (hypothesis: what is missing).\n\n"
+    "Do NOT write prose explanations — the pipeline needs executable structure.\n\n"
+    "PARTIAL_IDENTITY_POLICY (read carefully):\n"
+    "  If [AVAILABLE_IDENTITY] block is present with known namespace/deployment/pod, you MUST output a "
+    "  read-only discovery tool scoped to that identity — NOT an empty ESCALATE action.\n"
+    "  - namespace only → action.tool=\"kubectl_get_pods\" args={\"namespace\": \"<ns>\"}\n"
+    "  - namespace+deployment → action.tool=\"k8s_describe_resource\" args={\"namespace\": \"<ns>\", \"name\": \"<dep>\", \"kind\": \"Deployment\"}\n"
+    "  - namespace+pod → action.tool=\"k8s_describe_resource\" args={\"namespace\": \"<ns>\", \"name\": \"<pod>\", \"kind\": \"Pod\"}\n"
+    "  ESCALATE is only valid when [AVAILABLE_IDENTITY] is absent or ALL identity fields are empty.\n\n"
     "Output format (strict, English):\n"
     "MACHINE_JSON: {\"verdict\":\"DIAGNOSE\"|\"ESCALATE\",\"hypothesis\":\"...\",\"action\":{\"tool\":\"\",\"args\":{}}}\n"
     "HUMAN_SUMMARY: <at most 30 words, one line — facts only, no how-to>\n\n"

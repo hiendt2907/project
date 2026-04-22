@@ -638,36 +638,6 @@ async def tool_redis_info(ctx: Any, args: dict[str, Any]) -> str:
     return await tool_redis_health(ctx, args)
 
 
-async def tool_pgvector_health(ctx: Any, args: dict[str, Any]) -> str:
-    """Kiểm tra bắt buộc `itops_sop_ledger` / `itops_error_ledger` qua Postgres HA."""
-    store = getattr(ctx, "vector_store", None)
-    if store is None:
-        return "Không có ctx.vector_store (Postgres)."
-    try:
-        async with store._pool.acquire() as conn:
-            rows = await conn.fetch("SELECT DISTINCT collection_name FROM rag_documents")
-            names = [r["collection_name"] for r in rows]
-            
-        lines: list[str] = ["=== pgvector_health (Postgres HA) ===", f"collections={names}"]
-        for must in (COLLECTION_SOP, COLLECTION_ERRORS):
-            if must in names:
-                async with store._pool.acquire() as conn:
-                    cnt = await conn.fetchval("SELECT count(*) FROM rag_documents WHERE collection_name = $1", must)
-                lines.append(f"OK {must}: points_count={cnt}")
-            else:
-                lines.append(f"MISSING {must} (Postgres partition empty)")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Lỗi Postgres pgvector: {e!s}"
-
-
-async def tool_pgvector_status(ctx: Any, args: dict[str, Any]) -> str:
-    return await tool_pgvector_health(ctx, args)
-
-async def tool_pgvector_health_audit(ctx: Any, args: dict[str, Any]) -> str:
-    return await tool_pgvector_health(ctx, args)
-
-
 async def tool_query_historical_metrics(ctx: Any, args: dict[str, Any]) -> str:
     """
     Prometheus range (httpx) → tóm tắt ngắn + matplotlib → Telegram (không chữ dài).
@@ -1257,25 +1227,6 @@ async def tool_net_scapy_interfaces(ctx: Any, args: dict[str, Any]) -> str:
         return "Interfaces (scapy): " + ", ".join(names) if names else "(trống)"
     except Exception as e:
         return f"scapy không khả dụng hoặc cần quyền: {e!s}"
-
-
-async def tool_postgres_ping(ctx: Any, args: dict[str, Any]) -> str:
-    """Thử kết nối Postgres qua asyncpg nếu OMNI_POSTGRES_DSN có."""
-    s = getattr(ctx, "settings", None)
-    dsn = (getattr(s, "postgres_dsn", None) or "").strip() if s else ""
-    if not dsn:
-        return "Chưa cấu hình OMNI_POSTGRES_DSN — bỏ qua."
-    try:
-        import asyncpg  # noqa: PLC0415
-
-        conn = await asyncpg.connect(dsn, timeout=10.0)
-        try:
-            v = await conn.fetchval("SELECT 1")
-            return f"PostgreSQL OK (SELECT 1 → {v})."
-        finally:
-            await conn.close()
-    except Exception as e:
-        return f"Lỗi asyncpg: {e!s}"
 
 
 async def tool_vendor_knowledge_search(ctx: Any, args: dict[str, Any]) -> str:

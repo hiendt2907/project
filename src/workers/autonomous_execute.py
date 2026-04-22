@@ -134,6 +134,15 @@ async def run_execute_mutate_tool(
     name = str(tool_name or "").strip()
     reg_name = MUTATE_TOOL_REGISTRY_NAME.get(name, name)
     ws = getattr(ctx, "settings", None)
+    force_nsenter = bool(getattr(ws, "omni_executor_force_nsenter", False)) if ws is not None else False
+    if force_nsenter and reg_name != "kubectl_cluster":
+        msg = (
+            "[DATA] error\n[DIAGNOSIS] reason_code="
+            f"{ERR_GOV_UNAUTHORIZED_MUTATION} "
+            f"executor_policy_denied: tool {name!r} resolved={reg_name!r} "
+            "must route through kubectl_cluster with nsenter host wrapper."
+        )
+        return msg, 1
     unrestricted = bool(getattr(ws, "omni_unrestricted_tool_execution", True))
     if unrestricted:
         fn_any = TOOL_REGISTRY.get(reg_name) or TOOL_REGISTRY.get(name)

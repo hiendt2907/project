@@ -8,3 +8,7 @@ __pycache__/
 # MkDocs output (built site; CI uploads artifact)
 wiki/site/
 tests/
+
+# Gitleaks scan artifacts
+leak_report.json
+leak_report_history.json

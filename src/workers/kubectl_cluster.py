@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 import time
 import uuid
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from workers.os_executor_adapter import wrap_host_command
 from workers.tool_registry import register_tool
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,16 @@ async def _audit_kubectl(
         logger.debug("audit kubectl_cluster skip: %s", e)
 
 
+def _force_nsenter(ctx: Any) -> bool:
+    ws = getattr(ctx, "settings", None)
+    if ws is None:
+        return False
+    return bool(
+        getattr(ws, "omni_executor_force_nsenter", False)
+        or getattr(ws, "omni_shadow_os_mode", False)
+    )
+
+
 @register_tool("kubectl_cluster", KubectlClusterArgs)
 async def tool_kubectl_cluster(ctx: Any, args: KubectlClusterArgs) -> str:
     """Chạy `kubectl` với argv an toàn (list, không shell) — bật khi OMNI_CLUSTER_FULL_ACCESS hoặc lab/god."""
@@ -87,35 +99,49 @@ async def tool_kubectl_cluster(ctx: Any, args: KubectlClusterArgs) -> str:
     if len(raw) > _MAX_ARGV:
         return f"[DATA] error\n[DIAGNOSIS] Too many arguments (max {_MAX_ARGV})."
     argv = ["kubectl", *raw]
+    run_shell: str | None = None
+    audit_argv = list(argv)
+    if _force_nsenter(ctx):
+        quoted = " ".join(shlex.quote(part) for part in argv)
+        wrapped = wrap_host_command(quoted)
+        run_shell = wrapped.command
+        audit_argv = ["nsenter", *wrapped.nsenter_flags, *argv]
     trace = str(getattr(ctx, "inbound_trace_id", "") or "kubectl").strip() or "kubectl"
     timeout = float(args.timeout_sec)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        if run_shell is not None:
+            proc = await asyncio.create_subprocess_shell(
+                run_shell,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         code = proc.returncode
     except asyncio.TimeoutError:
         await _audit_kubectl(
             ctx,
             trace_id=trace,
-            argv=argv,
+            argv=audit_argv,
             exit_code=None,
             stdout="",
             stderr=f"timeout after {timeout}s",
         )
         return f"[DATA] error\n[DIAGNOSIS] kubectl timeout {timeout}s\n[TRACE] {trace}"
     except Exception as e:
-        await _audit_kubectl(ctx, trace_id=trace, argv=argv, exit_code=None, stdout="", stderr=str(e))
+        await _audit_kubectl(ctx, trace_id=trace, argv=audit_argv, exit_code=None, stdout="", stderr=str(e))
         return f"[DATA] error\n[DIAGNOSIS] kubectl exec failed: {e!s}\n[TRACE] {trace}"
 
     out = (out_b or b"").decode("utf-8", errors="replace")
     err = (err_b or b"").decode("utf-8", errors="replace")
     if len(out) > _MAX_OUT:
         out = out[: _MAX_OUT - 80] + "\n... [truncated]"
-    await _audit_kubectl(ctx, trace_id=trace, argv=argv, exit_code=code, stdout=out, stderr=err)
+    await _audit_kubectl(ctx, trace_id=trace, argv=audit_argv, exit_code=code, stdout=out, stderr=err)
     rs = (args.reasoning or "").strip()
     tail = f" reasoning={rs[:200]}" if rs else ""
     if code != 0:

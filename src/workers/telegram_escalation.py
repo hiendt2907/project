@@ -10,6 +10,33 @@ logger = logging.getLogger(__name__)
 _MAX_CTX = 3500
 
 
+def format_operator_action_card(
+    known_facts: dict[str, str],
+    missing_facts: list[str],
+    suggested_steps: list[str],
+) -> str:
+    """Return a structured KNOWN/MISSING/NEXT body for Telegram escalation messages."""
+    lines: list[str] = ["KNOWN:"]
+    for k, v in (known_facts or {}).items():
+        lines.append(f"  {k}: {v}")
+    if not known_facts:
+        lines.append("  (no identity context extracted)")
+
+    lines += ["", "MISSING:"]
+    for m in (missing_facts or []):
+        lines.append(f"  {m}")
+    if not missing_facts:
+        lines.append("  (nothing identified as missing)")
+
+    lines += ["", "NEXT:"]
+    for s in (suggested_steps or []):
+        lines.append(f"  {s}")
+    if not suggested_steps:
+        lines.append("  escalate to on-call — insufficient context for automated action")
+
+    return "\n".join(lines)
+
+
 async def emit_telegram_escalation(
     ctx: Any,
     trace_id: str,

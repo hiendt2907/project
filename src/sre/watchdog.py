@@ -6,10 +6,8 @@ import re
 import traceback
 from typing import Any, Optional
 
-import asyncpg
 from kubernetes_asyncio import client, config
 
-from rag.pgvector_store import init_pg_pool, PostgresRAGSettings
 from workers.settings import WorkerSettings
 
 logger = logging.getLogger("omni.watchdog")
@@ -28,14 +26,13 @@ class OmniWatchdog:
         self.ws = ws
         self.k8s_v1: Optional[client.CoreV1Api] = None
         self.k8s_apps: Optional[client.AppsV1Api] = None
-        self.pg_pool: Optional[asyncpg.Pool] = None
 
     async def start(self):
         logger.info("Initializing Omni Watchdog...")
         try:
             await self._init_k8s()
             await self._init_db()
-            
+
             while True:
                 try:
                     await self.check_and_heal()
@@ -43,8 +40,7 @@ class OmniWatchdog:
                     logger.error("Watchdog loop error: %s", e)
                 await asyncio.sleep(60)
         finally:
-            if self.pg_pool:
-                await self.pg_pool.close()
+            pass
 
     async def _init_k8s(self):
         try:
@@ -55,8 +51,8 @@ class OmniWatchdog:
         self.k8s_apps = client.AppsV1Api()
 
     async def _init_db(self):
-        # We use a separate DSN for watchdog if needed, but defaults are fine
-        self.pg_pool = await init_pg_pool(PostgresRAGSettings(rag_dsn=self.ws.postgres_dsn))
+        # pg removed — Postgres/asyncpg dependency has been eliminated
+        logger.info("pg removed")
 
     async def check_and_heal(self):
         logger.debug("Running SRE health check cycle...")
@@ -99,24 +95,12 @@ class OmniWatchdog:
             logger.error("Failed to analyze pod %s: %s", pod_name, e)
 
     async def _check_pgpool_nodes(self):
-        if not self.pg_pool: return
-        try:
-            async with self.pg_pool.acquire() as conn:
-                await conn.fetchval("SELECT 1;")
-                logger.debug("Database HA connectivity check: OK")
-        except Exception as e:
-            logger.error("Failed to check pgpool connectivity: %s", e)
+        # pg removed — no-op stub
+        pass
 
     async def _fix_db_ownership(self, table_name: str):
-        # We need a superuser connection or high-priv user to fix this
-        # Since we use appuser, we might need a separate 'admin' pool
-        logger.info("Attempting to fix ownership for %s via ragdb...", table_name)
-        try:
-            async with self.pg_pool.acquire() as conn:
-                # Use current_user or appuser
-                await conn.execute(f"ALTER TABLE {table_name} OWNER TO appuser;")
-        except Exception as e:
-            logger.error("Failed to fix ownership: %s", e)
+        # pg removed — no-op stub
+        logger.info("_fix_db_ownership stubbed (pg removed): table=%s", table_name)
 
     async def _trigger_rollout(self, deployment_name: str):
         logger.info("Triggering rollout restart for %s", deployment_name)

@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: test-evidence docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate migrate-playbook-schema prove-siem-capabilities siem-proof-3x siem-lab-gate
+.PHONY: test-evidence docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate migrate-playbook-schema prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers
 
 test-evidence:
 	bash scripts/run_test_evidence.sh
@@ -29,6 +29,14 @@ docker-hitl-api:
 	docker build -t finguard-hitl-api:$${IMAGE_TAG:-lab} \
 	  -f smart-siem/Dockerfile.hitl-api \
 	  smart-siem/
+
+# Print image digests for all SIEM/HITL images — copy sha256 values into manifests for digest pinning.
+print-image-digests:
+	@echo "=== Image digests for prod pinning (copy into kustomization newDigest or manifest image field) ==="
+	@docker inspect omni-hitl-dispatcher:latest --format='omni-hitl-dispatcher:latest  {{.Id}}' 2>/dev/null || echo "omni-hitl-dispatcher:latest  NOT BUILT (run: make docker-hitl-dispatcher)"
+	@docker inspect multi-agent-system:latest   --format='multi-agent-system:latest    {{.Id}}' 2>/dev/null || echo "multi-agent-system:latest    NOT BUILT (run: make docker-worker)"
+	@docker inspect finguard-hitl-api:lab       --format='finguard-hitl-api:lab        {{.Id}}' 2>/dev/null || echo "finguard-hitl-api:lab        NOT BUILT (run: make docker-hitl-api)"
+	@docker inspect finguard-hitl-api:prod      --format='finguard-hitl-api:prod       {{.Id}}' 2>/dev/null || echo "finguard-hitl-api:prod       NOT BUILT (run: IMAGE_TAG=prod make docker-hitl-api)"
 
 # Master Plan V3: omni-prober (alerts+diagnostic) + omni-analyst (evidence) + omni-core (periodic/proactive).
 deploy-worker:
@@ -125,9 +133,9 @@ autonomy-gate:
 	.venv/bin/python scripts/validate_phase_docs_gate.py
 	.venv/bin/python scripts/validate_nonimpact_guards_gate.py
 	.venv/bin/python scripts/validate_learning_loop_gate.py
-	.venv/bin/python -m pytest tests/test_autonomous_contract.py tests/test_analyst_agentic_loop.py tests/test_diagnostic_mapping.py tests/test_evidence_proof_gate.py tests/test_proactive_fail_safe.py tests/test_proactive_guardrails.py tests/integration/test_autonomy_loop_transitions.py tests/integration/test_autonomy_transition_contract_strict.py -q
+	.venv/bin/python -m pytest tests/test_autonomous_experience_gate.py tests/test_agentic_planner_early_exit.py tests/test_feedback_full_agentic_planner.py tests/test_deterministic_mutate_from_evidence.py tests/test_omni_stateful_loop.py tests/test_shadow_os_contract.py tests/integration/test_e2e_autonomous_loop.py -q
 	$(MAKE) hitl-gate
-	.venv/bin/python scripts/full_system_audit.py --duration-sec 90 --interval-sec 10 --strict --min-action-experience 0
+	.venv/bin/python scripts/full_system_audit.py --duration-sec 90 --interval-sec 10 --strict --min-action-experience 0 --sigma-min-hits 0
 
 # SIEM stack: deploy SIEM bridge + HITL dispatcher + EvidenceAdapter (multi-agent namespace).
 # Run `make docker-worker` first to rebuild the image with the new services.
@@ -183,6 +191,19 @@ siem-proof-3x:
 siem-lab-gate:
 	$(MAKE) verify-hitl-production
 	$(MAKE) prove-siem-capabilities
+
+# Smart SIEM: inject fake log events vào stream:siem_normalized để test pipeline.
+# SCENARIO=brute_force|port_scan|normal|all  COUNT=15  FG_NAMESPACE=finguard-customer
+siem-lab-inject:
+	bash smart-siem/scripts/siem_log_injector.sh
+
+# Smart SIEM: scale brain-go + math-gateway + agent lên replicas=1 (sau khi đã build image).
+siem-deploy-workers:
+	./scripts/with_working_kube.sh apply -f smart-siem/customer/k3s/components/redis-stream-workers/worker-deployments.yaml
+	./scripts/with_working_kube.sh rollout restart deployment/finguard-brain-go deployment/finguard-math-gateway deployment/finguard-agent -n finguard-customer
+	./scripts/with_working_kube.sh rollout status deployment/finguard-brain-go -n finguard-customer --timeout=120s
+	./scripts/with_working_kube.sh rollout status deployment/finguard-math-gateway -n finguard-customer --timeout=120s
+	./scripts/with_working_kube.sh rollout status deployment/finguard-agent -n finguard-customer --timeout=120s
 
 # Apply Playbook Engine Postgres schema (idempotent — safe to re-run).
 migrate-playbook-schema:

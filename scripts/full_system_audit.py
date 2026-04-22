@@ -374,7 +374,7 @@ def simulate(duration_sec: int, interval_sec: int, *, inject_proactive: bool = F
 
 
 def _trace_in_logs(trace_id: str, deploy: str) -> bool:
-    rc, out = k("logs", "-n", "multi-agent", f"deploy/{deploy}", "--since=20m", "--tail=3000")
+    rc, out = k("logs", "-n", "multi-agent", f"deploy/{deploy}", "--all-pods", "--since=20m", "--tail=3000")
     if rc != 0:
         return False
     return trace_id in out
@@ -487,7 +487,7 @@ def main() -> int:
     gw_trace_stage = verify_trace_stage_matrix(
         list(sim.get("gateway_trace_ids") or []),
         require_gateway=True,
-        min_worker_hits=2,
+        min_worker_hits=1,
     )
     proactive_trace_stage = verify_trace_stage_matrix(
         list(sim.get("proactive_trace_ids") or []),

@@ -129,6 +129,11 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_ACTION_FEEDBACK"),
         description="Executor → Analyst: mutate result (stdout/stderr/exit_code).",
     )
+    kafka_topic_hitl_pending: str = Field(
+        default="omni-hitl-pending",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_HITL_PENDING"),
+        description="HITL gate: actions awaiting human approval before executor dispatch.",
+    )
     omni_auto_execute_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("OMNI_AUTO_EXECUTE_ENABLED"),
@@ -140,6 +145,14 @@ class WorkerSettings(BaseSettings):
         description=(
             "Shadow OS governance mode: block SDK mutate execution and route to "
             "SUGGEST_OS_RUNBOOK / escalation path."
+        ),
+    )
+    omni_executor_force_nsenter: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_EXECUTOR_FORCE_NSENTER"),
+        description=(
+            "Force executor command execution through nsenter host namespace wrapper "
+            "(`nsenter -t 1 -m -u -i -n -p -- <command>`)."
         ),
     )
     omni_autonomous_rollout_on_cpu_incident: bool = Field(
@@ -1177,6 +1190,15 @@ class WorkerSettings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("OMNI_KNOWLEDGE_DRAFT_ENABLED"),
         description="Stage Symptom/RootCause/Fix draft artifacts (no direct doc writes by default).",
+    )
+    omni_siem_suggest_only: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_SIEM_SUGGEST_ONLY"),
+        description=(
+            "When True (default), SIEM (FinGuard siem_source=finguard) evidence batches emit "
+            "SUGGEST_REMEDIATION + Telegram to admin only — no EXECUTE_MUTATE and no HITL pipeline. "
+            "Set to False only to re-enable autonomous execution for SIEM incidents (not recommended for prod)."
+        ),
     )
     shadow_influence_suggest_only: bool = Field(
         default=False,

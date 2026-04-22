@@ -15,11 +15,7 @@ from init.deep_scout_autonomous import run_deep_scout_autonomous
 from ingest.telegram import TelegramBotSettings, TelegramClient, summarize_message_update
 from llm.vllm_client import VLLMClient
 from rag.error_ledger import ErrorLedger
-from rag.pgvector_store import (
-    init_pg_pool, 
-    PGVectorStore, 
-    PostgresRAGSettings
-)
+from rag.redis_vector_store import RedisVectorStore
 from workers.autonomous_decider import autonomous_decider_loop
 from workers.baseline_snapshot import baseline_snapshot_loop
 from workers.forecast_autonomous_loop import autonomous_forecast_loop
@@ -456,16 +452,15 @@ async def build_context() -> WorkerHandlerContext:
     ws = WorkerSettings()
     r = await connect_redis(ws)
     llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url)
-    pg_settings = PostgresRAGSettings()
-    pg_pool = await init_pg_pool(pg_settings)
-    vector_store = PGVectorStore(pg_pool)
-    ledger = ErrorLedger(pg_pool, owns_pool=False)
+    vector_store = RedisVectorStore(r)
+    ledger = ErrorLedger(r)
     sem = LLMSemaphore(
         r,
         max_slots=ws.llm_num_parallel,
         lease_ttl_sec=ws.llm_lease_ttl_sec,
     )
     await sem.init_pool()
+    await vector_store.ensure_ready()
     await ledger.ensure_ready()
 
     tg: TelegramClient | None = None

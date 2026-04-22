@@ -17,7 +17,7 @@ from typing import Any
 from aiokafka import AIOKafkaProducer
 
 DEFAULT_TOPIC = os.getenv("OMNI_KAFKA_TOPIC_ACTION_FEEDBACK", "omni-action-feedback")
-DEFAULT_BOOTSTRAP = os.getenv("OMNI_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+DEFAULT_BOOTSTRAP = os.getenv("OMNI_KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 
 
 def _hash_command(command: str) -> str:

@@ -84,6 +84,8 @@ make deploy-gateway
 make deploy-kafka
 make deploy-ollama
 make ensure-kafka-topics
+make deploy-siem-stack       # deploys siem-bridge, hitl-dispatcher, evidence-adapter
+make migrate-playbook-schema # idempotent Postgres DDL for playbook engine
 ```
 
 ### E2E / Lab
@@ -102,7 +104,7 @@ Build image → Deploy + rollout → Unit tests → E2E. See `.cursor/rules/omni
 
 ### Split Topology (Master Plan V3)
 
-Five processes, each a separate K8s Deployment and Docker image:
+Five core processes, each a separate K8s Deployment:
 
 | Component | `OMNI_WORKER_ROLE` | Kafka: reads from → writes to |
 |---|---|---|
@@ -112,12 +114,21 @@ Five processes, each a separate K8s Deployment and Docker image:
 | **Omni-Executor** | `executor` | `omni-actions` → `omni-action-feedback` |
 | **Omni-Gateway** | _(separate image)_ | HTTP ingress → `omni-alerts` |
 
+**SIEM integration components** (separate Deployments, same image):
+
+| Component | Transport | Role |
+|---|---|---|
+| **Omni-SIEM-Bridge** | Smart-SIEM Redis → Kafka `omni-alerts` | Translates FinGuard incidents to Omni alert envelopes |
+| **Omni-Evidence-Adapter** | Smart-SIEM Redis → Kafka `omni-diagnostic-evidence` | Converts raw SIEM events to evidence envelopes (bypasses prober) |
+| **Omni-HITL-Dispatcher** | Kafka `omni-hitl-pending` → FinGuard HITL API → `omni-actions`/`omni-action-feedback` | HITL approval gate for SIEM-sourced critical mutations |
+
 **Full incident flow:**
 1. Prometheus alertmanager → Gateway (HTTP, rate-limited) → `omni-alerts`
 2. Prober diagnoses via 3 evidence lanes (K8s resource state, application logs, Prometheus metrics) → `omni-diagnostic-evidence`
-3. Analyst runs LLM ReAct loop, classifies incident, generates action → `omni-actions`
-4. Executor applies K8s mutation → `omni-action-feedback`
-5. Analyst reads feedback, updates pgvector RAG collections (experience replay)
+3. Analyst runs LLM ReAct loop, classifies incident; **PlaybookMatcher** matches pre-approved playbook from Postgres → guides action selection → `omni-actions`
+4. If SIEM-sourced critical: Analyst emits to `omni-hitl-pending` with `explain`/`advise` fields → HITL Dispatcher awaits operator approval
+5. Executor applies K8s mutation → `omni-action-feedback`
+6. Analyst reads feedback, updates pgvector RAG collections (experience replay)
 
 ### Key Source Directories
 
@@ -130,12 +141,15 @@ Five processes, each a separate K8s Deployment and Docker image:
 | `src/rag/` | pgvector store, semantic search, collection management |
 | `src/prober/` | Diagnostic probes (K8s, Prometheus, Loki, network) |
 | `src/services/analyst/` | Analyst boundary (reasoning only, no direct mutations) |
+| `src/services/playbook/` | Playbook Engine: models, PlaybookStore (asyncpg), PlaybookMatcher, state machine |
+| `src/services/evidence_adapter/` | EvidenceAdapter protocol + SIEMEvidenceAdapter + AdapterGeneratorWorker |
 | `src/llm/` | Ollama client, LLM routing, token management |
 | `src/messaging/` | Kafka bus, Redis streams, async message handling |
 | `src/observability/` | OpenTelemetry tracing, structured logging, Prometheus metrics |
 | `src/training/` | Learning loops, experience replay |
 | `src/anomaly/` | Time-series anomaly detection and forecasting |
 | `tests/` | pytest suite (480+ tests); `tests/integration/` for async loop tests |
+| `scripts/migrate_playbook_schema.sql` | Idempotent Postgres DDL for playbook engine (run via `make migrate-playbook-schema`) |
 
 ### Core Invariants
 

@@ -111,7 +111,8 @@ async def test_run_agentic_mutate_plan_calls_llm_on_credential_batch_no_early_ex
                 "content": (
                     '{"thought":"auth failure","tool_name":"k8s_patch_secret",'
                     '"args":{"namespace":"multi-agent","name":"chaos-pg-secret","key":"APP_PASSWORD",'
-                    '"value":"x","reasoning":"restore"},"phase":"remediate","step":"mutate"}'
+                        '"value":"x","reasoning":"restore"},'
+                        '"evidence_refs":["fact:credential_failure"],"phase":"remediate","step":"mutate"}'
                 )
             }
         }
@@ -403,6 +404,7 @@ async def test_run_agentic_mutate_plan_accepts_tool_args_for_mutate():
                     '{"decision":"mutate","tool_name":"k8s_patch_secret",'
                     '"tool_args":{"namespace":"multi-agent","name":"sec","key":"DB_PASSWORD","value":"x",'
                     '"value_source":"lab_env","value_source_ref":"ticket-1"},'
+                    '"evidence_refs":["history:secret_ref"],'
                     '"step":"mutate"}'
                 )
             }

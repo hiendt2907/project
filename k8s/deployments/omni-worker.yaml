@@ -45,11 +45,6 @@ spec:
                 name: omni-worker-config
           # Chỉ Secret / nhạy cảm — mọi giá trị khác nằm trong omni-worker-config
           env:
-            - name: POSTGRES_RAG_DSN
-              valueFrom:
-                secretKeyRef:
-                  name: omni-postgres-app
-                  key: uri
             - name: TELEGRAM_BOT_TOKEN
               valueFrom:
                 secretKeyRef:

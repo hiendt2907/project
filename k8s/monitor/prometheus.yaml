@@ -282,15 +282,6 @@ data:
               description: "Worker pod scrape is not up for 2m, processing pipeline is halted."
           # OmniNoGatewayIngest removed: webhook chỉ có khi Alertmanager gửi — idle là bình thường, không phải sự cố.
           # OmniNoWorkerProcessing removed: idle lab (không Telegram/webhook) là bình thường; dùng OmniWorkerDown nếu cần.
-          - alert: OmniRedisStandaloneDown
-            expr: max(up{job="kubernetes-pods",kubernetes_namespace="multi-agent",kubernetes_pod_name=~"redis-[0-9]+"} == 1) < 1
-            for: 2m
-            labels:
-              severity: critical
-              domain: redis
-            annotations:
-              summary: "Redis standalone is down"
-              description: "Expected redis StatefulSet pod scrape up; current max(up) is {{ $value }}."
           - alert: OmniRedisExporterDown
             expr: max(up{job="kubernetes-pods",kubernetes_namespace="multi-agent",kubernetes_pod_name=~"redis-exporter.*"}) < 1
             for: 2m
@@ -320,15 +311,6 @@ data:
             annotations:
               summary: "Postgres cluster node count dropped"
               description: "Expected 3 postgres pods up, current count is {{ $value }}."
-          - alert: OmniPgpoolDown
-            expr: max(kube_deployment_status_replicas_available{namespace="multi-agent",deployment="pgpool-gateway"}) < 1
-            for: 2m
-            labels:
-              severity: critical
-              domain: db
-            annotations:
-              summary: "pgpool-gateway is unavailable"
-              description: "PGPool deployment has no available replicas."
           - alert: OmniK8sDeploymentUnavailable
             expr: sum(kube_deployment_status_replicas_unavailable{namespace="multi-agent"}) > 0
             for: 5m

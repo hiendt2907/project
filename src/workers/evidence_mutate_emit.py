@@ -215,6 +215,96 @@ async def emit_execute_mutate(
         logger.warning("EXECUTE_MUTATE emit skip: %s", e)
 
 
+def _siem_hitl_required(batch: list[dict[str, Any]]) -> bool:
+    """True when the originating SIEM alert explicitly requested HITL approval."""
+    for b in batch:
+        snip = str(b.get("canonical_query_snippet") or "").strip()
+        if not snip.startswith("{"):
+            continue
+        try:
+            j = json.loads(snip)
+            labels = j.get("labels") if isinstance(j, dict) else None
+            if isinstance(labels, dict) and labels.get("siem_hitl_required") == "true":
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _siem_alert_labels(batch: list[dict[str, Any]]) -> dict[str, str]:
+    """Extract SIEM-specific labels from the canonical_query_snippet of the first matching batch item."""
+    for b in batch:
+        snip = str(b.get("canonical_query_snippet") or "").strip()
+        if not snip.startswith("{"):
+            continue
+        try:
+            j = json.loads(snip)
+            labels = j.get("labels") if isinstance(j, dict) else {}
+            if isinstance(labels, dict) and labels.get("siem_source") == "finguard":
+                return {k: str(v) for k, v in labels.items()}
+        except Exception:
+            continue
+    return {}
+
+
+async def emit_hitl_pending(
+    ctx: Any,
+    *,
+    trace: str,
+    tool_name: str,
+    args: dict[str, Any],
+    attempt_count: int = 1,
+    reasoning_chain: dict[str, Any] | None = None,
+    hitl_reason: str = "",
+    batch: list[dict[str, Any]] | None = None,
+    explain: str = "",
+    advise: str = "",
+) -> None:
+    """Emit action to omni-hitl-pending instead of omni-actions — suspends execution until HITL decision."""
+    k = getattr(ctx, "kafka", None)
+    ws = getattr(ctx, "settings", None)
+    r = getattr(ctx, "redis", None)
+    if k is None or ws is None:
+        return
+    siem_labels = _siem_alert_labels(batch or [])
+    body = build_execute_mutate_body(
+        trace,
+        tool_name=tool_name,
+        args=args,
+        attempt_count=attempt_count,
+        reasoning_chain=reasoning_chain,
+    )
+    # Annotate with HITL metadata so dispatcher knows what to show the operator.
+    body["hitl_pending"] = True
+    body["hitl_reason"] = hitl_reason or "siem_critical_action"
+    body["siem_incident_id"] = siem_labels.get("siem_incident_id", "")
+    body["siem_tenant"] = siem_labels.get("siem_tenant", "")
+    body["siem_playbook_id"] = siem_labels.get("siem_playbook_id", "")
+    body["siem_category"] = siem_labels.get("siem_category", "")
+    # Explain & Advise: surfaced to operators in the HITL approval UI.
+    if explain:
+        body["explain"] = str(explain)[:500]
+    if advise:
+        body["advise"] = str(advise)[:500]
+    try:
+        topic = getattr(ws, "kafka_topic_hitl_pending", "omni-hitl-pending")
+        await k.send_dict(topic, {"data": json.dumps(body, ensure_ascii=False)})
+        logger.info(
+            "event=hitl_pending_emitted trace=%s tool=%s siem_incident=%s",
+            trace,
+            tool_name,
+            body["siem_incident_id"],
+        )
+        if r is not None:
+            await r.setex(
+                f"omni:hitl:state:{trace}",
+                7200,
+                json.dumps({"status": "PENDING_APPROVAL", "tool_name": tool_name}, ensure_ascii=False),
+            )
+    except Exception as e:
+        logger.warning("HITL_PENDING emit skip trace=%s: %s", trace, e)
+
+
 async def store_autonomous_trace_context(
     redis: Any,
     trace: str,

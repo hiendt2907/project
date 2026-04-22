@@ -1,4 +1,4 @@
-"""Registry tool — Service Provider: SDK-only (psutil, kubernetes_asyncio, httpx, matplotlib, scapy, asyncpg)."""
+"""Registry tool — Service Provider: SDK-only (psutil, kubernetes_asyncio, httpx, matplotlib, scapy)."""
 
 from __future__ import annotations
 
@@ -32,13 +32,9 @@ from workers.sdk_service_tools import (
     tool_get_historical_series_dataframe,
     tool_metrics_promql_hints,
     tool_net_scapy_interfaces,
-    tool_postgres_ping,
     tool_k8s_expert_search,
     tool_vendor_knowledge_search,
     tool_predict_resource_exhaustion,
-    tool_pgvector_health,
-    tool_pgvector_health_audit,
-    tool_pgvector_status,
     tool_query_historical_metrics,
     tool_query_prometheus_metrics,
     tool_query_vm_timeseries,
@@ -152,13 +148,9 @@ register_tool("query_vm_timeseries", tool_query_vm_timeseries)
 register_tool("forecast_memory_risk_vm", tool_forecast_memory_risk_vm)
 register_tool("predict_resource_exhaustion", tool_predict_resource_exhaustion)
 register_tool("redis_expert_check", tool_redis_expert_check)
-register_tool("pgvector_health_audit", tool_pgvector_health_audit)
 register_tool("redis_health", tool_redis_health)
 register_tool("redis_info", tool_redis_info)
-register_tool("pgvector_health", tool_pgvector_health)
-register_tool("pgvector_status", tool_pgvector_status)
 register_tool("net_scapy_interfaces", tool_net_scapy_interfaces)
-register_tool("postgres_ping", tool_postgres_ping)
 register_tool("vendor_knowledge_search", tool_vendor_knowledge_search)
 register_tool("k8s_expert_search", tool_k8s_expert_search)
 register_tool("audit_observability_stack", tool_audit_observability_stack)

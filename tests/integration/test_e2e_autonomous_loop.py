@@ -63,6 +63,7 @@ class SmartLLMStub:
             if ri == 0:
                 raw = json.dumps(
                     {
+                        "decision": "discovery",
                         "thought": "Describe Secret referenced by workload to confirm credential source.",
                         "tool_name": "k8s_describe_resource",
                         "args": {
@@ -87,6 +88,7 @@ class SmartLLMStub:
             if ri == 1:
                 raw = json.dumps(
                     {
+                        "decision": "mutate",
                         "thought": "Patch Secret key to restore valid credential for DB.",
                         "tool_name": "k8s_patch_secret",
                         "args": {
@@ -98,6 +100,9 @@ class SmartLLMStub:
                         },
                         "phase": "remediate",
                         "step": "mutate",
+                        "evidence_refs": ["trace:e2e-react-glassbox-trace"],
+                        "explain": "Patching secret to match DB password.",
+                        "advise": "Verify pod comes up.",
                     },
                     ensure_ascii=False,
                 )
@@ -118,6 +123,7 @@ class SmartLLMStub:
             if ri == 0:
                 raw = json.dumps(
                     {
+                        "decision": "discovery",
                         "thought": "Re-describe Secret after executor applied patch.",
                         "tool_name": "k8s_describe_resource",
                         "args": {
@@ -142,12 +148,13 @@ class SmartLLMStub:
             if ri == 1:
                 raw = json.dumps(
                     {
+                        "decision": "discovery",
                         "thought": "Read-only output shows healthy sync; exit.",
                         "phase": "done",
                         "resolution_summary": "Secret describe shows healthy rotation and DB auth success vs initial credential mismatch.",
                         "tool_name": "",
                         "args": {},
-                        "step": "mutate",
+                        "step": "readonly",
                     },
                     ensure_ascii=False,
                 )
@@ -265,7 +272,6 @@ async def test_e2e_react_credential_secret_patch_two_phase_glassbox(monkeypatch:
             "plan_result",
             "executor_simulated",
             "llm_round",
-            "readonly_executed",
             "llm_round",
             "plan_result",
         ],

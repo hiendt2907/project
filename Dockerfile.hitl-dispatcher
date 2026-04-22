@@ -1,0 +1,41 @@
+# Dockerfile.hitl-dispatcher — minimal image for omni-hitl-dispatcher.
+# No kubectl, no kubectl-auth, no data/ or config/ bulk.
+# Multi-arch: amd64 + arm64 via buildx.
+#
+# Build:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -t omni-hitl-dispatcher:latest -f Dockerfile.hitl-dispatcher . --push
+#
+# ── Stage 1: dependency compile ─────────────────────────────────────────────
+FROM python:3.13-slim-bookworm AS builder
+
+WORKDIR /build
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ── Stage 2: runtime ─────────────────────────────────────────────────────────
+FROM python:3.13-slim-bookworm
+
+# Non-root user matching k8s securityContext.runAsUser: 10001
+RUN useradd -m -u 10001 --no-log-init --shell /sbin/nologin appuser
+
+# Copy pre-built site-packages
+COPY --from=builder /install /usr/local
+
+WORKDIR /app
+
+# Only copy what the dispatcher needs — not data/, config/, scripts/
+COPY src/workers/hitl_dispatcher.py      /app/src/workers/hitl_dispatcher.py
+COPY src/workers/__init__.py             /app/src/workers/__init__.py
+
+ENV PYTHONPATH=/app/src
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+USER appuser
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import workers.hitl_dispatcher; print('ok')" || exit 1
+
+CMD ["python", "-m", "workers.hitl_dispatcher"]

@@ -1,17 +1,21 @@
-"""CLI: ``python -m knowledge.ingest_main`` — vendor knowledge → PGVector."""
+"""CLI: ``python -m knowledge.ingest_main`` — vendor knowledge → Redis vector store."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
+
+import redis.asyncio as aioredis
 
 from knowledge.config import load_knowledge_sources
 from knowledge.pipeline import run_pipeline_for_entry
 from llm.vllm_client import VLLMClient
-from rag.pgvector_store import COLLECTION_VENDOR_KNOWLEDGE, PGVectorStore, PostgresRAGSettings, init_pg_pool
+from rag.redis_vector_store import RedisVectorStore, PostgresRAGSettings
+from rag.pgvector_store import COLLECTION_VENDOR_KNOWLEDGE
 from training.sop_ingest import _embed_batch  # noqa: PLC2701 — shared embed helper
 from workers.settings import WorkerSettings
 
@@ -49,14 +53,16 @@ async def _run(sources_path: str, *, dry_run: bool, limit_sources: int | None) -
         logger.warning("no points to upsert")
         return 0
 
-    pg_pool = await init_pg_pool(PostgresRAGSettings())
-    store = PGVectorStore(pg_pool)
+    redis_url = os.environ.get("OMNI_REDIS_URL", "redis://redis:6379/0")
+    r = aioredis.from_url(redis_url, decode_responses=False)
+    store = RedisVectorStore(r)
     await store.ensure_ready()
     batch = ws.knowledge_ingest_embed_batch
     for i in range(0, len(all_points), batch):
         chunk = all_points[i : i + batch]
         await store.upsert(COLLECTION_VENDOR_KNOWLEDGE, chunk)
     await store.close()
+    await r.aclose()
     logger.info("upserted %d points into %s", len(all_points), COLLECTION_VENDOR_KNOWLEDGE)
     return 0
 

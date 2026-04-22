@@ -28,11 +28,10 @@ spec:
         prometheus.io/port: "9090"
         prometheus.io/path: "/metrics"
     spec:
+      hostPID: true
       serviceAccountName: omni-executor
       automountServiceAccountToken: true
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 10001
         fsGroup: 10001
       containers:
         - name: omni-executor
@@ -46,13 +45,10 @@ spec:
             - configMapRef:
                 name: omni-worker-config
           env:
-            - name: POSTGRES_RAG_DSN
-              valueFrom:
-                secretKeyRef:
-                  name: omni-postgres-app
-                  key: uri
             - name: OMNI_WORKER_ROLE
               value: "executor"
+            - name: OMNI_EXECUTOR_FORCE_NSENTER
+              value: "true"
             - name: TELEGRAM_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -68,6 +64,16 @@ spec:
                 secretKeyRef:
                   name: telegram-bot
                   key: chat-id
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            allowPrivilegeEscalation: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_PTRACE
+            seccompProfile:
+              type: Unconfined
           resources:
             requests:
               cpu: "100m"

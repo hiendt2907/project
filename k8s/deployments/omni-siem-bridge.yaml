@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-siem-bridge
+  namespace: multi-agent
+  labels:
+    app: omni-siem-bridge
+    app.kubernetes.io/component: bridge
+    app.kubernetes.io/part-of: omni
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omni-siem-bridge
+  template:
+    metadata:
+      labels:
+        app: omni-siem-bridge
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: siem-bridge
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "workers.siem_bridge"]
+          env:
+            # --- Smart-SIEM Redis (cross-namespace DNS) ---
+            - name: SIEM_BRIDGE_REDIS_URL
+              value: "redis://redis.finguard-customer.svc.cluster.local:6379"
+            - name: SIEM_BRIDGE_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: finguard-redis-bridge-secret
+                  key: password
+            - name: SIEM_BRIDGE_STREAM
+              value: "stream:actionable_incidents"
+            - name: SIEM_BRIDGE_GROUP
+              value: "omni-bridge-consumers"
+            - name: SIEM_BRIDGE_CONSUMER
+              value: "omni-bridge-1"
+            # --- Omni Kafka (same namespace) ---
+            - name: OMNI_KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:9092"
+            - name: OMNI_KAFKA_TOPIC_ALERTS
+              value: "omni-alerts"
+            - name: SIEM_BRIDGE_DEFAULT_NAMESPACE
+              value: "multi-agent"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+---
+# Secret: holds the FinGuard Redis password so the bridge can authenticate.
+# In lab: matches CHANGEME_REDIS_PASSWORD from finguard redis-auth Secret.
+# Change this to match your actual lab password.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: finguard-redis-bridge-secret
+  namespace: multi-agent
+type: Opaque
+stringData:
+  password: "CHANGEME_REDIS_PASSWORD"
