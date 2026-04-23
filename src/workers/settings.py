@@ -942,12 +942,12 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_TELEGRAM_ADMIN_CHAT_ID", "TELEGRAM_CHAT_ID"),
         description="Báo cáo Deep Scout; None = không gửi.",
     )
+    # Postgres removed — Omni RAG is on Redis Stack (HNSW + semantic cache).
+    # Keep field as deprecated placeholder for any legacy caller that references it;
+    # actual storage is `redis_url`. Remove when callers are fully purged.
     postgres_dsn: str = Field(
-        default="postgresql://appuser:${OMNI_DB_PASSWORD}@pgpool-gateway:5432/ragdb",
-        description=(
-            "asyncpg DSN (Pgpool-II gateway). Must be overridden via env/Secret; "
-            "placeholder default is fail-fast by design."
-        ),
+        default="",
+        description="DEPRECATED — Omni RAG migrated to Redis Stack. Do not set.",
     )
 
     # Deep Scout autonomous (1.5B synthesis + Redis/Postgres)

@@ -62,7 +62,7 @@ def build_run_commands_json(
     """Lệnh mẫu để chạy ingest (local + gợi ý Job K8s)."""
     local = (
         f"PYTHONPATH=src OMNI_VLLM_BASE_URL={settings.vllm_base_url} "
-        f"POSTGRES_RAG_DSN=${{POSTGRES_RAG_DSN:-postgresql://appuser:${{OMNI_DB_PASSWORD}}@pgpool-gateway:5432/ragdb}} "
+        f"OMNI_REDIS_URL=${{OMNI_REDIS_URL:-redis://redis:6379/0}} "
         f"CLI_HIL_COLLECTION={collection} "
         f".venv/bin/python -m training.cli_hil_ingest --count {count}"
         + (" --dry-run" if dry_run else "")

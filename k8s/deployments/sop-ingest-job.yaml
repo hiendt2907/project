@@ -1,4 +1,4 @@
-# One-shot: seed SOP → Ollama embed → Postgres itops_sop_ledger (tới 10k điểm).
+# One-shot: seed SOP → Ollama embed → Redis Stack HNSW index (COLLECTION_SOP, up to 10k points).
 apiVersion: batch/v1
 kind: Job
 metadata:
