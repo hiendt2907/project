@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: test-evidence docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate migrate-playbook-schema prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers
+.PHONY: test-evidence docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres
 
 test-evidence:
 	bash scripts/run_test_evidence.sh
@@ -205,6 +205,13 @@ siem-deploy-workers:
 	./scripts/with_working_kube.sh rollout status deployment/finguard-math-gateway -n finguard-customer --timeout=120s
 	./scripts/with_working_kube.sh rollout status deployment/finguard-agent -n finguard-customer --timeout=120s
 
-# Apply Playbook Engine Postgres schema (idempotent — safe to re-run).
-migrate-playbook-schema:
-	PGPASSWORD=$$OMNI_DB_PASSWORD psql -h pgpool-gateway -U appuser -d ragdb -f scripts/migrate_playbook_schema.sql
+# Playbooks now stored in Redis Stack (HNSW index). Legacy Postgres schema removed.
+
+# Teardown Omni Postgres cluster (RAG already migrated to Redis Stack).
+# Dry-run by default; pass APPLY=1 to actually delete.
+teardown-omni-postgres:
+	@if [ "$(APPLY)" = "1" ]; then \
+		./scripts/teardown_omni_postgres.sh --apply; \
+	else \
+		./scripts/teardown_omni_postgres.sh; \
+	fi

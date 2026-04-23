@@ -59,15 +59,9 @@ spec:
             runAsUser: 10001
             capabilities:
               drop: ["ALL"]
----
-# Secret: holds the FinGuard Redis password so the bridge can authenticate.
-# In lab: matches CHANGEME_REDIS_PASSWORD from finguard redis-auth Secret.
-# Change this to match your actual lab password.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: finguard-redis-bridge-secret
-  namespace: multi-agent
-type: Opaque
-stringData:
-  password: "CHANGEME_REDIS_PASSWORD"
+# Secret `finguard-redis-bridge-secret` is managed out-of-band.
+# Bootstrap (lab or prod):
+#   kubectl create secret generic finguard-redis-bridge-secret \
+#     --from-literal=password="<redis-password>" \
+#     -n multi-agent
+# Applying this manifest must NEVER overwrite a live password.

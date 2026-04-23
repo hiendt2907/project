@@ -1,0 +1,166 @@
+---
+# Production-grade Evidence Adapter manifest.
+# Drains FinGuard Redis stream `siem_evidence_raw` → Omni Kafka `omni-diagnostic-evidence`.
+# Differences from lab YAML:
+#   - PodDisruptionBudget: minAvailable=1
+#   - NetworkPolicy: egress-only to Kafka, FinGuard Redis, DNS
+#   - Liveness/readiness exec probes
+#   - Rolling update: maxUnavailable=0
+#   - Secret managed out-of-band
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omni-evidence-adapter
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/name: omni-evidence-adapter
+    app.kubernetes.io/component: evidence-adapter
+    app.kubernetes.io/part-of: omni
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-evidence-adapter
+  namespace: multi-agent
+  labels:
+    app: omni-evidence-adapter
+    app.kubernetes.io/name: omni-evidence-adapter
+    app.kubernetes.io/component: evidence-adapter
+    app.kubernetes.io/part-of: omni
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: omni-evidence-adapter
+  template:
+    metadata:
+      labels:
+        app: omni-evidence-adapter
+      annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      serviceAccountName: omni-evidence-adapter
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: evidence-adapter
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.evidence_adapter.worker"]
+          env:
+            - name: ADAPTER_REDIS_URL
+              value: "redis://redis.finguard-customer.svc.cluster.local:6379"
+            - name: ADAPTER_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: finguard-redis-bridge-secret
+                  key: password
+            - name: ADAPTER_STREAM
+              value: "stream:siem_evidence_raw"
+            - name: ADAPTER_GROUP
+              value: "omni-evidence-adapters"
+            - name: ADAPTER_CONSUMER
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ADAPTER_BLOCK_MS
+              value: "2000"
+            - name: ADAPTER_BATCH
+              value: "10"
+            - name: OMNI_KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:9092"
+            - name: OMNI_KAFKA_TOPIC_EVIDENCE
+              value: "omni-diagnostic-evidence"
+            - name: OMNI_ENV_MODE
+              value: "prod"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import services.evidence_adapter.worker; print('ok')"
+            initialDelaySeconds: 15
+            periodSeconds: 60
+            failureThreshold: 3
+            timeoutSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import services.evidence_adapter.worker; print('ok')"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 2
+            timeoutSeconds: 8
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: omni-evidence-adapter-pdb
+  namespace: multi-agent
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: omni-evidence-adapter
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-evidence-adapter-netpol
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-evidence-adapter
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - ports:
+        - port: 9092
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: finguard-customer
+      ports:
+        - port: 6379
+          protocol: TCP
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+# Secret managed out-of-band (shared with omni-siem-bridge).
+# Bootstrap:
+#   kubectl create secret generic finguard-redis-bridge-secret \
+#     --from-literal=password="<redis-password>" \
+#     -n multi-agent
