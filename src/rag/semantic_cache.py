@@ -10,7 +10,7 @@ import uuid
 from typing import Any
 
 import redis.asyncio as aioredis
-from redis.commands.search.field import VectorField
+from redis.commands.search.field import NumericField, VectorField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 
@@ -47,7 +47,7 @@ class SemanticCache:
             await self._r.ft(_SEMCACHE_IDX).create_index(
                 [
                     VectorField(
-                        "embedding",
+                        "$.embedding",
                         "HNSW",
                         {
                             "TYPE": "FLOAT32",
@@ -59,9 +59,10 @@ class SemanticCache:
                         },
                         as_name="embedding",
                     ),
+                    NumericField("$.ts", as_name="ts", sortable=True),
                 ],
                 definition=IndexDefinition(
-                    prefix=[_SEMCACHE_PREFIX], index_type=IndexType.HASH
+                    prefix=[_SEMCACHE_PREFIX], index_type=IndexType.JSON
                 ),
             )
             self._ready = True
@@ -115,15 +116,12 @@ class SemanticCache:
         ttl = ttl_sec if ttl_sec is not None else self._default_ttl
         try:
             key = f"{_SEMCACHE_PREFIX}{uuid.uuid4()}"
-            vec_bytes = struct.pack(f"{EMBED_DIM}f", *vec)
-            await self._r.hset(
-                key,
-                mapping={
-                    "embedding": vec_bytes,
-                    "result_json": result.model_dump_json(),
-                    "ts": str(time.time()),
-                },
-            )
+            doc = {
+                "embedding": list(vec),
+                "result_json": result.model_dump_json(),
+                "ts": time.time(),
+            }
+            await self._r.json().set(key, "$", doc)
             await self._r.expire(key, ttl)
         except Exception as e:
             logger.debug("event=semcache_set_failed err=%s", e)

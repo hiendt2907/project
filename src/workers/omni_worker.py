@@ -16,6 +16,8 @@ from ingest.telegram import TelegramBotSettings, TelegramClient, summarize_messa
 from llm.vllm_client import VLLMClient
 from rag.error_ledger import ErrorLedger
 from rag.redis_vector_store import RedisVectorStore
+from rag.semantic_cache import SemanticCache
+from services.playbook.store import PlaybookStore
 from workers.autonomous_decider import autonomous_decider_loop
 from workers.baseline_snapshot import baseline_snapshot_loop
 from workers.forecast_autonomous_loop import autonomous_forecast_loop
@@ -462,6 +464,14 @@ async def build_context() -> WorkerHandlerContext:
     await sem.init_pool()
     await vector_store.ensure_ready()
     await ledger.ensure_ready()
+    try:
+        await PlaybookStore(r).ensure_ready()
+    except Exception as e:
+        logger.warning("event=playbook_index_ensure_failed err=%s", e)
+    try:
+        await SemanticCache(r).ensure_ready()
+    except Exception as e:
+        logger.warning("event=semcache_index_ensure_failed err=%s", e)
 
     tg: TelegramClient | None = None
     if ws.telegram_enabled:
