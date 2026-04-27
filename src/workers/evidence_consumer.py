@@ -1680,6 +1680,68 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             )
             return contrast
 
+        # **ADVISORY MODE INTEGRATION (Phase 5)**
+        # Check if we should run advisory analyst instead of traditional flow
+        if bool(getattr(ctx.settings, "omni_siem_suggest_only", True)) and not bool(
+            getattr(ctx.settings, "omni_auto_execute_enabled", False)
+        ):
+            from workers.temporal_evidence_collector import fetch_temporal_evidence_for_batch
+            from workers.advisory_analyst_handler import run_advisory_analyst
+            from workers.telegram_advisory_emitter import render_advisory_to_telegram
+
+            try:
+                # Fetch temporal evidence (1-hour historical metrics)
+                temporal_block = await fetch_temporal_evidence_for_batch(ctx, batch, trace)
+                sanitized_text = format_batch_sanitized_analyst_user_text(batch)
+                if len(batch) == 1:
+                    sanitized_text = format_sanitized_analyst_user_text(batch[0])
+
+                if temporal_block:
+                    sanitized_text = f"{sanitized_text}\n\n=== TEMPORAL EVIDENCE ===\n{temporal_block}"
+
+                # Run advisory analyst (returns AnalystAdvisory schema)
+                advisory = await run_advisory_analyst(
+                    ctx,
+                    payload={"chat_id": chat_id},
+                    trace=trace,
+                    evidence_text=sanitized_text,
+                )
+
+                if advisory:
+                    # Emit advisory to Telegram with full formatting
+                    if chat_id is not None:
+                        await render_advisory_to_telegram(ctx, advisory, chat_id)
+                    # Emit as SUGGEST_REMEDIATION (not mutations)
+                    await _emit_suggest_remediation(
+                        ctx,
+                        trace=trace,
+                        diagnosis=advisory.root_cause,
+                        confidence=0.9,
+                        source="ADVISORY_MODE_ANALYST",
+                        suggested_tool="kubectl_describe",
+                    )
+                    logger.info(
+                        "event=advisory_analyst_complete trace=%s verdict=%s chat_id=%s",
+                        trace,
+                        advisory.verdict,
+                        chat_id,
+                    )
+                    await emit_transition(
+                        ctx,
+                        trace_id=trace,
+                        transition=TRANSITION_PLAN_EMITTED,
+                        component="evidence_consumer",
+                        detail="advisory_analyst_generated",
+                    )
+                    return f"[ADVISORY MODE] {advisory.verdict}: {advisory.root_cause}"
+            except Exception as e:
+                logger.warning(
+                    "event=advisory_analyst_error trace=%s err=%s",
+                    trace,
+                    str(e)[:200],
+                )
+                # Fall through to traditional flow on error
+
         sanitized_text = format_batch_sanitized_analyst_user_text(batch)
         if len(batch) == 1:
             sanitized_text = format_sanitized_analyst_user_text(batch[0])

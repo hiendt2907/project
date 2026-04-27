@@ -260,7 +260,23 @@ async def emit_hitl_pending(
     explain: str = "",
     advise: str = "",
 ) -> None:
-    """Emit action to omni-hitl-pending instead of omni-actions — suspends execution until HITL decision."""
+    """
+    Emit action to omni-hitl-pending instead of omni-actions — suspends execution until HITL decision.
+
+    DEPRECATED in Advisory Mode (Phase 5): omni-hitl-pending is disabled.
+    All suggestions route through Telegram + SUGGEST_REMEDIATION only.
+    This function returns silently if advisory mode is active.
+    """
+    # Advisory Mode kill-switch: omni-hitl-pending is DISABLED
+    from workers.advisory_mode_kill_switch import AdvisoryModeKillSwitch
+    from workers.advisory_hitl_compat import AdvisoryHITLCompat
+
+    if not AdvisoryModeKillSwitch.OMNI_AUTO_EXECUTE_ENABLED:
+        allowed, reason = AdvisoryHITLCompat.validate_hitl_gate(trace, context="emit_hitl_pending")
+        if not allowed:
+            logger.warning("event=hitl_pending_blocked_advisory_mode trace=%s reason=%s", trace, reason)
+            return
+
     k = getattr(ctx, "kafka", None)
     ws = getattr(ctx, "settings", None)
     r = getattr(ctx, "redis", None)
