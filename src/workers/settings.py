@@ -134,6 +134,11 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_HITL_PENDING"),
         description="HITL gate: actions awaiting human approval before executor dispatch.",
     )
+    kafka_topic_audit_chain: str = Field(
+        default="omni-audit-chain",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_AUDIT_CHAIN"),
+        description="CRAT tamper-evident audit chain (SOX §404, PCI-DSS v4.0). cleanup.policy=compact, infinite retention.",
+    )
     omni_auto_execute_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("OMNI_AUTO_EXECUTE_ENABLED"),
@@ -499,6 +504,7 @@ class WorkerSettings(BaseSettings):
         "kafka_topic_tool_audit",
         "kafka_topic_actions",
         "kafka_topic_action_feedback",
+        "kafka_topic_audit_chain",
         mode="after",
     )
     @classmethod
@@ -515,6 +521,7 @@ class WorkerSettings(BaseSettings):
             "kafka_topic_tool_audit": "omni-tool-audit",
             "kafka_topic_actions": "omni-actions",
             "kafka_topic_action_feedback": "omni-action-feedback",
+            "kafka_topic_audit_chain": "omni-audit-chain",
         }
         fb = defaults.get(info.field_name or "", "omni-alerts")
         if not isinstance(v, str) or not v.strip():

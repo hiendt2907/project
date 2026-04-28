@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import signal
 import time
 from typing import Any
@@ -178,7 +179,15 @@ async def _process_stream_entry(
     try:
         payload: dict[str, Any] = json.loads(raw)
         payload.setdefault("trace_id", trace)
-        trace = str(payload.get("trace_id"))
+        _raw_trace = str(payload.get("trace_id"))
+        if not re.match(r"^[a-zA-Z0-9_\-]{1,128}$", _raw_trace):
+            logger.warning(
+                "event=trace_id_invalid raw=%r — sanitizing to safe fallback",
+                _raw_trace[:64],
+            )
+            _raw_trace = f"stream-{msg_id}"
+            payload["trace_id"] = _raw_trace
+        trace = _raw_trace
         tok_trace = push_trace_id(trace)
         await emit_transition(
             ctx,

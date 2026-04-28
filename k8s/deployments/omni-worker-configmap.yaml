@@ -59,20 +59,23 @@ data:
   OMNI_AUTONOMOUS_FIX_COOLDOWN_SEC: "600"
   OMNI_AUTONOMOUS_SAFE_TOOLS: "k8s_rollout_restart,redis_health,redis_expert_check,sandbox_cleanup"
   OMNI_AUTONOMOUS_ALLOWED_NAMESPACES: "multi-agent"
-  # Executor: cho phép chạy EXECUTE_MUTATE thay vì chỉ audit-only.
-  OMNI_AUTO_EXECUTE_ENABLED: "true"
-  # Emit restart mutate khi evidence là fault workload (probe/crashloop/createcontainer/imagepull...).
-  OMNI_AUTONOMOUS_ROLLOUT_ON_FAULT_INCIDENT: "true"
+  # Phase 5 — Strict Advisory Mode: fail-closed at infra level.
+  # OMNI_AUTO_EXECUTE_ENABLED=false prevents ALL autonomous mutations.
+  # All SIEM incidents emit SUGGEST_REMEDIATION + Telegram only (no EXECUTE_MUTATE, no HITL pipeline).
+  # To re-enable execution, this ConfigMap must be edited AND redeployed — LLM cannot override this.
+  OMNI_AUTO_EXECUTE_ENABLED: "false"
+  OMNI_SIEM_SUGGEST_ONLY: "true"
+  # Advisory Mode: autonomous rollout disabled — all actions are suggestions only.
+  OMNI_AUTONOMOUS_ROLLOUT_ON_FAULT_INCIDENT: "false"
   # In-cluster service URLs & worker runtime (non-secret — override per cluster via ConfigMap)
   OMNI_REDIS_URL: "redis://redis:6379/0"
   OMNI_REDIS_CLUSTER: "false"
   OMNI_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
   OMNI_ENV_MODE: "prod"
-  # OrbStack chaos-victim inject: LLM cannot know DB password; enable lab autofix + password (see settings validator).
+  # OrbStack chaos-victim inject: password sourced from Secret omni-chaos-lab (see omni-chaos-secret.yaml).
   OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX_ENABLED: "true"
-  OMNI_CHAOS_PG_APP_PASSWORD: "chaos-app-pass-2025"
-  # Full cluster scope when executor SA is cluster-admin; set "false" for restricted prod.
-  OMNI_CLUSTER_FULL_ACCESS: "true"
+  # omni-worker no longer bound to cluster-admin — least-privilege RBAC enforced (see omni-worker-rbac.yaml).
+  OMNI_CLUSTER_FULL_ACCESS: "false"
   # Planner-led autonomy (skip deterministic mutate shortcuts; pair with OMNI_LEGACY_DETERMINISTIC_FALLBACK=false)
   OMNI_LLM_FIRST_AUTONOMY_ENABLED: "true"
   OMNI_LEGACY_DETERMINISTIC_FALLBACK: "false"

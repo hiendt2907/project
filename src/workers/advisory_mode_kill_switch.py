@@ -5,25 +5,27 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from services.audit_ledger.chain_writer import write_audit_block
+from services.audit_ledger.signer import AuditLedgerError
+
 logger = logging.getLogger(__name__)
 
 
 class AdvisoryModeKillSwitch:
     """
-    Hardcoded kill-switch that prevents mutations in Advisory Mode.
+    Kill-switch enforcement that prevents autonomous mutations when disabled.
+    Reads from Pydantic settings with strict fallback to False (fail-closed).
     If an LLM somehow hallucinates a mutation or an old code path tries to execute one,
     this module catches it and routes it to Telegram as a "Suggested Action" instead.
     """
-
-    # Hardcoded: Advisory Mode is ALWAYS read-only
-    OMNI_AUTO_EXECUTE_ENABLED = False
-    OMNI_SIEM_SUGGEST_ONLY = True
 
     @staticmethod
     def validate_execution_gate(
         tool_name: str,
         args: dict[str, Any],
         context: str = "unknown",
+        auto_execute_enabled: bool = False,
+        siem_suggest_only: bool = True,
     ) -> tuple[bool, str]:
         """
         Pre-execution validation. Returns (allow_execute, reason).
@@ -32,11 +34,13 @@ class AdvisoryModeKillSwitch:
             tool_name: The mutation tool name (e.g., k8s_rollout_restart)
             args: Tool arguments
             context: Where the execution was requested (advisory_analyst, planner, etc.)
+            auto_execute_enabled: OMNI_AUTO_EXECUTE_ENABLED from settings (default: False, fail-closed)
+            siem_suggest_only: OMNI_SIEM_SUGGEST_ONLY from settings (default: True)
 
         Returns:
-            (allow_execute=False, reason_message) — ALWAYS blocks in Advisory Mode
+            (allow_execute=False, reason_message) — blocks unless explicitly enabled via env config
         """
-        if not AdvisoryModeKillSwitch.OMNI_AUTO_EXECUTE_ENABLED:
+        if not auto_execute_enabled:
             reason = (
                 f"ADVISORY_MODE_KILL_SWITCH: Mutation '{tool_name}' blocked. "
                 f"Advisory Mode only supports read-only analysis. "
@@ -76,10 +80,14 @@ class AdvisoryModeKillSwitch:
         args: dict[str, Any],
         ctx: Any,
         trace: str,
+        auto_execute_enabled: bool = False,
     ) -> str:
         """
         If a mutation slips through (LLM hallucination, old code path),
         trap it and emit a Telegram message with "Suggested Action" instead of executing.
+
+        Args:
+            auto_execute_enabled: OMNI_AUTO_EXECUTE_ENABLED from settings (passed for audit trail)
 
         Returns:
             Safe message for the user explaining what was blocked.
@@ -89,6 +97,32 @@ class AdvisoryModeKillSwitch:
             tool_name,
             trace,
         )
+
+        # CRAT: fail-closed — audit trapped mutation BEFORE any Telegram emit.
+        _redis = getattr(ctx, "redis", None)
+        _kafka = getattr(ctx, "kafka", None)
+        _settings = getattr(ctx, "settings", None)
+        _audit_topic = getattr(_settings, "kafka_topic_audit_chain", "omni-audit-chain")
+        if _redis is not None:
+            try:
+                await write_audit_block(
+                    event_type="MUTATION_TRAPPED",
+                    trace_id=trace,
+                    payload={"tool_name": tool_name, "args": args, "auto_execute_enabled": auto_execute_enabled},
+                    redis=_redis,
+                    kafka=_kafka,
+                    kafka_topic=_audit_topic,
+                )
+            except AuditLedgerError as _audit_err:
+                logger.critical(
+                    "event=audit_chain_write_failed phase=trap_hallucinated_mutation trace=%s err=%s FAIL_CLOSED",
+                    trace,
+                    _audit_err,
+                )
+                return (
+                    f"AUDIT_CHAIN_FAILURE: Cannot safely trap mutation '{tool_name}'. "
+                    f"Audit write failed — transaction aborted. Trace: {trace}"
+                )
 
         # Route to Telegram as advisory
         if hasattr(ctx, "telegram") and ctx.telegram:
@@ -104,9 +138,9 @@ class AdvisoryModeKillSwitch:
                         f"(Advisory Mode). Please review and execute manually if safe.\n"
                         f"Trace: `{trace}`"
                     )
-                    await ctx.telegram.send_message(chat_id, suggestion_msg, parse_mode="markdown")
+                    await ctx.telegram.send_message(chat_id, suggestion_msg, parse_mode="Markdown")
                 except Exception as e:
-                    logger.warning("event=telegram_trap_send_error err=%s", e)
+                    logger.error("event=telegram_trap_send_error err=%r", e)
 
         return (
             f"ADVISED_ACTION: {tool_name} recommended but NOT executed in Advisory Mode. "

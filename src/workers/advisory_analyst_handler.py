@@ -8,6 +8,8 @@ import time
 from typing import Any
 
 from pkg.reasoning.analyst_advisory_schema import AnalystAdvisory
+from services.audit_ledger.chain_writer import write_audit_block
+from services.audit_ledger.signer import AuditLedgerError
 from workers.advisory_mode_system_prompt import build_advisory_system_prompt
 from workers.handler_context import WorkerHandlerContext
 from workers.llm_context_budget import effective_reply_max_words
@@ -153,6 +155,25 @@ async def run_advisory_analyst(
                 f"remediation_steps={len(advisory.proposed_remediation)}"
             ),
         )
+
+        # CRAT: fail-closed — audit write MUST succeed before advisory is returned.
+        try:
+            await write_audit_block(
+                event_type="ADVISORY_DECISION",
+                trace_id=trace,
+                payload=advisory.model_dump(),
+                redis=ctx.redis,
+                kafka=ctx.kafka,
+                kafka_topic=getattr(ws, "kafka_topic_audit_chain", "omni-audit-chain"),
+            )
+        except AuditLedgerError as _audit_err:
+            logger.critical(
+                "event=audit_chain_write_failed phase=advisory_analyst trace=%s err=%s FAIL_CLOSED",
+                trace,
+                _audit_err,
+            )
+            advisory = None
+            return None
 
         return advisory
 

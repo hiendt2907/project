@@ -27,4 +27,16 @@ for t in "${TOPICS[@]}"; do
     /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BOOTSTRAP" \
     --create --if-not-exists --topic "$t" --partitions 1 --replication-factor 1
 done
+
+# CRAT audit chain: compacted + infinite retention (SOX §404, PCI-DSS v4.0).
+# cleanup.policy=compact preserves the latest block per key; retention.ms=-1 = keep forever.
+echo "Ensuring topic: omni-audit-chain (compact, infinite retention)"
+"${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
+  /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BOOTSTRAP" \
+  --create --if-not-exists --topic "omni-audit-chain" \
+  --partitions 1 --replication-factor 1 \
+  --config cleanup.policy=compact \
+  --config retention.ms=-1 \
+  --config min.insync.replicas=1
+
 echo "Done."

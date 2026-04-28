@@ -63,6 +63,8 @@ spec:
                 secretKeyRef:
                   name: telegram-bot
                   key: chat-id
+            - name: OMNI_AUDIT_PRIVATE_KEY_PATH
+              value: /etc/omni/audit/private_key.pem
           resources:
             requests:
               cpu: "100m"
@@ -71,10 +73,11 @@ spec:
               cpu: "2"
               memory: 2Gi
           volumeMounts:
-            - name: source-code
-              mountPath: /app/src
+            - name: audit-keys
+              mountPath: /etc/omni/audit
+              readOnly: true
       volumes:
-        - name: source-code
-          hostPath:
-            path: /Users/hiendang/project/src
-            type: Directory
+        - name: audit-keys
+          secret:
+            secretName: omni-audit-keys
+            defaultMode: 0400

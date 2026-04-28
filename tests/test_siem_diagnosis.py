@@ -186,7 +186,10 @@ async def test_siem_telegram_has_real_incident_data():
     from workers.evidence_consumer import reason_from_diagnostic_evidence
 
     tg_captures: list = []
-    ctx = _make_ctx(tg_captures)
+    # Bypass advisory mode gate (requires siem_suggest_only=True AND NOT auto_execute_enabled).
+    # Setting auto_execute_enabled=True disables the gate so the SIEM fast-path in
+    # _emit_agentic_mutate_if_any (which still checks siem_suggest_only=True) runs normally.
+    ctx = _make_ctx(tg_captures, omni_auto_execute_enabled=True)
 
     batch_item = _siem_batch(category="ddos", ns="prod-ns")[0]
     ev_doc = {**batch_item, "kind": "diagnostic_evidence", "trace_id": "fg-siem-tg-001"}

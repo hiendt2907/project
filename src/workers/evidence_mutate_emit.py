@@ -267,18 +267,23 @@ async def emit_hitl_pending(
     All suggestions route through Telegram + SUGGEST_REMEDIATION only.
     This function returns silently if advisory mode is active.
     """
-    # Advisory Mode kill-switch: omni-hitl-pending is DISABLED
+    # Advisory Mode kill-switch: omni-hitl-pending is DISABLED if OMNI_AUTO_EXECUTE_ENABLED is false
     from workers.advisory_mode_kill_switch import AdvisoryModeKillSwitch
     from workers.advisory_hitl_compat import AdvisoryHITLCompat
 
-    if not AdvisoryModeKillSwitch.OMNI_AUTO_EXECUTE_ENABLED:
+    k = getattr(ctx, "kafka", None)
+    ws = getattr(ctx, "settings", None)
+    if ws is None:
+        return
+
+    auto_execute_enabled = bool(getattr(ws, "omni_auto_execute_enabled", False))
+    siem_suggest_only = bool(getattr(ws, "omni_siem_suggest_only", True))
+
+    if not auto_execute_enabled:
         allowed, reason = AdvisoryHITLCompat.validate_hitl_gate(trace, context="emit_hitl_pending")
         if not allowed:
             logger.warning("event=hitl_pending_blocked_advisory_mode trace=%s reason=%s", trace, reason)
             return
-
-    k = getattr(ctx, "kafka", None)
-    ws = getattr(ctx, "settings", None)
     r = getattr(ctx, "redis", None)
     if k is None or ws is None:
         return

@@ -5,16 +5,48 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+_LAYER_PATTERNS: list[tuple[str, list[str]]] = [
+    ("prometheus", ["rate(", "predict_linear(", "irate(", "increase(", "avg_over_time("]),
+    ("kubernetes", ["kubectl ", "helm ", "k8s.", "kube-"]),
+    ("network", ["ss -", "ip route", "ip link", "mtr ", "dig ", "tcpdump", "nmap ", "curl ", "nslookup"]),
+    ("os_baremetal", ["df ", "iostat", "dmesg", "journalctl", "lsblk", "top ", "top\n", "vmstat", "free ", "lscpu", "uptime", "du ", "sar "]),
+]
+
+_LAYER_TYPE = Literal["os_baremetal", "network", "kubernetes", "prometheus"]
+
+
+def _infer_layer(command: str) -> _LAYER_TYPE:
+    """Infer diagnostic layer from command text when the LLM omits the field."""
+    cmd_lower = command.lower()
+    for layer, patterns in _LAYER_PATTERNS:
+        if any(p in cmd_lower for p in patterns):
+            return layer  # type: ignore[return-value]
+    return "kubernetes"
 
 
 class VerificationStep(BaseModel):
     """Read-only command or query for human verification."""
 
     order: int = Field(gt=0, description="Step number")
-    command: str = Field(description="Exact kubectl, prometheus, or shell command (read-only)")
+    layer: _LAYER_TYPE = Field(
+        default="kubernetes",
+        description="Diagnostic layer: os_baremetal → network → kubernetes → prometheus",
+    )
+    command: str = Field(description="Exact shell, network, kubectl, or prometheus command (read-only)")
     expected_output: str = Field(default="", description="What healthy output looks like")
     rationale: str = Field(description="Why this step proves/disproves the root cause")
+
+    @model_validator(mode="after")
+    def infer_layer_from_command(self) -> "VerificationStep":
+        # If the LLM omitted layer or left it at the default and the command
+        # clearly belongs to a different layer, auto-correct silently.
+        if self.layer == "kubernetes" and self.command:
+            inferred = _infer_layer(self.command)
+            if inferred != "kubernetes":
+                object.__setattr__(self, "layer", inferred)
+        return self
 
 
 class ProposedRemediationStep(BaseModel):
@@ -50,6 +82,14 @@ class ImpactForecast(BaseModel):
     )
     confidence: Literal["high", "medium", "low"]
 
+    @field_validator("severity", mode="before")
+    @classmethod
+    def coerce_severity(cls, v: object) -> object:
+        # LLMs occasionally output "normal" — map to "healthy" before enum validation.
+        if v == "normal":
+            return "healthy"
+        return v
+
 
 class ForecastTimeline(BaseModel):
     """Complete time-series degradation model."""
@@ -59,7 +99,7 @@ class ForecastTimeline(BaseModel):
         default="",
         description="What evidence basis this forecast uses (e.g., 'prometheus predict_linear(rate[5m])')",
     )
-    forecasts: list[ImpactForecast] = Field(description="Severity at each timeframe")
+    forecasts: list[ImpactForecast] = Field(default_factory=list, description="Severity at each timeframe")
     note: str = Field(
         default="",
         description="If forecast is degraded, explain why (e.g., 'missing rate data')",

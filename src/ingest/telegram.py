@@ -74,10 +74,13 @@ class TelegramClient(BaseModel):
         text: str,
         *,
         reply_markup: dict[str, Any] | None = None,
+        parse_mode: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             body["reply_markup"] = reply_markup
+        if parse_mode is not None:
+            body["parse_mode"] = parse_mode
         r = await self._http.post("/sendMessage", json=body)
         r.raise_for_status()
         return r.json()

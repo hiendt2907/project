@@ -164,7 +164,8 @@ async def test_rag_miss_sdk_escalate_telegram_has_structure():
     from workers.evidence_consumer import reason_from_diagnostic_evidence
 
     tg_captures: list = []
-    ctx = _make_ctx(tg_captures)
+    # Disable advisory mode: test targets traditional planner Telegram output path.
+    ctx = _make_ctx(tg_captures, omni_siem_suggest_only=False)
 
     ev_doc = {
         "kind": "diagnostic_evidence",
@@ -234,7 +235,8 @@ async def test_rag_miss_sdk_escalate_body_not_empty_context_only():
     from workers.evidence_consumer import reason_from_diagnostic_evidence
 
     tg_captures: list = []
-    ctx = _make_ctx(tg_captures)
+    # Disable advisory mode: test targets traditional planner Telegram output path.
+    ctx = _make_ctx(tg_captures, omni_siem_suggest_only=False)
 
     ev_doc = {
         "kind": "diagnostic_evidence",
@@ -302,7 +304,8 @@ async def test_rag_miss_sdk_escalate_known_includes_alert_and_namespace():
     from workers.evidence_consumer import reason_from_diagnostic_evidence
 
     tg_captures: list = []
-    ctx = _make_ctx(tg_captures)
+    # Disable advisory mode: test targets traditional planner Telegram output path.
+    ctx = _make_ctx(tg_captures, omni_siem_suggest_only=False)
 
     ev_doc = {
         "kind": "diagnostic_evidence",

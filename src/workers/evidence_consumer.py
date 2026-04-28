@@ -98,6 +98,8 @@ from workers.autonomy_contract import (
     emit_transition,
 )
 from workers.tool_registry import get_tool_registry
+from services.audit_ledger.chain_writer import write_audit_block
+from services.audit_ledger.signer import AuditLedgerError
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +260,11 @@ def _siem_diagnosis_from_batch(
     )
 
     raw_steps = _SIEM_CATEGORY_STEPS.get(category, _SIEM_DEFAULT_STEPS)
-    steps = [s.format(ns=ns, ip=affected_ip or "?") for s in raw_steps]
+    # Use explicit replacement instead of str.format() to prevent format-string injection
+    # from untrusted SIEM-sourced ns/ip values containing "{...}" sequences.
+    _safe_ns = str(ns or "").replace("{", "").replace("}", "")
+    _safe_ip = str(affected_ip or "?").replace("{", "").replace("}", "")
+    steps = [s.replace("{ns}", _safe_ns).replace("{ip}", _safe_ip) for s in raw_steps]
     steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(steps))
 
     return (
@@ -1708,9 +1714,58 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 )
 
                 if advisory:
-                    # Emit advisory to Telegram with full formatting
-                    if chat_id is not None:
-                        await render_advisory_to_telegram(ctx, advisory, chat_id)
+                    from workers.advisory_mode_kill_switch import AdvisoryModeKillSwitch
+                    # Validate advisory output for forbidden mutation keywords (kill-switch layer 2)
+                    _valid, _reason = AdvisoryModeKillSwitch.validate_advisor_output(
+                        advisory.model_dump()
+                    )
+                    if not _valid:
+                        logger.error(
+                            "event=advisory_output_validation_failed trace=%s reason=%s",
+                            trace,
+                            _reason,
+                        )
+                    # Confirm execution gate is enforced and log it for the audit trail
+                    _, _gate_reason = AdvisoryModeKillSwitch.validate_execution_gate(
+                        tool_name="advisory_emit",
+                        args={},
+                        context="evidence_consumer_advisory",
+                        auto_execute_enabled=bool(
+                            getattr(ctx.settings, "omni_auto_execute_enabled", False)
+                        ),
+                        siem_suggest_only=bool(
+                            getattr(ctx.settings, "omni_siem_suggest_only", True)
+                        ),
+                    )
+                    logger.info(
+                        "event=advisory_gate_confirmed trace=%s gate=%s", trace, _gate_reason
+                    )
+                    # CRAT Fail-Closed Gate: audit write MUST succeed before any Telegram emit.
+                    try:
+                        await write_audit_block(
+                            event_type="ADVISORY_DISPATCHED",
+                            trace_id=trace,
+                            payload=advisory.model_dump(),
+                            redis=ctx.redis,
+                            kafka=ctx.kafka,
+                            kafka_topic=ctx.settings.kafka_topic_audit_chain,
+                        )
+                    except AuditLedgerError as _audit_err:
+                        logger.critical(
+                            "event=audit_chain_write_failed phase=evidence_consumer trace=%s err=%s FAIL_CLOSED",
+                            trace,
+                            _audit_err,
+                        )
+                        return "[ADVISORY MODE FAIL_CLOSED] audit_chain_write_failed — dispatch aborted"
+                    # Emit advisory to Telegram — prefer request chat_id, fall back to admin chat_id
+                    effective_cid = chat_id or getattr(ctx.settings, "telegram_admin_chat_id", None)
+                    if effective_cid is not None:
+                        await render_advisory_to_telegram(ctx, advisory, int(effective_cid))
+                    elif ctx.telegram:
+                        logger.error(
+                            "event=advisory_no_chat_id trace=%s — set OMNI_TELEGRAM_ADMIN_CHAT_ID to receive autonomous advisories",
+                            trace,
+                        )
                     # Emit as SUGGEST_REMEDIATION (not mutations)
                     await _emit_suggest_remediation(
                         ctx,
@@ -1724,7 +1779,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                         "event=advisory_analyst_complete trace=%s verdict=%s chat_id=%s",
                         trace,
                         advisory.verdict,
-                        chat_id,
+                        effective_cid,
                     )
                     await emit_transition(
                         ctx,
@@ -1734,13 +1789,41 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                         detail="advisory_analyst_generated",
                     )
                     return f"[ADVISORY MODE] {advisory.verdict}: {advisory.root_cause}"
+                else:
+                    # LLM returned None (parse failure) — FAIL-CLOSED, never fall through to planner.
+                    logger.warning(
+                        "event=advisory_analyst_null trace=%s — no advisory generated, failing closed",
+                        trace,
+                    )
+                    return "[ADVISORY MODE DEGRADED] advisory=None"
             except Exception as e:
                 logger.warning(
                     "event=advisory_analyst_error trace=%s err=%s",
                     trace,
                     str(e)[:200],
+                    exc_info=True,
                 )
-                # Fall through to traditional flow on error
+                # FAIL-CLOSED: never fall through to the traditional planner.
+                # The planner can emit EXECUTE_MUTATE; in advisory mode that is an invariant violation.
+                # Emit a degraded Telegram alert so operators are notified.
+                effective_cid = chat_id or getattr(ctx.settings, "telegram_admin_chat_id", None)
+                if effective_cid and getattr(ctx, "telegram", None):
+                    try:
+                        await ctx.telegram.send_message(
+                            int(effective_cid),
+                            (
+                                "⚠️ *Advisory Analyst Degraded*\n"
+                                f"Trace: `{trace}`\n"
+                                "The advisory analyst encountered an error and produced no analysis. "
+                                "*No automated action has been taken.* "
+                                "Please investigate manually.\n"
+                                f"Error: `{str(e)[:300]}`"
+                            ),
+                            parse_mode="Markdown",
+                        )
+                    except Exception:
+                        logger.error("event=advisory_degraded_telegram_error trace=%s", trace)
+                return f"[ADVISORY MODE DEGRADED] trace={trace} err={str(e)[:100]}"
 
         sanitized_text = format_batch_sanitized_analyst_user_text(batch)
         if len(batch) == 1:
@@ -2029,7 +2112,10 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     advise=_advise,
                 )
                 _SYNTHETIC_ALERTNAMES = {"FullAudit", "ChaosLabAlert", "SIEMUnknown", "GenericAlert"}
-                if _tg_alertname in _SYNTHETIC_ALERTNAMES:
+                # SIEM batches originate from external FinGuard system — never suppress, even if
+                # the prober fell back to GenericAlert alertname due to missing workload context.
+                _is_siem = _is_siem_batch(batch or [])
+                if _tg_alertname in _SYNTHETIC_ALERTNAMES and not _is_siem:
                     logger.info(
                         "event=telegram_escalation_suppressed trace=%s reason=synthetic_audit alertname=%s",
                         trace,
