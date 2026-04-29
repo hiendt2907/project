@@ -38,8 +38,14 @@ def _json_with_trace(content: dict[str, Any], *, trace_id: str, status_code: int
     )
 
 # ─── Config from env ──────────────────────────────────────────────────────────
+import hashlib
+import hmac as _hmac
 import os
 import re
+
+from pydantic import BaseModel, Field
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, Security
 
 _RE_TOPIC = re.compile(r"^[a-zA-Z0-9._-]+$")
 # Client-supplied trace (header X-Omni-Trace-Id or query trace_id): alphanumeric + _ - , length 8–128.
@@ -64,6 +70,31 @@ SILENCE_CHAOS_LAB = os.getenv("OMNI_GATEWAY_SILENCE_CHAOS_LAB", "false").strip()
     "true",
     "yes",
 )
+# Zero-Trust: HMAC-SHA256 webhook signature (lab: empty = skip; prod: set via K8s Secret omni-gateway-secret)
+_WEBHOOK_SECRET: bytes = (os.getenv("OMNI_GATEWAY_WEBHOOK_SECRET") or "").strip().encode()
+
+
+class PrometheusAlert(BaseModel):
+    alertname: str = Field(default="")
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+    status: str = Field(default="firing")
+    startsAt: str = Field(default="")
+    endsAt: str = Field(default="")
+    generatorURL: str = Field(default="")
+
+
+class PrometheusWebhookBody(BaseModel):
+    receiver: str = Field(default="")
+    status: str = Field(default="")
+    alerts: list[PrometheusAlert] = Field(default_factory=list)
+    groupLabels: dict[str, str] = Field(default_factory=dict)
+    commonLabels: dict[str, str] = Field(default_factory=dict)
+    commonAnnotations: dict[str, str] = Field(default_factory=dict)
+    externalURL: str = Field(default="")
+    version: str = Field(default="4")
+    groupKey: str = Field(default="")
+    truncatedAlerts: int = Field(default=0)
 
 
 def _str_header(request: Request, name: str) -> str | None:
@@ -110,6 +141,38 @@ def _resolve_prometheus_trace_id(request: Request) -> str:
     tid = f"gw-prom-{uuid.uuid4().hex[:12]}"
     logger.info("[GATEWAY] trace_id=generated id=%s", tid)
     return tid
+
+
+def _verify_hmac_signature(request: Request, raw_body: bytes) -> bool:
+    """Verify X-Hub-Signature-256 header against OMNI_GATEWAY_WEBHOOK_SECRET.
+    Returns True unconditionally when secret is not configured (lab mode).
+    """
+    if not _WEBHOOK_SECRET:
+        return True
+    sig_header = (
+        _str_header(request, "x-hub-signature-256")
+        or _str_header(request, "x-omni-signature")
+    )
+    if not sig_header or not sig_header.startswith("sha256="):
+        return False
+    expected = _hmac.new(_WEBHOOK_SECRET, raw_body, hashlib.sha256).hexdigest()
+    return _hmac.compare_digest(sig_header[7:], expected)
+
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+async def _require_api_key(
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
+) -> None:
+    """API key guard for sensitive operational endpoints. Skip when key not configured (lab mode)."""
+    key = os.getenv("OMNI_GATEWAY_API_KEY", "").strip()
+    if not key:
+        return
+    if credentials is None or not _hmac.compare_digest(
+        credentials.credentials.encode(), key.encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 def _is_chaos_lab_prometheus_webhook(body: Any) -> bool:
@@ -160,6 +223,10 @@ def _build_redis_client() -> aioredis.Redis:
 async def lifespan(app: FastAPI):
     global _redis, _kafka, _rate_semaphore, _token_refill_task
     install_gateway_trace_logging()
+    if not _WEBHOOK_SECRET:
+        logger.warning(
+            "omni-gateway: OMNI_GATEWAY_WEBHOOK_SECRET not set — webhook signature verification DISABLED (lab mode)"
+        )
     _redis = _build_redis_client()
     await _redis.initialize()
     _kafka = AIOKafkaProducer(
@@ -275,10 +342,24 @@ async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONRespo
             )
 
         # ── 3. Parse & Enqueue ───────────────────────────────────────────────
+        raw_body = await request.body()
+
+        if not _verify_hmac_signature(request, raw_body):
+            logger.warning("[GATEWAY][%s] Webhook signature verification failed — rejecting.", trace_id)
+            gw_requests.labels(status="401_invalid_signature").inc()
+            return _json_with_trace(
+                {"error": "Unauthorized", "detail": "Invalid or missing webhook signature.", "trace_id": trace_id},
+                trace_id=trace_id,
+                status_code=401,
+            )
+
         try:
-            body: Any = await request.json()
+            body: Any = PrometheusWebhookBody.model_validate_json(raw_body).model_dump()
         except Exception:
-            body = {}
+            try:
+                body = json.loads(raw_body) if raw_body else {}
+            except Exception:
+                body = {}
 
         if SILENCE_CHAOS_LAB and _is_chaos_lab_prometheus_webhook(body):
             logger.info("[GATEWAY][%s] Dropped chaos-lab webhook (OMNI_GATEWAY_SILENCE_CHAOS_LAB=1)", trace_id)
@@ -309,7 +390,7 @@ async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONRespo
 
 
 @app.get("/metrics/circuit_breaker")
-async def cb_status():
+async def cb_status(_: None = Depends(_require_api_key)):
     """Quick status endpoint để Gateway tự expose trạng thái mạch."""
     assert _redis is not None
     flag = await _redis.get(CB_KEY)
