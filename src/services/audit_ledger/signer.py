@@ -9,6 +9,12 @@ from functools import lru_cache
 logger = logging.getLogger(__name__)
 
 _ENV_KEY_PATH = "OMNI_AUDIT_PRIVATE_KEY_PATH"
+_ENV_KEY_VERSION = "OMNI_AUDIT_KEY_VERSION"
+
+
+def public_key_version() -> str:
+    """Return the current key version (from env). Used to tag CRAT blocks for rotation tracing."""
+    return os.environ.get(_ENV_KEY_VERSION, "1").strip() or "1"
 
 
 class AuditLedgerError(Exception):

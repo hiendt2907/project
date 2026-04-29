@@ -112,6 +112,27 @@ def _generate_dynamic_promql_queries(
                 60,
             )
 
+    # Service-level SLI fallback — for SIEM alerts where pod is empty but deployment+namespace known
+    if deployment and namespace and not pod:
+        queries["svc_error_rate"] = (
+            f'sum(rate(http_requests_total{{job="{deployment}", namespace="{namespace}", status=~"5.."}}[5m]))'
+            f' / sum(rate(http_requests_total{{job="{deployment}", namespace="{namespace}"}}[5m]))',
+            "Service Error Rate (5xx ratio)",
+            60,
+        )
+        queries["svc_latency_p99"] = (
+            f'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{{job="{deployment}", namespace="{namespace}"}}[5m])) by (le))',
+            "Service Latency P99 (sec)",
+            60,
+        )
+
+    # Always-on cluster throughput baseline (excludes infra namespaces)
+    queries["cluster_throughput_rps"] = (
+        'sum(rate(http_requests_total{namespace!~"kube-.*|monitor|kube-system"}[5m]))',
+        "Cluster HTTP Throughput (req/sec)",
+        60,
+    )
+
     # Replica/scaling alerts
     if re.search(r"replica|scaling|pending|unschedulable", alert_context) and deployment and namespace:
         queries["deployment_replicas"] = (

@@ -195,6 +195,173 @@ async def probe_kafka_alerts_topic(ctx: WorkerHandlerContext, _ev: AnomalyEvent)
     )
 
 
+# ── P7.2.A — L1 OS-level probes (node_exporter via Prometheus) ───────────────
+
+async def probe_node_disk_pressure(ctx: WorkerHandlerContext, _ev: AnomalyEvent) -> ProbeRunRaw:
+    """L1: Node filesystem available < 10% on any mount."""
+    promql = (
+        'node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} '
+        '/ node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.1'
+    )
+    try:
+        data = await _prometheus_instant_query(ctx, promql)
+        res = (data.get("data") or {}).get("result") or []
+        if res:
+            summary, structured = _instant_vector_summary(data)
+            return ProbeRunRaw(
+                probe_name="node_disk_pressure",
+                status="FAILED",
+                raw_text=f"node(s) below 10% free disk: {summary}"[:4000],
+                structured_hint={"unit": "free_ratio", **structured},
+            )
+        return ProbeRunRaw(
+            probe_name="node_disk_pressure",
+            status="PASSED",
+            raw_text="all node filesystems above 10% free",
+        )
+    except Exception as e:
+        logger.warning("probe_node_disk_pressure: %s", e)
+        return ProbeRunRaw(probe_name="node_disk_pressure", status="INCONCLUSIVE", raw_text=str(e)[:2000])
+
+
+async def probe_node_cpu_saturation(ctx: WorkerHandlerContext, _ev: AnomalyEvent) -> ProbeRunRaw:
+    """L1: Cluster-level CPU saturation (1 - idle %)."""
+    promql = '1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))'
+    try:
+        data = await _prometheus_instant_query(ctx, promql)
+        summary, structured = _instant_vector_summary(data)
+        ok = data.get("status") == "success" and (data.get("data") or {}).get("result")
+        return ProbeRunRaw(
+            probe_name="node_cpu_saturation",
+            status="PASSED" if ok else "INCONCLUSIVE",
+            raw_text=f"cluster_cpu_saturation={summary}"[:4000],
+            structured_hint={"unit": "saturation_ratio", **structured},
+        )
+    except Exception as e:
+        logger.warning("probe_node_cpu_saturation: %s", e)
+        return ProbeRunRaw(probe_name="node_cpu_saturation", status="INCONCLUSIVE", raw_text=str(e)[:2000])
+
+
+async def probe_node_memory_pressure(ctx: WorkerHandlerContext, _ev: AnomalyEvent) -> ProbeRunRaw:
+    """L1: Node memory pressure (1 - MemAvailable/MemTotal)."""
+    promql = '1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)'
+    try:
+        data = await _prometheus_instant_query(ctx, promql)
+        summary, structured = _instant_vector_summary(data)
+        ok = data.get("status") == "success" and (data.get("data") or {}).get("result")
+        return ProbeRunRaw(
+            probe_name="node_memory_pressure",
+            status="PASSED" if ok else "INCONCLUSIVE",
+            raw_text=f"node_memory_pressure={summary}"[:4000],
+            structured_hint={"unit": "pressure_ratio", **structured},
+        )
+    except Exception as e:
+        logger.warning("probe_node_memory_pressure: %s", e)
+        return ProbeRunRaw(probe_name="node_memory_pressure", status="INCONCLUSIVE", raw_text=str(e)[:2000])
+
+
+async def probe_node_disk_io_saturation(ctx: WorkerHandlerContext, _ev: AnomalyEvent) -> ProbeRunRaw:
+    """L1: Node disk I/O utilisation rate."""
+    promql = 'rate(node_disk_io_time_seconds_total[5m])'
+    try:
+        data = await _prometheus_instant_query(ctx, promql)
+        summary, structured = _instant_vector_summary(data)
+        ok = data.get("status") == "success" and (data.get("data") or {}).get("result")
+        return ProbeRunRaw(
+            probe_name="node_disk_io_saturation",
+            status="PASSED" if ok else "INCONCLUSIVE",
+            raw_text=f"disk_io_utilisation={summary}"[:4000],
+            structured_hint={"unit": "io_util_ratio", **structured},
+        )
+    except Exception as e:
+        logger.warning("probe_node_disk_io_saturation: %s", e)
+        return ProbeRunRaw(probe_name="node_disk_io_saturation", status="INCONCLUSIVE", raw_text=str(e)[:2000])
+
+
+# ── P7.2.B — L2 Network probes (kubernetes_asyncio, read-only) ───────────────
+
+async def probe_k8s_service_endpoints_ready(ctx: WorkerHandlerContext, ev: AnomalyEvent) -> ProbeRunRaw:
+    """L2: Check service endpoints have ready backends (empty subsets = unreachable)."""
+    ns = (getattr(ev, "namespace", None) or "").strip()
+    svc = (getattr(ev, "workload", None) or getattr(ev, "deployment", None) or "").strip()
+    if not ns or not svc:
+        return ProbeRunRaw(
+            probe_name="k8s_service_endpoints_ready",
+            status="SKIPPED",
+            raw_text="missing namespace or service name",
+        )
+    try:
+        from kubernetes_asyncio import client, config as k8s_config
+
+        await k8s_config.load_incluster_config()
+        v1 = client.CoreV1Api()
+        try:
+            ep = await v1.read_namespaced_endpoints(name=svc, namespace=ns)
+            subsets = ep.subsets or []
+            ready_addrs = sum(len(s.addresses or []) for s in subsets)
+            if ready_addrs == 0:
+                return ProbeRunRaw(
+                    probe_name="k8s_service_endpoints_ready",
+                    status="FAILED",
+                    raw_text=f"service/{svc} in {ns}: no ready endpoints (subsets empty)",
+                    structured_hint={"service": svc, "namespace": ns, "ready_addresses": 0},
+                )
+            return ProbeRunRaw(
+                probe_name="k8s_service_endpoints_ready",
+                status="PASSED",
+                raw_text=f"service/{svc} in {ns}: {ready_addrs} ready endpoint(s)",
+                structured_hint={"service": svc, "namespace": ns, "ready_addresses": ready_addrs},
+            )
+        except Exception as e:
+            return ProbeRunRaw(
+                probe_name="k8s_service_endpoints_ready",
+                status="INCONCLUSIVE",
+                raw_text=f"could not read endpoints/{svc} in {ns}: {e}"[:2000],
+            )
+        finally:
+            await v1.api_client.close()
+    except Exception as e:
+        logger.warning("probe_k8s_service_endpoints_ready: %s", e)
+        return ProbeRunRaw(probe_name="k8s_service_endpoints_ready", status="INCONCLUSIVE", raw_text=str(e)[:2000])
+
+
+async def probe_k8s_networkpolicy_audit(ctx: WorkerHandlerContext, ev: AnomalyEvent) -> ProbeRunRaw:
+    """L2: List NetworkPolicies in alert namespace — surfaces deny-all or restrictive rules."""
+    ns = (getattr(ev, "namespace", None) or "").strip()
+    if not ns:
+        return ProbeRunRaw(
+            probe_name="k8s_networkpolicy_audit",
+            status="SKIPPED",
+            raw_text="missing namespace",
+        )
+    try:
+        from kubernetes_asyncio import client, config as k8s_config
+
+        await k8s_config.load_incluster_config()
+        netv1 = client.NetworkingV1Api()
+        try:
+            policies = await netv1.list_namespaced_network_policy(namespace=ns)
+            names = [p.metadata.name for p in (policies.items or [])]
+            count = len(names)
+            return ProbeRunRaw(
+                probe_name="k8s_networkpolicy_audit",
+                status="PASSED",
+                raw_text=f"namespace={ns} network_policies={count}: {', '.join(names[:10])}",
+                structured_hint={"namespace": ns, "policy_count": count, "policies": names[:10]},
+            )
+        except Exception as e:
+            return ProbeRunRaw(
+                probe_name="k8s_networkpolicy_audit",
+                status="INCONCLUSIVE",
+                raw_text=f"could not list NetworkPolicies in {ns}: {e}"[:2000],
+            )
+        finally:
+            await netv1.api_client.close()
+    except Exception as e:
+        logger.warning("probe_k8s_networkpolicy_audit: %s", e)
+        return ProbeRunRaw(probe_name="k8s_networkpolicy_audit", status="INCONCLUSIVE", raw_text=str(e)[:2000])
+
+
 PROBE_REGISTRY: dict[str, ProbeFn] = {
     "redis_ping": probe_redis_ping,
     "k8s_list_pods_namespace": probe_k8s_list_pods_namespace,
@@ -213,6 +380,14 @@ PROBE_REGISTRY: dict[str, ProbeFn] = {
     # OmniConfigMapGodModeProd alert types.
     "rbac_drift": probe_k8s_rbac_drift,
     "configmap_security_drift": probe_k8s_configmap_security_drift,
+    # P7.2.A — L1 OS-level (node_exporter via Prometheus)
+    "node_disk_pressure": probe_node_disk_pressure,
+    "node_cpu_saturation": probe_node_cpu_saturation,
+    "node_memory_pressure": probe_node_memory_pressure,
+    "node_disk_io_saturation": probe_node_disk_io_saturation,
+    # P7.2.B — L2 Network (kubernetes_asyncio, read-only)
+    "k8s_service_endpoints_ready": probe_k8s_service_endpoints_ready,
+    "k8s_networkpolicy_audit": probe_k8s_networkpolicy_audit,
 }
 
 

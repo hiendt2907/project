@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Any
 
-from services.audit_ledger.signer import AuditLedgerError, public_key_hex, sign_block_hash
+from services.audit_ledger.signer import AuditLedgerError, public_key_hex, public_key_version, sign_block_hash
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ async def write_audit_block(
             seq: int = int(results[1])
 
             # 2. Compute block hash
-            timestamp_utc = datetime.datetime.utcnow().isoformat() + "Z"
+            timestamp_utc = datetime.datetime.now(datetime.UTC).isoformat()
             p_hash = _payload_hash(payload)
             block_hash = _compute_block_hash(seq, event_type, trace_id, timestamp_utc, p_hash, prev_hash)
 
@@ -92,6 +92,7 @@ async def write_audit_block(
                 "block_hash": block_hash,
                 "signature_hex": sig_hex,
                 "public_key_hex": pub_hex,
+                "pub_key_version": public_key_version(),
                 "payload": payload,
             }
             block_json = json.dumps(block, default=str)

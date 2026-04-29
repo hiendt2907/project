@@ -23,6 +23,11 @@ KAFKA_BOOTSTRAP = os.getenv("OMNI_KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 DLQ_TOPIC = os.getenv("OMNI_KAFKA_TOPIC_DLQ", os.getenv("OMNI_STREAM_DLQ", "omni-dlq"))
 ALERTS_TOPIC = os.getenv("OMNI_KAFKA_TOPIC_ALERTS", os.getenv("OMNI_STREAM_INBOUND", "omni-alerts"))
 
+# SIEM Redis Stream DLQ (FinGuard Redis, separate from Kafka DLQ)
+SIEM_REDIS_URL = os.getenv("SIEM_REDIS_URL") or os.getenv("OMNI_REDIS_FG_URL") or "redis://localhost:6379/0"
+SIEM_DLQ_STREAM = os.getenv("SIEM_REDIS_DLQ", "stream:actionable_incidents:dlq")
+SIEM_MAIN_STREAM = os.getenv("SIEM_REDIS_STREAM", "stream:actionable_incidents")
+
 NETWORK_ERROR_TYPES = {
     "HTTPStatusError",
     "ConnectionError",
@@ -150,17 +155,94 @@ async def replay_messages(
     print(f"\n  Summary: replayed={replayed} skipped_fatal={skipped_fatal} skipped_filter={skipped_filter}")
 
 
+async def siem_dlq_list(since: str | None = None) -> None:
+    """List all entries in the SIEM Redis Stream DLQ."""
+    import redis.asyncio as aioredis
+
+    r = aioredis.from_url(SIEM_REDIS_URL, decode_responses=True)
+    try:
+        min_id = "-"
+        if since:
+            try:
+                import datetime as _dt
+                ts = _dt.datetime.fromisoformat(since.replace("Z", "+00:00"))
+                min_id = str(int(ts.timestamp() * 1000))
+            except Exception:
+                print(f"[WARN] Could not parse --since={since!r}, using beginning of stream.")
+
+        entries = await r.xrange(SIEM_DLQ_STREAM, min=min_id, max="+")
+        if not entries:
+            print(f"[EMPTY] SIEM DLQ stream '{SIEM_DLQ_STREAM}' has no messages.")
+            return
+
+        print(f"\n{'─' * 80}\n  SIEM DLQ — {SIEM_DLQ_STREAM} ({len(entries)} entries)\n{'─' * 80}")
+        for i, (msg_id, fields) in enumerate(entries, 1):
+            ts_ms = int(msg_id.split("-")[0])
+            ts_fmt = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts_ms / 1000))
+            print(
+                f"\n  [{i}] id={msg_id} ts={ts_fmt}"
+                f"\n       error={fields.get('error', '')[:120]}"
+                f"\n       payload_preview={fields.get('payload', '')[:180]}"
+            )
+        print(f"\n  Total: {len(entries)} entries")
+    finally:
+        await r.aclose()
+
+
+async def siem_dlq_replay(dry_run: bool = False, since: str | None = None) -> None:
+    """Replay SIEM DLQ entries back into the main stream."""
+    import redis.asyncio as aioredis
+
+    r = aioredis.from_url(SIEM_REDIS_URL, decode_responses=True)
+    try:
+        min_id = "-"
+        if since:
+            try:
+                import datetime as _dt
+                ts = _dt.datetime.fromisoformat(since.replace("Z", "+00:00"))
+                min_id = str(int(ts.timestamp() * 1000))
+            except Exception:
+                print(f"[WARN] Could not parse --since={since!r}, using beginning of stream.")
+
+        entries = await r.xrange(SIEM_DLQ_STREAM, min=min_id, max="+")
+        if not entries:
+            print(f"[INFO] SIEM DLQ stream '{SIEM_DLQ_STREAM}' is empty.")
+            return
+
+        replayed = 0
+        for msg_id, fields in entries:
+            payload = fields.get("payload") or "{}"
+            if dry_run:
+                print(f"  [DRY-RUN] Would replay {msg_id} → {SIEM_MAIN_STREAM}")
+                replayed += 1
+                continue
+            await r.xadd(SIEM_MAIN_STREAM, {"data": payload, "_dlq_replay_from": msg_id})
+            print(f"  [REPLAYED] {msg_id} → {SIEM_MAIN_STREAM}")
+            replayed += 1
+
+        print(f"\n  Summary: replayed={replayed} dry_run={dry_run}")
+    finally:
+        await r.aclose()
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DLQ replay — Kafka")
-    parser.add_argument("--list", action="store_true")
-    parser.add_argument("--replay", action="store_true")
-    parser.add_argument("--replay-network", action="store_true")
-    parser.add_argument("--replay-id", metavar="MSG_ID")
-    parser.add_argument("--error-type", metavar="TYPE")
-    parser.add_argument("--dry-run", action="store_true")
+    parser = argparse.ArgumentParser(description="DLQ replay — Kafka + SIEM Redis Stream")
+    parser.add_argument("--list", action="store_true", help="List Kafka DLQ messages")
+    parser.add_argument("--replay", action="store_true", help="Replay Kafka DLQ messages")
+    parser.add_argument("--replay-network", action="store_true", help="Replay network-error Kafka DLQ messages")
+    parser.add_argument("--replay-id", metavar="MSG_ID", help="Replay a specific Kafka DLQ message by ID")
+    parser.add_argument("--error-type", metavar="TYPE", help="Filter by error type")
+    parser.add_argument("--dry-run", action="store_true", help="Print actions without executing")
+    parser.add_argument("--siem-dlq-list", action="store_true", help="List SIEM Redis Stream DLQ entries")
+    parser.add_argument("--siem-dlq-replay", action="store_true", help="Replay SIEM Redis DLQ → main stream")
+    parser.add_argument("--siem-dlq-replay-since", metavar="ISO_TIMESTAMP", help="Only replay entries since ISO timestamp")
     args = parser.parse_args()
 
-    if args.list:
+    if args.siem_dlq_list:
+        asyncio.run(siem_dlq_list(since=args.siem_dlq_replay_since))
+    elif args.siem_dlq_replay:
+        asyncio.run(siem_dlq_replay(dry_run=args.dry_run, since=args.siem_dlq_replay_since))
+    elif args.list:
         asyncio.run(list_dlq(error_type_filter=args.error_type))
     elif args.replay or args.replay_network or args.replay_id:
         asyncio.run(
