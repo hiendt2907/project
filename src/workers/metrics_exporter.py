@@ -53,6 +53,7 @@ _proactive_outcome: Any = None
 _proactive_incident_duration: Any = None
 _promql_placeholder_rejected: Any = None
 _evidence_llm_contradiction: Any = None
+_rag_empty_result: Any = None
 _started = False
 
 
@@ -68,7 +69,7 @@ def _ensure_metrics() -> None:
     global _proactive_tombstone_no_k8s, _proactive_lease_conflict, _proactive_skip_frozen
     global _wilson_confidence_score, _redis_stream_backlog
     global _proactive_outcome, _proactive_incident_duration, _promql_placeholder_rejected
-    global _evidence_llm_contradiction
+    global _evidence_llm_contradiction, _rag_empty_result
     if _build_info is not None:
         return
     from prometheus_client import Counter, Gauge, Histogram, Info
@@ -248,6 +249,11 @@ def _ensure_metrics() -> None:
     _evidence_llm_contradiction = Counter(
         "omni_evidence_llm_contradiction_total",
         "Diagnostic analyst LLM output contradicted SDK evidence batch",
+    )
+    _rag_empty_result = Counter(
+        "omni_rag_empty_result_total",
+        "RAG search returned empty results (graceful degradation — LLM receives reduced context)",
+        ["collection", "search_type"],
     )
     _wilson_confidence_score.set(0.0)
     _proactive_events.inc(0)
@@ -467,6 +473,15 @@ def inc_llm_requests() -> None:
 def inc_evidence_llm_contradiction() -> None:
     _ensure_metrics()
     _evidence_llm_contradiction.inc()
+
+
+def inc_rag_empty_result(collection: str, search_type: str) -> None:
+    """RAG search returned empty — LLM will receive reduced context."""
+    _ensure_metrics()
+    _rag_empty_result.labels(
+        collection=(collection or "unknown")[:48],
+        search_type=(search_type or "unknown")[:16],
+    ).inc()
 
 
 def inc_fastpath_hits() -> None:

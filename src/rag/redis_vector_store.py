@@ -27,6 +27,12 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 logger = logging.getLogger(__name__)
 
+try:
+    from workers.metrics_exporter import inc_rag_empty_result as _inc_rag_empty
+except ImportError:
+    def _inc_rag_empty(collection: str, search_type: str) -> None:  # type: ignore[misc]
+        pass
+
 # nomic-embed-text (Ollama) = 768 dims
 EMBED_DIM = 768
 
@@ -442,6 +448,7 @@ class RedisVectorStore:
             logger.warning(
                 "event=redis_fulltext_search_failed collection=%s err=%s", collection_name, exc
             )
+            _inc_rag_empty(collection_name, "fulltext")
             return QueryResponse(points=[])
 
         pts: list[PointStruct] = []
@@ -625,6 +632,8 @@ class RedisVectorStore:
                 out_pts.append(p)
                 if len(out_pts) >= lim:
                     break
+        if not out_pts:
+            _inc_rag_empty(collection_id, "hybrid")
         return QueryResponse(points=out_pts)
 
     # ------------------------------------------------------------------

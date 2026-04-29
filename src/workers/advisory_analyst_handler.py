@@ -7,6 +7,8 @@ import logging
 import time
 from typing import Any
 
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
 from pkg.reasoning.analyst_advisory_schema import AnalystAdvisory
 from services.audit_ledger.chain_writer import write_audit_block
 from services.audit_ledger.signer import AuditLedgerError
@@ -18,6 +20,24 @@ from workers.metrics_exporter import inc_llm_requests
 from workers.request_trace import log_end_request_ctx, log_start_request_ctx
 
 logger = logging.getLogger(__name__)
+
+_LLM_TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError)
+
+
+@retry(
+    retry=retry_if_exception_type(_LLM_TRANSIENT_ERRORS),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+async def _llm_chat_with_retry(llm: Any, model: str, messages: list, options: dict) -> dict:
+    """Wrap ctx.llm.chat with exponential-backoff retry for transient network errors.
+
+    Scope: only the HTTP call. CRAT writes are outside this scope.
+    Deterministic failures (bad JSON, schema errors) bubble immediately without retry.
+    """
+    return await llm.chat(model=model, messages=messages, options=options)
+
 
 # SIEM categories that are infrastructure incidents — NOT security threats.
 # If the LLM incorrectly applies a "Security incident" escalation to these,
@@ -114,7 +134,8 @@ async def run_advisory_analyst(
             ),
         )
 
-        resp = await ctx.llm.chat(
+        resp = await _llm_chat_with_retry(
+            ctx.llm,
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt[:16000]},
