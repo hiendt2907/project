@@ -280,7 +280,7 @@ async def emit_hitl_pending(
     siem_suggest_only = bool(getattr(ws, "omni_siem_suggest_only", True))
 
     if not auto_execute_enabled:
-        allowed, reason = AdvisoryHITLCompat.validate_hitl_gate(trace, context="emit_hitl_pending")
+        allowed, reason = AdvisoryHITLCompat.validate_hitl_gate(trace, context="emit_hitl_pending", settings=ws)
         if not allowed:
             logger.warning("event=hitl_pending_blocked_advisory_mode trace=%s reason=%s", trace, reason)
             return

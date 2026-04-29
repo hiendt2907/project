@@ -1766,6 +1766,49 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                             "event=advisory_no_chat_id trace=%s — set OMNI_TELEGRAM_ADMIN_CHAT_ID to receive autonomous advisories",
                             trace,
                         )
+                    # Phase 7.3 — Controlled HITL Routing (default off)
+                    if (
+                        advisory.escalation_reason
+                        and getattr(ctx.settings, "omni_hitl_routing_enabled", False)
+                    ):
+                        from workers.advisory_hitl_compat import AdvisoryHITLCompat
+                        hitl_ok, _ = AdvisoryHITLCompat.validate_hitl_gate(
+                            trace, context="evidence_consumer_advisory", settings=ctx.settings
+                        )
+                        if hitl_ok:
+                            # CRAT Fail-Closed: audit write MUST succeed before Kafka send
+                            try:
+                                await write_audit_block(
+                                    event_type="HITL_ESCALATION_EMITTED",
+                                    trace_id=trace,
+                                    payload={
+                                        "escalation_reason": advisory.escalation_reason,
+                                        "verdict": advisory.verdict,
+                                        "tool_name": "human_escalation",
+                                    },
+                                    redis=ctx.redis,
+                                    kafka=ctx.kafka,
+                                    kafka_topic=ctx.settings.kafka_topic_audit_chain,
+                                )
+                            except AuditLedgerError as _hitl_audit_err:
+                                logger.critical(
+                                    "event=hitl_audit_write_failed trace=%s err=%s FAIL_CLOSED",
+                                    trace,
+                                    _hitl_audit_err,
+                                )
+                            else:
+                                await emit_hitl_pending(
+                                    ctx,
+                                    trace=trace,
+                                    tool_name="human_escalation",
+                                    args={"escalation_reason": advisory.escalation_reason},
+                                    hitl_reason=advisory.escalation_reason,
+                                )
+                                logger.info(
+                                    "event=hitl_escalation_emitted trace=%s reason=%s",
+                                    trace,
+                                    advisory.escalation_reason[:200],
+                                )
                     # Emit as SUGGEST_REMEDIATION (not mutations)
                     await _emit_suggest_remediation(
                         ctx,

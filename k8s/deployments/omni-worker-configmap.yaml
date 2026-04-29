@@ -65,6 +65,9 @@ data:
   # To re-enable execution, this ConfigMap must be edited AND redeployed — LLM cannot override this.
   OMNI_AUTO_EXECUTE_ENABLED: "false"
   OMNI_SIEM_SUGGEST_ONLY: "true"
+  # Phase 7.3 — Controlled HITL Routing (default off; set to true to enable escalation→omni-hitl-pending).
+  # CRAT block HITL_ESCALATION_EMITTED is written before any Kafka send (fail-closed).
+  # OMNI_HITL_ROUTING_ENABLED: "false"
   # Advisory Mode: autonomous rollout disabled — all actions are suggestions only.
   OMNI_AUTONOMOUS_ROLLOUT_ON_FAULT_INCIDENT: "false"
   # In-cluster service URLs & worker runtime (non-secret — override per cluster via ConfigMap)

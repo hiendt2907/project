@@ -1198,6 +1198,15 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_KNOWLEDGE_DRAFT_ENABLED"),
         description="Stage Symptom/RootCause/Fix draft artifacts (no direct doc writes by default).",
     )
+    omni_hitl_routing_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_HITL_ROUTING_ENABLED"),
+        description=(
+            "When True, escalation_reason advisories may route to omni-hitl-pending for HITL approval. "
+            "Default False — all advisories remain suggest-only via Telegram. "
+            "CRAT block HITL_ESCALATION_EMITTED is written BEFORE any Kafka send (fail-closed)."
+        ),
+    )
     omni_siem_suggest_only: bool = Field(
         default=True,
         validation_alias=AliasChoices("OMNI_SIEM_SUGGEST_ONLY"),

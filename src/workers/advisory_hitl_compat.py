@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -26,18 +25,35 @@ class AdvisoryHITLCompat:
     def validate_hitl_gate(
         trace_id: str,
         context: str = "unknown",
+        settings: Any | None = None,
     ) -> tuple[bool, str]:
         """
         Pre-HITL validation. Returns (allow_hitl, reason).
-        In Advisory Mode, HITL is ALWAYS disabled.
+
+        HITL is enabled only when OMNI_HITL_ROUTING_ENABLED=true in settings.
+        Default (and legacy) behavior: HITL blocked (advisory mode, suggest-only).
 
         Args:
             trace_id: Trace ID for logging
             context: Where HITL was requested (analyst, planner, etc.)
+            settings: WorkerSettings object; reads omni_hitl_routing_enabled when present.
 
         Returns:
-            (False, reason_message) — ALWAYS blocks HITL in Advisory Mode
+            (True, "") when HITL routing is enabled via settings.
+            (False, reason_message) otherwise.
         """
+        hitl_routing_enabled = bool(
+            getattr(settings, "omni_hitl_routing_enabled", False)
+        ) if settings is not None else False
+
+        if hitl_routing_enabled:
+            logger.info(
+                "event=advisory_hitl_gate_open trace=%s context=%s",
+                trace_id,
+                context,
+            )
+            return True, ""
+
         if not AdvisoryHITLCompat.OMNI_HITL_ENABLED:
             reason = (
                 f"ADVISORY_MODE_HITL_DISABLED: Mutation approval via HITL blocked. "
