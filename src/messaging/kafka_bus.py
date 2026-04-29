@@ -79,7 +79,13 @@ class KafkaBus:
     def __init__(self, producer: AIOKafkaProducer) -> None:
         self._p = producer
 
-    async def send_dict(self, topic: str, envelope: dict[str, Any]) -> None:
+    async def send_dict(
+        self,
+        topic: str,
+        envelope: dict[str, Any],
+        *,
+        key: bytes | None = None,
+    ) -> None:
         if not is_valid_kafka_topic(topic):
             logger.warning("skip kafka send: invalid topic name %r", topic)
             return
@@ -88,7 +94,7 @@ class KafkaBus:
         headers: list[tuple[str, bytes]] = []
         if trace:
             headers.append(("trace_id", trace.encode("utf-8", errors="ignore")))
-        await self._p.send_and_wait(topic, value=payload, headers=headers or None)
+        await self._p.send_and_wait(topic, value=payload, headers=headers or None, key=key)
 
     async def send_envelope_inner(self, topic: str, inner: dict[str, Any], extra: dict[str, Any] | None = None) -> None:
         env: dict[str, Any] = {"data": json.dumps(inner, ensure_ascii=False)}

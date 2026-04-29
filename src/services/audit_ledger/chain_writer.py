@@ -102,9 +102,14 @@ async def write_audit_block(
             pipe2.rpush(_REDIS_BLOCKS_KEY, block_json)
             await pipe2.execute()
 
-            # 5. Publish to Kafka (durable compliance stream)
+            # 5. Publish to Kafka — round-trip through block_json for JSON-safety;
+            #    pass seq as key because omni-audit-chain is a compacted topic.
             if kafka is not None:
-                await kafka.send_dict(kafka_topic, block)
+                await kafka.send_dict(
+                    kafka_topic,
+                    json.loads(block_json),
+                    key=str(seq).encode(),
+                )
             else:
                 logger.warning(
                     "event=audit_kafka_unavailable seq=%d trace=%s — Kafka not configured",

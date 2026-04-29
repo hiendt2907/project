@@ -32,7 +32,9 @@ from .protocol import EvidenceAdapter
 log = logging.getLogger(__name__)
 
 # --- Config ---
-_REDIS_URL = os.getenv("ADAPTER_REDIS_URL", "redis://localhost:6379")
+_REDIS_URL = os.getenv("ADAPTER_REDIS_URL") or os.getenv("OMNI_REDIS_URL")
+if not _REDIS_URL:
+    raise RuntimeError("ADAPTER_REDIS_URL or OMNI_REDIS_URL must be set")
 _REDIS_PASSWORD = os.getenv("ADAPTER_REDIS_PASSWORD", "")
 _STREAM = os.getenv("ADAPTER_STREAM", "stream:siem_evidence_raw")
 _GROUP = os.getenv("ADAPTER_GROUP", "omni-evidence-adapters")

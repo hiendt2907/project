@@ -19,6 +19,36 @@ from workers.request_trace import log_end_request_ctx, log_start_request_ctx
 
 logger = logging.getLogger(__name__)
 
+# SIEM categories that are infrastructure incidents — NOT security threats.
+# If the LLM incorrectly applies a "Security incident" escalation to these,
+# we correct it post-hoc because small LLMs over-escalate on SIEM source.
+_INFRA_SIEM_CATEGORIES = frozenset({
+    "high_cpu", "high_mem", "disk_pressure", "db_crash",
+    "network_timeout", "service_unavailable", "oom", "latency_spike",
+})
+
+
+def _correct_escalation_reason(advisory: AnalystAdvisory, evidence_text: str) -> AnalystAdvisory:
+    """
+    Guardrail: if the evidence is an infra SIEM category but the LLM incorrectly
+    applied a security-incident escalation template, clear the escalation_reason.
+    """
+    if not advisory.escalation_reason:
+        return advisory
+    if "security incident" not in advisory.escalation_reason.lower():
+        return advisory
+    # Check if any infra category appears in the evidence
+    ev_lower = evidence_text.lower()
+    if any(cat in ev_lower for cat in _INFRA_SIEM_CATEGORIES):
+        logger.warning(
+            "event=escalation_correction_applied trace=advisory "
+            "reason='infra category misclassified as security incident' "
+            "original_reason=%r",
+            advisory.escalation_reason[:100],
+        )
+        return advisory.model_copy(update={"escalation_reason": ""})
+    return advisory
+
 
 async def run_advisory_analyst(
     ctx: WorkerHandlerContext,
@@ -141,6 +171,9 @@ async def run_advisory_analyst(
                 detail=f"Schema validation failed: {e!s}"[:500],
             )
             return None
+
+        # Guardrail: correct LLM escalation misclassification for infra SIEM categories.
+        advisory = _correct_escalation_reason(advisory, evidence_text)
 
         log_llm_trace(
             ws,

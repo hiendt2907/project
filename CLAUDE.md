@@ -70,6 +70,9 @@ kafka: omni-action-feedback → omni-analyst (re-evaluation cycle)
 - **Executor RBAC: NEVER cluster-admin.**
 - `OMNI_AUTO_EXECUTE_ENABLED=false` — master kill-switch (fail-closed).
 - **CRAT Fail-Closed**: `write_audit_block()` MUST succeed before any Telegram emit or action dispatch. Failure aborts the transaction.
+- `kafka_evidence_loop` uses `auto_offset_reset="earliest"` — analyst recovers messages that arrive during consumer-group rebalance on pod restart. DO NOT change to `latest`.
+- `omni-audit-chain` Kafka topic requires a message key (compact policy); `chain_writer.py` passes `key=str(seq).encode()`.
+- E2E harness `scripts/verify_e2e_crat_pipeline.py` auto-resolves OrbStack ClusterIPs via kubectl; override with `E2E_KAFKA_BOOTSTRAP` / `E2E_REDIS_MA_URL` / `E2E_REDIS_FG_URL`.
 
 ### CRAT — Cryptographic Regulatory Audit Trail (SOX §404, PCI-DSS v4.0)
 `src/services/audit_ledger/` — SHA-256 hash-chaining + Ed25519 signing.
@@ -134,3 +137,4 @@ CI order: build → rollout → unit → E2E.
 - TOOLS: Prioritize internal CLIs & MCP servers.
 - GIT: Execute "commit, push, PR" strictly when instructed.
 - MEMORY: Use '#' to persist explicit user rules here.
+- CI/CD LOOP: Authorized for autonomous Build-Deploy-Test-Fix cycles during Lab development.

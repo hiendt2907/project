@@ -407,6 +407,7 @@ async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) ->
         bootstrap_servers=ws.kafka_bootstrap_servers,
         group_id=ws.consumer_group_analyst,
         enable_auto_commit=False,
+        auto_offset_reset="earliest",
         client_id=ws.consumer_name_analyst,
     )
     await consumer.start()
