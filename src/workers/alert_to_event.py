@@ -129,15 +129,25 @@ def anomaly_event_dict_from_evidence_batch(
 
 def build_anomaly_event_from_alert_payload(payload: dict[str, Any]) -> AnomalyEvent:
     """Build a minimal AnomalyEvent so the diagnostic matrix can classify and run probes."""
-    trace_id = str(payload.get("trace_id") or f"alert-{uuid.uuid4().hex[:12]}")
     source = str(payload.get("source") or "unknown")
 
-    if source == "prometheus":
-        body = payload.get("data")
-        if not isinstance(body, dict):
+    body: dict[str, Any] = {}
+    raw_data = payload.get("data")
+    if isinstance(raw_data, dict):
+        body = raw_data
+    elif isinstance(raw_data, str) and raw_data.strip().startswith("{"):
+        try:
+            body = json.loads(raw_data)
+        except Exception:
             body = {}
-        alerts = body.get("alerts") or []
-        a0: dict[str, Any] = alerts[0] if alerts and isinstance(alerts[0], dict) else {}
+
+    alerts = body.get("alerts") or []
+    a0: dict[str, Any] = alerts[0] if alerts and isinstance(alerts[0], dict) else {}
+    raw_labels = a0.get("labels") if isinstance(a0.get("labels"), dict) else {}
+    tid = str(payload.get("trace_id") or raw_labels.get("trace_id") or "").strip()
+    trace_id = tid if tid else f"alert-{uuid.uuid4().hex[:12]}"
+
+    if source == "prometheus":
         labels = _stringify_labels(a0.get("labels") if isinstance(a0.get("labels"), dict) else None)
         annot = _stringify_labels(a0.get("annotations") if isinstance(a0.get("annotations"), dict) else None)
         dna: SignalDNA = parse_signal_dna_from_labels(labels)
@@ -173,11 +183,6 @@ def build_anomaly_event_from_alert_payload(payload: dict[str, Any]) -> AnomalyEv
         )
 
     if source == "siem":
-        body = payload.get("data")
-        if not isinstance(body, dict):
-            body = {}
-        alerts = body.get("alerts") or []
-        a0: dict[str, Any] = alerts[0] if alerts and isinstance(alerts[0], dict) else {}
         labels = _stringify_labels(a0.get("labels") if isinstance(a0.get("labels"), dict) else None)
         annot = _stringify_labels(a0.get("annotations") if isinstance(a0.get("annotations"), dict) else None)
         alertname = labels.get("alertname") or "SIEMUnknown"

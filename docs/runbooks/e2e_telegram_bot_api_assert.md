@@ -45,12 +45,16 @@ python3 scripts/e2e_telegram_bot_api_assert.py '<trace_id>'
 
 ## Ánh xạ kịch bản (matrix tối thiểu)
 
-| Kịch bản | Script / entry | Ghi chú |
-|----------|----------------|--------|
-| Gateway → alert → analyst → Telegram | `scripts/gateway_alert_loki_verify.sh` + `E2E_ASSERT_TELEGRAM_BOT_API=1` | Luồng “vàng” lab MPV3 |
-| Proactive + build/deploy | `make e2e-proactive` / `scripts/proactive_e2e.sh` | Có thể nối assert tương tự nếu advisory ra Telegram |
-| Ma trận fault | `make e2e-incident-matrix` | Tăng `SLEEP_SEC` / `E2E_EXTRA_AGENTIC_SLEEP`; bật assert khi cần advisory |
-| FinGuard Redis → bridge → Omni | `scripts/verify_e2e_crat_pipeline.py` | Cross-stack; assert Telegram **tách** bước nếu ingest không qua gateway — dùng cùng script assert với `trace_id` từ log |
+| Kịch bản | Script / entry | Bằng chứng tối thiểu (trust but verify) | Ghi chú |
+|----------|-----------------|----------------------------------------|--------|
+| **A** Contrast / suggest | `scripts/gateway_alert_loki_verify.sh` + tuỳ `E2E_ASSERT_TELEGRAM_BOT_API=1` | Log pod **+** Loki cùng `trace_id`; Telegram nếu contrast gửi tin | Smoke MPV3 nhanh |
+| **B** Full advisory LLM | `scripts/e2e_one_alert_full_advisory_path.sh` | Log `advisory_analyst_ok` / CRAT **+** Bot API hoặc `deleteMessage` OK **+** Loki | Mặc định `nginx_waiting_fault`; sleep dài |
+| **C** Death loop / feedback | Sau trace: `scripts/e2e_collect_trace_evidence.sh '<trace_id>'` + inject/stress lab | Counter `action_feedback_*` / `omni_actions_in` **+** dòng terminal (`STATE_VERIFY_MAX_ATTEMPTS` / success / tombstone) **+** log | Không dùng một dòng grep làm PASS duy nhất |
+| Proactive + build/deploy | `make e2e-proactive` / `scripts/proactive_e2e.sh` | Theo checklist khi cần Telegram | Có thể nối assert tương tự nếu advisory ra Telegram |
+| Ma trận fault | `make e2e-incident-matrix` | Tee + Loki + trace | Tăng `SLEEP_SEC` / `E2E_EXTRA_AGENTIC_SLEEP`; bật assert khi cần advisory |
+| FinGuard Redis → bridge → Omni | `scripts/verify_e2e_crat_pipeline.py` | CRAT verifier **+** trace log | Cross-stack; assert Telegram **tách** bước nếu ingest không qua gateway — dùng cùng script assert với `trace_id` từ log |
+
+Checklist đầy đủ: [e2e_full_flow_evidence_checklist.md](e2e_full_flow_evidence_checklist.md).
 
 Ràng buộc vận hành: `OMNI_SIEM_SUGGEST_ONLY` / advisory path; CRAT fail-closed trước emit (xem `CLAUDE.md`).
 

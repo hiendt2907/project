@@ -75,13 +75,16 @@ async def emit_transition(
         except Exception as e:
             logger.debug("emit_transition kafka skip: %s", e)
     try:
+        d = (detail or "").strip()
+        dlog = f" detail={d[:240]}" if d else ""
         logger.info(
-            "[%s] event=autonomy_transition transition=%s status=%s component=%s seq=%s",
+            "[%s] event=autonomy_transition transition=%s status=%s component=%s seq=%s%s",
             tid,
             transition,
             status,
             component or "unknown",
             seq,
+            dlog,
         )
     except Exception:
         pass

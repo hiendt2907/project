@@ -68,6 +68,7 @@ jobs:
           bash -n scripts/rotate_hitl_token.sh
           bash -n scripts/gateway_alert_loki_verify.sh
           bash -n scripts/e2e_one_alert_full_advisory_path.sh
+          bash -n scripts/e2e_collect_trace_evidence.sh
 
   docker-image:
     runs-on: ubuntu-latest

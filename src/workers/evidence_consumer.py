@@ -32,7 +32,11 @@ from pkg.reasoning.sanitize import (
     format_batch_sanitized_analyst_user_text,
     format_sanitized_analyst_user_text,
 )
-from workers.alert_sdk_truth_compare import compare_alert_claim_to_sdk_state
+from workers.alert_sdk_truth_compare import (
+    build_contrast_diagnosis_for_action,
+    build_contrast_operator_telegram_body,
+    compare_alert_claim_to_sdk_state,
+)
 from workers.analyst_agentic_loop import infer_blind_proof_lane_hint, run_agentic_mutate_plan
 from workers.memory.initial_symptom import initial_symptom_from_evidence_batch
 from workers.memory.trace_memory import load_trace_memory
@@ -88,6 +92,11 @@ from workers.telegram_escalation import (
 )
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.telegram_outbound import send_telegram_out_for_inbound
+from workers.telegram_advisory_emitter import (
+    _e,
+    copy_advisory_for_telegram_if_mismatch,
+    render_advisory_to_telegram,
+)
 from workers import llm_prompts_en as ope
 from workers.metrics_exporter import inc_evidence_llm_contradiction
 from workers.autonomy_contract import (
@@ -1611,7 +1620,14 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         if rel:
             logger.warning("event=evidence_relevance_mismatch detail=%s", rel[:500])
 
-        batch = await append_evidence_and_take_flush_batch(ctx.redis, trace, ev_doc)
+        batch = await append_evidence_and_take_flush_batch(
+            ctx.redis,
+            trace,
+            ev_doc,
+            agg_timeout_sec=float(
+                getattr(ctx.settings, "evidence_batch_agg_timeout_sec", 3.0) or 3.0
+            ),
+        )
         if batch is None:
             return ""
         batch = await merge_preflight_deployment_secret_refs(batch, trace=trace)
@@ -1661,31 +1677,30 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         by_probe = {str(b.get("probe") or ""): dict(b) for b in batch}
         contrast = compare_alert_claim_to_sdk_state(by_probe)
         if contrast is not None:
+            contrast_st = contrast.strip()
+            diagnosis_rich = build_contrast_diagnosis_for_action(by_probe, contrast_st)
             await _emit_suggest_remediation(
                 ctx,
                 trace=trace,
-                diagnosis=contrast.strip(),
+                diagnosis=diagnosis_rich,
                 confidence=0.95,
                 source="STATE_MACHINE_CONTRAST",
                 suggested_tool="verify_metrics_alignment",
             )
-            # Notify admin chat with rubric-friendly Markdown so E2E can assert via Bot API
-            # (contrast path previously skipped advisory renderer entirely).
+            # Admin notify: structured plain text from probe fields (no LLM on this path).
             admin_cid = getattr(ctx.settings, "telegram_admin_chat_id", None)
+            digest_loc = str(getattr(ctx.settings, "omni_operator_digest_locale", "both") or "both").lower()
+            if digest_loc not in ("en", "vi", "both"):
+                digest_loc = "both"
             if admin_cid and ctx.telegram:
                 try:
-                    t_msg = (
-                        "*VERDICT:* INVESTIGATE\n"
-                        "*ROOT CAUSE:* state_machine_contrast\n"
-                        "*CONFIDENCE:* high\n\n"
-                        f"*PROPOSED REMEDIATION (advisory):*\n{contrast.strip()}\n\n"
-                        f"*Suggested tool:* `verify_metrics_alignment`\n\n"
-                        f"*TRACE:* `{trace}`"
+                    t_msg = build_contrast_operator_telegram_body(
+                        by_probe, contrast_st, str(trace), locale=digest_loc
                     )
                     res = await ctx.telegram.send_message(
                         int(admin_cid),
                         t_msg[:3900],
-                        parse_mode="Markdown",
+                        parse_mode=None,
                     )
                     mid = (res.get("result") or {}).get("message_id")
                     logger.info(
@@ -1697,13 +1712,16 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 except Exception as te:
                     logger.warning("event=contrast_telegram_send_failed trace=%s err=%r", trace, te)
             if chat_id is not None:
+                inbound_body = build_contrast_operator_telegram_body(
+                    by_probe, contrast_st, str(trace), locale=digest_loc
+                )[:3500]
                 pld = {
                     "trace_id": trace,
                     "source": "diagnostic_evidence",
-                    "text": contrast,
+                    "text": inbound_body,
                     "diagnostic_evidence_sanitized": True,
                 }
-                await send_telegram_out_for_inbound(ctx, pld, trace, contrast)
+                await send_telegram_out_for_inbound(ctx, pld, trace, inbound_body)
             await emit_transition(
                 ctx,
                 trace_id=trace,
@@ -1720,7 +1738,6 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         ):
             from workers.temporal_evidence_collector import fetch_temporal_evidence_for_batch
             from workers.advisory_analyst_handler import run_advisory_analyst
-            from workers.telegram_advisory_emitter import render_advisory_to_telegram
 
             try:
                 # Fetch temporal evidence (1-hour historical metrics)
@@ -1787,7 +1804,11 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     # Emit advisory to Telegram — prefer request chat_id, fall back to admin chat_id
                     effective_cid = chat_id or getattr(ctx.settings, "telegram_admin_chat_id", None)
                     if effective_cid is not None:
-                        await render_advisory_to_telegram(ctx, advisory, int(effective_cid))
+                        # Telegram-only copy: CRAT above used original ``advisory`` unchanged.
+                        tg_advisory = copy_advisory_for_telegram_if_mismatch(
+                            advisory, sanitized_text
+                        )
+                        await render_advisory_to_telegram(ctx, tg_advisory, int(effective_cid))
                     elif ctx.telegram:
                         logger.error(
                             "event=advisory_no_chat_id trace=%s — set OMNI_TELEGRAM_ADMIN_CHAT_ID to receive autonomous advisories",

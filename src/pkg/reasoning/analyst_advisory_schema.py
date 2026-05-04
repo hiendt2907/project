@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _LAYER_PATTERNS: list[tuple[str, list[str]]] = [
     ("prometheus", ["rate(", "predict_linear(", "irate(", "increase(", "avg_over_time("]),
@@ -109,6 +109,8 @@ class ForecastTimeline(BaseModel):
 class AnalystAdvisory(BaseModel):
     """The complete structured output of the Advisory-Mode Analyst."""
 
+    model_config = ConfigDict(extra="ignore")
+
     trace_id: str = Field(description="Trace ID for correlation")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     verdict: Literal["NORMAL", "INVESTIGATE", "URGENT", "CRITICAL"]
@@ -156,6 +158,8 @@ class AnalystAdvisory(BaseModel):
 
 class AnalystAdvisoryAggregated(BaseModel):
     """Multiple advisory outputs aggregated for batch incidents."""
+
+    model_config = ConfigDict(extra="ignore")
 
     advisories: list[AnalystAdvisory] = Field(description="One advisory per distinct incident")
     batch_summary: str = Field(

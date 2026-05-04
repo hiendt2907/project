@@ -200,9 +200,289 @@ def compare_alert_claim_to_sdk_state(
         extra = " Live memory from API is also low for this scope."
 
     return (
-        "Alert claims elevated workload CPU; Kubernetes API state machine (PodMetrics) shows "
-        "negligible CPU for containers in scope."
+        "Alert claims elevated workload CPU; this pipeline's Kubernetes state machine (PodMetrics) shows "
+        "negligible CPU for containers in scope. Trust the state machine for this snapshot; treat the firing alert "
+        "as suspect (false alarm / stale series, wrong selector, or recording–scrape lag) until verified on "
+        "Prometheus and the alert rule."
         + extra
-        + " Conclusion: the firing alert is inconsistent with live cluster state "
-        "(stale or mismatched Prometheus series vs kubelet)."
     )
+
+
+def _first_alert_rule(evidence_by_probe: dict[str, dict[str, Any]]) -> str:
+    for d in evidence_by_probe.values():
+        r = str(d.get("alert_rule") or "").strip()
+        if r:
+            return r
+    return ""
+
+
+def _pod_phase_from_status_probe(stat_ev: dict[str, Any] | None) -> str:
+    if not stat_ev:
+        return ""
+    ef = _parse_extracted_fact(str(stat_ev.get("extracted_fact") or ""))
+    pods = ef.get("pods")
+    if isinstance(pods, list) and pods and isinstance(pods[0], dict):
+        return str(pods[0].get("phase") or "").strip()
+    return ""
+
+
+def _metrics_api_container_lines(met_ev: dict[str, Any] | None) -> str:
+    if not met_ev:
+        return ""
+    ef = _parse_extracted_fact(str(met_ev.get("extracted_fact") or ""))
+    lines: list[str] = []
+    for c in (ef.get("containers") or [])[:6]:
+        if not isinstance(c, dict):
+            continue
+        lines.append(
+            f"  - container {c.get('name', '?')}: cpu={c.get('cpu', '?')} memory={c.get('memory', '?')}"
+        )
+    return "\n".join(lines) if lines else ""
+
+
+def _prom_cpu_workload_line(prom_ev: dict[str, Any] | None) -> str:
+    if not prom_ev:
+        return ""
+    ef = _parse_extracted_fact(str(prom_ev.get("extracted_fact") or ""))
+    if not ef:
+        return ""
+    s0 = ef.get("s0")
+    unit = str(ef.get("unit") or "").strip()
+    if s0 is None and not unit:
+        return ""
+    raw = str(prom_ev.get("raw") or "").strip()
+    raw_short = raw[:220] + ("…" if len(raw) > 220 else "")
+    return (
+        f"  - prom_pod_cpu_cores (workload-scoped PromQL sum): s0={s0} unit={unit or 'n/a'}\n"
+        f"    raw excerpt: {raw_short if raw_short else '(empty)'}"
+    )
+
+
+def _contrast_operator_sections_en(
+    *,
+    ns: str,
+    dep: str,
+    pod: str,
+    alertname: str,
+    container: str,
+    summ: str,
+    desc_short: str,
+    hint_short: str,
+    phase: str,
+    metrics_lines: str,
+    prom_line: str,
+    rule: str,
+    contrast_narrative: str,
+    trace_id: str,
+) -> list[str]:
+    why = (
+        "Operational default on this contrast path: trust the state machine (kubelet / Metrics API in scope). "
+        "The firing alert is suspect — typical causes: (1) PromQL or recording rule matching an old pod/replica; "
+        "(2) alert labels not aligned with kube_pod_* / workload selectors; (3) scrape or recording lag vs this snapshot. "
+        "Verify the rule and series on Prometheus; do not assume the alert is true without that cross-check."
+    )
+    return [
+        "=== STATE_MACHINE_CONTRAST (read-only; no mutate) ===",
+        "",
+        "WHO / WHERE (scope)",
+        f"- Kubernetes namespace: {ns}",
+        f"- Workload deployment (from alert labels): {dep}",
+        f"- Pod name on the alert: {pod}",
+        f"- Container (if labeled): {container or '(not in labels)'}",
+        "",
+        "WHAT THE ALERT CLAIMS",
+        f"- alertname: {alertname}",
+        f"- ingress/rule hint: {rule or '(probe did not carry alert_rule)'}",
+        f"- annotation summary: {summ or '(empty)'}",
+        f"- annotation description (trimmed): {desc_short or '(empty)'}",
+        f"- alert_hint (from evidence pipeline): {hint_short or '(empty)'}",
+        "",
+        "WHAT STATE MACHINE SHOWS (same trace; kubelet / Metrics API)",
+        f"- Pod phase (k8s_clinical_pod_status): {phase or '(unparsed)'}",
+        "- Metrics API container view (k8s_clinical_pod_metrics):",
+        metrics_lines or "  (no container rows parsed)",
+        "- Prometheus workload-scoped CPU probe (if present):",
+        prom_line or "  (no prom_pod_cpu_cores row)",
+        "",
+        "WHY ALERT AND STATE MACHINE DIVERGE (alert suspect until verified)",
+        why,
+        "",
+        "DO FIRST (commands)",
+        f"  kubectl -n {ns} get pod {pod} -o wide",
+        f"  kubectl -n {ns} describe pod {pod} | sed -n '1,120p'",
+        f"  kubectl -n {ns} top pod {pod} 2>/dev/null || true",
+        "  Open Prometheus → paste the firing rule expression → verify pod= and namespace= match this pod name and generation.",
+        "",
+        "SUGGESTED TOOL (pipeline): verify_metrics_alignment",
+        "",
+        f"TRACE: {trace_id}",
+        "",
+        "--- Narrative (same as omni-actions diagnosis) ---",
+        contrast_narrative.strip(),
+    ]
+
+
+def _contrast_operator_sections_vi(
+    *,
+    ns: str,
+    dep: str,
+    pod: str,
+    alertname: str,
+    container: str,
+    summ: str,
+    desc_short: str,
+    hint_short: str,
+    phase: str,
+    metrics_lines: str,
+    prom_line: str,
+    rule: str,
+    contrast_narrative: str,
+    trace_id: str,
+) -> list[str]:
+    why_vi = (
+        "Mặc định vận hành trên luồng contrast: **tin state machine** (kubelet / Metrics API trong phạm vi). "
+        "Alert đang firing là **đáng nghi** — hay gặp: (1) PromQL/recording khớp pod/replica cũ; "
+        "(2) label alert lệch so với kube_pod_* / selector workload; (3) scrape–recording trễ so snapshot này. "
+        "Đối soát rule và series trên Prometheus; không coi alert là đúng nếu chưa kiểm tra."
+    )
+    return [
+        "=== STATE_MACHINE_CONTRAST (chỉ đọc; không mutate) ===",
+        "",
+        "PHẠM VI / VỊ TRÍ",
+        f"- Namespace Kubernetes: {ns}",
+        f"- Deployment workload (từ label alert): {dep}",
+        f"- Tên pod trên alert: {pod}",
+        f"- Container (nếu có label): {container or '(không có trong labels)'}",
+        "",
+        "ALERT ĐANG TUYÊN BỐ GÌ",
+        f"- alertname: {alertname}",
+        f"- gợi ý ingress/rule: {rule or '(probe không mang alert_rule)'}",
+        f"- annotation summary: {summ or '(trống)'}",
+        f"- annotation description (rút gọn): {desc_short or '(trống)'}",
+        f"- alert_hint (pipeline evidence): {hint_short or '(trống)'}",
+        "",
+        "STATE MACHINE CHO THẤY (cùng trace; kubelet / Metrics API)",
+        f"- Phase pod (k8s_clinical_pod_status): {phase or '(chưa parse)'}",
+        "- Metrics API theo container (k8s_clinical_pod_metrics):",
+        metrics_lines or "  (chưa parse được dòng container)",
+        "- Probe CPU Prometheus theo workload (nếu có):",
+        prom_line or "  (không có prom_pod_cpu_cores)",
+        "",
+        "VÌ SAO ALERT VÀ STATE MACHINE LỆCH (alert đáng nghi tới khi verify)",
+        why_vi,
+        "",
+        "LÀM TRƯỚC (lệnh)",
+        f"  kubectl -n {ns} get pod {pod} -o wide",
+        f"  kubectl -n {ns} describe pod {pod} | sed -n '1,120p'",
+        f"  kubectl -n {ns} top pod {pod} 2>/dev/null || true",
+        "  Mở Prometheus → dán biểu thức rule đang firing → kiểm tra pod= và namespace= khớp pod/generation này.",
+        "",
+        "GỢI Ý TOOL (pipeline): verify_metrics_alignment",
+        "",
+        f"TRACE: {trace_id}",
+        "",
+        "--- Diễn giải (giống diagnosis omni-actions) ---",
+        contrast_narrative.strip(),
+    ]
+
+
+def build_contrast_operator_telegram_body(
+    evidence_by_probe: dict[str, dict[str, Any]],
+    contrast_narrative: str,
+    trace_id: str,
+    *,
+    locale: str = "both",
+) -> str:
+    """Plain-text operator digest: who/where, what alert vs SDK/Prom, why mismatch, first actions.
+
+    Contrast path is deterministic (no LLM); this packs structured fields from probes so humans
+    are not left with only the generic narrative paragraph.
+    """
+    labels, annotations = _parse_alert_labels_annotations_from_evidence(evidence_by_probe)
+    ns = str(labels.get("namespace") or "").strip() or "unknown"
+    dep = str(labels.get("deployment") or labels.get("workload") or "").strip() or "unknown"
+    pod = str(labels.get("pod") or "").strip() or "unknown"
+    alertname = str(labels.get("alertname") or "").strip() or "unknown"
+    container = str(labels.get("container") or "").strip() or ""
+    summ = str((annotations or {}).get("summary") or "").strip()
+    desc = str((annotations or {}).get("description") or "").strip()
+    desc_short = (desc[:280] + "…") if len(desc) > 280 else desc
+
+    alert_hint = ""
+    for d in evidence_by_probe.values():
+        h = str(d.get("alert_hint") or "").strip()
+        if h:
+            alert_hint = h
+            break
+    hint_short = (alert_hint[:320] + "…") if len(alert_hint) > 320 else alert_hint
+
+    stat_ev = evidence_by_probe.get("k8s_clinical_pod_status")
+    if not isinstance(stat_ev, dict):
+        stat_ev = None
+    met_ev = evidence_by_probe.get("k8s_clinical_pod_metrics")
+    if not isinstance(met_ev, dict):
+        met_ev = None
+    prom_ev = evidence_by_probe.get("prom_pod_cpu_cores")
+    if not isinstance(prom_ev, dict):
+        prom_ev = None
+
+    phase = _pod_phase_from_status_probe(stat_ev)
+    metrics_lines = _metrics_api_container_lines(met_ev)
+    prom_line = _prom_cpu_workload_line(prom_ev)
+    rule = _first_alert_rule(evidence_by_probe)
+    narr = contrast_narrative.strip()
+    loc = str(locale or "both").strip().lower()
+    if loc not in ("en", "vi", "both"):
+        loc = "both"
+    kw = dict(
+        ns=ns,
+        dep=dep,
+        pod=pod,
+        alertname=alertname,
+        container=container,
+        summ=summ,
+        desc_short=desc_short,
+        hint_short=hint_short,
+        phase=phase,
+        metrics_lines=metrics_lines,
+        prom_line=prom_line,
+        rule=rule,
+        contrast_narrative=narr,
+        trace_id=trace_id,
+    )
+    if loc == "en":
+        parts = [_contrast_operator_sections_en(**kw)]
+    elif loc == "vi":
+        parts = [_contrast_operator_sections_vi(**kw)]
+    else:
+        parts = [
+            _contrast_operator_sections_en(**kw),
+            ["", "----------", "[VI]", ""],
+            _contrast_operator_sections_vi(**kw),
+        ]
+    flat: list[str] = []
+    for p in parts:
+        flat.extend(p)
+    body = "\n".join(flat)
+    return body[:3900]
+
+
+def build_contrast_diagnosis_for_action(
+    evidence_by_probe: dict[str, dict[str, Any]],
+    contrast_narrative: str,
+    max_len: int = 1800,
+) -> str:
+    """Shorter diagnosis string for SUGGEST_REMEDIATION / Kafka (still names workload + mechanism)."""
+    labels, _ann = _parse_alert_labels_annotations_from_evidence(evidence_by_probe)
+    ns = str(labels.get("namespace") or "").strip() or "unknown"
+    dep = str(labels.get("deployment") or labels.get("workload") or "").strip() or "unknown"
+    pod = str(labels.get("pod") or "").strip() or "unknown"
+    alertname = str(labels.get("alertname") or "").strip() or "unknown"
+    head = (
+        f"[contrast scope ns={ns} deploy={dep} pod={pod} alertname={alertname}] "
+        f"Trust state machine: PodMetrics negligible vs alert CPU claim — firing alert suspect (false alarm / "
+        f"stale or mismatched series) until Prometheus/rule verified."
+    )
+    tail = contrast_narrative.strip()
+    out = f"{head}\n\n{tail}"
+    return out if len(out) <= max_len else (out[: max_len - 1] + "…")

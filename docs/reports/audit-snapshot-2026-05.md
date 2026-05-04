@@ -17,7 +17,7 @@ Periodic registry: **what the system is for**, **where truth lives**, **what was
 | Omni pipeline + invariants | [CLAUDE.md](../../CLAUDE.md) | End-to-end diagram, `OMNI_WORKER_ROLE`, CRAT, pytest/Make |
 | Omni ops single source | [OMNI_PROJECT_CANONICAL.md](../vendor/OMNI_PROJECT_CANONICAL.md) | Split deploy, Kafka topic names, feedback topic |
 | Smart-SIEM program | [smart-siem/AGENTS.md](../../smart-siem/AGENTS.md) | Planning hierarchy, layout, air-gap pointers |
-| Locked deltas / incidents | [project-memory.md](project-memory.md) | Invariants and postmortems — **not** a duplicate of CLAUDE |
+| Locked deltas / incidents | [project-memory.md](project-memory.md) | Invariants and postmortems — **not** a duplicate of CLAUDE; **STATE_MACHINE_CONTRAST** = trust kubelet/Metrics API snapshot vs suspect firing alert — see § *OmniStateMachineContrast* |
 
 ## Repository scope (this checkout)
 
@@ -36,9 +36,13 @@ Commands below were executed as part of implementing this snapshot.
 
 | Step | Command | Result |
 |------|---------|--------|
-| Unit tests | `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` | **PASS** — 399 passed (2026-05-04) |
-| Integration (optional) | `.venv/bin/python -m pytest tests/integration/ -q` | _(not run this pass)_ |
+| Unit tests | `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` | **PASS** — 417 passed (2026-05-05) |
+| Integration (optional) | `.venv/bin/python -m pytest tests/integration/ -q` | **PASS** — 1 passed (2026-05-05) |
 | E2E alert (cluster) | `SLEEP_SEC=15 STRICT_ASSERT=0 … bash scripts/gateway_alert_loki_verify.sh` (default HighCPU payload) | **PASS** — trace `gw-prom-3ee38bccd131` (2026-05-04, lab `multi-agent`) |
+| E2E death-loop lab (gateway → synthetic feedback → assert) | `NS=multi-agent PYTHON=.venv/bin/python bash scripts/e2e_death_loop_lab_complete.sh` | **PASS** — `count_command_feedback_ingested≥1` (2026-05-05); aligns with [project-memory.md](project-memory.md) § OmniStateMachineContrast |
+| E2E CRAT pipeline (cluster) | `.venv/bin/python scripts/verify_e2e_crat_pipeline.py` | **PASS** — 4/4 phases (2026-05-05); requires `omni-siem-bridge` + SIEM Redis same as script (`E2E_SIEM_REDIS_NAMESPACE` default `finguard-customer,smart-siem`) |
+| E2E incident matrix | `NS=multi-agent bash scripts/e2e_incident_matrix.sh` | **PARTIAL** — `wave_a1_rbac_permissions` **FAIL** when lab `omni-executor` SA over-privileged; apply `k8s/rbac-executor-least-privilege.yaml` or `SCENARIOS=…` without RBAC perm check (2026-05-05) |
+| E2E DoD docs + death-loop helper | Runbooks + [e2e_full_flow_evidence_checklist.md](../runbooks/e2e_full_flow_evidence_checklist.md) + `scripts/e2e_collect_trace_evidence.sh` + `docs/reports/e2e-artifacts/README.md` | **Doc pack landed** — 2026-05-05; runtime **C** chạy khi lab có fault / inject + `trace_id` |
 
 ### Smart-SIEM (Go)
 
@@ -59,3 +63,5 @@ Copy into **Cursor Project Instructions** if desired:
 ---
 
 *Next audit: re-run verify matrix, refresh dates, and append a one-line changelog under this header.*
+
+**Changelog (2026-05-05):** Synced Omni **STATE_MACHINE_CONTRAST** invariant + lab death-loop row with [project-memory.md](project-memory.md) § *OmniStateMachineContrast*; bumped unit count; CRAT `verify_e2e_crat_pipeline.py` green (SIEM Redis namespace order + `labels.trace_id` fallback in `build_anomaly_event_from_alert_payload` + stricter Phase-1 correlation); incident matrix RBAC scenario fails on over-privileged lab executor until least-privilege RBAC applied.

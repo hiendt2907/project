@@ -34,11 +34,11 @@
   - `validate_advisor_output()`: Post-generation check (scans for embedded mutations)
 
 ### Telegram Emitter
-- **`src/workers/telegram_advisory_emitter.py`** (191 lines)
-  - `render_advisory_to_telegram()`: Renders AnalystAdvisory to Markdown + emojis
-  - `render_advisory_batch_to_telegram()`: Batches multiple advisories
+- **`src/workers/telegram_advisory_emitter.py`**
+  - `render_advisory_to_telegram()`: Renders AnalystAdvisory to Markdown
+  - `copy_advisory_for_telegram_if_mismatch()`: Telegram-only toned-down copy when SDK shows healthy pod but model escalates (CRAT keeps original)
+  - `render_advisory_batch_to_telegram(..., evidence_text=None)`: Batch summary with `_e()` on dynamic lines; when `evidence_text` is set and summary is long, each per-advisory send uses the same sanitize helper as `evidence_consumer`
   - `_render_verdict_header()`, `_render_verification_steps()`, etc.: Component renders
-  - Emoji map for verdict/severity/confidence
 
 ---
 

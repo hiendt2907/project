@@ -228,6 +228,7 @@ async def run_advisory_analyst(
             advisory = None
             return None
 
+        # CRAT boundary: only return after ADVISORY_DECISION write — downstream Telegram assumes this ordering.
         return advisory
 
     except BaseException as e:

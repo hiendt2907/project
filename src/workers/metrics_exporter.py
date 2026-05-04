@@ -54,6 +54,7 @@ _proactive_incident_duration: Any = None
 _promql_placeholder_rejected: Any = None
 _evidence_llm_contradiction: Any = None
 _rag_empty_result: Any = None
+_crat_write: Any = None
 _started = False
 
 
@@ -69,7 +70,7 @@ def _ensure_metrics() -> None:
     global _proactive_tombstone_no_k8s, _proactive_lease_conflict, _proactive_skip_frozen
     global _wilson_confidence_score, _redis_stream_backlog
     global _proactive_outcome, _proactive_incident_duration, _promql_placeholder_rejected
-    global _evidence_llm_contradiction, _rag_empty_result
+    global _evidence_llm_contradiction, _rag_empty_result, _crat_write
     if _build_info is not None:
         return
     from prometheus_client import Counter, Gauge, Histogram, Info
@@ -255,6 +256,11 @@ def _ensure_metrics() -> None:
         "RAG search returned empty results (graceful degradation — LLM receives reduced context)",
         ["collection", "search_type"],
     )
+    _crat_write = Histogram(
+        "omni_crat_write_seconds",
+        "Wall time to persist one CRAT block (Redis chain + optional Kafka publish), success only.",
+        buckets=[0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5],
+    )
     _wilson_confidence_score.set(0.0)
     _proactive_events.inc(0)
     _llm_requests.inc(0)
@@ -426,6 +432,12 @@ def observe_latency(seconds: float) -> None:
     """Ghi nhận Latency xử lý tin nhắn (giây)."""
     _ensure_metrics()
     _latency.observe(seconds)
+
+
+def observe_crat_write_seconds(seconds: float) -> None:
+    """Successful CRAT block write duration (wall clock inside chain lock)."""
+    _ensure_metrics()
+    _crat_write.observe(max(0.0, float(seconds)))
 
 
 def inc_learning_upsert(source: str, outcome: str) -> None:

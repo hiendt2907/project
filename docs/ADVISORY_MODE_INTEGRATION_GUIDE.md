@@ -164,6 +164,7 @@ async def execute_mutation(
 **Add import:**
 ```python
 from workers.telegram_advisory_emitter import (
+    copy_advisory_for_telegram_if_mismatch,
     render_advisory_to_telegram,
     render_advisory_batch_to_telegram,
 )
@@ -175,11 +176,21 @@ from workers.telegram_advisory_emitter import (
 async def handle_evidence_inbound(payload: dict[str, Any], ctx: WorkerHandlerContext):
     advisory = await run_advisory_analyst(...)
     if advisory and ctx.telegram:
+        # After CRAT write_audit_block(original advisory): Telegram-only clone when needed.
+        tg_advisory = copy_advisory_for_telegram_if_mismatch(advisory, sanitized_evidence_text)
         await render_advisory_to_telegram(
             ctx,
-            advisory,
+            tg_advisory,
             chat_id=int(payload["chat_id"]),
         )
+```
+
+**Batch render:** pass the same evidence blob used for the analyst prompt when you want per-advisory sanitize on the long path (summary + individual messages):
+
+```python
+await render_advisory_batch_to_telegram(
+    ctx, advisories, chat_id, batch_summary="...", evidence_text=sanitized_evidence_text
+)
 ```
 
 ---

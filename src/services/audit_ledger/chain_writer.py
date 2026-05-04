@@ -11,11 +11,19 @@ import datetime
 import hashlib
 import json
 import logging
+import time
 from typing import Any
 
 from services.audit_ledger.signer import AuditLedgerError, public_key_hex, public_key_version, sign_block_hash
 
 logger = logging.getLogger(__name__)
+
+try:
+    from workers.metrics_exporter import observe_crat_write_seconds as _observe_crat_write_seconds
+except ImportError:
+
+    def _observe_crat_write_seconds(_seconds: float) -> None:  # type: ignore[misc]
+        pass
 
 _REDIS_HEAD_KEY = "audit_chain:head_hash"
 _REDIS_SEQ_KEY = "audit_chain:seq"
@@ -65,6 +73,7 @@ async def write_audit_block(
     """
     async with _get_lock():
         try:
+            _t0 = time.monotonic()
             # 1. Fetch prev_hash and increment seq atomically
             pipe = redis.pipeline()
             pipe.get(_REDIS_HEAD_KEY)
@@ -118,12 +127,16 @@ async def write_audit_block(
                     trace_id,
                 )
 
+            _elapsed = time.monotonic() - _t0
+            _crat_write_ms = int(_elapsed * 1000)
+            _observe_crat_write_seconds(_elapsed)
             logger.info(
-                "event=audit_block_written seq=%d event_type=%s trace=%s signed=%s",
+                "event=audit_block_written seq=%d event_type=%s trace=%s signed=%s crat_write_ms=%d",
                 seq,
                 event_type,
                 trace_id,
                 sig_hex is not None,
+                _crat_write_ms,
             )
             return block
 

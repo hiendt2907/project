@@ -19,6 +19,8 @@ paths = [
     '''smart-siem/\.gitea/.*''',
     '''smart-siem/\.github/.*''',
     '''smart-siem/tests/.*''',
+    '''ui/node_modules/.*''',
+    '''node_modules/.*''',
 ]
 
 [[rules]]

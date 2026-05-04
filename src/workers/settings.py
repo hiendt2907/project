@@ -957,6 +957,11 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_TELEGRAM_ADMIN_CHAT_ID", "TELEGRAM_CHAT_ID"),
         description="Báo cáo Deep Scout; None = không gửi.",
     )
+    omni_operator_digest_locale: Literal["en", "vi", "both"] = Field(
+        default="both",
+        validation_alias=AliasChoices("OMNI_OPERATOR_DIGEST_LOCALE"),
+        description="Contrast digest Telegram/inbound: en | vi | both (deterministic copy).",
+    )
     # Postgres removed — Omni RAG is on Redis Stack (HNSW + semantic cache).
     # Keep field as deprecated placeholder for any legacy caller that references it;
     # actual storage is `redis_url`. Remove when callers are fully purged.
@@ -1022,6 +1027,13 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_DIAGNOSTIC_MATRIX_PATH"),
     )
     diagnostic_evidence_maxlen: int = Field(default=2000, ge=100, le=50_000)
+    evidence_batch_agg_timeout_sec: float = Field(
+        default=3.0,
+        ge=0.5,
+        le=120.0,
+        validation_alias=AliasChoices("OMNI_EVIDENCE_BATCH_AGG_TIMEOUT_SEC"),
+        description="Diagnostic evidence Redis batch: seconds to wait for probes before timeout flush.",
+    )
     # Bách khoa K8s (pgvector k8s_expert) → luồng analyst sanitized (omni-diagnostic-evidence).
     diag_k8s_expert_rag_enabled: bool = Field(
         default=True,

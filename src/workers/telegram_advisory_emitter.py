@@ -21,9 +21,110 @@ logger = logging.getLogger(__name__)
 _MD_ESCAPE_RE = re.compile(r'([_*`\[])')
 
 
+def normalize_llm_markdown_escapes(text: str) -> str:
+    """Strip TeX-style ``\\_`` so Markdown does not show a stray backslash (e.g. linear\\_extrapolation)."""
+    return str(text).replace("\\_", "_")
+
+
 def _e(text: str) -> str:
     """Escape Telegram Markdown V1 special chars in dynamic content."""
-    return _MD_ESCAPE_RE.sub(r'\\\1', str(text))
+    s = normalize_llm_markdown_escapes(str(text))
+    return _MD_ESCAPE_RE.sub(r'\\\1', s)
+
+
+def _evidence_shows_healthy_running_pod(evidence_text: str) -> bool:
+    """True when batch text indicates Pod Running and k8s_clinical_pod_status passed (FinGuard SDK).
+
+    Ops feedback: tune match strings here and in ``_root_cause_suggests_benign_or_below_threshold``;
+    add a regression test in ``tests/test_telegram_advisory_emitter.py`` per change.
+    """
+    sl = evidence_text.lower()
+    running = (
+        "phase=running" in sl
+        or '"phase": "running"' in sl
+        or '"phase":"running"' in sl
+        or 'phase": "running"' in evidence_text
+    )
+    pod_probe = "k8s_clinical_pod_status" in sl
+    passed = "passed" in sl or '"result": "passed"' in sl or '"result":"passed"' in sl
+    return bool(running and pod_probe and passed)
+
+
+def _root_cause_suggests_benign_or_below_threshold(root_cause: str) -> bool:
+    """Heuristic: benign / below-threshold wording — extend needles only with tests (ops-driven)."""
+    x = root_cause.lower()
+    needles = (
+        "below threshold",
+        "below alert threshold",
+        "below the threshold",
+        "healthy",
+        "negligible",
+        "no oom",
+        "not present",
+        "well below",
+        "low usage",
+        "low cpu",
+        "low memory",
+        "usage is",
+        "is below",
+    )
+    return any(n in x for n in needles)
+
+
+def copy_advisory_for_telegram_if_mismatch(
+    advisory: AnalystAdvisory,
+    evidence_text: str,
+) -> AnalystAdvisory:
+    """Operator-safe Telegram copy when the model escalates but SDK evidence shows a healthy pod.
+
+    CRAT / ``write_audit_block`` must use the original ``advisory`` unchanged; only pass this
+    return value to ``render_advisory_to_telegram``.
+    """
+    if advisory.verdict not in ("URGENT", "CRITICAL"):
+        return advisory
+    if not _evidence_shows_healthy_running_pod(evidence_text):
+        return advisory
+    if not _root_cause_suggests_benign_or_below_threshold(advisory.root_cause):
+        return advisory
+
+    tone_note = (
+        "Telegram render: verdict and forecast toned down because live SDK shows Running/PASSED "
+        "while the stated root cause describes low impact / below-threshold usage."
+    )
+    esc = (advisory.escalation_reason or "").strip()
+    esc = f"{esc}\n({tone_note})" if esc else tone_note
+    new_forecast = ForecastTimeline(
+        method="heuristic",
+        basis="SDK probes remained PASSED; workload phase Running.",
+        forecasts=[
+            ImpactForecast(
+                timeframe="1h",
+                severity="degraded",
+                prediction=(
+                    "No verified degradation path while live probes show a healthy workload; "
+                    "align alert labels/PromQL with the pod and rule thresholds."
+                ),
+                confidence="medium",
+            )
+        ],
+        note=(
+            "Suppressed model URGENT/CRITICAL and multi-step critical/catastrophic rows for this "
+            "Telegram render only (audit payload unchanged)."
+        ),
+    )
+    logger.info(
+        "event=telegram_advisory_sanitized trace_id=%s original_verdict=%s new_verdict=INVESTIGATE",
+        advisory.trace_id,
+        advisory.verdict,
+    )
+    return advisory.model_copy(
+        deep=True,
+        update={
+            "verdict": "INVESTIGATE",
+            "forecast": new_forecast,
+            "escalation_reason": esc,
+        },
+    )
 
 
 _LAYER_BADGE = {
@@ -48,7 +149,7 @@ def _render_verdict_header(advisory: AnalystAdvisory) -> str:
         f"*CONFIDENCE:* {_e(advisory.confidence)}",
     ]
     if advisory.affected_workload and advisory.affected_workload != "unknown":
-        lines.append(f"*WORKLOAD:* `{advisory.affected_workload}`")
+        lines.append(f"*WORKLOAD:* `{_e(advisory.affected_workload)}`")
     return "\n".join(lines)
 
 
@@ -168,18 +269,27 @@ async def render_advisory_batch_to_telegram(
     advisories: list[AnalystAdvisory],
     chat_id: int,
     batch_summary: str = "",
+    evidence_text: str | None = None,
 ) -> None:
-    """Render multiple advisories as a batch summary."""
+    """Render multiple advisories as a batch summary.
+
+    When ``evidence_text`` is set (same shape as ``sanitized_text`` in evidence_consumer), each
+    advisory passed to ``render_advisory_to_telegram`` is cloned via
+    ``copy_advisory_for_telegram_if_mismatch`` so Telegram stays operator-safe; CRAT must still
+    use originals. When ``None``, no per-advisory sanitize is applied (callers without evidence).
+    """
     if not advisories:
         return
 
-    summary = batch_summary or f"{len(advisories)} incident(s) detected"
-    message = f"*BATCH ALERT SUMMARY*\n{summary}\n\n---\n\n"
+    summary_line = batch_summary or f"{len(advisories)} incident(s) detected"
+    message = f"*BATCH ALERT SUMMARY*\n{_e(summary_line)}\n\n---\n\n"
 
     for adv in advisories:
+        rc_snip = (adv.root_cause or "")[:100]
+        wl = adv.affected_workload or "unknown"
         message += (
-            f"*{adv.verdict}* | {adv.root_cause[:100]}\n"
-            f"  Workload: {adv.affected_workload or 'unknown'}\n"
+            f"*{_e(str(adv.verdict))}* | {_e(rc_snip)}\n"
+            f"  Workload: {_e(wl)}\n"
             f"  {len(adv.verification_steps)} verification steps | "
             f"{len(adv.proposed_remediation)} actions\n\n"
         )
@@ -191,7 +301,12 @@ async def render_advisory_batch_to_telegram(
             logger.error("event=advisory_batch_summary_send_error chat_id=%s err=%r", chat_id, e)
 
         for adv in advisories:
-            await render_advisory_to_telegram(ctx, adv, chat_id)
+            tg_adv = (
+                copy_advisory_for_telegram_if_mismatch(adv, evidence_text)
+                if evidence_text is not None
+                else adv
+            )
+            await render_advisory_to_telegram(ctx, tg_adv, chat_id)
     else:
         try:
             await ctx.telegram.send_message(chat_id, message, parse_mode="Markdown")

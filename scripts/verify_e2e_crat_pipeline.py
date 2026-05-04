@@ -100,9 +100,10 @@ def _resolve_redis_ma() -> str:
 def _resolve_redis_fg() -> str:
     """SIEM data-plane Redis URL: E2E_REDIS_FG_URL overrides; else redis-0 pod IP + password.
 
-    Namespace order: E2E_SIEM_REDIS_NAMESPACE (comma-separated), default smart-siem then finguard-customer.
+    Namespace order: E2E_SIEM_REDIS_NAMESPACE (comma-separated), default **finguard-customer** first
+    (matches `omni-siem-bridge` SIEM_BRIDGE_REDIS_URL), then smart-siem.
     """
-    raw_ns = os.getenv("E2E_SIEM_REDIS_NAMESPACE", "smart-siem,finguard-customer")
+    raw_ns = os.getenv("E2E_SIEM_REDIS_NAMESPACE", "finguard-customer,smart-siem")
     ns_order = [x.strip() for x in raw_ns.split(",") if x.strip()]
     pod_ip = ""
     password = ""
@@ -378,11 +379,32 @@ async def main() -> int:
 
         print(f"  Waiting for siem-bridge → omni-alerts …")
         alert_msg = await t_alert
+
+        def _alert_correlates(msg: dict[str, Any] | None, expect: str) -> bool:
+            if not msg or not isinstance(msg, dict):
+                return False
+            if msg.get("trace_id") == expect:
+                return True
+            data = msg.get("data")
+            if not isinstance(data, dict):
+                return False
+            for al in data.get("alerts") or []:
+                if not isinstance(al, dict):
+                    continue
+                lab = al.get("labels")
+                if isinstance(lab, dict) and lab.get("trace_id") == expect:
+                    return True
+            return False
+
+        correlated = _alert_correlates(alert_msg, trace_id)
         if alert_msg:
-            alerts_list = alert_msg.get("alerts", [])
+            data_inner = alert_msg.get("data")
+            alerts_list = data_inner.get("alerts", []) if isinstance(data_inner, dict) else []
             labels = alerts_list[0].get("labels", {}) if alerts_list else {}
             log("omni-alerts", {
                 "trace_id": alert_msg.get("trace_id"),
+                "labels_trace_id": labels.get("trace_id"),
+                "correlated": correlated,
                 "alertname": labels.get("alertname"),
                 "severity": labels.get("severity"),
                 "siem_source": labels.get("siem_source"),
@@ -390,21 +412,32 @@ async def main() -> int:
         else:
             log("omni-alerts", "TIMEOUT — bridge did not forward within 30s")
 
-        ok1 = alert_msg is not None
+        ok1 = correlated
         outcomes["P1_INGRESS"] = ok1
-        result("Phase 1 — siem-bridge → omni-alerts", ok1,
-               f"trace_id={trace_id}" if ok1 else "bridge timeout")
+        result(
+            "Phase 1 — siem-bridge → omni-alerts",
+            ok1,
+            f"trace_id={trace_id} correlated" if ok1 else "no correlated omni-alerts message (wrong payload or bridge idle)",
+        )
     except Exception as exc:
         print(f"  [EXCEPTION] Phase 1: {exc}")
         outcomes["P1_INGRESS"] = False
         t_evid.cancel()
         t_suggest.cancel()
 
+    if not outcomes.get("P1_INGRESS"):
+        for _t in (t_evid, t_suggest):
+            if not _t.done():
+                _t.cancel()
+
     # ── Phase 2 ────────────────────────────────────────────────────────────
     banner("PHASE 2 — PROBER EVIDENCE: omni-diagnostic-evidence")
     print(f"  Listening for trace_id={trace_id} (timeout {PHASE2_TIMEOUT:.0f}s) …")
     try:
-        evid_msg = await t_evid
+        try:
+            evid_msg = await t_evid
+        except asyncio.CancelledError:
+            evid_msg = None
         if evid_msg:
             log("omni-diagnostic-evidence", {
                 "trace_id": evid_msg.get("trace_id"),
@@ -423,7 +456,10 @@ async def main() -> int:
     banner("PHASE 3 — LLM ADVISORY + KILL-SWITCH: omni-actions SUGGEST_REMEDIATION")
     print(f"  Listening for SUGGEST_REMEDIATION trace_id={trace_id} (timeout {PHASE3_TIMEOUT:.0f}s) …")
     try:
-        suggest_msg = await t_suggest
+        try:
+            suggest_msg = await t_suggest
+        except asyncio.CancelledError:
+            suggest_msg = None
         if suggest_msg:
             data = suggest_msg.get("data", {})
             if isinstance(data, str):

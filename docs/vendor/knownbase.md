@@ -4,9 +4,14 @@
 
 **Audit / North Star (Cursor + người):** [../reports/audit-snapshot-2026-05.md](../reports/audit-snapshot-2026-05.md) — tóm tắt ý tưởng gốc, ma trận verify, gap tài liệu (ví dụ `MASTER_PLAN` nếu thiếu trong checkout).
 
+**E2E DoD (trust but verify + death loop):** [../runbooks/e2e_full_flow_evidence_checklist.md](../runbooks/e2e_full_flow_evidence_checklist.md) — sau trace chạy `scripts/e2e_collect_trace_evidence.sh '<trace_id>'` để đếm feedback / terminal.
+
 Short entries only. **Newest first** within each section. If the same symptom already exists, update **Fix** instead of adding a duplicate.
 
 ## Logic / application
+
+**Symptom:** Cần tune thời gian gom probe Redis → flush batch diagnostic trước khi analyst thấy message Kafka; hoặc batch flush quá sớm / quá trễ so với SLA lab.
+**Fix:** `OMNI_EVIDENCE_BATCH_AGG_TIMEOUT_SEC` → `WorkerSettings.evidence_batch_agg_timeout_sec` (mặc định `3`, clamp 0.5–120): timeout flush trong `evidence_consumer` khi gọi `append_evidence_and_take_flush_batch` (chờ đủ probe hoặc hết timeout). Kafka topic `omni-diagnostic-evidence` không đổi tên; retention broker/optional tạo topic: xem comment trong [`scripts/kafka_ensure_omni_topics.sh`](../../scripts/kafka_ensure_omni_topics.sh) + biến `OMNI_DIAGNOSTIC_EVIDENCE_RETENTION_MS`. Verify: `pytest tests/test_evidence_batch_security_flush.py` (và test batch liên quan).
 
 **Symptom:** Shadow OS migration vẫn nhận `EXECUTE_MUTATE` ở executor hoặc planner thiếu `dry_run_command` / `rollback_command` / `evidence_refs`, gây rủi ro chạy lệnh không đủ kiểm soát và audit thiếu dấu vết.
 **Fix:** Bật mặc định `OMNI_SHADOW_OS_MODE=true`; chặn SDK mutate trong `kafka_actions_consumer` (fail-closed + tombstone), emit `SUGGEST_OS_RUNBOOK` thay cho execute trực tiếp, validate schema runbook bắt buộc (`dry_run_command`, `rollback_command`, `evidence_refs`) qua contract mới `OSCommandItem`, và thêm marker `TRUNCATED` cho log/audit truncation. CLI `scripts/omni_shadow_exec_feedback.py` thu output lệnh và đẩy `omni-action-feedback` để vòng re-evaluate không cần copy/paste thủ công.
