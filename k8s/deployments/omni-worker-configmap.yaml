@@ -89,6 +89,8 @@ data:
   VLLM_MODEL: "qwen2.5-coder:7b"
   OMNI_LLM_NUM_PARALLEL: "2"
   OMNI_TELEGRAM_ENABLED: "true"
+  # E2E harness: Bot API getUpdates must not compete with in-cluster long-poll.
+  OMNI_TELEGRAM_POLLING_ENABLED: "false"
   # Model profile (go-prod baseline on current Ollama inventory)
   # - chat_model: fast/robust interactive + tool JSON
   # - reasoning_engine: diagnosis/planning quality

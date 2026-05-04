@@ -3,9 +3,8 @@
 E2E CRAT Pipeline Verification — 4-Phase God-Mode Validation
 ============================================================
 
-Phase 1 (Ingress):   Inject synthetic "High CPU / DB Crash" alert into
-                     finguard-customer Redis stream:actionable_incidents.
-                     Assert: siem-bridge translates → omni-alerts Kafka topic.
+Phase 1 (Ingress):   Inject synthetic alert into SIEM Redis stream:actionable_incidents
+                     (namespace from E2E_SIEM_REDIS_NAMESPACE). Assert bridge → omni-alerts.
 
 Phase 2 (Evidence):  Assert prober diagnostic pipeline runs and publishes
                      temporal evidence to omni-diagnostic-evidence.
@@ -19,6 +18,12 @@ Phase 4 (CRAT):      Fetch audit_chain:blocks from Redis; run hash-chain +
 
 Usage:
     python scripts/verify_e2e_crat_pipeline.py
+
+Env:
+    E2E_KAFKA_BOOTSTRAP, E2E_REDIS_MA_URL, E2E_REDIS_FG_URL — optional overrides.
+    E2E_OMNI_KUBE_NAMESPACE — Omni namespace for kafka/redis ClusterIP (default: multi-agent).
+    E2E_SIEM_REDIS_NAMESPACE — comma-separated SIEM Redis ns search order.
+    E2E_KUBECTL_WRAPPER — path to script that prefixes kubectl (e.g. with_working_kube.sh).
 """
 
 from __future__ import annotations
@@ -49,41 +54,74 @@ from services.audit_ledger.verifier import verify_chain
 # ── Connection config ─────────────────────────────────────────────────────────
 # Priority: env var override → kubectl auto-resolve.
 # Set E2E_KAFKA_BOOTSTRAP / E2E_REDIS_MA_URL / E2E_REDIS_FG_URL to skip kubectl.
+# Optional: E2E_REDIS_FG_PASSWORD when redis-auth Secret is unreadable.
+# Use ./scripts/with_working_kube.sh as kubectl wrapper if multiple kubeconfigs (OrbStack).
+
+
+def _kube_cmd() -> list[str]:
+    """kubectl argv prefix: optional E2E_KUBECTL_WRAPPER, else with_working_kube.sh, else kubectl."""
+    wrap = (os.environ.get("E2E_KUBECTL_WRAPPER") or "").strip()
+    if wrap:
+        return [wrap, "kubectl"]
+    wk = os.path.join(_REPO_ROOT, "scripts", "with_working_kube.sh")
+    if os.path.isfile(wk):
+        return [wk, "kubectl"]
+    return ["kubectl"]
+
+
+def _omni_namespace() -> str:
+    return (os.environ.get("E2E_OMNI_KUBE_NAMESPACE") or os.environ.get("E2E_KUBE_NS") or "multi-agent").strip()
 
 
 def _kubectl(*args: str) -> str:
     """Run kubectl and return stripped stdout, or '' on failure."""
     try:
-        return subprocess.check_output(["kubectl", *args], text=True, timeout=8).strip()
+        return subprocess.check_output(_kube_cmd() + list(args), text=True, timeout=12).strip()
     except Exception:
         return ""
 
 
 def _resolve_kafka() -> str:
-    ip = _kubectl("get", "svc", "kafka", "-n", "multi-agent",
-                  "-o", "jsonpath={.spec.clusterIP}")
+    ns = _omni_namespace()
+    ip = _kubectl("get", "svc", "kafka", "-n", ns, "-o", "jsonpath={.spec.clusterIP}")
     if not ip or ip == "None":
         raise RuntimeError("Cannot resolve Kafka ClusterIP. Set E2E_KAFKA_BOOTSTRAP.")
     return f"{ip}:9092"
 
 
 def _resolve_redis_ma() -> str:
-    ip = _kubectl("get", "svc", "redis", "-n", "multi-agent",
-                  "-o", "jsonpath={.spec.clusterIP}")
+    ns = _omni_namespace()
+    ip = _kubectl("get", "svc", "redis", "-n", ns, "-o", "jsonpath={.spec.clusterIP}")
     if not ip or ip == "None":
-        raise RuntimeError("Cannot resolve Redis-MA ClusterIP. Set E2E_REDIS_MA_URL.")
+        raise RuntimeError("Cannot resolve Redis ClusterIP in Omni namespace. Set E2E_REDIS_MA_URL.")
     return f"redis://{ip}:6379/0"
 
 
 def _resolve_redis_fg() -> str:
-    # StatefulSet redis-0 — resolve by pod name (stable across restarts)
-    pod_ip = _kubectl("get", "pod", "redis-0", "-n", "finguard-customer",
-                      "-o", "jsonpath={.status.podIP}")
+    """SIEM data-plane Redis URL: E2E_REDIS_FG_URL overrides; else redis-0 pod IP + password.
+
+    Namespace order: E2E_SIEM_REDIS_NAMESPACE (comma-separated), default smart-siem then finguard-customer.
+    """
+    raw_ns = os.getenv("E2E_SIEM_REDIS_NAMESPACE", "smart-siem,finguard-customer")
+    ns_order = [x.strip() for x in raw_ns.split(",") if x.strip()]
+    pod_ip = ""
+    password = ""
+    for ns in ns_order:
+        pod_ip = _kubectl("get", "pod", "redis-0", "-n", ns,
+                          "-o", "jsonpath={.status.podIP}")
+        if pod_ip:
+            raw = _kubectl("get", "secret", "redis-auth", "-n", ns,
+                           "-o", "jsonpath={.data.password}")
+            if raw:
+                password = base64.b64decode(raw).decode()
+            break
     if not pod_ip:
-        raise RuntimeError("Cannot resolve FinGuard Redis pod IP. Set E2E_REDIS_FG_URL.")
-    raw = _kubectl("get", "secret", "redis-auth", "-n", "finguard-customer",
-                   "-o", "jsonpath={.data.password}")
-    password = base64.b64decode(raw).decode() if raw else ""
+        raise RuntimeError(
+            "Cannot resolve SIEM Redis pod IP in namespaces "
+            f"{ns_order}. Set E2E_REDIS_FG_URL."
+        )
+    # Lab override when Secret missing or kubectl RBAC blocks read (never commit).
+    password = os.getenv("E2E_REDIS_FG_PASSWORD", password)
     auth = f":{password}@" if password else ""
     return f"redis://{auth}{pod_ip}:6379/0"
 

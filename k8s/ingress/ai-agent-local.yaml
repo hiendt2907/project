@@ -11,7 +11,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: omni.ai-agent.local
+    - host: omni.local
       http:
         paths:
           - path: /
@@ -25,20 +25,22 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: finguard-ui
-  namespace: finguard-customer
+  name: siem-dashboard-ingress
+  namespace: smart-siem
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/hsts: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   ingressClassName: nginx
   rules:
-    - host: finguard.ai-agent.local
+    - host: siem.local
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: finguard-ui-frontend
+                name: siem-ui
                 port:
                   number: 80

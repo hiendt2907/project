@@ -134,6 +134,25 @@ class AnalystAdvisory(BaseModel):
         description="Why this is being escalated (security, unknown-cause, out-of-scope, etc.)",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_placeholder_timestamp(cls, data: Any) -> Any:
+        """LLMs often emit literal \"ISO8601\" instead of a real instant; drop so default_factory applies."""
+        if not isinstance(data, dict):
+            return data
+        ts = data.get("timestamp")
+        if not isinstance(ts, str):
+            return data
+        s = ts.strip()
+        if not s:
+            return {k: v for k, v in data.items() if k != "timestamp"}
+        sl = s.lower()
+        if sl in {"iso8601", "utc", "now", "datetime", "timestamp", "rfc3339"}:
+            return {k: v for k, v in data.items() if k != "timestamp"}
+        if "iso8601" in sl and len(s) < 20:
+            return {k: v for k, v in data.items() if k != "timestamp"}
+        return data
+
 
 class AnalystAdvisoryAggregated(BaseModel):
     """Multiple advisory outputs aggregated for batch incidents."""

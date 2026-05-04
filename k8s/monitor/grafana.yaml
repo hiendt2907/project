@@ -217,6 +217,16 @@ spec:
                       settings:
                         bottoken: "${esc_bot}"
                         chatid: "${esc_chat}"
+                # Real data path: firing → omni-gateway → Kafka omni-alerts → prober/analyst →
+                # LLM advisory + SUGGEST_REMEDIATION (Telegram từ Omni, không phải tin thô Grafana).
+                - orgId: 1
+                  name: omni-gateway
+                  receivers:
+                    - uid: omni_gateway_cp
+                      type: webhook
+                      settings:
+                        url: "http://omni-gateway.multi-agent.svc.cluster.local/webhook/prometheus"
+                        httpMethod: POST
               EOF
           volumeMounts:
             - name: alerting-contact-rendered

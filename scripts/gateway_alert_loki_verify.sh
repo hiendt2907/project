@@ -14,7 +14,10 @@
 #   E2E_TRACE_LOG_DEPLOYS="omni-prober …" # override danh sách grep log theo trace
 #   E2E_NGINX_POD_AUTO=1                 # (default) với alertmanager_nginx_cpu_high.json: patch labels.pod = pod app=nginx-test hiện tại
 #   E2E_REDIS_POD_AUTO=1                 # (default) với alertmanager_business_sane.json: patch labels.pod = live app=redis-exporter
-#   STRICT_ASSERT=1                     # trace in >=3 worker deploy logs + action marker
+#   STRICT_ASSERT=1                     # trace in >=N worker deploy logs + action marker (N=STRICT_ASSERT_MIN_DEPLOY_HITS, default 3)
+#   STRICT_ASSERT_MIN_DEPLOY_HITS=3
+#   STRICT_ASSERT_INCLUDE_ADVISORY_MARKERS=0  # if 1, stage marker grep also accepts advisory/CRAT logs (advisory_analyst_ok|ADVISORY_DECISION|…)
+#   E2E_ASSERT_TELEGRAM_BOT_API=1       # sau Loki: assert tin advisory qua Telegram getUpdates (cần TELEGRAM_BOT_TOKEN; nên OMNI_TELEGRAM_POLLING_ENABLED=false trên prober)
 #   E2E_ASSERT_DIAGNOSTIC_POLICY=1        # optional: INV_/DIAGNOSTIC_* or agentic/discovery (agentic_mutate_plan|readonly_discovery_redirect|k8s_args_coerced); SLEEP_SEC>=120 if Ollama slow
 #   E2E_EXTRA_AGENTIC_SLEEP=0           # After first SLEEP_SEC, wait N more seconds then re-grep logs (agentic loop: first LLM step can be 60–120s after PLAN_EMITTED; multi-step needs longer). Use with waiting_fault / broken_spec (e.g. 180–300).
 set -euo pipefail
@@ -29,6 +32,7 @@ SLEEP_SEC="${SLEEP_SEC:-25}"
 E2E_EXTRA_AGENTIC_SLEEP="${E2E_EXTRA_AGENTIC_SLEEP:-0}"
 NS="${NS:-multi-agent}"
 STRICT_ASSERT="${STRICT_ASSERT:-1}"
+STRICT_ASSERT_MIN_DEPLOY_HITS="${STRICT_ASSERT_MIN_DEPLOY_HITS:-3}"
 
 # Pod có Python + image worker — tránh omni-gateway (slim) nếu thiếu python.
 EXEC_DEPLOY="${E2E_EXEC_DEPLOY:-omni-prober}"
@@ -228,15 +232,20 @@ if [[ "${STRICT_ASSERT}" == "1" ]]; then
       STAGE_DEP_HITS=$((STAGE_DEP_HITS + 1))
     fi
   done
-  if [[ "${STAGE_DEP_HITS}" -lt 3 ]]; then
-    echo "FAIL: trace_id ${TRACE} does not appear in >=3 worker deployments (hits=${STAGE_DEP_HITS})" >&2
+  if [[ "${STAGE_DEP_HITS}" -lt "${STRICT_ASSERT_MIN_DEPLOY_HITS}" ]]; then
+    echo "FAIL: trace_id ${TRACE} does not appear in >=${STRICT_ASSERT_MIN_DEPLOY_HITS} worker deployments (hits=${STAGE_DEP_HITS})" >&2
     exit 2
   fi
   if ! echo "${WR_LINES}" | grep -Eq "event=omni_actions_in|event=action_emitted|event=action_feedback_published|REQUIRES_HUMAN"; then
+    if [[ "${STRICT_ASSERT_INCLUDE_ADVISORY_MARKERS:-0}" == "1" ]] && echo "${WR_LINES}" | grep -Eq \
+      "advisory_analyst_ok|audit_block_written|ADVISORY_DECISION|event=advisory_telegram_sent|telegram_outbound_ok|phase=advisory_render|SUGGEST_REMEDIATION"; then
+      true
+    else
     echo "FAIL: trace_id ${TRACE} has no action/feedback/terminal markers" >&2
     exit 3
+    fi
   fi
-  echo "PASS: strict stage assertions satisfied (worker_deploy_hits=${STAGE_DEP_HITS})"
+  echo "PASS: strict stage assertions satisfied (worker_deploy_hits=${STAGE_DEP_HITS}, min=${STRICT_ASSERT_MIN_DEPLOY_HITS})"
 fi
 
 # Optional: assert diagnostic policy / reasoning_chain markers (nginx waiting fault lab).
@@ -391,3 +400,18 @@ echo "• Default alert: pod nginx-test (E2E_NGINX_POD_AUTO patch từ app=nginx
 echo "• MPV3 split: trace xuất hiện trước hết ở omni-prober (omni-alerts); analyst = evidence loop."
 echo "• omni-executor: expect event=omni_actions_in action=SUGGEST_REMEDIATION (English diagnosis) — not legacy ping."
 echo "• Dùng trace trong Grafana Explore Loki:  $TRACE"
+
+if [[ "${E2E_ASSERT_TELEGRAM_BOT_API:-}" == "1" ]]; then
+  echo ""
+  echo "=== 7) Telegram Bot API assert (getUpdates) ==="
+  if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
+    echo "FAIL: E2E_ASSERT_TELEGRAM_BOT_API=1 but TELEGRAM_BOT_TOKEN unset" >&2
+    exit 7
+  fi
+  export E2E_TELEGRAM_POLL_SEC="${E2E_TELEGRAM_POLL_SEC:-300}"
+  if ! python3 "${ROOT}/scripts/e2e_telegram_bot_api_assert.py" "$TRACE"; then
+    echo "FAIL: Telegram Bot API assert did not find advisory for trace_id=$TRACE" >&2
+    exit 8
+  fi
+  echo "PASS: Telegram Bot API assert (getUpdates text or deleteMessage delivery proof)"
+fi

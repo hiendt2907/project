@@ -1,5 +1,7 @@
 # Project Memory Registry
 
+**North Star + audit verify log (định kỳ):** [audit-snapshot-2026-05.md](audit-snapshot-2026-05.md)
+
 **Canonical kiến trúc (bám code):** [../vendor/OMNI_PROJECT_CANONICAL.md](../vendor/OMNI_PROJECT_CANONICAL.md)
 
 ## Invariants

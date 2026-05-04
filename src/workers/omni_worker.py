@@ -531,7 +531,7 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
                 asyncio.create_task(circuit_breaker_loop(ctx, stop), name="circuit_breaker"),
             ]
         )
-        if ctx.telegram is not None:
+        if ctx.telegram is not None and ctx.settings.telegram_polling_enabled:
             tasks.append(asyncio.create_task(telegram_loop(ctx, stop), name="telegram_loop"))
     if role in ("full", "analyst"):
         tasks.append(asyncio.create_task(kafka_evidence_loop(ctx, stop), name="kafka_evidence_loop"))

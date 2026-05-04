@@ -12,6 +12,7 @@ Dùng sau `make deploy-worker` hoặc rollout tương đương — xác nhận k
 1. **Pods:** `kubectl get pods -n multi-agent -l 'app in (omni-analyst,omni-prober,omni-core,omni-executor)'`
 2. **Gateway (nếu đụng ingest):** `kubectl get pods -n multi-agent -l app=omni-gateway`
 3. **Một E2E:** `bash scripts/gateway_alert_loki_verify.sh` (hoặc inject chaos tương đương trace đã thấy).
+3b. **Telegram Bot API (tùy lab):** `E2E_ASSERT_TELEGRAM_BOT_API=1` + `TELEGRAM_BOT_TOKEN` — assert tin advisory qua `getUpdates` (xem [e2e_telegram_bot_api_assert.md](e2e_telegram_bot_api_assert.md); nên `OMNI_TELEGRAM_POLLING_ENABLED=false` trên prober).
 4. **Loki theo trace_id:** Grafana Explore Loki hoặc log query `{namespace="multi-agent"} |= "<trace_id>"`.
 5. **Telegram suppress:** Khi `OMNI_TELEGRAM_SUPPRESS_WHEN_DEPLOYMENT_HEALTHY=true` và rollout deployment healthy, log không nên có `telegram_escalation_sent` cho cùng điều kiện “đã healthy” — grep analyst/core logs.
 

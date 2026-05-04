@@ -12,7 +12,7 @@ data:
     apiVersion: 1
     policies:
       - orgId: 1
-        receiver: omni-telegram
+        receiver: omni-gateway
         group_by: ["alertname", "grafana_folder"]
         group_wait: 30s
         group_interval: 5m

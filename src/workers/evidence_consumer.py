@@ -1669,6 +1669,33 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 source="STATE_MACHINE_CONTRAST",
                 suggested_tool="verify_metrics_alignment",
             )
+            # Notify admin chat with rubric-friendly Markdown so E2E can assert via Bot API
+            # (contrast path previously skipped advisory renderer entirely).
+            admin_cid = getattr(ctx.settings, "telegram_admin_chat_id", None)
+            if admin_cid and ctx.telegram:
+                try:
+                    t_msg = (
+                        "*VERDICT:* INVESTIGATE\n"
+                        "*ROOT CAUSE:* state_machine_contrast\n"
+                        "*CONFIDENCE:* high\n\n"
+                        f"*PROPOSED REMEDIATION (advisory):*\n{contrast.strip()}\n\n"
+                        f"*Suggested tool:* `verify_metrics_alignment`\n\n"
+                        f"*TRACE:* `{trace}`"
+                    )
+                    res = await ctx.telegram.send_message(
+                        int(admin_cid),
+                        t_msg[:3900],
+                        parse_mode="Markdown",
+                    )
+                    mid = (res.get("result") or {}).get("message_id")
+                    logger.info(
+                        "event=telegram_outbound_ok chat_id=%s message_id=%s trace=%s source=state_machine_contrast",
+                        admin_cid,
+                        mid,
+                        trace,
+                    )
+                except Exception as te:
+                    logger.warning("event=contrast_telegram_send_failed trace=%s err=%r", trace, te)
             if chat_id is not None:
                 pld = {
                     "trace_id": trace,

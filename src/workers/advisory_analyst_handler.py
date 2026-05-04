@@ -173,9 +173,8 @@ async def run_advisory_analyst(
             )
             return None
 
-        # Inject trace_id if missing
-        if not parsed.get("trace_id"):
-            parsed["trace_id"] = trace
+        # Bind real correlation id (LLM often emits a placeholder trace_id).
+        parsed["trace_id"] = trace
 
         # Validate schema
         try:

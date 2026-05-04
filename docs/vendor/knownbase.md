@@ -2,6 +2,8 @@
 
 **Split topology / deploy / logs:** [OMNI_PROJECT_CANONICAL.md](OMNI_PROJECT_CANONICAL.md) (canonical); [golden_path_split.md](golden_path_split.md) chỉ là redirect.
 
+**Audit / North Star (Cursor + người):** [../reports/audit-snapshot-2026-05.md](../reports/audit-snapshot-2026-05.md) — tóm tắt ý tưởng gốc, ma trận verify, gap tài liệu (ví dụ `MASTER_PLAN` nếu thiếu trong checkout).
+
 Short entries only. **Newest first** within each section. If the same symptom already exists, update **Fix** instead of adding a duplicate.
 
 ## Logic / application

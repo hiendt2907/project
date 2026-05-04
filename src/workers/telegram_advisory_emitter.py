@@ -121,10 +121,19 @@ async def render_advisory_to_telegram(
         _render_escalation(advisory.escalation_reason),
     ]
     message = "\n\n".join([p for p in parts if p])
+    # Footer for Loki cross-check and E2E harness (Telegram Bot API getUpdates assert).
+    message = f"{message}\n\n*TRACE:* `{_e(advisory.trace_id)}`"
 
     if len(message) <= 4000:
         try:
-            await ctx.telegram.send_message(chat_id, message, parse_mode="Markdown")
+            res = await ctx.telegram.send_message(chat_id, message, parse_mode="Markdown")
+            mid = (res.get("result") or {}).get("message_id")
+            logger.info(
+                "event=telegram_outbound_ok chat_id=%s message_id=%s trace=%s source=advisory_render",
+                chat_id,
+                mid,
+                advisory.trace_id,
+            )
             logger.info("event=advisory_telegram_sent chat_id=%s trace=%s", chat_id, advisory.trace_id)
         except Exception as e:
             logger.error("event=advisory_telegram_send_error chat_id=%s trace=%s err=%r", chat_id, advisory.trace_id, e)
@@ -133,10 +142,19 @@ async def render_advisory_to_telegram(
         for idx, chunk in enumerate(chunks):
             try:
                 header = f"[{idx + 1}/{len(chunks)}] " if len(chunks) > 1 else ""
-                await ctx.telegram.send_message(
+                res = await ctx.telegram.send_message(
                     chat_id,
                     f"{header}{chunk}",
                     parse_mode="Markdown",
+                )
+                mid = (res.get("result") or {}).get("message_id")
+                logger.info(
+                    "event=telegram_outbound_ok chat_id=%s message_id=%s trace=%s source=advisory_chunk chunk=%s/%s",
+                    chat_id,
+                    mid,
+                    advisory.trace_id,
+                    idx + 1,
+                    len(chunks),
                 )
             except Exception as e:
                 logger.error(

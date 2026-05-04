@@ -396,3 +396,96 @@ async def cb_status(_: None = Depends(_require_api_key)):
     flag = await _redis.get(CB_KEY)
     active = str(flag).strip() == "1"
     return {"circuit_breaker_active": active}
+
+
+# ─── Forecast Matrix ──────────────────────────────────────────────────────────
+
+import datetime as _dt
+
+def _linear_forecast(values: list[float], *, horizon_steps: int) -> tuple[list[float], dict[str, float]]:
+    """Inline linear regression — no scipy/numpy dependency in gateway image."""
+    import statistics as _st
+    n = len(values)
+    xs = list(range(n))
+    x_mean = _st.mean(xs)
+    y_mean = _st.mean(values)
+    ss_xy = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, values))
+    ss_xx = sum((x - x_mean) ** 2 for x in xs)
+    slope = ss_xy / ss_xx if ss_xx else 0.0
+    intercept = y_mean - slope * x_mean
+    y_hat = [slope * x + intercept for x in xs]
+    ss_res = sum((y - yh) ** 2 for y, yh in zip(values, y_hat))
+    ss_tot = sum((y - y_mean) ** 2 for y in values)
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot else 1.0
+    pred_x_start = n
+    pred_y = [slope * (pred_x_start + i) + intercept for i in range(horizon_steps)]
+    return pred_y, {"slope": slope, "intercept": intercept, "r_squared": r_squared}
+
+_FORECAST_HORIZONS_HOURS: list[float] = [1.0, 3.0, 6.0, 12.0, 24.0]
+_FORECAST_RISK_THRESHOLD: float = float(os.getenv("OMNI_FORECAST_RISK_THRESHOLD", "0.9"))
+
+
+class ForecastMatrixRequest(BaseModel):
+    metric_name: str = Field(..., min_length=1, max_length=256)
+    values: list[float] = Field(..., min_length=2, max_length=10000)
+    timestamps: list[float] = Field(..., min_length=2, max_length=10000)
+    step_seconds: float = Field(default=300.0, gt=0)
+
+
+class ForecastHorizon(BaseModel):
+    predicted: float
+    slope: float
+    r_squared: float
+    risk: bool
+
+
+class ForecastMatrixResponse(BaseModel):
+    metric_name: str
+    current_value: float
+    step_seconds: float
+    horizons: dict[str, ForecastHorizon]
+    computed_at: str
+
+
+@app.post("/forecast/matrix", response_model=ForecastMatrixResponse)
+async def forecast_matrix(
+    body: ForecastMatrixRequest,
+    _: None = Depends(_require_api_key),
+) -> ForecastMatrixResponse:
+    """Dự báo metric tại 5 mốc thời gian (1h/3h/6h/12h/24h) bằng hồi quy tuyến tính."""
+    if len(body.values) != len(body.timestamps):
+        raise HTTPException(status_code=422, detail="values and timestamps must have the same length")
+    if len(body.values) < 2:
+        raise HTTPException(status_code=422, detail="at least 2 data points required")
+
+    current_value = body.values[-1]
+    horizons: dict[str, ForecastHorizon] = {}
+
+    for h_hours in _FORECAST_HORIZONS_HOURS:
+        horizon_steps = max(1, int(h_hours * 3600.0 / body.step_seconds))
+        try:
+            pred_y, meta = _linear_forecast(body.values, horizon_steps=horizon_steps)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"forecast error: {exc}") from exc
+
+        predicted = float(pred_y[-1])
+        slope = meta["slope"]
+        r_squared = meta["r_squared"]
+        # Risk heuristic: predicted exceeds current by > OMNI_FORECAST_RISK_THRESHOLD factor (usage growth)
+        risk = (current_value > 0 and predicted / current_value > _FORECAST_RISK_THRESHOLD) if current_value != 0 else False
+
+        key = f"{int(h_hours)}h" if h_hours == int(h_hours) else f"{h_hours}h"
+        horizons[key] = ForecastHorizon(
+            predicted=predicted,
+            slope=slope,
+            r_squared=r_squared,
+            risk=risk,
+        )
+
+    return ForecastMatrixResponse(
+        metric_name=body.metric_name,
+        current_value=current_value,
+        step_seconds=body.step_seconds,
+        horizons=horizons,
+        computed_at=_dt.datetime.now(_dt.UTC).isoformat(),
+    )

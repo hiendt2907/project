@@ -725,6 +725,14 @@ class WorkerSettings(BaseSettings):
     slow_path_stale_signature_streak: int = Field(default=3, ge=2, le=8)
 
     telegram_enabled: bool = Field(default=True)
+    telegram_polling_enabled: bool = Field(
+        default=True,
+        description=(
+            "Khi False: không chạy telegram_loop (getUpdates) trên prober/full — "
+            "để harness E2E gọi Bot API getUpdates từ ngoài không bị tranh offset; "
+            "analyst/core vẫn dùng TelegramClient.send_message cho advisory."
+        ),
+    )
 
     # Mặc định khi tool k8s_list_pods không truyền args.namespace — khớp RBAC Role namespace.
     k8s_default_namespace: str = Field(default="multi-agent", min_length=1)
