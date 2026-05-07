@@ -1,16 +1,16 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Ingress manifest — ai-agent.local lab domain
 #
-# All rules use ingressClassName: nginx (ingress-nginx running in OrbStack K3s).
-# Hosts mapped in /etc/hosts → 192.168.139.2 (OrbStack LB).
+# ingressClassName: traefik (Traefik v3, Helm-installed in namespace traefik)
+# Hosts mapped in /etc/hosts → OrbStack LB IP (run: make hosts-update)
 #
 # Domain map:
-#   omni.ai-agent.local       → multi-agent/omni-ui:80        Omni Next.js dashboard
-#   gateway.ai-agent.local    → multi-agent/omni-gateway:80   Omni REST/WS gateway
-#   siem.ai-agent.local       → smart-siem/siem-ui:80         FinGuard SOC Vite UI
-#   siem.ai-agent.local/api   → smart-siem/siem-ui-api:8080   FinGuard BFF (Go Gin)
-#   finguard.ai-agent.local   → finguard-customer/finguard-ui-frontend:80  Vite frontend
-#   finguard.ai-agent.local/api → finguard-customer/finguard-ui-api:8080   Customer BFF
+#   omni.ai-agent.local       → multi-agent/omni-ui:80
+#   gateway.ai-agent.local    → multi-agent/omni-gateway:80   (SSE streaming)
+#   siem.ai-agent.local       → smart-siem/siem-ui:80
+#   siem.ai-agent.local/api   → smart-siem/siem-ui-api:8080
+#   finguard.ai-agent.local   → finguard-customer/finguard-ui-frontend:80
+#   finguard.ai-agent.local/api → finguard-customer/finguard-ui-api:8080
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── multi-agent: Omni UI ──────────────────────────────────────────────────────
@@ -21,11 +21,10 @@ metadata:
   name: omni-ui
   namespace: multi-agent
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/hsts: "false"
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: multi-agent-body-limit-10m@kubernetescrd
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
     - host: omni.ai-agent.local
       http:
@@ -38,7 +37,7 @@ spec:
                 port:
                   number: 80
 
-# ── multi-agent: Omni Gateway ─────────────────────────────────────────────────
+# ── multi-agent: Omni Gateway (SSE / long-polling) ───────────────────────────
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -46,15 +45,11 @@ metadata:
   name: omni-gateway
   namespace: multi-agent
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/hsts: "false"
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    # Allow SSE / long-polling — disable proxy buffering for streaming responses
-    nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      multi-agent-sse-buffering-off@kubernetescrd,multi-agent-body-limit-10m@kubernetescrd
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
     - host: gateway.ai-agent.local
       http:
@@ -75,19 +70,15 @@ metadata:
   name: siem-ui
   namespace: smart-siem
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/hsts: "false"
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    # SSE support for pipeline + monitoring pages
-    nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      smart-siem-sse-buffering-off@kubernetescrd,smart-siem-body-limit-10m@kubernetescrd
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
     - host: siem.ai-agent.local
       http:
         paths:
-          # BFF API — must be listed before / to take precedence
           - path: /api/v1
             pathType: Prefix
             backend:
@@ -103,7 +94,7 @@ spec:
                 port:
                   number: 80
 
-# ── finguard-customer: Vite frontend + customer BFF ───────────────────────────
+# ── finguard-customer: Vite frontend + customer BFF ──────────────────────────
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -111,18 +102,15 @@ metadata:
   name: finguard-ui
   namespace: finguard-customer
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/hsts: "false"
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      finguard-customer-sse-buffering-off@kubernetescrd,finguard-customer-body-limit-10m@kubernetescrd
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
     - host: finguard.ai-agent.local
       http:
         paths:
-          # Customer BFF API
           - path: /api/v1
             pathType: Prefix
             backend:

@@ -1,5 +1,28 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres
+.PHONY: traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres
+
+# ── Traefik ingress management ────────────────────────────────────────────────
+traefik-install:
+	helm repo add traefik https://traefik.github.io/charts && helm repo update traefik
+	helm upgrade --install traefik traefik/traefik \
+	  -n traefik --create-namespace \
+	  -f k8s/ingress/traefik-values.yaml
+	kubectl apply -f k8s/ingress/traefik-middlewares.yaml
+	kubectl apply -f k8s/ingress/ai-agent-local.yaml
+
+traefik-uninstall:
+	helm uninstall traefik -n traefik
+
+nginx-uninstall:
+	kubectl delete validatingwebhookconfiguration ingress-nginx-admission --ignore-not-found
+	kubectl delete ingressclass nginx --ignore-not-found
+	kubectl delete ns ingress-nginx --ignore-not-found
+
+hosts-update:
+	@TRAEFIK_IP=$$(kubectl get svc -n traefik traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}'); \
+	echo "Traefik IP: $$TRAEFIK_IP"; \
+	sudo sed -i '' "s|.*ai-agent\.local.*|$$TRAEFIK_IP omni.ai-agent.local finguard.ai-agent.local gateway.ai-agent.local siem.ai-agent.local|" /etc/hosts && \
+	grep ai-agent /etc/hosts
 
 test-evidence:
 	bash scripts/run_test_evidence.sh
