@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Sidebar } from "@/components/sidebar";
+import { DiagnosticLanes } from "@/components/diagnostic-lanes";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -97,6 +98,12 @@ type SiemOverview = {
     redis_memory_used_bytes: number;
     redis_memory_max_bytes: number;
     workers: { role: string; replicas: number; ready: number; last_heartbeat_age_sec: number }[];
+  };
+  diagnostic_lanes: {
+    sys_resource: { status: "ok" | "warn" | "critical"; z_cpu: number; z_mem: number; baseline_age_sec: number; anomaly_triggered: boolean };
+    sys_hard_fail: { status: "ok" | "warn" | "critical"; crash_loops: number; broken_specs: number; advisory_count_24h: number };
+    app_http: { status: "ok" | "warn" | "critical"; surge_triggered: boolean; dominant_error_class: "5xx" | "429" | "499" | "401" | "403" | "none"; error_rate_pct: number; sigma_bypass: boolean };
+    siem_security: { status: "ok" | "warn" | "critical"; active_incidents: number; kill_chain_stage: string; pipeline_healthy: boolean; forecast_1h_severity: string };
   };
 };
 
@@ -679,6 +686,12 @@ export default function SiemDashboardPage() {
               )}
             </Panel>
           </div>
+
+          {/* Row 7 — Diagnostic Lanes */}
+          <section>
+            <h2 className="mb-3 text-sm font-semibold text-zinc-400 uppercase tracking-wider">Diagnostic Lanes</h2>
+            <DiagnosticLanes data={data?.diagnostic_lanes ?? null} />
+          </section>
 
           {data && (
             <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-zinc-600">

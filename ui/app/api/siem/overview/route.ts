@@ -82,6 +82,12 @@ type SiemOverview = {
     redis_memory_max_bytes: number;
     workers: { role: string; replicas: number; ready: number; last_heartbeat_age_sec: number }[];
   };
+  diagnostic_lanes: {
+    sys_resource: { status: "ok" | "warn" | "critical"; z_cpu: number; z_mem: number; baseline_age_sec: number; anomaly_triggered: boolean };
+    sys_hard_fail: { status: "ok" | "warn" | "critical"; crash_loops: number; broken_specs: number; advisory_count_24h: number };
+    app_http: { status: "ok" | "warn" | "critical"; surge_triggered: boolean; dominant_error_class: "5xx" | "429" | "499" | "401" | "403" | "none"; error_rate_pct: number; sigma_bypass: boolean };
+    siem_security: { status: "ok" | "warn" | "critical"; active_incidents: number; kill_chain_stage: string; pipeline_healthy: boolean; forecast_1h_severity: string };
+  };
 };
 
 function rand(min: number, max: number) {
@@ -215,6 +221,35 @@ function buildMock(): SiemOverview {
         { role: "evidence-adapter", replicas: 1, ready: 1, last_heartbeat_age_sec: 4 },
         { role: "hitl-dispatcher", replicas: 1, ready: 1, last_heartbeat_age_sec: 3 },
       ],
+    },
+    diagnostic_lanes: {
+      sys_resource: {
+        status: Math.random() > 0.8 ? "warn" : "ok",
+        z_cpu: +(Math.random() * 2.5).toFixed(2),
+        z_mem: +(Math.random() * 1.8).toFixed(2),
+        baseline_age_sec: Math.floor(Math.random() * 120),
+        anomaly_triggered: Math.random() > 0.9,
+      },
+      sys_hard_fail: {
+        status: Math.random() > 0.9 ? "critical" : "ok",
+        crash_loops: Math.floor(Math.random() * 3),
+        broken_specs: Math.floor(Math.random() * 2),
+        advisory_count_24h: Math.floor(Math.random() * 8),
+      },
+      app_http: {
+        status: Math.random() > 0.85 ? "warn" : "ok",
+        surge_triggered: Math.random() > 0.9,
+        dominant_error_class: "none",
+        error_rate_pct: +(Math.random() * 3).toFixed(2),
+        sigma_bypass: Math.random() > 0.8,
+      },
+      siem_security: {
+        status: "ok",
+        active_incidents: Math.floor(Math.random() * 5),
+        kill_chain_stage: "recon",
+        pipeline_healthy: true,
+        forecast_1h_severity: "low",
+      },
     },
   };
 }
