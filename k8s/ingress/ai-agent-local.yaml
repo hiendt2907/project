@@ -1,3 +1,19 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress manifest — ai-agent.local lab domain
+#
+# All rules use ingressClassName: nginx (ingress-nginx running in OrbStack K3s).
+# Hosts mapped in /etc/hosts → 192.168.139.2 (OrbStack LB).
+#
+# Domain map:
+#   omni.ai-agent.local       → multi-agent/omni-ui:80        Omni Next.js dashboard
+#   gateway.ai-agent.local    → multi-agent/omni-gateway:80   Omni REST/WS gateway
+#   siem.ai-agent.local       → smart-siem/siem-ui:80         FinGuard SOC Vite UI
+#   siem.ai-agent.local/api   → smart-siem/siem-ui-api:8080   FinGuard BFF (Go Gin)
+#   finguard.ai-agent.local   → finguard-customer/finguard-ui-frontend:80  Vite frontend
+#   finguard.ai-agent.local/api → finguard-customer/finguard-ui-api:8080   Customer BFF
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── multi-agent: Omni UI ──────────────────────────────────────────────────────
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -11,7 +27,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: omni.local
+    - host: omni.ai-agent.local
       http:
         paths:
           - path: /
@@ -21,26 +37,103 @@ spec:
                 name: omni-ui
                 port:
                   number: 80
+
+# ── multi-agent: Omni Gateway ─────────────────────────────────────────────────
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: siem-dashboard-ingress
-  namespace: smart-siem
+  name: omni-gateway
+  namespace: multi-agent
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
     nginx.ingress.kubernetes.io/hsts: "false"
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # Allow SSE / long-polling — disable proxy buffering for streaming responses
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 spec:
   ingressClassName: nginx
   rules:
-    - host: siem.local
+    - host: gateway.ai-agent.local
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
+                name: omni-gateway
+                port:
+                  number: 80
+
+# ── smart-siem: FinGuard SOC UI + BFF ────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: siem-ui
+  namespace: smart-siem
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/hsts: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # SSE support for pipeline + monitoring pages
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: siem.ai-agent.local
+      http:
+        paths:
+          # BFF API — must be listed before / to take precedence
+          - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: siem-ui-api
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
                 name: siem-ui
+                port:
+                  number: 80
+
+# ── finguard-customer: Vite frontend + customer BFF ───────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: finguard-ui
+  namespace: finguard-customer
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/hsts: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: finguard.ai-agent.local
+      http:
+        paths:
+          # Customer BFF API
+          - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: finguard-ui-api
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: finguard-ui-frontend
                 port:
                   number: 80
