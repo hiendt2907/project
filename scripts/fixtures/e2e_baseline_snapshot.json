@@ -1,0 +1,8 @@
+{
+  "dr": true,
+  "z_cpu": 4.8,
+  "z_mem": 3.5,
+  "threshold": 3.0,
+  "cpu_pct": 96.2,
+  "mem_pct": 88.7
+}

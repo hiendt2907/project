@@ -43,6 +43,12 @@ BATCH = int(os.getenv("SIEM_BRIDGE_BATCH", "10"))
 KAFKA_SERVERS = os.getenv("OMNI_KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 KAFKA_TOPIC = os.getenv("OMNI_KAFKA_TOPIC_ALERTS", "omni-alerts")
 
+# Dual-emit: when true, also publish raw FinGuard incident to omni-siem-raw for brain-go Kafka mode.
+# Dedup note: analyst pipeline must subscribe ONLY ONE of omni-alerts or omni-siem-incidents —
+# not both simultaneously — to avoid duplicate evidence for the same incident_id.
+DUAL_EMIT = os.getenv("SIEM_BRIDGE_DUAL_EMIT", "false").lower() in ("true", "1", "yes")
+KAFKA_TOPIC_SIEM_RAW = os.getenv("OMNI_KAFKA_TOPIC_SIEM_RAW", "omni-siem-raw")
+
 
 # --- Schema translation ---
 SEVERITY_MAP = {
@@ -241,6 +247,22 @@ async def _process(redis: Redis, producer: AIOKafkaProducer, msg_id: str, fields
         inner = {"source": "siem", "trace_id": trace_id, "data": alert}
         envelope = json.dumps({"data": json.dumps(inner, ensure_ascii=False)}, ensure_ascii=False).encode()
         await producer.send_and_wait(KAFKA_TOPIC, value=envelope)
+
+        if DUAL_EMIT:
+            raw_envelope = json.dumps({
+                "id": incident_id,
+                "tenant_id": fields.get("tenant_id", ""),
+                "severity": fields.get("severity", ""),
+                "category": fields.get("category", ""),
+                "source": fields.get("source", "siem-bridge"),
+                "source_ip": fields.get("source_ip", ""),
+                "timestamp_unix": int(fields.get("timestamp_unix", 0)),
+                "schema_version": "1.0.0",
+                "trace_id": trace_id,
+            }, ensure_ascii=False).encode()
+            await producer.send_and_wait(KAFKA_TOPIC_SIEM_RAW, value=raw_envelope)
+            log.info('"dual_emit_raw" incident_id="%s" topic="%s"', incident_id, KAFKA_TOPIC_SIEM_RAW)
+
         await redis.xack(STREAM, GROUP, msg_id)
         log.info(
             '"incident forwarded to omni" incident_id="%s" alert="%s" severity="%s"',

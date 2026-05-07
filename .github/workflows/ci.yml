@@ -7,7 +7,7 @@
 #   make prove-siem-capabilities — CAP-1 through CAP-6 live proof
 #   make siem-proof-3x        — 3-run flake burn-in
 #   bash scripts/verify_hitl_production.sh — in-cluster readiness gate
-#   bash scripts/gateway_alert_loki_verify.sh — full pipeline E2E (optional E2E_ASSERT_TELEGRAM_BOT_API=1)
+#   NS=<ns> bash scripts/gateway_alert_loki_verify.sh — full pipeline E2E (NS required; lab: multi-agent); optional E2E_ASSERT_TELEGRAM_BOT_API=1
 #
 # To run lab gates: `make siem-lab-gate` with port-forwards active on the lab cluster.
 # See: docs/runbooks/siem-capability-proof.md
@@ -62,7 +62,8 @@ jobs:
         run: pytest -q --tb=short tests/test_e2e_telegram_bot_api_assert.py
 
       - name: Script syntax check (SIEM scripts)
-        # Validate scripts are syntactically correct without executing them
+        # Validate scripts are syntactically correct without executing them.
+        # Gateway / matrix helpers require NS at runtime (no default in-script); lab contract: NS=multi-agent.
         run: |
           bash -n scripts/verify_hitl_production.sh
           bash -n scripts/rotate_hitl_token.sh

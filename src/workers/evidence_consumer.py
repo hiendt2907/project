@@ -112,6 +112,9 @@ from services.audit_ledger.signer import AuditLedgerError
 
 logger = logging.getLogger(__name__)
 
+# Log fragment injected into analyst evidence when baseline z-scores exist (E2E / log greppers).
+SIGMA_RESOURCE_EVIDENCE_BASELINE_MARKER = "3-SIGMA RESOURCE BASELINE"
+
 # Self-remediation lab alerts: do not trust low-score RAG chunks as final diagnosis.
 _SECURITY_SELF_REMEDIATION_ALERT_NAMES = frozenset(
     {
@@ -231,6 +234,124 @@ _SIEM_DEFAULT_STEPS = [
     "Apply remediation from suggested_action below; verify with kubectl rollout status",
 ]
 
+# SIEM WHY context per category (root cause basis for operator)
+_SIEM_CATEGORY_WHY: dict[str, str] = {
+    "ddos": "Distributed volumetric attack detected — traffic anomaly exceeds baseline; origin IP triggered FinGuard ruleset.",
+    "malware": "Malicious executable or C2 beaconing detected — process/network behavior deviates from pod baseline.",
+    "data_exfil": "Unauthorized data transfer detected — egress volume or destination IP matches exfiltration signature.",
+    "k8s_threat": "Kubernetes privilege escalation or container breakout attempt detected — privileged pod/binding anomaly.",
+    "auth_failure": "Sustained authentication failures detected — credential stuffing or brute-force pattern confirmed.",
+    "lateral_movement": "East-west pod-to-pod traffic anomaly detected — signature matches lateral movement playbook.",
+    "network_anomaly": "Network traffic pattern deviation detected — anomalous port/protocol outside expected service mesh.",
+}
+_SIEM_DEFAULT_WHY = "Security incident detected by FinGuard SIEM — anomaly confidence exceeds alert threshold."
+
+# SIEM forecast by (category, severity) — heuristic kill-chain timeline
+# Keys: "critical"/"high"/"medium"/"low"; default to critical if not found
+_SIEM_FORECAST: dict[str, dict[str, list[tuple[str, str, str, str]]]] = {
+    # (timeframe, severity_level, prediction, confidence)
+    "ddos": {
+        "critical": [
+            ("1h", "critical", "Service throughput drops >70%; HPA may not scale fast enough.", "high"),
+            ("3h", "catastrophic", "Service fully unavailable; downstream cascading failures expected.", "high"),
+            ("6h", "catastrophic", "Infrastructure exhaustion; database connection pool saturation.", "medium"),
+            ("12h", "catastrophic", "Multi-region impact if CDN/WAF not engaged.", "medium"),
+            ("24h", "catastrophic", "Full outage without WAF/IP-block remediation.", "low"),
+        ],
+    },
+    "malware": {
+        "critical": [
+            ("1h", "critical", "Malware lateral movement begins; adjacent pods at risk.", "high"),
+            ("3h", "catastrophic", "C2 exfiltration channel established; data breach underway.", "high"),
+            ("6h", "catastrophic", "Persistence mechanisms installed; full cluster compromise risk.", "medium"),
+            ("12h", "catastrophic", "Regulatory breach window exceeded (GDPR 72h timer starts).", "high"),
+            ("24h", "catastrophic", "Incident uncontainable without full forensic isolation.", "medium"),
+        ],
+    },
+    "data_exfil": {
+        "critical": [
+            ("1h", "critical", "Active exfiltration in progress; data already partially exposed.", "high"),
+            ("3h", "catastrophic", "Full exfiltration complete; breach notification mandatory.", "high"),
+            ("6h", "catastrophic", "Attacker pivots to destroy evidence; log tampering risk.", "medium"),
+            ("12h", "catastrophic", "Compliance violation window exceeded.", "high"),
+            ("24h", "catastrophic", "Attacker may have destroyed forensic evidence.", "low"),
+        ],
+    },
+    "k8s_threat": {
+        "critical": [
+            ("1h", "critical", "Privileged pod may gain node-level access.", "high"),
+            ("3h", "catastrophic", "Cluster-admin level compromise; all namespaces at risk.", "high"),
+            ("6h", "catastrophic", "Supply chain compromise; image tampering possible.", "medium"),
+            ("12h", "catastrophic", "Full cluster takeover; data and CI/CD pipeline at risk.", "medium"),
+            ("24h", "catastrophic", "Unrecoverable without full cluster rebuild.", "low"),
+        ],
+    },
+    "auth_failure": {
+        "critical": [
+            ("1h", "degraded", "Brute-force continues; account lockout may impact legitimate users.", "high"),
+            ("3h", "critical", "Credential compromise imminent if rate-limit not enforced.", "high"),
+            ("6h", "critical", "Account takeover likely; token rotation required.", "medium"),
+            ("12h", "catastrophic", "Compromised credentials used for lateral access.", "medium"),
+            ("24h", "catastrophic", "Full breach if multi-factor not enforced.", "low"),
+        ],
+        "high": [
+            ("1h", "degraded", "Continued auth failures; service degradation possible.", "high"),
+            ("3h", "degraded", "Credential lockout risk for legitimate users.", "medium"),
+            ("6h", "critical", "Escalation if attacker adapts credentials.", "medium"),
+            ("12h", "critical", "Sustained attack; credential compromise risk.", "low"),
+            ("24h", "critical", "Account takeover without remediation.", "low"),
+        ],
+    },
+    "lateral_movement": {
+        "critical": [
+            ("1h", "critical", "Attacker pivoting between pods; network policy breach.", "high"),
+            ("3h", "catastrophic", "Multiple namespaces compromised; secrets at risk.", "high"),
+            ("6h", "catastrophic", "Attacker gains control plane access.", "medium"),
+            ("12h", "catastrophic", "Full cluster lateral compromise.", "medium"),
+            ("24h", "catastrophic", "Incident uncontainable; full rebuild required.", "low"),
+        ],
+    },
+    "network_anomaly": {
+        "critical": [
+            ("1h", "degraded", "Network throughput degraded; service latency increasing.", "high"),
+            ("3h", "critical", "Service degradation cascades to dependent microservices.", "medium"),
+            ("6h", "critical", "Network partition risk if anomaly is routing-related.", "medium"),
+            ("12h", "catastrophic", "Full service mesh failure without routing correction.", "low"),
+            ("24h", "catastrophic", "Infrastructure-level network failure.", "low"),
+        ],
+    },
+}
+
+_SIEM_DEFAULT_FORECAST: list[tuple[str, str, str, str]] = [
+    ("1h", "degraded", "Security incident impact spreading; active threat uncontained.", "medium"),
+    ("3h", "critical", "Threat escalation likely without containment.", "medium"),
+    ("6h", "critical", "Sustained attack; lateral movement or data exposure risk.", "low"),
+    ("12h", "catastrophic", "Full incident impact if unmitigated.", "low"),
+    ("24h", "catastrophic", "Regulatory and operational breach without remediation.", "low"),
+]
+
+
+def _siem_forecast_timeline(category: str, severity: str) -> list[dict[str, str]]:
+    """Return heuristic kill-chain forecast for SIEM category × severity."""
+    cat_map = _SIEM_FORECAST.get(category, {})
+    timeline = cat_map.get(severity) or cat_map.get("critical") or _SIEM_DEFAULT_FORECAST
+    return [
+        {"timeframe": tf, "severity": sev, "prediction": pred, "confidence": conf}
+        for tf, sev, pred, conf in timeline
+    ]
+
+
+def _format_siem_forecast_text(forecast: list[dict[str, str]]) -> str:
+    """Format forecast timeline as operator-readable text."""
+    lines = ["Forecast (if unmitigated):"]
+    for f in forecast:
+        tf = f["timeframe"]
+        sev = f["severity"].upper()
+        pred = f["prediction"]
+        conf = f["confidence"]
+        lines.append(f"  +{tf}: [{sev}] {pred} (confidence={conf})")
+    return "\n".join(lines)
+
 
 def _siem_diagnosis_from_batch(
     batch: list[dict[str, Any]],
@@ -276,10 +397,20 @@ def _siem_diagnosis_from_batch(
     steps = [s.replace("{ns}", _safe_ns).replace("{ip}", _safe_ip) for s in raw_steps]
     steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(steps))
 
+    # Structured WHAT / WHO / WHY / HOW-TO / FORECAST
+    what = f"[{category.upper()}] {description or suggested or 'Security incident detected by FinGuard SIEM.'}"
+    who = f"namespace={_safe_ns}" + (f", tenant={tenant}" if tenant else "") + (f", source_ip={_safe_ip}" if affected_ip else "")
+    why = _SIEM_CATEGORY_WHY.get(category, _SIEM_DEFAULT_WHY)
+    forecast_items = _siem_forecast_timeline(category, severity)
+    forecast_text = _format_siem_forecast_text(forecast_items)
+
     return (
-        f"{header}\n\n"
-        f"Operator next steps for [{category}] in namespace [{ns}]:\n"
+        f"WHAT: {what}\n"
+        f"WHO: {who} | incident={incident_id} | severity={severity}\n"
+        f"WHY: {why}\n\n"
+        f"HOW-TO (operator next steps for [{category}] in namespace [{_safe_ns}]):\n"
         f"{steps_text}\n\n"
+        f"{forecast_text}\n\n"
         "Omni does NOT auto-execute for SIEM incidents — human approval required."
     )
 
@@ -344,25 +475,55 @@ async def _notify_siem_telegram(
         bits = [x for x in (ts, f"[{lane}]" if lane else "", probe, f"— {hint}" if hint else "") if x]
         if bits:
             chain_items.append(" ".join(bits))
+    # Extract WHY from structured diagnosis
+    why_text = ""
+    for ln in diagnosis.splitlines():
+        if ln.startswith("WHY:"):
+            why_text = ln[4:].strip()
+            break
+    reason = why_text or description or diagnosis[:300].strip() or f"category={category} — LLM diagnosis absent"
+
     advise: list[str] = []
+    in_howto = False
     for ln in diagnosis.splitlines():
         s = ln.strip()
         if not s:
             continue
-        if s[0].isdigit() or s.startswith(("kubectl", "Review", "Apply", "Isolate", "Rotate", "Segment", "Audit", "Check")):
-            advise.append(s)
+        if s.startswith("HOW-TO"):
+            in_howto = True
+            continue
+        if in_howto:
+            # Stop at forecast section
+            if s.startswith("Forecast") or s.startswith("Omni does NOT"):
+                in_howto = False
+                continue
+            if s[0].isdigit() or s.startswith(("kubectl", "Review", "Apply", "Isolate", "Rotate", "Segment", "Audit", "Check")):
+                advise.append(s)
+    if not advise:
+        # Fallback: parse old-style diagnosis
+        for ln in diagnosis.splitlines():
+            s = ln.strip()
+            if s and (s[0].isdigit() or s.startswith(("kubectl", "Review", "Apply", "Isolate", "Rotate", "Segment", "Audit", "Check"))):
+                advise.append(s)
     if suggested_action:
         advise.append(f"SIEM recommendation: {suggested_action[:200]}")
     if not advise:
         advise.append(f"Review: {diagnosis[:400]}")
     advise.append("Omni does NOT auto-execute SIEM incidents — human approval required")
+
+    # Build forecast section for Telegram
+    forecast_items = _siem_forecast_timeline(category, severity)
+    forecast_lines = [f"  +{f['timeframe']}: [{f['severity'].upper()}] {f['prediction']}" for f in forecast_items[:3]]
+    forecast_section = "Forecast (worst-case if unmitigated):\n" + "\n".join(forecast_lines)
+
     card_body = format_operator_triage_card(
         problem=problem, reason=reason, chain=chain_items, advise=advise,
     )
     msg = (
         f"[SIEM] FinGuard incident — human execution required\n"
         f"trace={trace}\n"
-        f"{card_body}"
+        f"{card_body}\n"
+        f"{forecast_section}"
     )[:4096]
     try:
         await tg.send_message(int(admin_cid), msg)
@@ -453,14 +614,23 @@ async def _try_log_surge_sigma_bypass(
     )
     extra = dict(res.meta or {})
     extra["log_surge_reason"] = res.reason
+    extra["business_error_class"] = res.dominant_error_class
     if res.ok:
         logger.info(
-            "event=log_surge_sigma_bypass_ok trace=%s reason=%s lines=%s",
+            "event=log_surge_sigma_bypass_ok trace=%s reason=%s lines=%s error_class=%s",
             trace,
             res.reason,
             extra.get("lines_fetched"),
+            res.dominant_error_class,
         )
         return True, {"log_surge_bypass": True, **extra}, False
+    # 499 client_abort: informational — do not bypass sigma but log for operator
+    if res.dominant_error_class == "client_abort":
+        logger.info(
+            "event=log_surge_client_abort_informational trace=%s lines=%s",
+            trace,
+            extra.get("lines_fetched"),
+        )
     if res.escalate_log_unavailable:
         return False, extra, True
     return False, extra, False
@@ -1466,6 +1636,19 @@ async def _emit_agentic_mutate_if_any(
             return False
     pl_inv = proof_meta.get("proof_lane")
     proof_lane_for_inv = str(pl_inv).strip() if isinstance(pl_inv, str) and pl_inv.strip() else None
+    readonly_discovery_executed: list[str] = []
+    if bool(getattr(ctx.settings, "omni_discovery_mandatory", False)):
+        mem_dm = await load_trace_memory(
+            ctx.redis,
+            trace,
+            initial_symptoms="",
+            initial_symptom=None,
+        )
+        readonly_discovery_executed = [
+            str(a.tool_name)
+            for a in (mem_dm.action_history or [])
+            if str(getattr(a, "kind", "") or "") == "readonly_executed" and not bool(getattr(a, "is_error", False))
+        ]
     if unrestricted:
         inv_ok, inv_reason, inv_meta = True, "", {}
     else:
@@ -1476,6 +1659,7 @@ async def _emit_agentic_mutate_if_any(
             batch=batch,
             discovery_tool_names=discovery_steps,
             proof_lane=proof_lane_for_inv,
+            readonly_discovery_executed=readonly_discovery_executed or None,
         )
     if not inv_ok:
         lane_guess = str(proof_meta.get("proof_lane") or "unknown")
@@ -1748,6 +1932,35 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
 
                 if temporal_block:
                     sanitized_text = f"{sanitized_text}\n\n=== TEMPORAL EVIDENCE ===\n{temporal_block}"
+
+                # Annotate 3-sigma baseline z-scores for the advisory analyst.
+                # These come from baseline_snapshot stored in Redis and read by _proof_of_fault_gate.
+                snap_raw = await ctx.redis.get(REDIS_KEY_SNAPSHOT)
+                if snap_raw:
+                    try:
+                        _snap = json.loads(snap_raw.decode() if isinstance(snap_raw, bytes) else snap_raw)
+                        _z_cpu = _f64(_snap.get("z_cpu"))
+                        _z_mem = _f64(_snap.get("z_mem"))
+                        _z_thr = float(getattr(ctx.settings, "baseline_dr_z_threshold", 3.0) or 3.0)
+                        if _z_cpu is not None or _z_mem is not None:
+                            _sigma_parts = []
+                            if _z_cpu is not None:
+                                _sigma_parts.append(f"z_cpu={_z_cpu:+.2f} ({'ANOMALY' if abs(_z_cpu) >= _z_thr else 'normal'})")
+                            if _z_mem is not None:
+                                _sigma_parts.append(f"z_mem={_z_mem:+.2f} ({'ANOMALY' if abs(_z_mem) >= _z_thr else 'normal'})")
+                            sanitized_text = (
+                                f"{sanitized_text}\n\n=== {SIGMA_RESOURCE_EVIDENCE_BASELINE_MARKER} ===\n"
+                                f"threshold=±{_z_thr:.1f}σ | {' | '.join(_sigma_parts)}\n"
+                                f"Anomaly = |z| ≥ {_z_thr:.1f}. Use this for forecast.basis when method=linear_extrapolation."
+                            )
+                            logger.info(
+                                "event=sigma_baseline_injected trace=%s %s threshold=%.1f",
+                                trace,
+                                " ".join(_sigma_parts),
+                                _z_thr,
+                            )
+                    except Exception:
+                        pass
 
                 # Run advisory analyst (returns AnalystAdvisory schema)
                 advisory = await run_advisory_analyst(

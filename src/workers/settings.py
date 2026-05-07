@@ -388,6 +388,16 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_DIAGNOSTIC_REACT_READONLY_MAX"),
         description="Max read-only tool rounds per agentic plan when react enabled.",
     )
+    omni_discovery_mandatory: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_DISCOVERY_MANDATORY"),
+        description=(
+            "When true (recommended in prod strict posture): block EXECUTE_MUTATE unless discovery-equivalent "
+            "evidence exists — planner discovery_steps, successful trace-memory readonly executions, or batch "
+            "probes indicating K8s/Prometheus/Loki/redis/service topology reads (see diagnostic_policy). "
+            "Default false so lab/unit tests stay unchanged unless env set."
+        ),
+    )
     omni_planner_llm_sole_evaluator: bool = Field(
         default=False,
         validation_alias=AliasChoices("OMNI_PLANNER_LLM_SOLE_EVALUATOR"),

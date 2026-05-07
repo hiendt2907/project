@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from services.playbook.models import Playbook
 
 from pkg.reasoning.deterministic_mutate_from_evidence import _evidence_suggests_credential_failure
-from pkg.reasoning.diagnostic_policy import DISCOVERY_TOOL_ALIASES, evidence_suggests_broken_spec
+from pkg.reasoning.diagnostic_policy import DISCOVERY_TOOL_ALIASES, evidence_suggests_broken_spec, OBSERVABILITY_READONLY_DISCOVERY_TOOL_NAMES
 from pkg.reasoning.incident_matrix_profile import VALID_PROOF_LANES, pick_matrix_row_for_batch
 from pkg.reasoning.reason_codes import (
     ERR_REA_HALLUCINATION_DETECTED,
@@ -243,7 +243,8 @@ def coerce_k8s_readonly_args(tool_name: str, args: dict[str, Any]) -> dict[str, 
 
 def _readonly_tool_router(tool_name: str) -> bool:
     """Runtime router: if tool is read-only, it never goes to mutate/executor semantics."""
-    return bool(tool_name and str(tool_name).strip() in READONLY_TOOL_ALLOWLIST)
+    tn = str(tool_name or "").strip()
+    return bool(tn and (tn in READONLY_TOOL_ALLOWLIST or tn in OBSERVABILITY_READONLY_DISCOVERY_TOOL_NAMES))
 
 
 def _discovery_repeat_dedupe_key(tool_name: str, args: dict[str, Any]) -> str:

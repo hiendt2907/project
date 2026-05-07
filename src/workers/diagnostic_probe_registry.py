@@ -362,6 +362,53 @@ async def probe_k8s_networkpolicy_audit(ctx: WorkerHandlerContext, ev: AnomalyEv
         return ProbeRunRaw(probe_name="k8s_networkpolicy_audit", status="INCONCLUSIVE", raw_text=str(e)[:2000])
 
 
+async def probe_loki_access_log_surge(ctx: WorkerHandlerContext, ev: AnomalyEvent) -> ProbeRunRaw:
+    """Query Loki for sustained HTTP error surge (429/5xx/auth) — sigma-bypass eligible evidence."""
+    from workers.log_surge_probe import evaluate_log_surge_sigma_bypass
+
+    ns = (ev.namespace or "").strip()
+    pod = (ev.gigo_metadata.get("pod", "") or ev.deployment or "").strip()
+    loki_url = getattr(ctx.settings, "omni_loki_base_url", None) or "http://loki.monitor.svc.cluster.local:3100"
+
+    if not ns:
+        return ProbeRunRaw(
+            probe_name="loki_access_log_surge",
+            status="SKIPPED",
+            raw_text="missing namespace label — cannot scope Loki query",
+        )
+    try:
+        result = await evaluate_log_surge_sigma_bypass(
+            loki_base_url=loki_url,
+            namespace=ns,
+            pod_name=pod,
+            window_sec=300,
+            min_lines=5,
+            min_ratio=0.3,
+            line_limit=500,
+            timeout_sec=25.0,
+        )
+        status = "PASSED" if result.ok else "INCONCLUSIVE"
+        counts = getattr(result, "meta", {}) or {}
+        return ProbeRunRaw(
+            probe_name="loki_access_log_surge",
+            status=status,
+            raw_text=(
+                f"dominant_class={result.dominant_error_class} "
+                f"sigma_bypass={result.ok} reason={result.reason} "
+                f"counts={counts}"
+            )[:2000],
+            structured_hint={
+                "dominant_error_class": result.dominant_error_class,
+                "sigma_bypass_eligible": result.ok,
+                "sigma_bypass_reason": result.reason,
+                "meta": counts,
+            },
+        )
+    except Exception as e:
+        logger.warning("probe_loki_access_log_surge: %s", e)
+        return ProbeRunRaw(probe_name="loki_access_log_surge", status="INCONCLUSIVE", raw_text=str(e)[:2000])
+
+
 PROBE_REGISTRY: dict[str, ProbeFn] = {
     "redis_ping": probe_redis_ping,
     "k8s_list_pods_namespace": probe_k8s_list_pods_namespace,
@@ -388,6 +435,8 @@ PROBE_REGISTRY: dict[str, ProbeFn] = {
     # P7.2.B — L2 Network (kubernetes_asyncio, read-only)
     "k8s_service_endpoints_ready": probe_k8s_service_endpoints_ready,
     "k8s_networkpolicy_audit": probe_k8s_networkpolicy_audit,
+    # APP_HTTP lane — Loki-based access-log surge detection
+    "loki_access_log_surge": probe_loki_access_log_surge,
 }
 
 

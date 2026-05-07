@@ -28,6 +28,10 @@ except ImportError:
 _REDIS_HEAD_KEY = "audit_chain:head_hash"
 _REDIS_SEQ_KEY = "audit_chain:seq"
 _REDIS_BLOCKS_KEY = "audit_chain:blocks"
+# Public aliases for E2E / ops scripts (avoid duplicating Redis key literals).
+REDIS_AUDIT_HEAD_KEY = _REDIS_HEAD_KEY
+REDIS_AUDIT_SEQ_KEY = _REDIS_SEQ_KEY
+REDIS_AUDIT_BLOCKS_KEY = _REDIS_BLOCKS_KEY
 _GENESIS_HASH = "0" * 64
 
 # Serialize block writes so seq + prev_hash are always consistent.

@@ -1,20 +1,20 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: test-evidence docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres
+.PHONY: test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres
 
 test-evidence:
 	bash scripts/run_test_evidence.sh
 
 # nginx-test CPU lab: deploy + optional stress + POST gateway (see scripts/nginx_test_cpu_alert_lab.sh header).
 lab-nginx-cpu:
-	bash scripts/nginx_test_cpu_alert_lab.sh
+	NS=multi-agent bash scripts/nginx_test_cpu_alert_lab.sh
 
 # Tải in-cluster + giữ load khi POST (true alarm path; LOAD_CONCURRENCY an toàn, không 10k process).
 lab-nginx-cpu-overlap:
-	STRESS_OVERLAP_ALERT=1 WARMUP_SEC=15 OVERLAP_STRESS_SEC=120 LOAD_CONCURRENCY=256 WAIT_PROM_CPU=1 SLEEP_SEC=45 bash scripts/nginx_test_cpu_alert_lab.sh
+	NS=multi-agent STRESS_OVERLAP_ALERT=1 WARMUP_SEC=15 OVERLAP_STRESS_SEC=120 LOAD_CONCURRENCY=256 WAIT_PROM_CPU=1 SLEEP_SEC=45 bash scripts/nginx_test_cpu_alert_lab.sh
 
 # nginx-test: patch envFrom → ConfigMap rồi xóa CM (CreateContainerConfigError) + gateway trace (fault thật).
 e2e-nginx-missing-configmap:
-	bash scripts/e2e_nginx_missing_configmap.sh
+	NS=multi-agent bash scripts/e2e_nginx_missing_configmap.sh
 
 docker-worker:
 	docker build -t multi-agent-system:latest -f Dockerfile .
@@ -92,13 +92,18 @@ rag-hot-sync:
 	PYTHONPATH=src .venv/bin/python scripts/rag_hot_sync_worker.py
 
 e2e-proactive:
-	bash scripts/proactive_e2e.sh
+	NS=multi-agent bash scripts/proactive_e2e.sh
 
 e2e-incident-matrix:
-	bash scripts/e2e_incident_matrix.sh
+	NS=multi-agent bash scripts/e2e_incident_matrix.sh
+
+# Death loop: build -> deploy -> optional pytest_unit -> product_e2e (gateway Loki strict, proactive e2e, incident matrix). Pytest is secondary; override NS via env.
+NS ?= multi-agent
+omni-death-loop:
+	NS=$(NS) bash scripts/omni_dev_death_loop.sh
 
 chaos-rag-lab:
-	bash scripts/chaos_rag_lab_run.sh
+	NS=multi-agent bash scripts/chaos_rag_lab_run.sh
 
 env-mode-gate:
 	.venv/bin/python scripts/validate_env_mode_gate.py

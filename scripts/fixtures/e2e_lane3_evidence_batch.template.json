@@ -1,0 +1,25 @@
+[
+  {
+    "probe": "log_surge_access_errors",
+    "alert_rule": "HighErrorRateSurge",
+    "alert_hint": "Access log surge detected: 429×42, 499×8, 200×50 in last 300s (rate_limit dominant — sigma bypass eligible)",
+    "canonical_query_snippet": "<<<LANE3_CANONICAL_JSON>>>",
+    "extracted_fact": {
+      "total_lines": 100,
+      "count_429": 42,
+      "count_499": 8,
+      "count_401": 3,
+      "count_403": 2,
+      "count_5xx": 5,
+      "dominant_class": "rate_limit",
+      "sigma_bypass_eligible": true,
+      "sigma_bypass_reason": "429 rate_limit surge (42% of requests)",
+      "note_499": "client_abort (499): informational only — NOT sigma bypass"
+    },
+    "result": "PASS",
+    "symptom_group": "<<<LANE3_SYMPTOM_GROUP>>>",
+    "layer": "prometheus",
+    "trace_id": "<<<TRACE>>>",
+    "kind": "diagnostic_evidence"
+  }
+]

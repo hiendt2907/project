@@ -6,6 +6,29 @@
 # contains that label key (see ``diagnostic_mapping._row_matches``).
 version: 1
 rows:
+  # Workload-level CPU saturation — queries per-pod PromQL, not cluster average.
+  - symptom_group: resource_cpu_saturation
+    layer: prometheus
+    priority: 10
+    labels_alertname: "HighCPUUsage"
+    error_hint_pattern: "(?i)cpu|saturation|throttle|high.cpu"
+    canonical_query_pattern: ".*"
+    probe_ids:
+      - prom_pod_cpu_cores
+      - k8s_clinical_pod_metrics
+    stop_on_first_failure: false
+
+  # HTTP error-rate surge via Loki access-log analysis (sigma-bypass path).
+  - symptom_group: http_surge
+    layer: application
+    priority: 15
+    labels_alertname: "HighErrorRateSurge"
+    error_hint_pattern: "(?i)surge|429|rate.?limit|5xx|error.*rate|http.*error"
+    canonical_query_pattern: ".*"
+    probe_ids:
+      - loki_access_log_surge
+    stop_on_first_failure: false
+
   # Nếu alert có labels.reason + pod + namespace → dispatcher dùng nhánh pod_container_state (SDK), không qua dòng này.
   - symptom_group: crash_loop_backoff
     layer: infrastructure
@@ -94,14 +117,13 @@ rows:
       - prom_pod_cpu_cores
     stop_on_first_failure: false
 
-  # Catch-all (last): any alert text matches — includes L1 baseline
+  # Catch-all (last): any alert text matches — cluster-level CPU baseline only.
+  # redis_ping and kafka_alerts_topic removed: they are infra health checks, not diagnostic evidence.
   - symptom_group: generic_unclassified
     layer: unknown
     priority: 999
     error_hint_pattern: ".*"
     canonical_query_pattern: ".*"
     probe_ids:
-      - redis_ping
-      - kafka_alerts_topic
       - node_cpu_saturation
     stop_on_first_failure: false

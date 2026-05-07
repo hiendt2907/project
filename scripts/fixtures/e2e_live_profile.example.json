@@ -1,0 +1,146 @@
+{
+  "comment": "Copy to a private path and set E2E_LIVE_PROFILE_JSON. No cluster-specific strings belong in Python.",
+  "gateway_receiver_name": "REPLACE_WITH_GATEWAY_RECEIVER_FIELD",
+  "kafka_svc_name": "REPLACE_WITH_KAFKA_SERVICE_NAME",
+  "redis_ma_svc_name": "REPLACE_WITH_REDIS_SERVICE_NAME",
+  "gateway_svc_name": "REPLACE_WITH_GATEWAY_SERVICE_NAME",
+  "analyst_deploy_name": "REPLACE_WITH_ANALYST_DEPLOYMENT_NAME",
+  "siem_bridge_deploy_name": "REPLACE_WITH_SIEM_BRIDGE_DEPLOYMENT_NAME",
+  "kafka_topic_diagnostic_evidence": "REPLACE_WITH_TOPIC_DIAGNOSTIC_EVIDENCE",
+  "kafka_topic_alerts": "REPLACE_WITH_TOPIC_ALERTS",
+  "kafka_topic_actions": "REPLACE_WITH_TOPIC_ACTIONS",
+  "siem_redis_stream": "REPLACE_WITH_SIEM_REDIS_STREAM_NAME",
+  "fg_redis_namespace_order": [
+    "REPLACE_WITH_FG_REDIS_NAMESPACE_FIRST",
+    "REPLACE_WITH_FG_REDIS_NAMESPACE_SECOND"
+  ],
+  "fg_redis_pod_name": "REPLACE_WITH_FG_REDIS_POD_NAME",
+  "fg_redis_auth_secret_name": "REPLACE_WITH_FG_REDIS_AUTH_SECRET_NAME",
+  "gateway_webhook_path": "REPLACE_WITH_GATEWAY_WEBHOOK_PATH",
+  "baseline_snapshot_ttl_sec": 3600,
+  "lane_pre_inject_sleep_sec": 8,
+  "trace_fallback_lane1": "REPLACE_WITH_LANE1_ALERTNAME_OR_FALLBACK_TRACE_TOKEN",
+  "trace_fallback_lane2": "REPLACE_WITH_LANE2_ALERTNAME_OR_FALLBACK_TRACE_TOKEN",
+  "siem_trace_prefix": "REPLACE_WITH_TRACE_PREFIX e.g. fg-",
+  "siem_incident_id_prefix": "REPLACE_WITH_INCIDENT_ID_PREFIX e.g. e2e-siem-",
+  "siem_random_hex_len": 8,
+  "siem_trace_body_hex_len": 8,
+  "siem_category": "REPLACE_WITH_SIEM_CATEGORY_FOR_FORECAST",
+  "siem_severity": "REPLACE_WITH_SIEM_SEVERITY",
+  "siem_tenant_id": "REPLACE_WITH_TENANT_ID",
+  "siem_source": "REPLACE_WITH_SIEM_SOURCE_LABEL",
+  "siem_affected_ip": "REPLACE_WITH_AFFECTED_IP_OR_NO_IP",
+  "siem_description": "REPLACE_WITH_INCIDENT_DESCRIPTION",
+  "siem_suggested_action": "REPLACE_WITH_SUGGESTED_ACTION_TEXT",
+  "siem_hitl_required": "true",
+  "siem_alert_rule": "REPLACE_WITH_SIEM_ALERT_RULE_NAME",
+  "siem_alert_hint": "REPLACE_WITH_SIEM_ALERT_HINT_TEXT",
+  "siem_k8s_namespace": "REPLACE_WITH_NAMESPACE_ON_INCIDENT",
+  "lane1_deployment": "REPLACE_WITH_TARGET_DEPLOYMENT_FOR_LANE1",
+  "lane1_summary": "REPLACE_WITH_LANE1_ANNOTATION_SUMMARY",
+  "lane1_description": "REPLACE_WITH_LANE1_ANNOTATION_DESCRIPTION",
+  "lane2_deployment": "REPLACE_WITH_LANE2_DEPLOYMENT",
+  "lane2_pod": "REPLACE_WITH_LANE2_POD_NAME_PATTERN",
+  "lane2_summary": "REPLACE_WITH_LANE2_SUMMARY",
+  "lane2_description": "REPLACE_WITH_LANE2_DESCRIPTION",
+  "lane3_symptom_group": "REPLACE_WITH_SYMPTOM_GROUP_LABEL",
+    "alertname": "REPLACE_WITH_LANE3_ALERTNAME",
+    "namespace": "REPLACE_WITH_LANE3_NAMESPACE",
+    "service": "REPLACE_WITH_LANE3_SERVICE_NAME",
+    "severity": "warning"
+  },
+  "runbook_who_hints": [
+    "REPLACE_WITH_SUBSTRING_FROM_YOUR_ENV_1",
+    "REPLACE_WITH_SUBSTRING_FROM_YOUR_ENV_2"
+  ],
+  "lane2_multi_signal_keywords": [
+    "REPLACE_KEYWORD_1",
+    "REPLACE_KEYWORD_2",
+    "REPLACE_KEYWORD_3",
+    "REPLACE_KEYWORD_4"
+  ],
+  "log_markers_lane1": [
+    "3-SIGMA RESOURCE BASELINE",
+    "advisory_analyst_ok",
+    "advisory_analyst_null",
+    "event=advisory_analyst",
+    "SUGGEST_REMEDIATION",
+    "diag_batch_flush"
+  ],
+  "log_markers_lane2": [
+    "advisory_analyst_ok",
+    "advisory_analyst_null",
+    "SUGGEST_REMEDIATION",
+    "source=advisory_render",
+    "audit_block_written",
+    "diag_batch_flush"
+  ],
+  "log_markers_lane3": [
+    "advisory_analyst_ok",
+    "advisory_analyst_null",
+    "event=advisory",
+    "SUGGEST_REMEDIATION",
+    "business_errors",
+    "rate_limit"
+  ],
+  "log_markers_lane4": [
+    "siem_suggest_only_emitted",
+    "SIEM_SUGGEST_ONLY"
+  ],
+  "lane1_log_anchors": {
+    "3-sigma baseline marker (primary)": "$LANE1_PRIMARY_MARKER",
+    "z_cpu annotated": "z_cpu=",
+    "ANOMALY label present": "ANOMALY",
+    "advisory analyst reached": "advisory_analyst",
+    "diag batch flushed": "diag_batch_flush"
+  },
+  "lane2_log_anchors": {
+    "advisory analyst reached": "advisory_analyst",
+    "SUGGEST_REMEDIATION emitted": "SUGGEST_REMEDIATION",
+    "audit CRAT block written": "audit_block_written",
+    "advisory_analyst_ok (LLM used)": "advisory_analyst_ok",
+    "diag batch flushed": "diag_batch_flush"
+  },
+  "lane3_log_anchors": {
+    "advisory analyst reached": "advisory_analyst",
+    "SUGGEST_REMEDIATION emitted": "SUGGEST_REMEDIATION"
+  },
+  "lane3_http_classify_expectations": [
+    {"status": 429, "expected_class": "rate_limit", "bypass": true, "note": "sigma bypass OK"},
+    {"status": 499, "expected_class": "client_abort", "bypass": false, "note": "informational only — NOT bypass"},
+    {"status": 401, "expected_class": "auth_failure", "bypass": true, "note": "sigma bypass OK"},
+    {"status": 403, "expected_class": "auth_failure", "bypass": true, "note": "sigma bypass OK"},
+    {"status": 500, "expected_class": "5xx", "bypass": true, "note": "sigma bypass OK"}
+  ],
+  "lane4_diag_substrings_required": [
+    "WHAT:",
+    "WHO:",
+    "WHY:",
+    "HOW-TO",
+    "Forecast",
+    "+1h",
+    "+24h",
+    "kubectl",
+    "NOT auto-execute"
+  ],
+  "lane4_forecast_blob_substrings_required": ["+1h", "+24h"],
+  "lane4_require_incident_id_in_diag": true,
+  "stream_tags_by_lane": {
+    "1": "SYS_RESOURCE",
+    "2": "SYS_HARD_FAIL",
+    "3": "APP_HTTP",
+    "4": "SIEM_SECURITY"
+  },
+  "crat_phase1_ingress_timeout_sec": 30,
+  "crat_phase3_timeout_sec": 180,
+  "crat_phase4_wait_sec": 5,
+  "kafka_consumer_auto_offset_reset": "latest",
+  "paths": {
+    "lane1_gateway_alert_template": "scripts/fixtures/e2e_lane1_gateway_alert.template.json",
+    "lane2_gateway_alert_template": "scripts/fixtures/e2e_lane2_gateway_alert.template.json",
+    "lane3_evidence_batch_template": "scripts/fixtures/e2e_lane3_evidence_batch.template.json",
+    "baseline_snapshot": "scripts/fixtures/e2e_baseline_snapshot.json",
+    "siem_redis_xadd_row_template": "scripts/fixtures/e2e_siem_redis_xadd_row.template.json",
+    "lane4_analyst_siem_evidence_batch_template": "scripts/fixtures/e2e_lane4_analyst_siem_evidence_batch.template.json"
+  }
+}

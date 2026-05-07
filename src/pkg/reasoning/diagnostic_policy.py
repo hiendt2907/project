@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Iterable, Sequence
 
 from pkg.reasoning.evidence_signals import critical_evidence_present
 from pkg.reasoning.reason_codes import (
+    INV_DISCOVERY_MANDATORY,
     INV_NAMESPACE_ISOLATION,
     INV_NO_RESTART_ON_BROKEN_SPEC,
     INV_READ_BEFORE_MUTATE,
@@ -28,6 +29,43 @@ DISCOVERY_TOOL_ALIASES: dict[str, tuple[str, ...]] = {
     "loki_pattern_analysis": ("k8s_tail_logs",),  # phased: log correlation via tail
     "prom_vector_context": ("query_prometheus_metrics", "k8s_check_endpoints"),
 }
+
+# Read-only registry tools used for metrics/logs/redis/service observability (not in K8s SDK readonly set).
+OBSERVABILITY_READONLY_DISCOVERY_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "query_prometheus_metrics",
+        "query_victoria_metrics",
+        "query_vm_timeseries",
+        "query_historical_metrics",
+        "promql_instant",
+        "promql_range",
+        "vm_promql_instant",
+        "vm_promql_range",
+        "metrics_promql_hints",
+        "timeseries_analyze",
+        "redis_expert_check",
+        "redis_health",
+        "redis_info",
+        "audit_observability_stack",
+        "forecast_metric_prophet",
+        "forecast_memory_risk_vm",
+        "predict_resource_exhaustion",
+    }
+)
+
+_DISCOVERY_PROBE_MARKERS: tuple[str, ...] = (
+    "loki",
+    "logql",
+    "promql",
+    "victoriametrics",
+    "query_prometheus",
+    "redis_expert",
+    "redis_health",
+    "audit_observability",
+    "topology",
+    "service_mesh",
+    "endpoints",
+)
 
 _RE_BROKEN_SPEC = re.compile(
     r"(createcontainerconfigerror|createcontainererror|failedmount|"
@@ -69,13 +107,35 @@ def evidence_suggests_broken_spec(batch: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _discovery_alias_flat_names() -> frozenset[str]:
+    out: set[str] = set()
+    for _spec, names in DISCOVERY_TOOL_ALIASES.items():
+        out.update(str(n).strip() for n in names if str(n).strip())
+    return frozenset(out)
+
+
+def discovery_satisfying_tool_names() -> frozenset[str]:
+    """Union of DISCOVERY_TOOL_ALIASES registry ids, K8s readonly allowlist, and observability readonly tools."""
+    try:
+        from workers.autonomous_execute import READONLY_TOOL_ALLOWLIST
+    except Exception:
+        READONLY_TOOL_ALLOWLIST = frozenset()  # type: ignore[misc,assignment]
+    return frozenset(READONLY_TOOL_ALLOWLIST) | OBSERVABILITY_READONLY_DISCOVERY_TOOL_NAMES | _discovery_alias_flat_names()
+
+
 def batch_has_prior_readonly_evidence(batch: list[dict[str, Any]]) -> bool:
     """
     True when the batch already contains read-style probe output (satisfies INV_READ_BEFORE_MUTATE
     without an extra ReAct tool round).
     """
+    sat_tools = discovery_satisfying_tool_names()
+    blob_lower = _batch_text_blob(batch).lower()
+    if any(m in blob_lower for m in _DISCOVERY_PROBE_MARKERS):
+        return True
     for b in batch:
         pr = str(b.get("probe") or "").lower()
+        if any(t in pr for t in sat_tools):
+            return True
         if any(
             x in pr
             for x in (
@@ -96,6 +156,36 @@ def batch_has_prior_readonly_evidence(batch: list[dict[str, Any]]) -> bool:
         if isinstance(ef, str) and len(ef) > 40 and ("Warning" in ef or "reason" in ef.lower()):
             return True
     return False
+
+
+def discovery_mandatory_satisfied(
+    batch: list[dict[str, Any]],
+    *,
+    discovery_steps: Iterable[str] | None,
+    readonly_executed: Sequence[str] | None = None,
+) -> tuple[bool, dict[str, Any]]:
+    """
+    When OMNI_DISCOVERY_MANDATORY is enabled, EXECUTE_MUTATE must not proceed unless at least one
+    discovery-equivalent signal exists: planner discovery_steps, successful readonly tools from trace
+    memory, or batch probe/output consistent with DISCOVERY_TOOL_ALIASES / observability readonly paths.
+    """
+    meta: dict[str, Any] = {}
+    tools = discovery_satisfying_tool_names()
+    names: list[str] = []
+    for src in (discovery_steps or (), readonly_executed or ()):
+        for x in src:
+            s = str(x).strip()
+            if s:
+                names.append(s)
+    for nm in names:
+        if nm in tools:
+            meta["discovery_via_tool"] = nm
+            return True, meta
+    if batch_has_prior_readonly_evidence(batch):
+        meta["discovery_via_batch"] = True
+        return True, meta
+    meta["discovery_missing"] = True
+    return False, meta
 
 
 def _inv_no_restart_broken_spec_blocks(
@@ -139,6 +229,7 @@ def evaluate_diagnostic_invariants(
     batch: list[dict[str, Any]],
     discovery_tool_names: list[str] | None,
     proof_lane: str | None = None,
+    readonly_discovery_executed: list[str] | None = None,
 ) -> tuple[bool, str | None, dict[str, Any]]:
     """
     Returns (ok, invariant_reason_code_or_none, meta).
@@ -149,6 +240,7 @@ def evaluate_diagnostic_invariants(
     ag = dict(args or {})
     meta: dict[str, Any] = {}
     disc = [str(x).strip() for x in (discovery_tool_names or []) if str(x).strip()]
+    ro_exec = [str(x).strip() for x in (readonly_discovery_executed or []) if str(x).strip()]
 
     # INV_NAMESPACE_ISOLATION (mutating tools with namespace)
     ns = str(ag.get("namespace") or "").strip()
@@ -165,6 +257,21 @@ def evaluate_diagnostic_invariants(
                 ns,
             )
             return False, INV_NAMESPACE_ISOLATION, meta
+
+    if bool(getattr(ws, "omni_discovery_mandatory", False)):
+        try:
+            from workers.autonomous_execute import MUTATE_TOOL_ALLOWLIST
+        except Exception:
+            MUTATE_TOOL_ALLOWLIST = frozenset()  # type: ignore[misc,assignment]
+        if tn in MUTATE_TOOL_ALLOWLIST:
+            ok_dm, dm_meta = discovery_mandatory_satisfied(
+                batch,
+                discovery_steps=disc,
+                readonly_executed=ro_exec,
+            )
+            meta["discovery_mandatory"] = dm_meta
+            if not ok_dm:
+                return False, INV_DISCOVERY_MANDATORY, meta
 
     if tn != "k8s_rollout_restart":
         # Other mutates: namespace already checked; optional read-before for critical faults

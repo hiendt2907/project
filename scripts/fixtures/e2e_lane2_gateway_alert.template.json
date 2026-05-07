@@ -1,0 +1,24 @@
+{
+  "receiver": "<<<GATEWAY_RECEIVER>>>",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "PodMemoryWorkingSetVsLimitHigh",
+        "severity": "critical",
+        "namespace": "<<<OMNI_NAMESPACE>>>",
+        "pod": "<<<LANE2_POD>>>",
+        "container": "analyst",
+        "domain": "pod",
+        "signal": "memory"
+      },
+      "annotations": {
+        "summary": "<<<LANE2_SUMMARY>>>",
+        "description": "<<<LANE2_DESCRIPTION>>>"
+      },
+      "startsAt": "<<<STAMP>>>",
+      "endsAt": "0001-01-01T00:00:00Z"
+    }
+  ]
+}
