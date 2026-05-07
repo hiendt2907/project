@@ -42,6 +42,7 @@ from workers.request_trace import (
 )
 from workers.metrics_exporter import (
     observability_metrics_loop,
+    set_kafka_consumer_lag,
     set_last_scout_timestamp,
     start_prometheus_server,
 )
@@ -366,6 +367,22 @@ async def circuit_breaker_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -
         await asyncio.sleep(2.0)
 
 
+def _report_kafka_lag(consumer: Any, topic: str, consumer_group: str) -> None:
+    """Best-effort: compute and export Kafka consumer lag after each commit."""
+    try:
+        total_lag = 0
+        for tp in consumer.assignment():
+            if tp.topic != topic:
+                continue
+            committed = consumer.last_stable_offset(tp)
+            end = consumer.highwater(tp)
+            if committed is not None and end is not None:
+                total_lag += max(0, end - committed)
+        set_kafka_consumer_lag(topic, consumer_group, total_lag)
+    except Exception:
+        pass  # lag reporting is best-effort — never disrupt the consumer loop
+
+
 async def kafka_alerts_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
     from aiokafka import AIOKafkaConsumer
 
@@ -388,6 +405,7 @@ async def kafka_alerts_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> N
                 mid = kafka_msg_id(msg.topic, msg.partition, msg.offset)
                 await _process_stream_entry(ctx, mid, fields)
                 await consumer.commit()
+                _report_kafka_lag(consumer, ws.kafka_topic_alerts, ws.consumer_group)
             except Exception as e:
                 await ctx.ledger.record_exception(e, phase="4", component="kafka_alerts_loop", swallow_errors=True)
                 logger.exception("kafka_alerts_loop message error: %s", e)
@@ -419,6 +437,7 @@ async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) ->
                 fields = decode_kafka_value_to_fields(msg.value, msg.headers)
                 await reason_from_diagnostic_evidence(ctx, fields)
                 await consumer.commit()
+                _report_kafka_lag(consumer, ws.kafka_topic_diagnostic_evidence, ws.consumer_group_analyst)
             except Exception as e:
                 await ctx.ledger.record_exception(e, phase="4", component="kafka_evidence_loop", swallow_errors=True)
                 logger.exception("kafka_evidence_loop message error: %s", e)

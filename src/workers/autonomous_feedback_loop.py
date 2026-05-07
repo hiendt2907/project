@@ -75,7 +75,8 @@ async def _load_state(redis: Any, trace: str) -> dict[str, Any]:
             o.setdefault("state_verify_attempt", 0)
             return o
         return {"last_attempt_count": 0, "feedback_failures": 0, "sdk_verify_round": 0, "state_verify_attempt": 0}
-    except Exception:
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+        logger.warning("event=feedback_state_parse_error err=%r", e)
         return {"last_attempt_count": 0, "feedback_failures": 0, "sdk_verify_round": 0, "state_verify_attempt": 0}
 
 
@@ -1419,7 +1420,8 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
         if raw_mf:
             try:
                 ctx_obj_mf = json.loads(raw_mf.decode() if isinstance(raw_mf, bytes) else raw_mf)
-            except Exception:
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+                logger.warning("event=feedback_ctx_mf_parse_error trace=%s err=%r", trace, e)
                 ctx_obj_mf = {}
         probe_ids_mf = [str(x) for x in (ctx_obj_mf.get("verify_probe_ids") or []) if str(x).strip()]
         ev_min_mf = ctx_obj_mf.get("anomaly_event_min")

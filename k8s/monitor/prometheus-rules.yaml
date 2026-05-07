@@ -1,0 +1,107 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: omni-alerts
+  namespace: monitor
+  labels:
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: omni.kafka
+      interval: 30s
+      rules:
+        - alert: KafkaConsumerLagHigh
+          expr: omni_kafka_consumer_lag{topic="omni-diagnostic-evidence"} > 100
+          for: 5m
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "Kafka consumer lag high on {{ $labels.topic }}"
+            description: >
+              Consumer group {{ $labels.consumer_group }} has lag {{ $value }} on topic {{ $labels.topic }}.
+              Analyst may be slow or stalled. Check omni-analyst pod logs.
+
+        - alert: KafkaConsumerLagCritical
+          expr: omni_kafka_consumer_lag{topic="omni-diagnostic-evidence"} > 1000
+          for: 2m
+          labels:
+            severity: critical
+            team: omni-sre
+          annotations:
+            summary: "Kafka consumer lag critical on {{ $labels.topic }}"
+            description: >
+              Consumer group {{ $labels.consumer_group }} has lag {{ $value }} — analyst is severely behind.
+              Immediate investigation required.
+
+        - alert: KafkaActionsLagHigh
+          expr: omni_kafka_consumer_lag{topic="omni-actions"} > 50
+          for: 5m
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "Kafka executor lag high on omni-actions"
+            description: "Executor consumer lag is {{ $value }}. Executor pod may be unhealthy."
+
+    - name: omni.crat
+      interval: 60s
+      rules:
+        - alert: CRATIntegrityFailed
+          expr: omni_crat_integrity_ok{reason!="empty_chain"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            team: omni-sre
+          annotations:
+            summary: "CRAT audit chain integrity check FAILED"
+            description: >
+              CRAT chain is broken (reason={{ $labels.reason }}).
+              Possible tampering or hash mismatch. Escalate immediately per SOX §404 protocol.
+
+        - alert: CRATNoBlocksVerified
+          expr: omni_crat_blocks_checked == 0
+          for: 2h
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "CRAT chain has no blocks for 2+ hours"
+            description: "No CRAT audit blocks found. System may not be processing advisories."
+
+    - name: omni.llm
+      interval: 30s
+      rules:
+        - alert: LLMDown
+          expr: omni_llm_up == 0
+          for: 3m
+          labels:
+            severity: critical
+            team: omni-sre
+          annotations:
+            summary: "Ollama LLM is unreachable"
+            description: "omni_llm_up=0 for 3 minutes. Analyst cannot process diagnostics."
+
+        - alert: TelegramSendTimeoutsHigh
+          expr: rate(omni_telegram_send_timeout_total[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "Telegram advisory delivery timeouts elevated"
+            description: "Telegram send timeout rate is {{ $value }}/s. Advisories may not be reaching operators."
+
+    - name: omni.circuit_breaker
+      interval: 15s
+      rules:
+        - alert: CircuitBreakerOpen
+          expr: omni_circuit_breaker_active == 1
+          for: 0m
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "Omni circuit breaker is OPEN"
+            description: "Gateway circuit breaker is active — alerts are being dropped. Investigate immediately."

@@ -6,6 +6,7 @@ proof-of-fault, and diagnostic policy gates below still apply and are not overri
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -1718,8 +1719,12 @@ async def _emit_agentic_mutate_if_any(
         if ns and dep:
             try:
                 args["evidence_snapshot"] = await deployment_evidence_snapshot(ns, dep)
-            except Exception:
-                args["evidence_snapshot"] = {}
+            except (asyncio.TimeoutError, OSError, Exception) as e:
+                logger.error(
+                    "event=mutation_aborted_missing_snapshot tool=%s ns=%s dep=%s err=%r trace=%s",
+                    tn, ns, dep, e, trace,
+                )
+                return False
     args["proof_of_fault"] = proof_meta
     exec_rc = plan.get("reasoning_chain") if isinstance(plan, dict) else None
     if _shadow_os_mode(ctx):

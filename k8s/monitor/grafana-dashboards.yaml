@@ -1396,6 +1396,128 @@ data:
               "legendFormat": "omni_redis_stream_backlog"
             }
           ]
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Kafka Consumer Lag",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "omni_kafka_consumer_lag",
+              "legendFormat": "{{topic}} / {{consumer_group}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "thresholds": { "steps": [
+              {"color": "green", "value": 0},
+              {"color": "yellow", "value": 100},
+              {"color": "red", "value": 1000}
+            ]}}
+          }
+        },
+        {
+          "id": 14,
+          "type": "timeseries",
+          "title": "LLM Chat Latency (p95)",
+          "gridPos": { "h": 6, "w": 12, "x": 12, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, rate(omni_worker_latency_seconds_bucket[5m]))",
+              "legendFormat": "p95 latency"
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.50, rate(omni_worker_latency_seconds_bucket[5m]))",
+              "legendFormat": "p50 latency"
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "type": "timeseries",
+          "title": "CRAT Write Latency (p99)",
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.99, rate(omni_crat_write_seconds_bucket[5m]))",
+              "legendFormat": "p99 CRAT write"
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "type": "stat",
+          "title": "Circuit Breaker State",
+          "gridPos": { "h": 6, "w": 4, "x": 8, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "omni_circuit_breaker_active"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {"type": "value", "options": {"0": {"text": "CLOSED", "color": "green"}, "1": {"text": "OPEN", "color": "red"}}}
+              ]
+            }
+          }
+        },
+        {
+          "id": 17,
+          "type": "stat",
+          "title": "CRAT Integrity",
+          "gridPos": { "h": 6, "w": 4, "x": 12, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "omni_crat_integrity_ok"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {"type": "value", "options": {"0": {"text": "BROKEN", "color": "red"}, "1": {"text": "OK", "color": "green"}}}
+              ]
+            }
+          }
+        },
+        {
+          "id": 18,
+          "type": "timeseries",
+          "title": "Telegram Send Timeouts",
+          "gridPos": { "h": 6, "w": 8, "x": 16, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "rate(omni_telegram_send_timeout_total[5m])",
+              "legendFormat": "{{context}} timeout/s"
+            }
+          ]
+        },
+        {
+          "id": 19,
+          "type": "timeseries",
+          "title": "Forecast Low-Confidence Rate",
+          "gridPos": { "h": 6, "w": 12, "x": 0, "y": 28 },
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "rate(omni_gateway_requests_total{status=~\".*forecast.*\"}[5m])",
+              "legendFormat": "forecast requests"
+            }
+          ]
         }
       ]
     }

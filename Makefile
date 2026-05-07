@@ -1,5 +1,7 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres
+.PHONY: traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate
+
+NS ?= multi-agent
 
 # ── Traefik ingress management ────────────────────────────────────────────────
 traefik-install:
@@ -86,6 +88,20 @@ deploy-gateway:
 	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-gateway.yaml
 	./scripts/with_working_kube.sh rollout restart deployment/omni-gateway -n multi-agent
 	./scripts/with_working_kube.sh rollout status deployment/omni-gateway -n multi-agent --timeout=180s
+
+rollback: ## Rollback all Omni worker+gateway to previous revision
+	./scripts/with_working_kube.sh rollout undo deployment/omni-prober -n $(NS)
+	./scripts/with_working_kube.sh rollout undo deployment/omni-analyst -n $(NS)
+	./scripts/with_working_kube.sh rollout undo deployment/omni-core -n $(NS)
+	./scripts/with_working_kube.sh rollout undo deployment/omni-executor -n $(NS)
+	./scripts/with_working_kube.sh rollout undo deployment/omni-gateway -n $(NS)
+	./scripts/with_working_kube.sh rollout status deployment/omni-analyst -n $(NS) --timeout=120s
+
+rollback-verify: ## Smoke test after rollback — CRAT pipeline only
+	python3 scripts/verify_e2e_crat_pipeline.py --smoke-only
+
+pre-deploy-validate: ## Validate all prerequisites before deploy
+	NS=$(NS) bash scripts/pre-deploy-validate.sh
 
 # Gom Ollama + Gateway (build gateway: `make docker-gateway`; worker không bắt buộc cho gateway).
 deploy-services: deploy-ollama deploy-gateway

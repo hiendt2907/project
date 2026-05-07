@@ -1125,6 +1125,27 @@ class WorkerSettings(BaseSettings):
         default="error,exception,traceback,failed,forbidden,timeout,empty result,result rỗng",
         description="CSV keywords to classify quick post-check failure in proactive fallback.",
     )
+    llm_chat_timeout_sec: float = Field(
+        default=120.0,
+        ge=5.0,
+        le=300.0,
+        validation_alias=AliasChoices("OMNI_LLM_TIMEOUT_SEC"),
+        description="asyncio.wait_for timeout for each llm.chat() call.",
+    )
+    telegram_send_timeout_sec: float = Field(
+        default=10.0,
+        ge=3.0,
+        le=60.0,
+        validation_alias=AliasChoices("OMNI_TELEGRAM_SEND_TIMEOUT_SEC"),
+        description="asyncio.wait_for timeout for each Telegram send_message call.",
+    )
+    forecast_min_r_squared: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("OMNI_FORECAST_MIN_R_SQUARED"),
+        description="Minimum r_squared for forecast to be considered reliable.",
+    )
     proactive_event_timeout_sec: float = Field(
         default=600.0,
         ge=30.0,

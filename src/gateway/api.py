@@ -437,6 +437,7 @@ class ForecastHorizon(BaseModel):
     slope: float
     r_squared: float
     risk: bool
+    confidence: str = "ok"  # "ok" | "low" — low when r_squared below OMNI_FORECAST_MIN_R_SQUARED
 
 
 class ForecastMatrixResponse(BaseModel):
@@ -471,8 +472,13 @@ async def forecast_matrix(
         predicted = float(pred_y[-1])
         slope = meta["slope"]
         r_squared = meta["r_squared"]
-        # Risk heuristic: predicted exceeds current by > OMNI_FORECAST_RISK_THRESHOLD factor (usage growth)
-        risk = (current_value > 0 and predicted / current_value > _FORECAST_RISK_THRESHOLD) if current_value != 0 else False
+        low_confidence = bool(meta.get("low_confidence", False))
+        # Risk heuristic: only escalate when model fit is reliable (r_squared >= threshold)
+        risk = (
+            not low_confidence
+            and current_value > 0
+            and predicted / current_value > _FORECAST_RISK_THRESHOLD
+        ) if current_value != 0 else False
 
         key = f"{int(h_hours)}h" if h_hours == int(h_hours) else f"{h_hours}h"
         horizons[key] = ForecastHorizon(
@@ -480,6 +486,7 @@ async def forecast_matrix(
             slope=slope,
             r_squared=r_squared,
             risk=risk,
+            confidence="low" if low_confidence else "ok",
         )
 
     return ForecastMatrixResponse(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -15,8 +16,20 @@ from pkg.reasoning.analyst_advisory_schema import (
     VerificationStep,
 )
 from workers.handler_context import WorkerHandlerContext
+from workers.metrics_exporter import inc_telegram_timeout
 
 logger = logging.getLogger(__name__)
+
+_TELEGRAM_SEND_TIMEOUT_SEC = 10.0  # overridden by ctx.settings.telegram_send_timeout_sec
+
+
+async def _tg_send(ctx: WorkerHandlerContext, chat_id: int, text: str, **kwargs: Any) -> dict:
+    """Send a Telegram message with timeout guard. Raises asyncio.TimeoutError on hang."""
+    timeout = float(getattr(ctx.settings, "telegram_send_timeout_sec", _TELEGRAM_SEND_TIMEOUT_SEC))
+    return await asyncio.wait_for(
+        ctx.telegram.send_message(chat_id, text, **kwargs),
+        timeout=timeout,
+    )
 
 _MD_ESCAPE_RE = re.compile(r'([_*`\[])')
 
@@ -227,7 +240,7 @@ async def render_advisory_to_telegram(
 
     if len(message) <= 4000:
         try:
-            res = await ctx.telegram.send_message(chat_id, message, parse_mode="Markdown")
+            res = await _tg_send(ctx, chat_id, message, parse_mode="Markdown")
             mid = (res.get("result") or {}).get("message_id")
             logger.info(
                 "event=telegram_outbound_ok chat_id=%s message_id=%s trace=%s source=advisory_render",
@@ -236,6 +249,12 @@ async def render_advisory_to_telegram(
                 advisory.trace_id,
             )
             logger.info("event=advisory_telegram_sent chat_id=%s trace=%s", chat_id, advisory.trace_id)
+        except asyncio.TimeoutError:
+            inc_telegram_timeout("advisory_render")
+            logger.warning(
+                "event=advisory_telegram_timeout chat_id=%s trace=%s",
+                chat_id, advisory.trace_id,
+            )
         except Exception as e:
             logger.error("event=advisory_telegram_send_error chat_id=%s trace=%s err=%r", chat_id, advisory.trace_id, e)
     else:
@@ -243,7 +262,8 @@ async def render_advisory_to_telegram(
         for idx, chunk in enumerate(chunks):
             try:
                 header = f"[{idx + 1}/{len(chunks)}] " if len(chunks) > 1 else ""
-                res = await ctx.telegram.send_message(
+                res = await _tg_send(
+                    ctx,
                     chat_id,
                     f"{header}{chunk}",
                     parse_mode="Markdown",
@@ -256,6 +276,12 @@ async def render_advisory_to_telegram(
                     advisory.trace_id,
                     idx + 1,
                     len(chunks),
+                )
+            except asyncio.TimeoutError:
+                inc_telegram_timeout("advisory_chunk")
+                logger.warning(
+                    "event=advisory_telegram_chunk_timeout chat_id=%s chunk=%s trace=%s",
+                    chat_id, idx + 1, advisory.trace_id,
                 )
             except Exception as e:
                 logger.error(
@@ -296,7 +322,10 @@ async def render_advisory_batch_to_telegram(
 
     if len(message) > 3000:
         try:
-            await ctx.telegram.send_message(chat_id, message, parse_mode="Markdown")
+            await _tg_send(ctx, chat_id, message, parse_mode="Markdown")
+        except asyncio.TimeoutError:
+            inc_telegram_timeout("batch_summary")
+            logger.warning("event=advisory_batch_summary_timeout chat_id=%s", chat_id)
         except Exception as e:
             logger.error("event=advisory_batch_summary_send_error chat_id=%s err=%r", chat_id, e)
 
@@ -309,6 +338,9 @@ async def render_advisory_batch_to_telegram(
             await render_advisory_to_telegram(ctx, tg_adv, chat_id)
     else:
         try:
-            await ctx.telegram.send_message(chat_id, message, parse_mode="Markdown")
+            await _tg_send(ctx, chat_id, message, parse_mode="Markdown")
+        except asyncio.TimeoutError:
+            inc_telegram_timeout("batch_send")
+            logger.warning("event=advisory_batch_send_timeout chat_id=%s", chat_id)
         except Exception as e:
             logger.error("event=advisory_batch_send_error chat_id=%s err=%r", chat_id, e)

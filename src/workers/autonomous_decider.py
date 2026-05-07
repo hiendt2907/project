@@ -259,8 +259,8 @@ async def _tick_legacy(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None
         )
         try:
             await ctx.redis.setex(ckey, cooldown_sec, "1")
-        except Exception as e:
-            logger.debug("autonomous_decider silent cooldown set: %s", e)
+        except (ConnectionError, OSError) as e:
+            logger.warning("autonomous_decider silent cooldown set failed fp=%s err=%r", fp, e)
         return
 
     try:
@@ -281,17 +281,21 @@ async def _tick_legacy(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None
 
     prev_proactive = getattr(ctx, "inbound_proactive", False)
     prev_trace = getattr(ctx, "inbound_trace_id", "")
+    llm_timeout = float(getattr(ws, "llm_chat_timeout_sec", 30.0))
     token = await ctx.semaphore.acquire_proactive()
     try:
         ctx.inbound_proactive = True
         ctx.inbound_trace_id = f"autonomous-decider-{fp}"
-        resp = await ctx.llm.chat(
-            model=model,
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            options={"temperature": 0.1, "num_ctx": 4096},
+        resp = await asyncio.wait_for(
+            ctx.llm.chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                options={"temperature": 0.1, "num_ctx": 4096},
+            ),
+            timeout=llm_timeout,
         )
     finally:
         await ctx.semaphore.release(token)
@@ -404,8 +408,8 @@ async def _tick_react(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None:
         )
         try:
             await ctx.redis.setex(ckey, cooldown_sec, "1")
-        except Exception as e:
-            logger.debug("autonomous_decider silent cooldown set: %s", e)
+        except (ConnectionError, OSError) as e:
+            logger.warning("autonomous_decider silent cooldown set failed fp=%s err=%r", fp, e)
         return
 
     try:
@@ -549,7 +553,7 @@ async def _tick_react(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None:
 
         try:
             call = _parse_tool_payload(content)
-        except Exception:
+        except (json.JSONDecodeError, ValueError, KeyError):
             logger.warning("[AUTONOMOUS_REACT] parse failed fp=%s turn=%s", fp, turn)
             messages.append({"role": "assistant", "content": content[:4000]})
             messages.append(

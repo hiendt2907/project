@@ -2,3 +2,10 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: multi-agent
+  labels:
+    kubernetes.io/metadata.name: multi-agent
+    # Pod Security Standards: warn+audit on restricted, enforce baseline
+    # Switch enforce to "restricted" once all pods confirm runAsNonRoot + readOnlyRootFilesystem
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

@@ -11,14 +11,19 @@ from scipy.stats import linregress
 MetricKind = Literal["usage", "available"]
 
 
+MIN_R_SQUARED_DEFAULT = 0.3  # overridden by OMNI_FORECAST_MIN_R_SQUARED in settings
+
+
 def linear_forecast_horizon(
     values: list[float] | np.ndarray,
     *,
     horizon_steps: int,
-) -> tuple[np.ndarray, dict[str, float]]:
+    min_r_squared: float = MIN_R_SQUARED_DEFAULT,
+) -> tuple[np.ndarray, dict[str, Any]]:
     """
     Hồi quy tuyến tính trên chỉ số 0..n-1, dự báo horizon_steps điểm tiếp theo.
-    Trả về (mảng giá trị dự báo, dict slope/intercept/r2).
+    Trả về (mảng giá trị dự báo, dict slope/intercept/r2/low_confidence).
+    low_confidence=True khi r_squared < min_r_squared — callers should not escalate risk.
     """
     y = np.asarray(values, dtype=float)
     if y.size < 2:
@@ -27,11 +32,13 @@ def linear_forecast_horizon(
     res = linregress(x, y)
     pred_x = np.arange(y.size, y.size + horizon_steps, dtype=float)
     pred_y = res.slope * pred_x + res.intercept
-    meta = {
+    r_squared = float(res.rvalue**2)
+    meta: dict[str, Any] = {
         "slope": float(res.slope),
         "intercept": float(res.intercept),
         "r_value": float(res.rvalue),
-        "r_squared": float(res.rvalue**2),
+        "r_squared": r_squared,
+        "low_confidence": r_squared < min_r_squared,
     }
     return pred_y, meta
 
@@ -60,6 +67,17 @@ def oom_risk_from_series(
     pred_y, meta = linear_forecast_horizon(y, horizon_steps=horizon_steps)
     last_pred = float(pred_y[-1])
 
+    if meta.get("low_confidence"):
+        return {
+            "ok": True,
+            "metric_kind": kind,
+            "horizon_hours": float(horizon_hours),
+            "oom_or_pressure_risk": False,
+            "low_confidence": True,
+            "headline": f"Forecast skipped: r_squared={meta['r_squared']:.3f} below threshold.",
+            "regression": meta,
+        }
+
     if kind == "usage":
         threshold = usage_warn_ratio * total_ram_bytes
         risk = last_pred >= threshold
@@ -84,6 +102,7 @@ def oom_risk_from_series(
         "last_observed_gib": float(y[-1] / (1024**3)),
         "predicted_last_gib": float(last_pred / (1024**3)),
         "oom_or_pressure_risk": bool(risk),
+        "low_confidence": False,
         "headline": headline,
         "regression": meta,
     }

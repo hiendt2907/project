@@ -55,6 +55,8 @@ _promql_placeholder_rejected: Any = None
 _evidence_llm_contradiction: Any = None
 _rag_empty_result: Any = None
 _crat_write: Any = None
+_telegram_timeout: Any = None
+_kafka_consumer_lag: Any = None
 _started = False
 
 
@@ -70,7 +72,7 @@ def _ensure_metrics() -> None:
     global _proactive_tombstone_no_k8s, _proactive_lease_conflict, _proactive_skip_frozen
     global _wilson_confidence_score, _redis_stream_backlog
     global _proactive_outcome, _proactive_incident_duration, _promql_placeholder_rejected
-    global _evidence_llm_contradiction, _rag_empty_result, _crat_write
+    global _evidence_llm_contradiction, _rag_empty_result, _crat_write, _telegram_timeout, _kafka_consumer_lag
     if _build_info is not None:
         return
     from prometheus_client import Counter, Gauge, Histogram, Info
@@ -260,6 +262,16 @@ def _ensure_metrics() -> None:
         "omni_crat_write_seconds",
         "Wall time to persist one CRAT block (Redis chain + optional Kafka publish), success only.",
         buckets=[0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5],
+    )
+    _telegram_timeout = Counter(
+        "omni_telegram_send_timeout_total",
+        "Telegram send_message calls that exceeded the timeout and were dropped.",
+        ["context"],
+    )
+    _kafka_consumer_lag = Gauge(
+        "omni_kafka_consumer_lag",
+        "Kafka consumer lag (highwater - committed offset) per topic and consumer group.",
+        ["topic", "consumer_group"],
     )
     _wilson_confidence_score.set(0.0)
     _proactive_events.inc(0)
@@ -572,6 +584,19 @@ def observe_proactive_incident_duration(seconds: float) -> None:
 def inc_promql_placeholder_rejected() -> None:
     _ensure_metrics()
     _promql_placeholder_rejected.inc()
+
+
+def inc_telegram_timeout(context: str = "advisory") -> None:
+    _ensure_metrics()
+    _telegram_timeout.labels(context=(context or "advisory")[:48]).inc()
+
+
+def set_kafka_consumer_lag(topic: str, consumer_group: str, lag: int) -> None:
+    _ensure_metrics()
+    _kafka_consumer_lag.labels(
+        topic=(topic or "unknown")[:64],
+        consumer_group=(consumer_group or "unknown")[:64],
+    ).set(max(0, int(lag)))
 
 
 async def observability_metrics_loop(

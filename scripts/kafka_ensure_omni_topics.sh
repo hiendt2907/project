@@ -32,6 +32,7 @@ TOPICS=(
   "omni-audit-agent"
   "omni-tool-audit"
   "omni-hitl-pending"
+  "omni-hitl-decisions"
 )
 
 for t in "${TOPICS[@]}"; do
@@ -39,6 +40,17 @@ for t in "${TOPICS[@]}"; do
   "${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
     /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BOOTSTRAP" \
     --create --if-not-exists --topic "$t" --partitions 1 --replication-factor 1
+done
+
+# SIEM integration topics (Phase 2): brain-go Kafka transport.
+# omni-siem-raw: raw FinGuard incidents from siem_bridge (SIEM_BRIDGE_DUAL_EMIT=true).
+# omni-siem-incidents: correlated incidents from brain-go (BRAIN_TRANSPORT=kafka).
+# Retention: broker default (set OMNI_SIEM_RAW_RETENTION_MS to override at create).
+for SIEM_TOPIC in "omni-siem-raw" "omni-siem-incidents"; do
+  echo "Ensuring topic: $SIEM_TOPIC (partitions=6)"
+  "${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
+    /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BOOTSTRAP" \
+    --create --if-not-exists --topic "$SIEM_TOPIC" --partitions 6 --replication-factor 1
 done
 
 # Diagnostic evidence lane (see header): optional finite retention at first create.
@@ -55,7 +67,7 @@ fi
   /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BOOTSTRAP" \
   --create --if-not-exists --topic "omni-diagnostic-evidence" \
   --partitions 1 --replication-factor 1 \
-  "${DIAG_EVIDENCE_EXTRA[@]}"
+  ${DIAG_EVIDENCE_EXTRA[@]+"${DIAG_EVIDENCE_EXTRA[@]}"}
 
 # CRAT audit chain: compacted + infinite retention (SOX 404, PCI-DSS v4.0).
 # cleanup.policy=compact preserves the latest block per key; retention.ms=-1 = keep forever.
@@ -67,5 +79,24 @@ echo "Ensuring topic: omni-audit-chain (compact, retention.ms=${OMNI_AUDIT_CHAIN
   --config cleanup.policy=compact \
   --config "retention.ms=${OMNI_AUDIT_CHAIN_RETENTION_MS}" \
   --config "min.insync.replicas=${OMNI_AUDIT_CHAIN_MIN_INSYNC_REPLICAS}"
+
+
+# ── Validate existing topic configs (idempotent alter) ─────────────────────
+echo "Validating omni-audit-chain config (retention.ms must be ${OMNI_AUDIT_CHAIN_RETENTION_MS})..."
+CURRENT_RETENTION=$("${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
+  /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$BOOTSTRAP" \
+  --describe --entity-type topics --entity-name omni-audit-chain 2>/dev/null \
+  | grep "retention.ms" | awk -F'=' '{print $2}' | tr -d ' ' || true)
+
+if [[ -n "$CURRENT_RETENTION" ]] && [[ "$CURRENT_RETENTION" != "${OMNI_AUDIT_CHAIN_RETENTION_MS}" ]]; then
+  echo "  [WARN] omni-audit-chain retention.ms=$CURRENT_RETENTION != ${OMNI_AUDIT_CHAIN_RETENTION_MS} — altering..."
+  "${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
+    /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$BOOTSTRAP" \
+    --alter --entity-type topics --entity-name omni-audit-chain \
+    --add-config "retention.ms=${OMNI_AUDIT_CHAIN_RETENTION_MS}"
+  echo "  [OK] omni-audit-chain retention.ms updated."
+else
+  echo "  [OK] omni-audit-chain retention.ms=${CURRENT_RETENTION:-<default>}"
+fi
 
 echo "Done."

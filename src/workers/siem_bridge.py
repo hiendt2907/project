@@ -102,8 +102,9 @@ def translate_incident(msg_id: str, fields: dict) -> dict:
     alert_name = CATEGORY_TO_ALERTNAME.get(category, f"SIEM{category.replace('_', '').title()}")
     omni_severity = SEVERITY_MAP.get(severity, "warning")
 
-    # Cross-reference: preserve FinGuard incident_id in trace context
-    trace_id = f"fg-{incident_id[:8]}"
+    # Cross-reference: use injected trace_id (E2E / bridge-rewrite) if present,
+    # otherwise derive from incident_id for real FinGuard events.
+    trace_id = fields.get("trace_id") or f"fg-{incident_id[:8]}"
 
     # Playbook routing: attach pre-approved playbook_id when category matches.
     playbook_id = CATEGORY_TO_PLAYBOOK.get(category, "") or ""

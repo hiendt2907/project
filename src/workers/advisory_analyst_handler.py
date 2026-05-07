@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -24,19 +25,28 @@ logger = logging.getLogger(__name__)
 _LLM_TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError)
 
 
+_LLM_CHAT_TIMEOUT_SEC = 30.0  # overridden by ctx.settings.llm_chat_timeout_sec
+
+
 @retry(
     retry=retry_if_exception_type(_LLM_TRANSIENT_ERRORS),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
     reraise=True,
 )
-async def _llm_chat_with_retry(llm: Any, model: str, messages: list, options: dict) -> dict:
-    """Wrap ctx.llm.chat with exponential-backoff retry for transient network errors.
+async def _llm_chat_with_retry(
+    llm: Any, model: str, messages: list, options: dict, *, timeout: float = _LLM_CHAT_TIMEOUT_SEC
+) -> dict:
+    """Wrap ctx.llm.chat with exponential-backoff retry and per-call timeout.
 
     Scope: only the HTTP call. CRAT writes are outside this scope.
     Deterministic failures (bad JSON, schema errors) bubble immediately without retry.
+    asyncio.TimeoutError is not retried (it's not in _LLM_TRANSIENT_ERRORS).
     """
-    return await llm.chat(model=model, messages=messages, options=options)
+    return await asyncio.wait_for(
+        llm.chat(model=model, messages=messages, options=options),
+        timeout=timeout,
+    )
 
 
 # SIEM categories that are infrastructure incidents — NOT security threats.
@@ -134,6 +144,7 @@ async def run_advisory_analyst(
             ),
         )
 
+        llm_timeout = float(getattr(ctx.settings, "llm_chat_timeout_sec", _LLM_CHAT_TIMEOUT_SEC))
         resp = await _llm_chat_with_retry(
             ctx.llm,
             model=model,
@@ -142,6 +153,7 @@ async def run_advisory_analyst(
                 {"role": "user", "content": evidence_text[:24000]},
             ],
             options={"num_predict": 2048, "temperature": 0.2},
+            timeout=llm_timeout,
         )
 
         raw_llm = str(((resp or {}).get("message") or {}).get("content") or "").strip()

@@ -8,5 +8,6 @@
   "description": "<<<SIEM_DESCRIPTION>>>",
   "suggested_action": "<<<SIEM_SUGGESTED_ACTION>>>",
   "timestamp": "<<<TIMESTAMP>>>",
-  "hitl_required": "<<<SIEM_HITL_REQUIRED>>>"
+  "hitl_required": "<<<SIEM_HITL_REQUIRED>>>",
+  "trace_id": "<<<TRACE>>>"
 }
