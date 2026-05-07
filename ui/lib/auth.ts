@@ -1,5 +1,6 @@
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
+import { getRedis } from "./redis";
 
 export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET,
@@ -11,8 +12,24 @@ export const authOptions: NextAuthOptions = {
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        const validUser = process.env.ADMIN_USERNAME ?? "admin";
-        const validPass = process.env.ADMIN_PASSWORD ?? "omni-admin-2024";
+        const validUser = process.env.ADMIN_USERNAME;
+        const validPass = process.env.ADMIN_PASSWORD;
+        if (!validUser || !validPass) {
+          throw new Error("ADMIN_USERNAME and ADMIN_PASSWORD env vars must be set");
+        }
+
+        // Rate limit: 5 attempts per username per 60s
+        const username = credentials?.username ?? "";
+        try {
+          const redis = getRedis();
+          const key = `login:attempts:${username}`;
+          const attempts = await redis.incr(key);
+          if (attempts === 1) await redis.expire(key, 60);
+          if (attempts > 5) return null;
+        } catch {
+          // Redis unavailable — degrade gracefully, allow login attempt
+        }
+
         if (
           credentials?.username === validUser &&
           credentials?.password === validPass

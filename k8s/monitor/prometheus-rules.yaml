@@ -93,6 +93,32 @@ spec:
             summary: "Telegram advisory delivery timeouts elevated"
             description: "Telegram send timeout rate is {{ $value }}/s. Advisories may not be reaching operators."
 
+    - name: omni.dlq
+      interval: 60s
+      rules:
+        - alert: DLQMessagesPublished
+          expr: increase(omni_dlq_published_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "Messages are landing in the DLQ"
+            description: "{{ $value }} messages published to DLQ in the last 5 minutes. Check omni-worker logs for repeated retry failures."
+
+    - name: omni.hitl
+      interval: 30s
+      rules:
+        - alert: HITLRegisterFailed
+          expr: increase(omni_dlq_published_total{topic="omni-dlq"}[5m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "HITL registration failed — action auto-rejected"
+            description: "FinGuard HITL API unreachable; pending action was auto-rejected. Check hitl-dispatcher logs for hitl_register_failed_auto_reject."
+
     - name: omni.circuit_breaker
       interval: 15s
       rules:

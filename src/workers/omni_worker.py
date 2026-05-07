@@ -41,6 +41,7 @@ from workers.request_trace import (
     push_trace_id,
 )
 from workers.metrics_exporter import (
+    inc_dlq_published,
     observability_metrics_loop,
     set_kafka_consumer_lag,
     set_last_scout_timestamp,
@@ -303,6 +304,7 @@ async def _process_stream_entry(
             dlq_payload = {"error_context": json.dumps(error_ctx), "trace_id": dlq_trace, "data": raw}
             assert ctx.kafka is not None
             await ctx.kafka.send_dict(ctx.settings.kafka_topic_dlq, dlq_payload)
+            inc_dlq_published(ctx.settings.kafka_topic_dlq)
             await ctx.redis.delete(retry_key)
 
     finally:
@@ -367,18 +369,20 @@ async def circuit_breaker_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -
         await asyncio.sleep(2.0)
 
 
-def _report_kafka_lag(consumer: Any, topic: str, consumer_group: str) -> None:
-    """Best-effort: compute and export Kafka consumer lag after each commit."""
+def _report_kafka_lag(consumer: Any, msg: Any, consumer_group: str) -> None:
+    """Best-effort: compute and export Kafka consumer lag after each commit.
+
+    Uses msg.offset+1 as committed position — accurate because we just committed
+    this message. Avoids last_stable_offset() which returns -1 with the default
+    read_uncommitted isolation level, causing lag = highwater+1 (wrong).
+    """
     try:
-        total_lag = 0
-        for tp in consumer.assignment():
-            if tp.topic != topic:
-                continue
-            committed = consumer.last_stable_offset(tp)
-            end = consumer.highwater(tp)
-            if committed is not None and end is not None:
-                total_lag += max(0, end - committed)
-        set_kafka_consumer_lag(topic, consumer_group, total_lag)
+        from aiokafka import TopicPartition
+        tp = TopicPartition(msg.topic, msg.partition)
+        end = consumer.highwater(tp)
+        if end is not None and end >= 0:
+            lag = max(0, end - (msg.offset + 1))
+            set_kafka_consumer_lag(msg.topic, consumer_group, lag)
     except Exception:
         pass  # lag reporting is best-effort — never disrupt the consumer loop
 
@@ -405,7 +409,7 @@ async def kafka_alerts_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> N
                 mid = kafka_msg_id(msg.topic, msg.partition, msg.offset)
                 await _process_stream_entry(ctx, mid, fields)
                 await consumer.commit()
-                _report_kafka_lag(consumer, ws.kafka_topic_alerts, ws.consumer_group)
+                _report_kafka_lag(consumer, msg, ws.consumer_group)
             except Exception as e:
                 await ctx.ledger.record_exception(e, phase="4", component="kafka_alerts_loop", swallow_errors=True)
                 logger.exception("kafka_alerts_loop message error: %s", e)
@@ -437,7 +441,7 @@ async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) ->
                 fields = decode_kafka_value_to_fields(msg.value, msg.headers)
                 await reason_from_diagnostic_evidence(ctx, fields)
                 await consumer.commit()
-                _report_kafka_lag(consumer, ws.kafka_topic_diagnostic_evidence, ws.consumer_group_analyst)
+                _report_kafka_lag(consumer, msg, ws.consumer_group_analyst)
             except Exception as e:
                 await ctx.ledger.record_exception(e, phase="4", component="kafka_evidence_loop", swallow_errors=True)
                 logger.exception("kafka_evidence_loop message error: %s", e)

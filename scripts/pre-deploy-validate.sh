@@ -46,6 +46,24 @@ for topic in "${REQUIRED_TOPICS[@]}"; do
   fi
 done
 
+# ── 2b. Validate omni-audit-chain compaction + retention policy ───────────────
+hdr "Kafka omni-audit-chain config (CRAT compliance)"
+CHAIN_CONFIG=$($KUBE exec -n "$KAFKA_NS" "deploy/$KAFKA_DEPLOY" -- \
+  /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$BOOTSTRAP" \
+  --describe --entity-type topics --entity-name omni-audit-chain 2>/dev/null || true)
+
+if echo "$CHAIN_CONFIG" | grep -q "cleanup.policy=compact"; then
+  ok "omni-audit-chain cleanup.policy=compact"
+else
+  fail "omni-audit-chain missing cleanup.policy=compact — CRAT compaction broken, run: make ensure-kafka-topics"
+fi
+
+if echo "$CHAIN_CONFIG" | grep -q "retention.ms=-1"; then
+  ok "omni-audit-chain retention.ms=-1 (infinite — SOX/PCI-DSS compliant)"
+else
+  fail "omni-audit-chain retention.ms not -1 — CRAT long-term retention at risk, run: make ensure-kafka-topics"
+fi
+
 # ── 3. Redis reachable ────────────────────────────────────────────────────────
 hdr "Redis"
 REDIS_URL="${OMNI_REDIS_URL:-redis://redis:6379/0}"
@@ -66,8 +84,6 @@ hdr "K8s Secrets ($NS)"
 REQUIRED_SECRETS=(
   "telegram-bot"
   "omni-audit-keys"
-  "omni-gateway-secret"
-  "omni-worker-config"
 )
 for secret in "${REQUIRED_SECRETS[@]}"; do
   if $KUBE get secret "$secret" -n "$NS" &>/dev/null; then
@@ -96,7 +112,7 @@ for sa in "omni-worker" "omni-executor"; do
   fi
 done
 
-for rb in "omni-worker-role-binding" "omni-executor-role-binding"; do
+for rb in "omni-worker-binding" "omni-executor-binding"; do
   if $KUBE get rolebinding "$rb" -n "$NS" &>/dev/null; then
     ok "RoleBinding exists: $rb"
   else

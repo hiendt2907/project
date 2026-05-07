@@ -57,6 +57,7 @@ _rag_empty_result: Any = None
 _crat_write: Any = None
 _telegram_timeout: Any = None
 _kafka_consumer_lag: Any = None
+_dlq_published: Any = None
 _started = False
 
 
@@ -72,7 +73,7 @@ def _ensure_metrics() -> None:
     global _proactive_tombstone_no_k8s, _proactive_lease_conflict, _proactive_skip_frozen
     global _wilson_confidence_score, _redis_stream_backlog
     global _proactive_outcome, _proactive_incident_duration, _promql_placeholder_rejected
-    global _evidence_llm_contradiction, _rag_empty_result, _crat_write, _telegram_timeout, _kafka_consumer_lag
+    global _evidence_llm_contradiction, _rag_empty_result, _crat_write, _telegram_timeout, _kafka_consumer_lag, _dlq_published
     if _build_info is not None:
         return
     from prometheus_client import Counter, Gauge, Histogram, Info
@@ -272,6 +273,11 @@ def _ensure_metrics() -> None:
         "omni_kafka_consumer_lag",
         "Kafka consumer lag (highwater - committed offset) per topic and consumer group.",
         ["topic", "consumer_group"],
+    )
+    _dlq_published = Counter(
+        "omni_dlq_published_total",
+        "Messages published to the DLQ after exhausting retries.",
+        ["topic"],
     )
     _wilson_confidence_score.set(0.0)
     _proactive_events.inc(0)
@@ -597,6 +603,11 @@ def set_kafka_consumer_lag(topic: str, consumer_group: str, lag: int) -> None:
         topic=(topic or "unknown")[:64],
         consumer_group=(consumer_group or "unknown")[:64],
     ).set(max(0, int(lag)))
+
+
+def inc_dlq_published(topic: str = "omni-dlq") -> None:
+    _ensure_metrics()
+    _dlq_published.labels(topic=(topic or "omni-dlq")[:64]).inc()
 
 
 async def observability_metrics_loop(

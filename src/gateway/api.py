@@ -87,7 +87,7 @@ class PrometheusAlert(BaseModel):
 class PrometheusWebhookBody(BaseModel):
     receiver: str = Field(default="")
     status: str = Field(default="")
-    alerts: list[PrometheusAlert] = Field(default_factory=list)
+    alerts: list[PrometheusAlert] = Field(default_factory=list, max_length=1000)
     groupLabels: dict[str, str] = Field(default_factory=dict)
     commonLabels: dict[str, str] = Field(default_factory=dict)
     commonAnnotations: dict[str, str] = Field(default_factory=dict)

@@ -28,7 +28,7 @@ export default function LoginPage() {
     if (result?.ok) {
       router.push("/");
     } else {
-      setError("Invalid credentials. Try admin / omni-admin-2024");
+      setError("Invalid credentials.");
     }
   }
 
@@ -50,12 +50,14 @@ export default function LoginPage() {
             <Label htmlFor="username" className="text-xs uppercase tracking-widest text-zinc-500">Username</Label>
             <Input
               id="username"
+              name="username"
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="admin"
               required
               autoFocus
+              autoComplete="username"
               className="border-zinc-800 bg-zinc-900 text-zinc-100 placeholder:text-zinc-600 focus-visible:ring-cyan-500/50"
             />
           </div>
@@ -63,11 +65,13 @@ export default function LoginPage() {
             <Label htmlFor="password" className="text-xs uppercase tracking-widest text-zinc-500">Password</Label>
             <Input
               id="password"
+              name="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
               required
+              autoComplete="current-password"
               className="border-zinc-800 bg-zinc-900 text-zinc-100 placeholder:text-zinc-600 focus-visible:ring-cyan-500/50"
             />
           </div>
