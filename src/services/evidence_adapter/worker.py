@@ -53,6 +53,7 @@ class AdapterGeneratorWorker:
         if not isinstance(adapter, EvidenceAdapter):
             raise TypeError(f"adapter must implement EvidenceAdapter protocol, got {type(adapter)}")
         self._adapter = adapter
+        self._redis_backoff: int = 2
 
     async def run(self) -> None:
         redis = Redis.from_url(
@@ -64,8 +65,7 @@ class AdapterGeneratorWorker:
             bootstrap_servers=_KAFKA_SERVERS,
             value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode(),
         )
-        # Retry Kafka bootstrap indefinitely so the pod survives upstream outages
-        # (DNS flaps, Kafka not-yet-ready) instead of crash-looping.
+        # Retry Kafka bootstrap with exponential backoff (mirrors Redis bootstrap below).
         backoff = 2
         while True:
             try:
@@ -75,6 +75,18 @@ class AdapterGeneratorWorker:
                 log.warning("event=kafka_bootstrap_retry err=%s backoff_s=%d", e, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
+        # Retry Redis ping with exponential backoff before entering the poll loop.
+        # Cross-namespace DNS (redis.finguard-customer.svc) may be slow to resolve
+        # on pod startup, causing repeated connection errors without this guard.
+        redis_backoff = 2
+        while True:
+            try:
+                await redis.ping()
+                break
+            except Exception as e:
+                log.warning("event=redis_bootstrap_retry err=%s backoff_s=%d", e, redis_backoff)
+                await asyncio.sleep(redis_backoff)
+                redis_backoff = min(redis_backoff * 2, 30)
         try:
             await _ensure_group(redis)
             log.info(
@@ -96,9 +108,11 @@ class AdapterGeneratorWorker:
                 count=_BATCH,
                 block=_BLOCK_MS,
             )
+            self._redis_backoff = 2  # reset on success
         except Exception as e:
-            log.warning("event=adapter_xreadgroup_error err=%s", e)
-            await asyncio.sleep(2)
+            log.warning("event=adapter_xreadgroup_error err=%s backoff_s=%d", e, self._redis_backoff)
+            await asyncio.sleep(self._redis_backoff)
+            self._redis_backoff = min(self._redis_backoff * 2, 30)
             return
 
         if not results:

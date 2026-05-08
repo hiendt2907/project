@@ -26,18 +26,15 @@ spec:
             runAsUser: 10001
           containers:
             - name: crat-check
-              image: ghcr.io/omni/multi-agent-system:latest
-              imagePullPolicy: IfNotPresent
+              image: multi-agent-system:latest
+              imagePullPolicy: Never
               command:
                 - python3
                 - /app/scripts/crat_integrity_check.py
+              envFrom:
+                - configMapRef:
+                    name: omni-worker-config
               env:
-                - name: OMNI_REDIS_URL
-                  valueFrom:
-                    secretKeyRef:
-                      name: omni-worker-config
-                      key: OMNI_REDIS_URL
-                      optional: false
                 - name: CRAT_METRIC_FILE
                   value: /tmp/crat_integrity.prom
               resources:

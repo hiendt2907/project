@@ -81,34 +81,16 @@ echo "Ensuring topic: omni-audit-chain (compact, retention.ms=${OMNI_AUDIT_CHAIN
   --config "min.insync.replicas=${OMNI_AUDIT_CHAIN_MIN_INSYNC_REPLICAS}"
 
 
-# ── Validate and enforce existing topic configs (idempotent alter) ────────────
-echo "Validating omni-audit-chain config (cleanup.policy=compact, retention.ms=${OMNI_AUDIT_CHAIN_RETENTION_MS})..."
-CHAIN_CONFIG=$("${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
+# ── Enforce omni-audit-chain dynamic config (always alter — idempotent) ────────
+# kafka-configs.sh --describe output format varies across broker versions and
+# includes synonyms/sensitive fields that make naive awk parsing brittle.
+# Using --alter unconditionally is safe: Kafka applies the config regardless of
+# current state, and the operation is a no-op if the value is already correct.
+echo "Enforcing omni-audit-chain config: cleanup.policy=compact retention.ms=${OMNI_AUDIT_CHAIN_RETENTION_MS}"
+"${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
   /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$BOOTSTRAP" \
-  --describe --entity-type topics --entity-name omni-audit-chain 2>/dev/null || true)
-
-CURRENT_RETENTION=$(echo "$CHAIN_CONFIG" | grep "retention.ms" | awk -F'=' '{print $2}' | tr -d ' ')
-CURRENT_POLICY=$(echo "$CHAIN_CONFIG" | grep "cleanup.policy" | awk -F'=' '{print $2}' | tr -d ' ')
-
-NEEDS_ALTER=false
-if [[ "$CURRENT_RETENTION" != "${OMNI_AUDIT_CHAIN_RETENTION_MS}" ]]; then
-  echo "  [WARN] omni-audit-chain retention.ms='${CURRENT_RETENTION:-<unset>}' != ${OMNI_AUDIT_CHAIN_RETENTION_MS}"
-  NEEDS_ALTER=true
-fi
-if [[ "$CURRENT_POLICY" != "compact" ]]; then
-  echo "  [WARN] omni-audit-chain cleanup.policy='${CURRENT_POLICY:-<unset>}' != compact"
-  NEEDS_ALTER=true
-fi
-
-if [[ "$NEEDS_ALTER" == "true" ]]; then
-  echo "  Altering omni-audit-chain to enforce compact + retention.ms=${OMNI_AUDIT_CHAIN_RETENTION_MS}..."
-  "${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
-    /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$BOOTSTRAP" \
-    --alter --entity-type topics --entity-name omni-audit-chain \
-    --add-config "cleanup.policy=compact,retention.ms=${OMNI_AUDIT_CHAIN_RETENTION_MS}"
-  echo "  [OK] omni-audit-chain config updated."
-else
-  echo "  [OK] omni-audit-chain cleanup.policy=compact retention.ms=${CURRENT_RETENTION}"
-fi
+  --alter --entity-type topics --entity-name omni-audit-chain \
+  --add-config "cleanup.policy=compact,retention.ms=${OMNI_AUDIT_CHAIN_RETENTION_MS}"
+echo "  [OK] omni-audit-chain cleanup.policy=compact retention.ms=${OMNI_AUDIT_CHAIN_RETENTION_MS}"
 
 echo "Done."

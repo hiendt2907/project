@@ -477,6 +477,8 @@ async def _llm_replan_after_feedback(
             return None
         tn = str(parsed.get("tool_name") or "").strip()
         args = parsed.get("args") if isinstance(parsed.get("args"), dict) else {}
+        if not tn:
+            return {"tool_name": "no_op", "args": {}}
         if tn == "k8s_rollout_restart" and str((args or {}).get("namespace") or "").strip() and str(
             (args or {}).get("deployment") or ""
         ).strip():
@@ -1473,6 +1475,13 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
                 logger.warning("event=mutate_fail_full_agentic_probe_err trace=%s err=%s", trace, e)
 
     plan = await _llm_replan_after_feedback(ctx, trace, stdout, stderr, exit_code)
+    if plan and plan.get("tool_name") == "no_op":
+        logger.info(
+            "event=replan_no_op trace=%s detail=llm_signalled_no_further_action",
+            trace,
+        )
+        await ctx.redis.delete(_STATE_KEY.format(trace=trace))
+        return
     if not plan:
         logger.error("event=ESCALATE_TO_HUMAN trace=%s reason=replan_empty", trace)
         if await _finalize_if_deployment_rollout_healthy_from_stored_ctx(
