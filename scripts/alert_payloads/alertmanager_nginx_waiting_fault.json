@@ -7,11 +7,10 @@
       "labels": {
         "alertname": "NginxTestContainerWaitingFaultLab",
         "severity": "critical",
-        "namespace": "multi-agent",
         "pod": "nginx-test-DYNAMIC",
         "deployment": "nginx-test",
         "container": "nginx",
-        "reason": "CreateContainerError",
+        "reason": "CreateContainerConfigError",
         "domain": "lab",
         "workload": "nginx-test"
       },

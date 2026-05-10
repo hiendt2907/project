@@ -1,14 +1,27 @@
-"""Ghi ledger lỗi lên Postgres HA (`itops_error_ledger`) — an toàn qua pgpool."""
+"""Error ledger — Redis SETEX backend (Postgres removed)."""
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import traceback
+from datetime import UTC, datetime
 from typing import Any
 
-# Tránh lưu token Telegram trong traceback (URL getUpdates).
+import redis.asyncio as aioredis
+
+from rag.redis_vector_store import (
+    COLLECTION_ERRORS,
+    RedisVectorStore,
+    log_error_to_ledger,
+)
+
+logger = logging.getLogger(__name__)
+
 _RE_TELEGRAM_BOT_URL = re.compile(r"https://api\.telegram\.org/bot[^/\s]+")
+
+_ERROR_TTL_SEC = 7 * 24 * 3600  # 7 days
 
 
 def _sanitize_ledger_text(text: str) -> str:
@@ -17,40 +30,23 @@ def _sanitize_ledger_text(text: str) -> str:
     return _RE_TELEGRAM_BOT_URL.sub("https://api.telegram.org/bot[REDACTED]", text)
 
 
-import asyncpg
-
-from rag.pgvector_store import (
-    COLLECTION_ERRORS,
-    PostgresRAGSettings,
-    init_pg_pool,
-    log_error_to_ledger,
-)
-
-logger = logging.getLogger(__name__)
-
-
 class ErrorLedger:
-    """Ghi lỗi có swallow (không làm sập worker), tự retry qua Tenacity trong pgvector_store."""
+    """Ghi lỗi — Redis SETEX (TTL-based, không cần vector index)."""
 
-    def __init__(self, pool: asyncpg.Pool, *, owns_pool: bool = False) -> None:
-        self._pool = pool
-        self._owns_pool = owns_pool
+    def __init__(self, r: aioredis.Redis, *, _owns_pool: bool = False) -> None:
+        self._r = r
+        # _vector_store used for log_error_to_ledger (upserts with stable vector)
+        self._vector_store = RedisVectorStore(r)
 
     @classmethod
-    async def from_settings(cls, settings: PostgresRAGSettings | None = None) -> ErrorLedger:
-        s = settings or PostgresRAGSettings()
-        pool = await init_pg_pool(s)
-        return cls(pool, owns_pool=True)
+    async def from_redis(cls, r: aioredis.Redis) -> "ErrorLedger":
+        return cls(r)
 
     async def aclose(self) -> None:
-        if self._owns_pool:
-            await self._pool.close()
+        pass  # shared connection owned by caller
 
     async def ensure_ready(self) -> None:
-        """Create extension and tables if not exist."""
-        from rag.pgvector_store import PGVectorStore
-        store = PGVectorStore(self._pool)
-        await store.ensure_ready()
+        await self._vector_store._ensure_index(COLLECTION_ERRORS)
 
     async def record_error(
         self,
@@ -65,7 +61,7 @@ class ErrorLedger:
     ) -> str | None:
         try:
             return await log_error_to_ledger(
-                self._pool,
+                self._vector_store,
                 title=title,
                 detail=_sanitize_ledger_text(detail),
                 phase=phase,
@@ -76,7 +72,7 @@ class ErrorLedger:
         except Exception:
             if swallow_errors:
                 logger.exception(
-                    "error_ledger_write_failed_pgHA",
+                    "error_ledger_write_failed",
                     extra={"phase": phase, "component": component, "title": title},
                 )
                 return None

@@ -21,6 +21,7 @@ class ToolSpec:
     name: str
     input_model: type[BaseModel]
     handler: ToolHandler
+    metadata: dict[str, Any]
 
 
 class ToolRegistry:
@@ -29,10 +30,22 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._specs: dict[str, ToolSpec] = {}
 
-    def register(self, name: str, input_model: type[BaseModel], handler: ToolHandler) -> None:
+    def register(
+        self,
+        name: str,
+        input_model: type[BaseModel],
+        handler: ToolHandler,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         if name in self._specs:
             raise ValueError(f"duplicate tool name: {name!r}")
-        self._specs[name] = ToolSpec(name=name, input_model=input_model, handler=handler)
+        self._specs[name] = ToolSpec(
+            name=name,
+            input_model=input_model,
+            handler=handler,
+            metadata=dict(metadata or {}),
+        )
 
     def has(self, name: str) -> bool:
         return name in self._specs
@@ -47,15 +60,22 @@ class ToolRegistry:
         import json
         import time
         READONLY_TOOLS = {"k8s_list_nodes", "k8s_node_conditions", "k8s_list_services", "k8s_list_ingress"}
-        MUTATING_TOOLS = {
-            "k8s_rollout_restart", "k8s_scale_deployment", "k8s_patch_resource",
+        LEGACY_MUTATING_TOOLS = {
+            "k8s_rollout_restart",
+            "k8s_scale_deployment",
+            "k8s_scale_resource",
+            "k8s_patch_resource",
+            "k8s_delete_pod",
             "kubectl_cluster",
-            "sandbox_cleanup", "execute_in_sandbox", "gated_allowlisted_execute",
+            "sandbox_cleanup",
+            "execute_in_sandbox",
+            "gated_allowlisted_execute",
             "execute_shell_command",
         }
         
         is_readonly = name in READONLY_TOOLS
-        is_mutating = name in MUTATING_TOOLS
+        capability = str(spec.metadata.get("capability") or "").strip().lower()
+        is_mutating = capability == "mutate" or name in LEGACY_MUTATING_TOOLS
         force_refresh_flag = raw_args.get("force_refresh", False)
         k8s_mutated_flag = getattr(ctx, "k8s_mutated", False)
         stable_id = getattr(ctx, "inbound_trace_id", "")
@@ -150,6 +170,27 @@ class ToolRegistry:
     def tool_names(self) -> frozenset[str]:
         return frozenset(self._specs.keys())
 
+    def metadata_for(self, name: str) -> dict[str, Any]:
+        spec = self._specs.get(name)
+        if spec is None:
+            raise KeyError(name)
+        return dict(spec.metadata)
+
+    def list_tool_catalog(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for name, spec in sorted(self._specs.items()):
+            out[name] = {
+                "args_schema": spec.input_model.model_json_schema(),
+                "metadata": dict(spec.metadata),
+            }
+        return out
+
+    def tool_catalog_json_for_prompt(self, max_chars: int | None = None) -> str:
+        s = json.dumps(self.list_tool_catalog(), ensure_ascii=False, separators=(",", ":"))
+        if max_chars is not None and len(s) > max_chars:
+            return s[: max_chars - 1] + "…"
+        return s
+
 
 _GLOBAL = ToolRegistry()
 
@@ -158,11 +199,11 @@ def get_tool_registry() -> ToolRegistry:
     return _GLOBAL
 
 
-def register_tool(name: str, input_model: type[BaseModel]):
+def register_tool(name: str, input_model: type[BaseModel], *, metadata: dict[str, Any] | None = None):
     """Decorator: gắn handler async(ctx, validated_model) vào registry global."""
 
     def decorator(fn: ToolHandler) -> ToolHandler:
-        _GLOBAL.register(name, input_model, fn)
+        _GLOBAL.register(name, input_model, fn, metadata=metadata)
         return fn
 
     return decorator

@@ -23,7 +23,5 @@ spec:
           - configMapRef:
               name: omni-worker-config
         env:
-          - name: POSTGRES_RAG_DSN
-            value: "postgresql://appuser:GD3fjTJJxfzi0bau6TSaoWV9Q8TeuEYxahQrFDh6DCnMRjgFdEQ1q7Hf3FKFbxD8@pgpool-gateway:5432/ragdb"
           - name: TELEGRAM_CHAT_ID
             valueFrom: { secretKeyRef: { name: telegram-bot, key: chat-id } }

@@ -1,0 +1,109 @@
+# CPU embed service — OpenAI /v1/embeddings (sentence-transformers).
+#
+# vLLM pooling on ARM64 CPU hits missing torch.ops._C.rotary_embedding; this
+# Deployment replaces the old vLLM embed container. Service name stays vllm-omni-embedder.
+# Lab on Mac: OMNI_VLLM_EMBED_URL=http://host.docker.internal:8001
+#
+# Build: bash infra/embed/build-and-load.sh  → image omni-embed-cpu:latest
+# imagePullPolicy: Never — Orbstack shares Docker with K8s.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-omni-embedder
+  namespace: multi-agent
+  labels:
+    app: vllm-omni-embedder
+    app.kubernetes.io/name: vllm-omni-embedder
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/criticality: "P2"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vllm-omni-embedder
+  template:
+    metadata:
+      labels:
+        app: vllm-omni-embedder
+        app.kubernetes.io/name: vllm-omni-embedder
+        app.kubernetes.io/part-of: omni-platform
+        omni.io/managed: "true"
+      annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: embed-cpu
+          image: omni-embed-cpu:latest
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8001
+              protocol: TCP
+          env:
+            - name: MODEL_ID
+              value: "nomic-ai/nomic-embed-text-v1.5"
+            - name: HF_HOME
+              value: "/tmp/hf-cache"
+            - name: TRANSFORMERS_CACHE
+              value: "/tmp/hf-cache/hub"
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "1"
+            - name: OMP_NUM_THREADS
+              value: "4"
+            - name: OPENBLAS_NUM_THREADS
+              value: "4"
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 6Gi
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /tmp/hf-cache
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 240
+            periodSeconds: 30
+            failureThreshold: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 40
+      volumes:
+        - name: hf-cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-omni-embedder
+  namespace: multi-agent
+  labels:
+    app: vllm-omni-embedder
+    app.kubernetes.io/name: vllm-omni-embedder
+    app.kubernetes.io/part-of: omni-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: vllm-omni-embedder
+  ports:
+    - name: http
+      port: 8001
+      targetPort: 8001
+      protocol: TCP

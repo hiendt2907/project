@@ -6,6 +6,10 @@ metadata:
   namespace: multi-agent
   labels:
     app: omni-analyst
+    app.kubernetes.io/name: omni-analyst
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/criticality: "P1"
 spec:
   replicas: 1
   selector:
@@ -15,6 +19,10 @@ spec:
     metadata:
       labels:
         app: omni-analyst
+        app.kubernetes.io/name: omni-analyst
+        app.kubernetes.io/part-of: omni-platform
+        omni.io/managed: "true"
+        omni.io/criticality: "P1"
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
@@ -34,15 +42,13 @@ spec:
             - name: metrics
               containerPort: 9090
               protocol: TCP
+            - name: health
+              containerPort: 8090
+              protocol: TCP
           envFrom:
             - configMapRef:
                 name: omni-worker-config
           env:
-            - name: POSTGRES_RAG_DSN
-              valueFrom:
-                secretKeyRef:
-                  name: omni-postgres-app
-                  key: uri
             - name: OMNI_WORKER_ROLE
               value: "analyst"
             - name: TELEGRAM_BOT_TOKEN
@@ -60,6 +66,8 @@ spec:
                 secretKeyRef:
                   name: telegram-bot
                   key: chat-id
+            - name: OMNI_AUDIT_PRIVATE_KEY_PATH
+              value: /etc/omni/audit/private_key.pem
           resources:
             requests:
               cpu: "100m"
@@ -67,11 +75,33 @@ spec:
             limits:
               cpu: "2"
               memory: 2Gi
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8090
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 5
           volumeMounts:
-            - name: source-code
-              mountPath: /app/src
+            - name: audit-keys
+              mountPath: /etc/omni/audit
+              readOnly: true
       volumes:
-        - name: source-code
-          hostPath:
-            path: /Users/hiendang/project/src
-            type: Directory
+        - name: audit-keys
+          secret:
+            secretName: omni-audit-keys
+            defaultMode: 0400

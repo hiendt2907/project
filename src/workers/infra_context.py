@@ -36,9 +36,8 @@ async def fetch_k8s_expert_context_for_diagnostic(ctx: Any, query_text: str) -> 
         resp = await ctx.vector_store.similarity_search(
             raw[: int(getattr(ws, "diag_k8s_expert_rag_query_max_chars", 4000))],
             coll,
-            ollama=ctx.ollama,
+            llm=ctx.llm,
             embed_model=ws.embed_model,
-            keep_alive=ws.ollama_keep_alive,
             limit=int(getattr(ws, "diag_k8s_expert_rag_limit", 4)),
             score_threshold=float(getattr(ws, "diag_k8s_expert_rag_score_threshold", 0.40)),
         )
@@ -66,7 +65,7 @@ async def fetch_k8s_expert_context_for_diagnostic(ctx: Any, query_text: str) -> 
     return "\n\n".join(parts)
 
 
-def _embedding_from_ollama(resp: dict[str, Any]) -> list[float]:
+def _embedding_from_response(resp: dict[str, Any]) -> list[float]:
     if "embedding" in resp:
         emb = resp["embedding"]
         return list(emb) if not isinstance(emb, list) else emb
@@ -86,12 +85,11 @@ async def fetch_infra_injection_for_fallback(ctx: Any, user_text: str) -> str:
     if len(raw) < 8:
         return ""
     try:
-        emb_resp = await ctx.ollama.embed(
+        emb_resp = await ctx.llm.embed(
             model=ctx.settings.embed_model,
             input=raw[:2000],
-            keep_alive=ctx.settings.ollama_keep_alive,
         )
-        vector = _embedding_from_ollama(emb_resp)
+        vector = _embedding_from_response(emb_resp)
         ec = _expert_collection(ctx)
         for coll, label, lim, thresh in (
             (ec, "k8s_expert", 2, 0.48),
@@ -139,12 +137,11 @@ async def enrich_working_text_with_infra(
 
     blocks: list[str] = []
     try:
-        emb_resp = await ctx.ollama.embed(
+        emb_resp = await ctx.llm.embed(
             model=ctx.settings.embed_model,
             input=raw[:2000],
-            keep_alive=ctx.settings.ollama_keep_alive,
         )
-        vector = _embedding_from_ollama(emb_resp)
+        vector = _embedding_from_response(emb_resp)
         ec = _expert_collection(ctx)
         for coll, label, lim, thresh in (
             (ec, "k8s_expert", 2, 0.48),

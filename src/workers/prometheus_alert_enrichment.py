@@ -37,7 +37,7 @@ def infer_alert_trigger_dimension(
     return "unknown"
 
 
-def build_ollama_anchor_en(
+def build_llm_anchor_en(
     *,
     namespace: str,
     pod: str,
@@ -67,7 +67,7 @@ def build_ollama_anchor_en(
             "Ignore unrelated pod names in [CONTEXT] topology unless they match the alert rule."
         )
     return (
-        "[OLLAMA_ANCHOR_EN]\n"
+        "[LLM_ANCHOR_EN]\n"
         f"FACTS: {facts_line}\n"
         f"TRIGGER: {trigger}\n"
         f"HINT: {hint}"

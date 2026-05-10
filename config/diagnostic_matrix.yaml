@@ -1,7 +1,34 @@
 # SRE Diagnostic Dictionary — symptom → ordered probes (deterministic; no LLM).
 # Rows seeded from docs/vendor/knownbase.md (abbreviated patterns).
+#
+# Ordering: ``priority`` ascending (lower = evaluated first). Put label-specific rows
+# before broad catch-alls. Label predicates apply only when the alert JSON actually
+# contains that label key (see ``diagnostic_mapping._row_matches``).
 version: 1
 rows:
+  # Workload-level CPU saturation — queries per-pod PromQL, not cluster average.
+  - symptom_group: resource_cpu_saturation
+    layer: prometheus
+    priority: 10
+    labels_alertname: "HighCPUUsage"
+    error_hint_pattern: "(?i)cpu|saturation|throttle|high.cpu"
+    canonical_query_pattern: ".*"
+    probe_ids:
+      - prom_pod_cpu_cores
+      - k8s_clinical_pod_metrics
+    stop_on_first_failure: false
+
+  # HTTP error-rate surge via Loki access-log analysis (sigma-bypass path).
+  - symptom_group: http_surge
+    layer: application
+    priority: 15
+    labels_alertname: "HighErrorRateSurge"
+    error_hint_pattern: "(?i)surge|429|rate.?limit|5xx|error.*rate|http.*error"
+    canonical_query_pattern: ".*"
+    probe_ids:
+      - loki_access_log_surge
+    stop_on_first_failure: false
+
   # Nếu alert có labels.reason + pod + namespace → dispatcher dùng nhánh pod_container_state (SDK), không qua dòng này.
   - symptom_group: crash_loop_backoff
     layer: infrastructure
@@ -51,13 +78,52 @@ rows:
       - k8s_list_pods_namespace
     stop_on_first_failure: false
 
-  # Catch-all (last): any alert text matches — Master Plan V3 prober-before-analyst
+  # P7.2.A — L1 OS: disk pressure / storage exhaustion
+  - symptom_group: node_disk_pressure
+    layer: os_baremetal
+    priority: 20
+    labels_alertname: "NodeDiskPressure|KubeNodeUnschedulable|DiskPressure|NodeFilesystemAlmostOutOfSpace"
+    error_hint_pattern: "(?i)disk|storage|filesystem|space|inode"
+    canonical_query_pattern: "(?i)disk_pressure|node_filesystem|storage_exhaust"
+    probe_ids:
+      - node_disk_pressure
+      - node_disk_io_saturation
+      - k8s_clinical_pod_events
+    stop_on_first_failure: false
+
+  # P7.2.A — L1 OS: CPU/memory resource exhaustion
+  - symptom_group: node_resource_exhaustion
+    layer: os_baremetal
+    priority: 25
+    labels_alertname: "NodeHighCPU|NodeMemoryPressure|KubeNodeMemoryPressure"
+    error_hint_pattern: "(?i)cpu.*saturat|memory.*pressure|resource.*exhaust|high_cpu|high_mem"
+    canonical_query_pattern: "(?i)node_cpu|node_memory|resource_exhaust"
+    probe_ids:
+      - node_cpu_saturation
+      - node_memory_pressure
+      - prom_pod_cpu_cores
+      - k8s_clinical_pod_events
+    stop_on_first_failure: false
+
+  # P7.2.B — L2 Network: service connectivity / timeout
+  - symptom_group: network_connectivity
+    layer: network
+    priority: 35
+    error_hint_pattern: "(?i)timeout|connection.*refused|dns|unreachable|service.*unavailab|network.*anomaly|tcp.*error"
+    canonical_query_pattern: "(?i)network_timeout|network_anomaly|tcp.*timeout|service_unavailab"
+    probe_ids:
+      - k8s_service_endpoints_ready
+      - k8s_networkpolicy_audit
+      - prom_pod_cpu_cores
+    stop_on_first_failure: false
+
+  # Catch-all (last): any alert text matches — cluster-level CPU baseline only.
+  # redis_ping and kafka_alerts_topic removed: they are infra health checks, not diagnostic evidence.
   - symptom_group: generic_unclassified
     layer: unknown
     priority: 999
     error_hint_pattern: ".*"
     canonical_query_pattern: ".*"
     probe_ids:
-      - redis_ping
-      - kafka_alerts_topic
+      - node_cpu_saturation
     stop_on_first_failure: false

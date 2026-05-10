@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: crat-integrity-check
+  namespace: multi-agent
+  labels:
+    app: crat-integrity-check
+    component: audit
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: crat-integrity-check
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: omni-worker
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+          containers:
+            - name: crat-check
+              image: multi-agent-system:latest
+              imagePullPolicy: Never
+              command:
+                - python3
+                - /app/scripts/crat_integrity_check.py
+              envFrom:
+                - configMapRef:
+                    name: omni-worker-config
+              env:
+                - name: CRAT_METRIC_FILE
+                  value: /tmp/crat_integrity.prom
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                capabilities:
+                  drop: ["ALL"]

@@ -58,6 +58,11 @@ data:
     global:
       scrape_interval: 15s
       evaluation_interval: 15s
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ["alertmanager.monitor.svc.cluster.local:9093"]
+          timeout: 10s
     remote_write:
       - url: http://mimir.monitor.svc.cluster.local:9009/api/v1/push
         queue_config:
@@ -277,15 +282,6 @@ data:
               description: "Worker pod scrape is not up for 2m, processing pipeline is halted."
           # OmniNoGatewayIngest removed: webhook chỉ có khi Alertmanager gửi — idle là bình thường, không phải sự cố.
           # OmniNoWorkerProcessing removed: idle lab (không Telegram/webhook) là bình thường; dùng OmniWorkerDown nếu cần.
-          - alert: OmniRedisStandaloneDown
-            expr: max(up{job="kubernetes-pods",kubernetes_namespace="multi-agent",kubernetes_pod_name=~"redis-[0-9]+"} == 1) < 1
-            for: 2m
-            labels:
-              severity: critical
-              domain: redis
-            annotations:
-              summary: "Redis standalone is down"
-              description: "Expected redis StatefulSet pod scrape up; current max(up) is {{ $value }}."
           - alert: OmniRedisExporterDown
             expr: max(up{job="kubernetes-pods",kubernetes_namespace="multi-agent",kubernetes_pod_name=~"redis-exporter.*"}) < 1
             for: 2m
@@ -306,24 +302,6 @@ data:
             annotations:
               summary: "Readiness probe failing for redis-exporter"
               description: "kube_pod_status_ready is 0 (expect probe to :9121/metrics). Context deadline / wrong port possible."
-          - alert: OmniPostgresNodeLoss
-            expr: count(up{job="kubernetes-pods",kubernetes_namespace="multi-agent",kubernetes_pod_name=~"omni-postgres-[0-9]+"} == 1) < 3
-            for: 2m
-            labels:
-              severity: critical
-              domain: db
-            annotations:
-              summary: "Postgres cluster node count dropped"
-              description: "Expected 3 postgres pods up, current count is {{ $value }}."
-          - alert: OmniPgpoolDown
-            expr: max(kube_deployment_status_replicas_available{namespace="multi-agent",deployment="pgpool-gateway"}) < 1
-            for: 2m
-            labels:
-              severity: critical
-              domain: db
-            annotations:
-              summary: "pgpool-gateway is unavailable"
-              description: "PGPool deployment has no available replicas."
           - alert: OmniK8sDeploymentUnavailable
             expr: sum(kube_deployment_status_replicas_unavailable{namespace="multi-agent"}) > 0
             for: 5m
@@ -549,6 +527,26 @@ data:
             annotations:
               summary: "Pod container filesystem read+write throughput high (multi-agent)"
               description: "read+write bytes/s > 50 MiB/s for 5m (cAdvisor). namespace={{ $labels.namespace }} pod={{ $labels.pod }} container={{ $labels.container }}."
+      # Chaos Engineering: organic fault injection victim — routes to Omni Gateway via alertmanager omni-webhook receiver.
+      - name: omni_chaos_victim
+        rules:
+          - alert: KubePodCrashLoopVictim
+            expr: |
+              max by (namespace, pod, container, reason) (
+                kube_pod_container_status_waiting_reason{
+                  namespace="multi-agent",
+                  pod=~"chaos-victim-.*",
+                  reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull"
+                }
+              ) > 0
+            for: 30s
+            labels:
+              severity: critical
+              domain: chaos
+              workload: chaos-victim
+            annotations:
+              summary: "chaos-victim pod in fault state (chaos engineering)"
+              description: "Pod {{ $labels.pod }} in {{ $labels.namespace }} waiting: reason={{ $labels.reason }} container={{ $labels.container }}. Organic chaos test — Omni Analyst ReAct loop expected."
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

@@ -1,0 +1,21 @@
+{
+  "receiver": "<<<GATEWAY_RECEIVER>>>",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "HighCPUUsage",
+        "severity": "warning",
+        "namespace": "<<<OMNI_NAMESPACE>>>",
+        "deployment": "<<<LANE1_DEPLOYMENT>>>"
+      },
+      "annotations": {
+        "summary": "<<<LANE1_SUMMARY>>>",
+        "description": "<<<LANE1_DESCRIPTION>>>"
+      },
+      "startsAt": "<<<STAMP>>>",
+      "endsAt": "0001-01-01T00:00:00Z"
+    }
+  ]
+}

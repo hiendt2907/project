@@ -13,6 +13,14 @@ paths = [
     '''leak_report\.json''',
     '''leak_report_history\.json''',
     '''deployments/.*''',
+    '''\.cursor/.*''',
+    '''smart-siem/vendor/.*''',
+    '''smart-siem/.*\.md''',
+    '''smart-siem/\.gitea/.*''',
+    '''smart-siem/\.github/.*''',
+    '''smart-siem/tests/.*''',
+    '''ui/node_modules/.*''',
+    '''node_modules/.*''',
 ]
 
 [[rules]]

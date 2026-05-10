@@ -1,0 +1,85 @@
+# Lab-only RBAC for omni-executor — ClusterRoleBinding for all-namespace access.
+#
+# Purpose: In lab / OMNI_ENV_MODE=lab the executor must be able to remediate faults
+# injected into ANY namespace (multi-agent, monitor, opensandbox, default, etc.)
+# without 403 from the API server.  Namespace-scoped RoleBindings in
+# executor-rbac.yaml are insufficient for cross-namespace labs.
+#
+# Safety model:
+#   PROD:  executor-rbac.yaml  — ClusterRole + namespace-scoped RoleBindings only.
+#          Mutations confined to OMNI_AUTONOMOUS_ALLOWED_NAMESPACES in code.
+#   LAB:   This file  — same ClusterRole verbs, bound cluster-wide via
+#          ClusterRoleBinding.  Only deploy when OMNI_ENV_MODE=lab or
+#          OMNI_LAB_UNRESTRICTED_RBAC=true is set in the ConfigMap.
+#
+# Apply:
+#   ./scripts/with_working_kube.sh apply -f k8s/deployments/executor-rbac-lab.yaml
+#
+# Verify:
+#   kubectl auth can-i create configmaps -n monitor \
+#     --as=system:serviceaccount:multi-agent:omni-executor    # → yes
+#   kubectl auth can-i create configmaps -n opensandbox \
+#     --as=system:serviceaccount:multi-agent:omni-executor    # → yes
+#   kubectl auth can-i delete namespaces \
+#     --as=system:serviceaccount:multi-agent:omni-executor    # → no (not granted)
+#
+# Remove when switching back to prod:
+#   kubectl delete clusterrolebinding omni-executor-mutate-lab
+---
+# Lab ClusterRole — same verb/resource matrix as prod ClusterRole but annotated as lab.
+# A separate name avoids overwriting the prod omni-executor-mutate ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-executor-mutate-lab
+  labels:
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/env: lab
+  annotations:
+    omni.io/note: "Lab-only. Do not create a ClusterRoleBinding from this in prod."
+rules:
+  # Workload mutations: rollout_restart, scale, patch_resource across all namespaces.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets", "daemonsets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # Core workload read + ConfigMap create/patch (k8s_create_or_patch_configmap).
+  - apiGroups: [""]
+    resources: ["pods", "events", "services", "endpoints", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+  # Secret patch: k8s_patch_secret for credential rotation (e.g. DB password restore)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # RBAC audit (k8s_apply_rbac_least_privilege read path).
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+  # ResourceQuota + LimitRange for resource evidence probes.
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges"]
+    verbs: ["get", "list", "watch"]
+---
+# Lab ClusterRoleBinding — cluster-wide scope for omni-executor SA.
+# NEVER ship an equivalent binding in prod manifests.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: omni-executor-mutate-lab
+  labels:
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/env: lab
+  annotations:
+    omni.io/note: "Lab only. Delete this binding before promoting to prod."
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-executor-mutate-lab
+subjects:
+  - kind: ServiceAccount
+    name: omni-executor
+    namespace: multi-agent

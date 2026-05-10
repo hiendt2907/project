@@ -10,6 +10,72 @@ logger = logging.getLogger(__name__)
 _MAX_CTX = 3500
 
 
+def format_operator_triage_card(
+    *,
+    problem: str,
+    reason: str,
+    chain: list[str] | None = None,
+    advise: list[str] | None = None,
+) -> str:
+    """Return a Problem/Reason/Chain/Advise body for Telegram escalation.
+
+    - problem: one-line summary of WHAT is broken (alertname + resource + severity).
+    - reason: WHY it broke (LLM hypothesis, or "context missing — identity incomplete").
+    - chain: ordered event sequence (correlated batch, state→app_log→metrics lanes).
+    - advise: concrete next actions (kubectl commands, playbook refs, oncall handoff).
+    """
+    lines: list[str] = []
+    lines.append("Problem:")
+    lines.append(f"  {problem.strip() or '(no problem description extracted)'}")
+    lines.append("")
+    lines.append("Reason:")
+    lines.append(f"  {reason.strip() or '(reason unknown — LLM + RAG both produced no hypothesis)'}")
+    lines.append("")
+    lines.append("Chain:")
+    if chain:
+        for i, step in enumerate(chain, start=1):
+            lines.append(f"  {i}. {step}")
+    else:
+        lines.append("  (no correlated events — isolated single alert)")
+    lines.append("")
+    lines.append("Advise:")
+    if advise:
+        for s in advise:
+            lines.append(f"  - {s}")
+    else:
+        lines.append("  - escalate to on-call — insufficient context for automated action")
+    return "\n".join(lines)
+
+
+# Back-compat alias: older callers still import format_operator_action_card.
+def format_operator_action_card(
+    known_facts: dict[str, str],
+    missing_facts: list[str],
+    suggested_steps: list[str],
+) -> str:
+    problem_parts: list[str] = []
+    if known_facts:
+        alert = known_facts.get("alert") or "UnknownAlert"
+        ns = known_facts.get("namespace") or "?"
+        res = known_facts.get("deployment") or known_facts.get("pod") or "?"
+        sev = known_facts.get("severity") or ""
+        sev_suffix = f" [{sev}]" if sev else ""
+        problem_parts.append(f"{alert} on {ns}/{res}{sev_suffix}")
+    else:
+        problem_parts.append("unidentified alert (no labels extracted)")
+    reason_parts = [m for m in (missing_facts or []) if m.lower().startswith("llm:")]
+    gaps = [m for m in (missing_facts or []) if not m.lower().startswith("llm:")]
+    reason = reason_parts[0][4:].strip() if reason_parts else ""
+    if not reason and gaps:
+        reason = "missing context: " + ", ".join(gaps)
+    return format_operator_triage_card(
+        problem=" | ".join(problem_parts),
+        reason=reason,
+        chain=None,
+        advise=suggested_steps,
+    )
+
+
 async def emit_telegram_escalation(
     ctx: Any,
     trace_id: str,

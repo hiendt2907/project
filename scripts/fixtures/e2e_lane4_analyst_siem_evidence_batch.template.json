@@ -1,0 +1,19 @@
+[
+  {
+    "probe": "siem_incident_context",
+    "evidence_source": "SIEM",
+    "alert_rule": "<<<SIEM_ALERT_RULE>>>",
+    "alert_hint": "<<<SIEM_ALERT_HINT>>>",
+    "canonical_query_snippet": "<<<LANE4_CANONICAL_JSON>>>",
+    "extracted_fact": {
+      "category": "<<<SIEM_CATEGORY>>>",
+      "severity": "<<<SIEM_SEVERITY>>>",
+      "incident_id": "<<<INCIDENT_ID>>>",
+      "tenant": "<<<SIEM_TENANT_ID>>>",
+      "description": "<<<SIEM_DESCRIPTION>>>",
+      "suggested_action": "<<<SIEM_SUGGESTED_ACTION>>>",
+      "affected_ip": "<<<SIEM_AFFECTED_IP>>>",
+      "namespace": "<<<SIEM_K8S_NAMESPACE>>>"
+    }
+  }
+]

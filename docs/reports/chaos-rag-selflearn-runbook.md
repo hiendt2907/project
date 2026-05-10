@@ -49,10 +49,10 @@ Sau phiên: **tắt** các flag self-learning trên worker nếu không còn th�
 
 ## 3. Matrix / chaos — lệnh và trace
 
-- **Chạy lab nhanh (smoke) + report + registry JSONL:** `bash scripts/chaos_rag_lab_run.sh` — gói `e2e_incident_matrix.sh` với 2 scenario `gateway_payload` mặc định, ghi `reports/chaos-rag-lab/latest.json` và `reports/chaos-rag-lab/registry-from-report.jsonl`. Full matrix: `CHAOS_RAG_FULL=1 bash scripts/chaos_rag_lab_run.sh`.
-- `bash scripts/e2e_incident_matrix.sh` — `MATRIX_PATHS` mặc định gồm `config/incident_training_matrix.yaml` + `config/prometheus_firing_simulation.yaml`.
+- **Chạy lab nhanh (smoke) + report + registry JSONL:** `NS=multi-agent bash scripts/chaos_rag_lab_run.sh` (hoặc `make chaos-rag-lab`) — gói `e2e_incident_matrix.sh` với 2 scenario `gateway_payload` mặc định, ghi `reports/chaos-rag-lab/latest.json` và `reports/chaos-rag-lab/registry-from-report.jsonl`. Full matrix: `NS=multi-agent CHAOS_RAG_FULL=1 bash scripts/chaos_rag_lab_run.sh`.
+- `NS=multi-agent bash scripts/e2e_incident_matrix.sh` — `MATRIX_PATHS` mặc định gồm `config/incident_training_matrix.yaml` + `config/prometheus_firing_simulation.yaml`.
 - Chaos nặng hơn (tùy lab): `scripts/agentic_chaos_validation.py`, `scripts/chaos_drill_v1.py`.
-- Vòng lặp training: `bash scripts/rag_llm_training_loop.sh` (tham chiếu).
+- Vòng lặp training: `NS=multi-agent bash scripts/rag_llm_training_loop.sh` (tham chiếu).
 
 **Mỗi scenario phải có `trace_id` thống nhất** trên luồng ingest → worker (guardrail repo).
 

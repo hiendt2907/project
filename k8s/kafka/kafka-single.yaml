@@ -39,6 +39,13 @@ spec:
         - name: kafka
           image: apache/kafka:3.8.0
           imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
           ports:
             - containerPort: 9092
               name: plaintext

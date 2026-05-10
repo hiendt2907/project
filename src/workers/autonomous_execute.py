@@ -18,9 +18,20 @@ from workers.tools import TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
 
+_FEEDBACK_TRUNC = 6000
+
+
+def _trunc_feedback_text(s: str, max_len: int = _FEEDBACK_TRUNC) -> str:
+    s = s or ""
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + "\n[...truncated]"
+
+
 # Tên gọi LLM / prompt khác tên đăng ký @register_tool (typed registry).
 MUTATE_TOOL_REGISTRY_NAME: dict[str, str] = {
     "k8s_patch_deployment": "k8s_patch_resource",
+    "k8s_scale_resource": "k8s_scale_deployment",
 }
 
 # Mutate-only: these tools are allowed in EXECUTE_MUTATE.
@@ -29,6 +40,11 @@ K8S_SDK_MUTATING_TOOL_NAMES: frozenset[str] = frozenset(
         "k8s_rollout_restart",
         "k8s_scale_deployment",
         "k8s_patch_resource",
+        "k8s_patch_configmap",
+        "k8s_patch_secret",
+        "k8s_create_or_patch_configmap",
+        "k8s_apply_rbac_least_privilege",
+        "k8s_delete_pod",
         "kubectl_cluster",
     }
 )
@@ -38,7 +54,15 @@ K8S_SDK_READONLY_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "k8s_describe_resource",
         "k8s_tail_logs",
+        "k8s_get_logs",
+        "k8s_get_events",
+        "k8s_list_resources",
         "k8s_check_endpoints",
+        "k8s_get_deployment_state",
+        "k8s_list_workload_pods",
+        "k8s_get_pod_secret_refs",
+        "k8s_get_secret_keys",
+        "k8s_verify_rollout",
         "k8s_list_nodes",
         "k8s_node_conditions",
         "k8s_list_services",
@@ -58,7 +82,17 @@ K8S_SDK_READONLY_TOOL_NAMES: frozenset[str] = frozenset(
 MUTATE_TOOL_ALLOWLIST: frozenset[str] = K8S_SDK_MUTATING_TOOL_NAMES | frozenset(MUTATE_TOOL_REGISTRY_NAME.keys())
 READONLY_TOOL_ALLOWLIST: frozenset[str] = K8S_SDK_READONLY_TOOL_NAMES
 _MUTATING_POLICY_GUARD_TOOLS: frozenset[str] = frozenset(
-    {"k8s_rollout_restart", "k8s_scale_deployment", "k8s_patch_resource", "kubectl_cluster"}
+    {
+        "k8s_rollout_restart",
+        "k8s_scale_deployment",
+        "k8s_patch_resource",
+        "k8s_patch_configmap",
+        "k8s_patch_secret",
+        "k8s_create_or_patch_configmap",
+        "k8s_apply_rbac_least_privilege",
+        "k8s_delete_pod",
+        "kubectl_cluster",
+    }
 )
 
 
@@ -99,6 +133,30 @@ async def run_execute_mutate_tool(
     """Returns (combined_output, exit_code)."""
     name = str(tool_name or "").strip()
     reg_name = MUTATE_TOOL_REGISTRY_NAME.get(name, name)
+    ws = getattr(ctx, "settings", None)
+    force_nsenter = bool(getattr(ws, "omni_executor_force_nsenter", False)) if ws is not None else False
+    if force_nsenter and reg_name != "kubectl_cluster":
+        msg = (
+            "[DATA] error\n[DIAGNOSIS] reason_code="
+            f"{ERR_GOV_UNAUTHORIZED_MUTATION} "
+            f"executor_policy_denied: tool {name!r} resolved={reg_name!r} "
+            "must route through kubectl_cluster with nsenter host wrapper."
+        )
+        return msg, 1
+    unrestricted = bool(getattr(ws, "omni_unrestricted_tool_execution", True))
+    if unrestricted:
+        fn_any = TOOL_REGISTRY.get(reg_name) or TOOL_REGISTRY.get(name)
+        if fn_any is None:
+            return f"[DATA] error\n[DIAGNOSIS] Unknown tool {name!r} resolved={reg_name!r}", 1
+        try:
+            run_name = reg_name if TOOL_REGISTRY.get(reg_name) is not None else name
+            run_args = _normalize_mutate_args_for_registry(run_name, args)
+            out = await fn_any(ctx, run_args)
+            s = str(out)
+            return s, infer_exit_code_from_tool_output(s)
+        except Exception as e:
+            logger.exception("unrestricted_execute tool %s: %s", name, e)
+            return f"[DATA] error\n[DIAGNOSIS] {e!s}", 1
     if reg_name in READONLY_TOOL_ALLOWLIST:
         msg = (
             f"[DATA] error\n[DIAGNOSIS] reason_code={ERR_GOV_UNAUTHORIZED_MUTATION} "
@@ -118,7 +176,6 @@ async def run_execute_mutate_tool(
             f"(from {name!r}) — deployment bug."
         )
         return msg, 1
-    ws = getattr(ctx, "settings", None)
     if ws is not None and not is_dev_mode(ws) and reg_name in _MUTATING_POLICY_GUARD_TOOLS:
         ns = str((args or {}).get("namespace") or "").strip()
         if not ns:
@@ -181,12 +238,14 @@ async def publish_action_feedback(
     if k is None or ws is None:
         return
     topic = getattr(ws, "kafka_topic_action_feedback", "omni-action-feedback")
+    out_s = _trunc_feedback_text(stdout) if exit_code != 0 else (stdout or "")
+    err_s = _trunc_feedback_text(stderr) if exit_code != 0 else (stderr or "")
     body = build_action_feedback_body(
         trace_id=trace_id,
         tool_name=tool_name,
         correlation_id=correlation_id,
-        stdout=stdout,
-        stderr=stderr,
+        stdout=out_s,
+        stderr=err_s,
         exit_code=exit_code,
         status=status,
         skipped_reason=skipped_reason,

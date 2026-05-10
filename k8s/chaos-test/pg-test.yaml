@@ -1,0 +1,121 @@
+# chaos-pg — ephemeral single-node PostgreSQL for chaos engineering.
+# Namespace: multi-agent (kube-state-metrics already covers it).
+#
+# Credentials stored in Secret chaos-pg-secret.
+# Fault injection: kubectl patch secret chaos-pg-secret --type=merge \
+#   -p '{"data":{"APP_PASSWORD":"d3JvbmctcGFzcw=="}}'   ← base64("wrong-pass")
+# Then rollout restart chaos-victim → psql fails → exit 1 → CrashLoopBackOff.
+#
+# Cleanup: kubectl delete -f k8s/chaos-test/pg-test.yaml
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: chaos-pg-secret
+  namespace: multi-agent
+  labels:
+    app: chaos-pg
+    chaos: "true"
+type: Opaque
+stringData:
+  # Superuser password (used by chaos-pg StatefulSet)
+  POSTGRES_PASSWORD: "chaos-super-s3cr3t"
+  # App user credentials (used by chaos-victim to connect)
+  APP_USER: "chaos_app"
+  APP_PASSWORD: "chaos-app-pass-2025"
+  APP_DB: "chaosdb"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: chaos-pg
+  namespace: multi-agent
+  labels:
+    app: chaos-pg
+    chaos: "true"
+spec:
+  serviceName: chaos-pg
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chaos-pg
+  template:
+    metadata:
+      labels:
+        app: chaos-pg
+        chaos: "true"
+    spec:
+      securityContext:
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: chaos-pg-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              value: chaosdb
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          # Create the app user + database on first start
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    until pg_isready -U postgres -d chaosdb -q; do sleep 1; done
+                    psql -U postgres -d chaosdb -c \
+                      "DO \$\$ BEGIN
+                         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'chaos_app') THEN
+                           CREATE USER chaos_app WITH PASSWORD 'chaos-app-pass-2025';
+                         END IF;
+                       END \$\$;"
+                    psql -U postgres -d chaosdb -c \
+                      "GRANT CONNECT ON DATABASE chaosdb TO chaos_app;"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "chaosdb"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "50m"
+              memory: 64Mi
+            limits:
+              cpu: "500m"
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chaos-pg
+  namespace: multi-agent
+  labels:
+    app: chaos-pg
+    chaos: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None   # Headless — StatefulSet DNS: chaos-pg-0.chaos-pg.multi-agent.svc.cluster.local
+  selector:
+    app: chaos-pg
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

@@ -17,7 +17,7 @@ _messages: Any = None
 _scout_ts: Any = None
 _exhausted: Any = None
 _kill_switch: Any = None
-_ollama_up: Any = None
+_llm_up: Any = None
 _semaphore: Any = None
 _anomaly: Any = None
 _baseline_z_cpu: Any = None
@@ -53,12 +53,29 @@ _proactive_outcome: Any = None
 _proactive_incident_duration: Any = None
 _promql_placeholder_rejected: Any = None
 _evidence_llm_contradiction: Any = None
+_rag_empty_result: Any = None
+_crat_write: Any = None
+_telegram_timeout: Any = None
+_kafka_consumer_lag: Any = None
+_dlq_published: Any = None
+# Feature: Self-monitoring health checks
+_worker_last_message_age: Any = None
+_health_check_status: Any = None
+# Feature: Business KPI metrics
+_kpi_mttd: Any = None
+_kpi_mttr: Any = None
+_kpi_advisory_acceptance_rate: Any = None
+_kpi_false_positive_rate: Any = None
+_kpi_incidents: Any = None
+# Feature: Advisory benchmark
+_advisory_benchmark_score: Any = None
+_advisory_benchmark_pass_rate: Any = None
 _started = False
 
 
 def _ensure_metrics() -> None:
     global _build_info, _messages, _scout_ts, _exhausted
-    global _kill_switch, _ollama_up, _semaphore, _anomaly
+    global _kill_switch, _llm_up, _semaphore, _anomaly
     global _baseline_z_cpu, _baseline_z_mem, _baseline_dr
     global _baseline_chs, _baseline_remediation_silent
     global _circuit_breaker, _lag_size, _error_rate, _latency
@@ -68,7 +85,10 @@ def _ensure_metrics() -> None:
     global _proactive_tombstone_no_k8s, _proactive_lease_conflict, _proactive_skip_frozen
     global _wilson_confidence_score, _redis_stream_backlog
     global _proactive_outcome, _proactive_incident_duration, _promql_placeholder_rejected
-    global _evidence_llm_contradiction
+    global _evidence_llm_contradiction, _rag_empty_result, _crat_write, _telegram_timeout, _kafka_consumer_lag, _dlq_published
+    global _worker_last_message_age, _health_check_status
+    global _kpi_mttd, _kpi_mttr, _kpi_advisory_acceptance_rate, _kpi_false_positive_rate, _kpi_incidents
+    global _advisory_benchmark_score, _advisory_benchmark_pass_rate
     if _build_info is not None:
         return
     from prometheus_client import Counter, Gauge, Histogram, Info
@@ -91,13 +111,13 @@ def _ensure_metrics() -> None:
         "omni_proactive_kill_switch",
         "Proactive kill switch from Redis: 0=Active running 1=Bypassed",
     )
-    _ollama_up = Gauge(
-        "omni_ollama_up",
-        "Ollama HTTP /api/tags reachable (1=yes 0=no)",
+    _llm_up = Gauge(
+        "omni_llm_up",
+        "vLLM HTTP /health reachable (1=yes 0=no)",
     )
     _semaphore = Gauge(
-        "omni_ollama_semaphore_in_use",
-        "Ollama semaphore slots currently held",
+        "omni_llm_semaphore_in_use",
+        "LLM semaphore slots currently held",
         ["lane"],
     )
     _anomaly = Counter(
@@ -249,6 +269,80 @@ def _ensure_metrics() -> None:
         "omni_evidence_llm_contradiction_total",
         "Diagnostic analyst LLM output contradicted SDK evidence batch",
     )
+    _rag_empty_result = Counter(
+        "omni_rag_empty_result_total",
+        "RAG search returned empty results (graceful degradation — LLM receives reduced context)",
+        ["collection", "search_type"],
+    )
+    _crat_write = Histogram(
+        "omni_crat_write_seconds",
+        "Wall time to persist one CRAT block (Redis chain + optional Kafka publish), success only.",
+        buckets=[0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5],
+    )
+    _telegram_timeout = Counter(
+        "omni_telegram_send_timeout_total",
+        "Telegram send_message calls that exceeded the timeout and were dropped.",
+        ["context"],
+    )
+    _kafka_consumer_lag = Gauge(
+        "omni_kafka_consumer_lag",
+        "Kafka consumer lag (highwater - committed offset) per topic and consumer group.",
+        ["topic", "consumer_group"],
+    )
+    _dlq_published = Counter(
+        "omni_dlq_published_total",
+        "Messages published to the DLQ after exhausting retries.",
+        ["topic"],
+    )
+    # Self-monitoring
+    _worker_last_message_age = Gauge(
+        "omni_worker_last_message_age_seconds",
+        "Seconds since the last inbound message was processed (0 if never)",
+    )
+    _health_check_status = Gauge(
+        "omni_health_check_status",
+        "Health check result: 1=ok, 0.5=degraded, 0=unhealthy",
+        ["check_name"],
+    )
+    # KPI metrics
+    _kpi_mttd = Histogram(
+        "omni_kpi_mttd_seconds",
+        "Mean Time To Detect — seconds from incident start to first advisory",
+        ["lane"],
+        buckets=[5, 15, 30, 60, 120, 300, 600, 1800],
+    )
+    _kpi_mttr = Histogram(
+        "omni_kpi_mttr_seconds",
+        "Mean Time To Resolve — seconds from detection to resolved feedback",
+        ["lane"],
+        buckets=[30, 60, 120, 300, 600, 1800, 3600, 7200],
+    )
+    _kpi_advisory_acceptance_rate = Gauge(
+        "omni_kpi_advisory_acceptance_rate",
+        "Rolling 24h advisory acceptance rate (accepted / total)",
+    )
+    _kpi_false_positive_rate = Gauge(
+        "omni_kpi_false_positive_rate",
+        "Rolling 24h false positive rate (executor_fail / total_executed)",
+    )
+    _kpi_incidents = Counter(
+        "omni_kpi_incidents_total",
+        "KPI incident count by lane and outcome",
+        ["lane", "outcome"],
+    )
+    # Advisory benchmark
+    _advisory_benchmark_score = Gauge(
+        "omni_advisory_benchmark_score",
+        "Advisory quality score (0-100) per benchmark case and model",
+        ["case_id", "model"],
+    )
+    _advisory_benchmark_pass_rate = Gauge(
+        "omni_advisory_benchmark_pass_rate",
+        "Fraction of benchmark cases that scored >= 70/100",
+    )
+    # Initialize health check labels
+    for _chk in ("kafka_lag", "redis_ping", "llm_up", "last_message_age"):
+        _health_check_status.labels(check_name=_chk).set(1.0)
     _wilson_confidence_score.set(0.0)
     _proactive_events.inc(0)
     _llm_requests.inc(0)
@@ -333,28 +427,33 @@ async def sync_proactive_kill_switch_metric(r: Any, key: str) -> None:
     _kill_switch.set(1.0 if engaged else 0.0)
 
 
-async def probe_ollama_up(base_url: str) -> None:
-    """GET {base}/api/tags — set omni_ollama_up 1/0."""
+async def probe_llm_up(base_url: str) -> None:
+    """GET {base}/health — set omni_llm_up 1/0."""
     _ensure_metrics()
-    url = (base_url or "").rstrip("/") + "/api/tags"
+    url = (base_url or "").rstrip("/") + "/health"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(url)
-            _ollama_up.set(1.0 if r.status_code < 500 else 0.0)
+            _llm_up.set(1.0 if r.status_code < 500 else 0.0)
     except Exception:
-        _ollama_up.set(0.0)
+        _llm_up.set(0.0)
 
 
-def ollama_semaphore_inc(lane: str) -> None:
+def llm_semaphore_inc(lane: str) -> None:
     _ensure_metrics()
     ln = lane if lane in ("proactive", "reactive") else "reactive"
     _semaphore.labels(lane=ln).inc()
 
 
-def ollama_semaphore_dec(lane: str) -> None:
+def llm_semaphore_dec(lane: str) -> None:
     _ensure_metrics()
     ln = lane if lane in ("proactive", "reactive") else "reactive"
     _semaphore.labels(lane=ln).dec()
+
+
+# Backwards-compatible aliases kept for any external callers during transition.
+ollama_semaphore_inc = llm_semaphore_inc
+ollama_semaphore_dec = llm_semaphore_dec
 
 
 def inc_anomaly_events() -> None:
@@ -417,6 +516,12 @@ def observe_latency(seconds: float) -> None:
     _latency.observe(seconds)
 
 
+def observe_crat_write_seconds(seconds: float) -> None:
+    """Successful CRAT block write duration (wall clock inside chain lock)."""
+    _ensure_metrics()
+    _crat_write.observe(max(0.0, float(seconds)))
+
+
 def inc_learning_upsert(source: str, outcome: str) -> None:
     _ensure_metrics()
     s = (source or "unknown")[:32]
@@ -462,6 +567,15 @@ def inc_llm_requests() -> None:
 def inc_evidence_llm_contradiction() -> None:
     _ensure_metrics()
     _evidence_llm_contradiction.inc()
+
+
+def inc_rag_empty_result(collection: str, search_type: str) -> None:
+    """RAG search returned empty — LLM will receive reduced context."""
+    _ensure_metrics()
+    _rag_empty_result.labels(
+        collection=(collection or "unknown")[:48],
+        search_type=(search_type or "unknown")[:16],
+    ).inc()
 
 
 def inc_fastpath_hits() -> None:
@@ -542,20 +656,42 @@ def inc_promql_placeholder_rejected() -> None:
     _promql_placeholder_rejected.inc()
 
 
+def inc_telegram_timeout(context: str = "advisory") -> None:
+    _ensure_metrics()
+    _telegram_timeout.labels(context=(context or "advisory")[:48]).inc()
+
+
+def set_kafka_consumer_lag(topic: str, consumer_group: str, lag: int) -> None:
+    _ensure_metrics()
+    _kafka_consumer_lag.labels(
+        topic=(topic or "unknown")[:64],
+        consumer_group=(consumer_group or "unknown")[:64],
+    ).set(max(0, int(lag)))
+
+
+def inc_dlq_published(topic: str = "omni-dlq") -> None:
+    _ensure_metrics()
+    _dlq_published.labels(topic=(topic or "omni-dlq")[:64]).inc()
+
+
 async def observability_metrics_loop(
     *,
     redis: Any,
     kill_switch_key: str,
-    ollama_base_url: str,
+    llm_base_url: str,
     stop: asyncio.Event,
     stream_keys: tuple[str, ...] = (),
     interval_sec: float = 15.0,
 ) -> None:
-    """15s: sync kill switch + ping Ollama /api/tags + lag_size từ Redis."""
+    """15s: sync kill switch + ping vLLM /health + lag_size từ Redis."""
+    import time as _time
+    from prometheus_client import REGISTRY
+    from workers.health_server import update_check_state
+
     while not stop.is_set():
         try:
             await sync_proactive_kill_switch_metric(redis, kill_switch_key)
-            await probe_ollama_up(ollama_base_url)
+            await probe_llm_up(llm_base_url)
             # Sync lag_size từ Redis Delayed Queue
             try:
                 lag = await redis.zcard("omni:delayed_queue")
@@ -570,6 +706,49 @@ async def observability_metrics_loop(
                     set_redis_stream_backlog(stream_key, float(size or 0))
                 except Exception:
                     set_redis_stream_backlog(stream_key, 0.0)
+
+            # ── Update health check states (passive push) ──────────────────
+            try:
+                # redis_ping
+                await asyncio.wait_for(redis.ping(), timeout=2.0)
+                update_check_state("redis_ping", "ok", "pong")
+                set_health_check_status("redis_ping", 1.0)
+            except Exception as _e:
+                update_check_state("redis_ping", "unhealthy", str(_e)[:60])
+                set_health_check_status("redis_ping", 0.0)
+
+            try:
+                # kafka_lag — lấy max lag từ Prometheus registry
+                _max_lag = 0.0
+                for _m in REGISTRY.collect():
+                    if _m.name == "omni_kafka_consumer_lag":
+                        for _s in _m.samples:
+                            _max_lag = max(_max_lag, _s.value)
+                if _max_lag > 1000:
+                    update_check_state("kafka_lag", "unhealthy", f"lag={_max_lag:.0f}")
+                    set_health_check_status("kafka_lag", 0.0)
+                else:
+                    update_check_state("kafka_lag", "ok", f"lag={_max_lag:.0f}")
+                    set_health_check_status("kafka_lag", 1.0)
+            except Exception:
+                pass
+
+            try:
+                # llm_up từ registry
+                _llm_ok = True
+                for _m in REGISTRY.collect():
+                    if _m.name == "omni_llm_up":
+                        for _s in _m.samples:
+                            _llm_ok = _s.value > 0
+                if _llm_ok:
+                    update_check_state("llm_up", "ok", "llm_up=1")
+                    set_health_check_status("llm_up", 1.0)
+                else:
+                    update_check_state("llm_up", "degraded", "llm_up=0")
+                    set_health_check_status("llm_up", 0.5)
+            except Exception:
+                pass
+
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -578,3 +757,61 @@ async def observability_metrics_loop(
             await asyncio.wait_for(stop.wait(), timeout=interval_sec)
         except asyncio.TimeoutError:
             pass
+
+
+# ── Self-monitoring setters ────────────────────────────────────────────────────
+
+def set_worker_last_message_age(seconds: float) -> None:
+    _ensure_metrics()
+    _worker_last_message_age.set(max(0.0, float(seconds)))
+
+
+def set_health_check_status(check_name: str, value: float) -> None:
+    """value: 1.0=ok, 0.5=degraded, 0.0=unhealthy."""
+    _ensure_metrics()
+    _health_check_status.labels(check_name=(check_name or "unknown")[:48]).set(float(value))
+
+
+# ── KPI setters ────────────────────────────────────────────────────────────────
+
+def observe_kpi_mttd(lane: str, seconds: float) -> None:
+    _ensure_metrics()
+    _kpi_mttd.labels(lane=(lane or "unknown")[:48]).observe(max(0.0, float(seconds)))
+
+
+def observe_kpi_mttr(lane: str, seconds: float) -> None:
+    _ensure_metrics()
+    _kpi_mttr.labels(lane=(lane or "unknown")[:48]).observe(max(0.0, float(seconds)))
+
+
+def set_kpi_advisory_acceptance_rate(rate: float) -> None:
+    _ensure_metrics()
+    _kpi_advisory_acceptance_rate.set(max(0.0, min(1.0, float(rate))))
+
+
+def set_kpi_false_positive_rate(rate: float) -> None:
+    _ensure_metrics()
+    _kpi_false_positive_rate.set(max(0.0, min(1.0, float(rate))))
+
+
+def inc_kpi_incident(lane: str, outcome: str) -> None:
+    _ensure_metrics()
+    _kpi_incidents.labels(
+        lane=(lane or "unknown")[:48],
+        outcome=(outcome or "unknown")[:48],
+    ).inc()
+
+
+# ── Benchmark setters ──────────────────────────────────────────────────────────
+
+def set_advisory_benchmark_score(case_id: str, model: str, score: float) -> None:
+    _ensure_metrics()
+    _advisory_benchmark_score.labels(
+        case_id=(case_id or "unknown")[:32],
+        model=(model or "unknown")[:48],
+    ).set(max(0.0, min(100.0, float(score))))
+
+
+def set_advisory_benchmark_pass_rate(rate: float) -> None:
+    _ensure_metrics()
+    _advisory_benchmark_pass_rate.set(max(0.0, min(1.0, float(rate))))

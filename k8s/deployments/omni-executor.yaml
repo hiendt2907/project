@@ -6,6 +6,10 @@ metadata:
   namespace: multi-agent
   labels:
     app: omni-executor
+    app.kubernetes.io/name: omni-executor
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/criticality: "P1"
 spec:
   replicas: 1
   selector:
@@ -15,16 +19,19 @@ spec:
     metadata:
       labels:
         app: omni-executor
+        app.kubernetes.io/name: omni-executor
+        app.kubernetes.io/part-of: omni-platform
+        omni.io/managed: "true"
+        omni.io/criticality: "P1"
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
         prometheus.io/path: "/metrics"
     spec:
-      serviceAccountName: omni-worker
+      hostPID: true
+      serviceAccountName: omni-executor
       automountServiceAccountToken: true
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 10001
         fsGroup: 10001
       containers:
         - name: omni-executor
@@ -38,13 +45,10 @@ spec:
             - configMapRef:
                 name: omni-worker-config
           env:
-            - name: POSTGRES_RAG_DSN
-              valueFrom:
-                secretKeyRef:
-                  name: omni-postgres-app
-                  key: uri
             - name: OMNI_WORKER_ROLE
               value: "executor"
+            - name: OMNI_EXECUTOR_FORCE_NSENTER
+              value: "true"
             - name: TELEGRAM_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -60,6 +64,16 @@ spec:
                 secretKeyRef:
                   name: telegram-bot
                   key: chat-id
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            allowPrivilegeEscalation: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_PTRACE
+            seccompProfile:
+              type: Unconfined
           resources:
             requests:
               cpu: "100m"

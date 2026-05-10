@@ -1,0 +1,37 @@
+# Prometheus alert rule for chaos-victim pod.
+# This YAML documents the rule group that is PATCHED into the prometheus-config
+# ConfigMap (omni-rules.yml) by the chaos setup script.
+#
+# Rule: KubePodCrashLoopVictim
+#   Source metric: kube_pod_container_status_waiting_reason (kube-state-metrics)
+#   for: 30s  ← fast feedback loop for chaos testing
+#   Labels: domain=chaos  ← routes to omni-webhook receiver in alertmanager
+#
+# Corresponding Alertmanager receiver: omni-webhook
+#   → POST http://omni-gateway.multi-agent.svc.cluster.local/webhook/prometheus
+
+# ── Rule group (appended to omni-rules.yml in prometheus-config ConfigMap) ────
+#
+# - name: omni_chaos_victim
+#   rules:
+#     - alert: KubePodCrashLoopVictim
+#       expr: |
+#         max by (namespace, pod, container, reason) (
+#           kube_pod_container_status_waiting_reason{
+#             namespace="multi-agent",
+#             pod=~"chaos-victim-.*",
+#             reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull"
+#           }
+#         ) > 0
+#       for: 30s
+#       labels:
+#         severity: critical
+#         domain: chaos
+#         workload: chaos-victim
+#       annotations:
+#         summary: "chaos-victim pod in fault state (chaos engineering)"
+#         description: >
+#           Pod {{ $labels.pod }} in {{ $labels.namespace }} is waiting:
+#           reason={{ $labels.reason }}. Container={{ $labels.container }}.
+#           Organic chaos test — Omni Analyst should receive this via
+#           Alertmanager → Omni Gateway and run ReAct loop.

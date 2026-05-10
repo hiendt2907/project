@@ -1,0 +1,13 @@
+{
+  "id": "case_003",
+  "description": "Kafka consumer lag spike — analyst behind > 1000 messages",
+  "lane": "SYS_RESOURCE",
+  "evidence_text": "omni-analyst consumer group lag on omni-diagnostic-evidence: 1247 messages. Lag growing at ~15 msg/min. omni-analyst pod CPU: 85% (2 vCPU limit). LLM inference latency p99=45s. Kafka partition 0 highwater: 5832, committed: 4585. Last commit was 3m ago.",
+  "expected": {
+    "verdict": "URGENT",
+    "root_cause_contains": ["Kafka", "lag"],
+    "should_not_contain": ["database", "certificate", "DNS"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": false
+  }
+}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import signal
 import time
 from typing import Any
@@ -13,13 +14,11 @@ import redis.asyncio as redis
 from init.deep_scout import DeepScoutSummary, deep_scout_periodic_loop, run_deep_scout
 from init.deep_scout_autonomous import run_deep_scout_autonomous
 from ingest.telegram import TelegramBotSettings, TelegramClient, summarize_message_update
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
 from rag.error_ledger import ErrorLedger
-from rag.pgvector_store import (
-    init_pg_pool, 
-    PGVectorStore, 
-    PostgresRAGSettings
-)
+from rag.redis_vector_store import RedisVectorStore
+from rag.semantic_cache import SemanticCache
+from services.playbook.store import PlaybookStore
 from workers.autonomous_decider import autonomous_decider_loop
 from workers.baseline_snapshot import baseline_snapshot_loop
 from workers.forecast_autonomous_loop import autonomous_forecast_loop
@@ -42,12 +41,16 @@ from workers.request_trace import (
     push_trace_id,
 )
 from workers.metrics_exporter import (
+    inc_dlq_published,
     observability_metrics_loop,
+    set_kafka_consumer_lag,
     set_last_scout_timestamp,
     start_prometheus_server,
 )
+from workers.health_server import configure as _configure_health, record_message_processed as _hc_record_msg, start_health_server
+from workers.kpi_metrics import run_kpi_collector as _kpi_run
 from workers.otel_tracing import setup_otel_tracing, shutdown_otel_tracing
-from workers.ollama_semaphore import RedisOllamaSemaphore
+from workers.llm_semaphore import LLMSemaphore
 from workers.settings import WorkerSettings
 from workers.redis_client import connect_redis
 from workers.telegram_outbound import send_telegram_out_for_inbound
@@ -180,7 +183,15 @@ async def _process_stream_entry(
     try:
         payload: dict[str, Any] = json.loads(raw)
         payload.setdefault("trace_id", trace)
-        trace = str(payload.get("trace_id"))
+        _raw_trace = str(payload.get("trace_id"))
+        if not re.match(r"^[a-zA-Z0-9_\-]{1,128}$", _raw_trace):
+            logger.warning(
+                "event=trace_id_invalid raw=%r — sanitizing to safe fallback",
+                _raw_trace[:64],
+            )
+            _raw_trace = f"stream-{msg_id}"
+            payload["trace_id"] = _raw_trace
+        trace = _raw_trace
         tok_trace = push_trace_id(trace)
         await emit_transition(
             ctx,
@@ -288,13 +299,14 @@ async def _process_stream_entry(
             logger.error("[%s] Fatal Retry >=3. Sending to DLQ.", trace)
             error_ctx = {
                 "error_type": type(e).__name__,
-                "component": "LLM_or_Tools" if "ollama" in str(e).lower() else "omni_worker",
+                "component": "LLM_or_Tools" if "vllm" in str(e).lower() else "omni_worker",
                 "message": str(e),
                 "trace_id": dlq_trace
             }
             dlq_payload = {"error_context": json.dumps(error_ctx), "trace_id": dlq_trace, "data": raw}
             assert ctx.kafka is not None
             await ctx.kafka.send_dict(ctx.settings.kafka_topic_dlq, dlq_payload)
+            inc_dlq_published(ctx.settings.kafka_topic_dlq)
             await ctx.redis.delete(retry_key)
 
     finally:
@@ -359,6 +371,24 @@ async def circuit_breaker_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -
         await asyncio.sleep(2.0)
 
 
+def _report_kafka_lag(consumer: Any, msg: Any, consumer_group: str) -> None:
+    """Best-effort: compute and export Kafka consumer lag after each commit.
+
+    Uses msg.offset+1 as committed position — accurate because we just committed
+    this message. Avoids last_stable_offset() which returns -1 with the default
+    read_uncommitted isolation level, causing lag = highwater+1 (wrong).
+    """
+    try:
+        from aiokafka import TopicPartition
+        tp = TopicPartition(msg.topic, msg.partition)
+        end = consumer.highwater(tp)
+        if end is not None and end >= 0:
+            lag = max(0, end - (msg.offset + 1))
+            set_kafka_consumer_lag(msg.topic, consumer_group, lag)
+    except Exception:
+        pass  # lag reporting is best-effort — never disrupt the consumer loop
+
+
 async def kafka_alerts_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
     from aiokafka import AIOKafkaConsumer
 
@@ -381,12 +411,25 @@ async def kafka_alerts_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> N
                 mid = kafka_msg_id(msg.topic, msg.partition, msg.offset)
                 await _process_stream_entry(ctx, mid, fields)
                 await consumer.commit()
+                _report_kafka_lag(consumer, msg, ws.consumer_group)
             except Exception as e:
                 await ctx.ledger.record_exception(e, phase="4", component="kafka_alerts_loop", swallow_errors=True)
                 logger.exception("kafka_alerts_loop message error: %s", e)
                 await asyncio.sleep(0.5)
     finally:
         await consumer.stop()
+
+
+async def _run_kpi_collector(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+    """Wrapper: run KPI collector with graceful error handling."""
+    try:
+        await _kpi_run(
+            redis=ctx.redis,
+            kafka_bootstrap=ctx.settings.kafka_bootstrap_servers,
+            stop=stop,
+        )
+    except Exception as e:
+        logger.warning("kpi_collector exited with error: %s", e)
 
 
 async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
@@ -400,6 +443,7 @@ async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) ->
         bootstrap_servers=ws.kafka_bootstrap_servers,
         group_id=ws.consumer_group_analyst,
         enable_auto_commit=False,
+        auto_offset_reset="earliest",
         client_id=ws.consumer_name_analyst,
     )
     await consumer.start()
@@ -411,6 +455,8 @@ async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) ->
                 fields = decode_kafka_value_to_fields(msg.value, msg.headers)
                 await reason_from_diagnostic_evidence(ctx, fields)
                 await consumer.commit()
+                _hc_record_msg()
+                _report_kafka_lag(consumer, msg, ws.consumer_group_analyst)
             except Exception as e:
                 await ctx.ledger.record_exception(e, phase="4", component="kafka_evidence_loop", swallow_errors=True)
                 logger.exception("kafka_evidence_loop message error: %s", e)
@@ -455,18 +501,25 @@ async def telegram_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
 async def build_context() -> WorkerHandlerContext:
     ws = WorkerSettings()
     r = await connect_redis(ws)
-    ollama = OllamaClient(base_url=ws.ollama_base_url)
-    pg_settings = PostgresRAGSettings()
-    pg_pool = await init_pg_pool(pg_settings)
-    vector_store = PGVectorStore(pg_pool)
-    ledger = ErrorLedger(pg_pool, owns_pool=False)
-    sem = RedisOllamaSemaphore(
+    llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url)
+    vector_store = RedisVectorStore(r)
+    ledger = ErrorLedger(r)
+    sem = LLMSemaphore(
         r,
-        max_slots=ws.ollama_num_parallel,
-        lease_ttl_sec=ws.ollama_lease_ttl_sec,
+        max_slots=ws.llm_num_parallel,
+        lease_ttl_sec=ws.llm_lease_ttl_sec,
     )
     await sem.init_pool()
+    await vector_store.ensure_ready()
     await ledger.ensure_ready()
+    try:
+        await PlaybookStore(r).ensure_ready()
+    except Exception as e:
+        logger.warning("event=playbook_index_ensure_failed err=%s", e)
+    try:
+        await SemanticCache(r).ensure_ready()
+    except Exception as e:
+        logger.warning("event=semcache_index_ensure_failed err=%s", e)
 
     tg: TelegramClient | None = None
     if ws.telegram_enabled:
@@ -483,7 +536,7 @@ async def build_context() -> WorkerHandlerContext:
     return WorkerHandlerContext(
         settings=ws,
         redis=r,
-        ollama=ollama,
+        llm=llm,
         vector_store=vector_store,
         ledger=ledger,
         semaphore=sem,
@@ -516,11 +569,14 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
                 asyncio.create_task(circuit_breaker_loop(ctx, stop), name="circuit_breaker"),
             ]
         )
-        if ctx.telegram is not None:
+        if ctx.telegram is not None and ctx.settings.telegram_polling_enabled:
             tasks.append(asyncio.create_task(telegram_loop(ctx, stop), name="telegram_loop"))
     if role in ("full", "analyst"):
         tasks.append(asyncio.create_task(kafka_evidence_loop(ctx, stop), name="kafka_evidence_loop"))
         tasks.append(asyncio.create_task(kafka_action_feedback_loop(ctx, stop), name="kafka_action_feedback_loop"))
+        tasks.append(asyncio.create_task(
+            _run_kpi_collector(ctx, stop), name="kpi_collector",
+        ))
     if role in ("full", "core"):
         tasks.extend(
             [
@@ -575,11 +631,13 @@ async def run_worker() -> None:
         enabled=bool(ctx.settings.otel_tracing_enabled and ctx.settings.otel_exporter_otlp_endpoint),
     )
     start_prometheus_server(ctx.settings.metrics_listen_host, ctx.settings.metrics_listen_port)
+    _configure_health(redis=ctx.redis, llm_base_url=ctx.settings.vllm_base_url)
+    start_health_server()
     asyncio.create_task(
         observability_metrics_loop(
             redis=ctx.redis,
             kill_switch_key=ctx.settings.proactive_kill_switch_key,
-            ollama_base_url=ctx.settings.ollama_base_url,
+            llm_base_url=ctx.settings.vllm_base_url,
             stop=stop,
             stream_keys=(),
             interval_sec=15.0,
@@ -633,7 +691,7 @@ async def run_worker() -> None:
     finally:
         stop.set()
         shutdown_otel_tracing()
-        await ctx.ollama.aclose()
+        await ctx.llm.aclose()
         if ctx.telegram:
             await ctx.telegram.aclose()
         if ctx.kafka:

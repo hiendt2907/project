@@ -27,11 +27,24 @@ data:
     aof-use-rdb-preamble yes
 
     # Memory — lab; tune theo workload
-    maxmemory 512mb
+    # dump.rdb for disaster recovery (every hour if 1+ writes, every 5min if 100+ writes)
+    save 3600 1
+    save 300 100
+    save 60 10000
+    dbfilename dump.rdb
+
+    # Vector index + Kafka stream data: 2gb
+    maxmemory 2gb
     maxmemory-policy allkeys-lru
 
     # In-cluster only (ClusterIP). Do not expose Redis publicly with protected-mode no.
     protected-mode no
+
+    # Redis Stack modules (paths valid for redis/redis-stack-server image)
+    loadmodule /opt/redis-stack/lib/redisearch.so
+    loadmodule /opt/redis-stack/lib/rejson.so
+    loadmodule /opt/redis-stack/lib/redistimeseries.so
+    loadmodule /opt/redis-stack/lib/redisbloom.so
 ---
 # Headless — bắt buộc cho StatefulSet (stable pod DNS: redis-0.redis-hls.multi-agent.svc.cluster.local)
 apiVersion: v1
@@ -88,7 +101,7 @@ spec:
     spec:
       containers:
         - name: redis
-          image: redis:7.4-alpine
+          image: redis/redis-stack-server:7.4.0-v3
           imagePullPolicy: IfNotPresent
           command:
             - redis-server
@@ -104,11 +117,11 @@ spec:
               readOnly: true
           resources:
             requests:
-              memory: "64Mi"
-              cpu: "25m"
+              memory: "256Mi"
+              cpu: "100m"
             limits:
-              memory: "768Mi"
-              cpu: "500m"
+              memory: "2.5Gi"
+              cpu: "1000m"
           readinessProbe:
             exec:
               command:
@@ -132,6 +145,7 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
         resources:
           requests:
-            storage: 2Gi
+            storage: 10Gi

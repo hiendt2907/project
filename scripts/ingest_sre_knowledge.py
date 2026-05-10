@@ -25,7 +25,7 @@ from rag.pgvector_store import (
     PostgresRAGSettings,
     init_pg_pool,
 )
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
 from workers.settings import WorkerSettings
 
 logger = logging.getLogger(__name__)
@@ -103,7 +103,7 @@ async def _run(
     await store.ensure_ready()
     if collection != COLLECTION_K8S_EXPERT:
         await store.ensure_partition_for_collection(collection)
-    ollama = OllamaClient(base_url=ws.ollama_base_url)
+    llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url)
     try:
         model = ws.embed_model
         batch = 16
@@ -111,7 +111,7 @@ async def _run(
         for i in range(0, len(chunks_meta), batch):
             batch_slice = chunks_meta[i : i + batch]
             texts = [c for _, _, c in batch_slice]
-            resp = await ollama.embed(model=model, input=texts, keep_alive="5m")
+            resp = await llm.embed(model=model, input=texts)
             vecs = _vecs_from_embed_response(resp)
             if len(vecs) != len(texts):
                 raise RuntimeError(f"embed batch mismatch want {len(texts)} got {len(vecs)}")
@@ -138,7 +138,7 @@ async def _run(
             n_ok += len(points)
             logger.info("upserted %s / %s chunks", n_ok, len(chunks_meta))
     finally:
-        await ollama.aclose()
+        await llm.aclose()
         await pool.close()
     logger.info("done: %s chunks → %s", len(chunks_meta), collection)
     return 0

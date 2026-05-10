@@ -1,0 +1,117 @@
+# Alertmanager — chaos engineering receiver
+# Routes KubePodCrashLoopVictim alerts to Omni Gateway webhook.
+# All other alerts fall through to omni-telegram (existing behavior).
+#
+# Applies to: monitor namespace
+# Gateway webhook: http://omni-gateway.multi-agent.svc.cluster.local/webhook/prometheus
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-chaos-config
+  namespace: monitor
+  labels:
+    app: alertmanager
+    chaos: "true"
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+
+    route:
+      # Default: send all chaos-victim alerts to Omni Gateway webhook.
+      # Telegram is intentionally omitted — secrets unavailable in this ConfigMap.
+      receiver: omni-webhook
+      group_by: ["alertname", "namespace", "severity"]
+      group_wait: 5s
+      group_interval: 30s
+      repeat_interval: 10m
+
+    receivers:
+      - name: omni-webhook
+        webhook_configs:
+          - url: "http://omni-gateway.multi-agent.svc.cluster.local/webhook/prometheus"
+            send_resolved: false
+            http_config:
+              follow_redirects: true
+            max_alerts: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitor
+  labels:
+    app: alertmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.27.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/alertmanager
+            - --web.listen-address=0.0.0.0:9093
+            - --log.level=info
+          ports:
+            - name: http
+              containerPort: 9093
+          # No Telegram secrets needed — this alertmanager routes exclusively
+          # to the Omni Gateway webhook (omni-webhook receiver).
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 15
+          resources:
+            requests:
+              cpu: "10m"
+              memory: 32Mi
+            limits:
+              cpu: "200m"
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+            - name: data
+              mountPath: /alertmanager
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-chaos-config
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitor
+  labels:
+    app: alertmanager
+spec:
+  type: ClusterIP
+  selector:
+    app: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: http

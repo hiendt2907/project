@@ -22,18 +22,17 @@ async def extract_entities_llm(ctx: Any, user_text: str) -> dict[str, Any]:
     """Gọi model_helper — JSON entities."""
     settings = getattr(ctx, "settings", None)
     model = getattr(settings, "model_helper", None) or "qwen2.5:1.5b"
-    ollama = getattr(ctx, "ollama", None)
-    if ollama is None or not (user_text or "").strip():
+    llm = getattr(ctx, "llm", None)
+    if llm is None or not (user_text or "").strip():
         return {}
     try:
-        resp = await ollama.chat(
+        resp = await llm.chat(
             model=model,
             messages=[
                 {"role": "system", "content": ENTITY_SCHEMA_HINT},
                 {"role": "user", "content": (user_text or "")[:4000]},
             ],
             options={"temperature": 0.0},
-            keep_alive=getattr(settings, "ollama_keep_alive", "5m"),
         )
         raw = ((resp.get("message") or {}).get("content") or "").strip()
         m = re.search(r"\{[^{}]*\}", raw, re.DOTALL)

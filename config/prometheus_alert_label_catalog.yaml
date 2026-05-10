@@ -149,6 +149,14 @@ alerts:
       summary: "Pod container CPU usage high vs limit (multi-agent)"
       description: "CPU rate / limit > 85% for 5m. namespace={{ $labels.namespace }} pod={{ $labels.pod }} container={{ $labels.container }}."
     workload_resolve: { deployment: nginx-test, container: nginx }
+  # Training-only name — disambiguates matrix rows that share PodCpuUtilizationVsLimitHigh semantics
+  OmniStaleSecretAuthTrap:
+    static_labels: { severity: warning, domain: pod, signal: auth }
+    series_label_keys: [namespace, pod, container]
+    annotations:
+      summary: "Training: secret rotated but pods still run with stale env (matrix stale_secret_auth_trap)"
+      description: "Compare pod restart time against secret update time; use for incident matrix payloads only."
+    workload_resolve: { deployment: nginx-test, container: nginx }
   PodMemoryWorkingSetVsLimitHigh:
     static_labels: { severity: warning, domain: pod, signal: memory }
     series_label_keys: [namespace, pod, container]

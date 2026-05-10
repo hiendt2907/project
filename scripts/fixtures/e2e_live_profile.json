@@ -1,0 +1,141 @@
+{
+  "gateway_receiver_name": "omni-webhook",
+  "omni_namespace": "multi-agent",
+  "kafka_svc_name": "kafka",
+  "redis_ma_svc_name": "redis",
+  "gateway_svc_name": "omni-gateway",
+  "analyst_deploy_name": "omni-analyst",
+  "siem_bridge_deploy_name": "omni-siem-bridge",
+  "kafka_topic_diagnostic_evidence": "omni-diagnostic-evidence",
+  "kafka_topic_alerts": "omni-alerts",
+  "kafka_topic_actions": "omni-actions",
+  "siem_redis_stream": "stream:actionable_incidents",
+  "fg_redis_namespace_order": ["finguard-customer"],
+  "fg_redis_pod_name": "redis-0",
+  "fg_redis_auth_secret_name": "redis-auth",
+  "gateway_webhook_path": "/webhook/prometheus",
+  "baseline_snapshot_ttl_sec": 3600,
+  "lane_pre_inject_sleep_sec": 8,
+  "trace_fallback_lane1": "HighCPUUsage",
+  "trace_fallback_lane2": "PodNotReady",
+  "siem_trace_prefix": "fg-",
+  "siem_incident_id_prefix": "e2e-siem-",
+  "siem_random_hex_len": 8,
+  "siem_trace_body_hex_len": 8,
+  "siem_category": "ddos",
+  "siem_severity": "critical",
+  "siem_tenant_id": "e2e-tenant",
+  "siem_source": "e2e-probe",
+  "siem_affected_ip": "10.0.0.42",
+  "siem_description": "E2E test: DDoS flood detected from 10.0.0.42 against multi-agent namespace",
+  "siem_suggested_action": "Block source IP at firewall and escalate to SOC",
+  "siem_hitl_required": "true",
+  "siem_alert_rule": "DDoSFloodDetected",
+  "siem_alert_hint": "High-rate SYN flood from single source IP",
+  "siem_k8s_namespace": "multi-agent",
+  "lane1_deployment": "nginx-test",
+  "lane1_summary": "High CPU usage on nginx-test in multi-agent",
+  "lane1_description": "CPU usage > 90% sustained for 5 minutes on nginx-test deployment",
+  "lane2_deployment": "omni-analyst",
+  "lane2_pod": "omni-analyst-pod-0",
+  "lane2_summary": "Pod memory at 95% of limit — OOM eviction imminent",
+  "lane2_description": "container_memory_working_set_bytes/limit=0.95 sustained 5m; omni-analyst pod at risk of OOMKilled",
+  "lane3_symptom_group": "http_surge",
+  "lane3_evidence_labels": {
+    "alertname": "HighErrorRateSurge",
+    "namespace": "multi-agent",
+    "service": "nginx-test",
+    "severity": "warning"
+  },
+  "runbook_who_hints": ["nginx-test", "multi-agent"],
+  "lane2_multi_signal_keywords": ["memory", "oom", "limit", "eviction", "omni-analyst"],
+  "log_markers_lane1": [
+    "3-SIGMA RESOURCE BASELINE",
+    "advisory_analyst_ok",
+    "advisory_analyst_null",
+    "event=advisory_analyst",
+    "SUGGEST_REMEDIATION",
+    "diag_batch_flush"
+  ],
+  "log_markers_lane2": [
+    "advisory_analyst_ok",
+    "advisory_analyst_null",
+    "SUGGEST_REMEDIATION",
+    "source=advisory_render",
+    "audit_block_written",
+    "diag_batch_flush"
+  ],
+  "log_markers_lane3": [
+    "advisory_analyst_ok",
+    "advisory_analyst_null",
+    "event=advisory",
+    "SUGGEST_REMEDIATION",
+    "business_errors",
+    "rate_limit"
+  ],
+  "log_markers_lane4": [
+    "siem_suggest_only_emitted",
+    "SIEM_SUGGEST_ONLY"
+  ],
+  "lane1_log_anchors": {
+    "3-sigma baseline marker (primary)": "$LANE1_PRIMARY_MARKER",
+    "z_cpu annotated": "z_cpu=",
+    "ANOMALY label present": "ANOMALY",
+    "advisory analyst reached": "advisory_analyst",
+    "diag batch flushed": "diag_batch_flush"
+  },
+  "lane2_log_anchors": {
+    "advisory analyst reached": "advisory_analyst",
+    "SUGGEST_REMEDIATION emitted": "SUGGEST_REMEDIATION",
+    "audit CRAT block written": "audit_block_written",
+    "advisory_analyst_ok (LLM used)": "advisory_analyst_ok",
+    "diag batch flushed": "diag_batch_flush"
+  },
+  "lane3_log_anchors": {
+    "advisory analyst reached": "advisory_analyst",
+    "SUGGEST_REMEDIATION emitted": "SUGGEST_REMEDIATION"
+  },
+  "lane3_http_classify_expectations": [
+    {"status": 429, "expected_class": "rate_limit", "bypass": true, "note": "sigma bypass OK"},
+    {"status": 499, "expected_class": "client_abort", "bypass": false, "note": "informational only — NOT bypass"},
+    {"status": 401, "expected_class": "auth_failure", "bypass": true, "note": "sigma bypass OK"},
+    {"status": 403, "expected_class": "auth_failure", "bypass": true, "note": "sigma bypass OK"},
+    {"status": 500, "expected_class": "5xx", "bypass": true, "note": "sigma bypass OK"}
+  ],
+  "lane4_diag_substrings_required": [
+    "WHAT:",
+    "WHO:",
+    "WHY:",
+    "HOW-TO",
+    "Forecast",
+    "+1h",
+    "+24h",
+    "kubectl",
+    "NOT auto-execute"
+  ],
+  "lane4_forecast_blob_substrings_required": ["+1h", "+24h"],
+  "lane4_require_incident_id_in_diag": true,
+  "lane4_cluster_log_substrings": [
+    "siem_suggest_only_emitted",
+    "SIEM_SUGGEST_ONLY"
+  ],
+  "stream_tags_by_lane": {
+    "1": "SYS_RESOURCE",
+    "2": "SYS_HARD_FAIL",
+    "3": "APP_HTTP",
+    "4": "SIEM_SECURITY"
+  },
+  "crat_phase1_ingress_timeout_sec": 30,
+  "crat_phase2_timeout_sec": 60,
+  "crat_phase3_timeout_sec": 180,
+  "crat_phase4_wait_sec": 5,
+  "kafka_consumer_auto_offset_reset": "latest",
+  "paths": {
+    "lane1_gateway_alert_template": "scripts/fixtures/e2e_lane1_gateway_alert.template.json",
+    "lane2_gateway_alert_template": "scripts/fixtures/e2e_lane2_gateway_alert.template.json",
+    "lane3_evidence_batch_template": "scripts/fixtures/e2e_lane3_evidence_batch.template.json",
+    "baseline_snapshot": "scripts/fixtures/e2e_baseline_snapshot.json",
+    "siem_redis_xadd_row_template": "scripts/fixtures/e2e_siem_redis_xadd_row.template.json",
+    "lane4_analyst_siem_evidence_batch_template": "scripts/fixtures/e2e_lane4_analyst_siem_evidence_batch.template.json"
+  }
+}

@@ -8,9 +8,9 @@
 #   - registry fragment JSONL (scenario_id, trace_id) derived from report
 #
 # Usage:
-#   bash scripts/chaos_rag_lab_run.sh              # smoke (2 gateway scenarios)
-#   CHAOS_RAG_FULL=1 bash scripts/chaos_rag_lab_run.sh   # all scenarios from MATRIX_PATHS
-#   SCENARIOS=nginx_waiting_fault,redis_probe_fault bash scripts/chaos_rag_lab_run.sh
+#   NS=<ns> bash scripts/chaos_rag_lab_run.sh              # smoke (2 gateway scenarios)
+#   NS=<ns> CHAOS_RAG_FULL=1 bash scripts/chaos_rag_lab_run.sh   # all scenarios from MATRIX_PATHS
+#   NS=<ns> SCENARIOS=nginx_waiting_fault,redis_probe_fault bash scripts/chaos_rag_lab_run.sh
 #
 # Env: same as e2e_incident_matrix.sh (NS, MATRIX_PATHS, SLEEP_SEC, STRICT_ASSERT, REPORT_JSON)
 set -euo pipefail
@@ -24,7 +24,10 @@ fi
 
 STRICT_ASSERT="${STRICT_ASSERT:-0}"
 SLEEP_SEC="${SLEEP_SEC:-8}"
-NS="${NS:-multi-agent}"
+if [[ -z "${NS:-}" ]]; then
+  echo "chaos_rag_lab_run.sh: set NS to the target Kubernetes namespace (no default)." >&2
+  exit 2
+fi
 REPORT_JSON="${REPORT_JSON:-${ROOT}/reports/chaos-rag-lab/latest.json}"
 CHAOS_RUN_ID="${CHAOS_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 export NS STRICT_ASSERT SLEEP_SEC REPORT_JSON MATRIX_PATHS

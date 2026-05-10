@@ -15,7 +15,15 @@ TRANSITION_DIAGNOSED = "DIAGNOSED"
 TRANSITION_PLAN_EMITTED = "PLAN_EMITTED"
 TRANSITION_EXECUTED = "EXECUTED"
 TRANSITION_VERIFIED_SUCCESS = "VERIFIED_SUCCESS"
+TRANSITION_STATE_MACHINE_VERIFIED = "STATE_MACHINE_VERIFIED"
 TRANSITION_REQUIRES_HUMAN = "REQUIRES_HUMAN"
+TRANSITION_POST_VERIFY_STATE_OK = "POST_VERIFY_STATE_OK"
+TRANSITION_POST_VERIFY_STATE_FAIL = "POST_VERIFY_STATE_FAIL"
+TRANSITION_OS_RUNBOOK_EMITTED = "OS_RUNBOOK_EMITTED"
+TRANSITION_DRY_RUN_PASSED = "DRY_RUN_PASSED"
+TRANSITION_DRY_RUN_FAILED = "DRY_RUN_FAILED"
+TRANSITION_COMMAND_FEEDBACK_INGESTED = "COMMAND_FEEDBACK_INGESTED"
+TRANSITION_RE_EVALUATED = "RE_EVALUATED"
 
 
 async def _next_seq(redis_cli: Any, trace_id: str) -> int:
@@ -67,13 +75,16 @@ async def emit_transition(
         except Exception as e:
             logger.debug("emit_transition kafka skip: %s", e)
     try:
+        d = (detail or "").strip()
+        dlog = f" detail={d[:240]}" if d else ""
         logger.info(
-            "[%s] event=autonomy_transition transition=%s status=%s component=%s seq=%s",
+            "[%s] event=autonomy_transition transition=%s status=%s component=%s seq=%s%s",
             tid,
             transition,
             status,
             component or "unknown",
             seq,
+            dlog,
         )
     except Exception:
         pass

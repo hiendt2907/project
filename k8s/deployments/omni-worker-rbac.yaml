@@ -1,20 +1,6 @@
-# Omni-worker SA: quyền cluster-admin (yêu cầu vận hành: rollout/restart toàn cluster).
-# God-Mode V3 k8s_cluster_tools (scale/patch/describe/logs/endpoints): cluster-admin đã bao phủ;
-# RoleBinding pod-reader bổ sung đọc pods/log/events trong multi-agent (không thay thế cluster-admin).
-# Cảnh báo: ServiceAccount này có quyền tương đương admin — chỉ dùng trong môi tin cậy.
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: omni-worker-cluster-admin
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: cluster-admin
-subjects:
-  - kind: ServiceAccount
-    name: omni-worker
-    namespace: multi-agent
+# Omni-worker SA: least-privilege read-only access.
+# Mutations are the executor's responsibility (executor-rbac-lab.yaml / rbac-executor-least-privilege.yaml).
+# cluster-admin binding removed — invariant: NEVER cluster-admin on any SRE automation SA.
 ---
 # RBAC đọc Pod trong namespace multi-agent (omni-worker tool k8s_list_pods) — bổ sung; cluster-admin đã bao phủ.
 apiVersion: v1
@@ -52,6 +38,70 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: omni-worker-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: omni-worker
+    namespace: multi-agent
+---
+# Temporal Prober: cross-namespace architecture visibility.
+# Secrets intentionally excluded — read access to secrets = credential exposure vector.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-temporal-prober-role
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - pods/status
+      - nodes
+      - nodes/status
+      - namespaces
+      - services
+      - endpoints
+      - persistentvolumes
+      - persistentvolumeclaims
+      - events
+      - resourcequotas
+      - limitranges
+      - configmaps
+      - serviceaccounts
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "volumeattachments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: omni-temporal-prober-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-temporal-prober-role
 subjects:
   - kind: ServiceAccount
     name: omni-worker

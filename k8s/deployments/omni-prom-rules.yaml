@@ -54,7 +54,21 @@ spec:
               omni_worker_error_rate > 5 lỗi/giây trong 3 phút liên tiếp.
               Component: {{ $labels.component }} | Error: {{ $labels.error_type }}.
 
-        # Alert 4: Latency P99 vượt ngưỡng 30 giây
+        # Alert 4: RAG empty results (LLM receiving degraded context)
+        - alert: OmniRagEmptyResultSurge
+          expr: increase(omni_rag_empty_result_total[5m]) > 5
+          for: 0m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "RAG search returning empty results — LLM context degraded"
+            description: |
+              omni_rag_empty_result_total increased by {{ $value }} in 5m.
+              Collection: {{ $labels.collection }} | Type: {{ $labels.search_type }}.
+              Action: Check Redis Stack index health (FT.INFO idx:<collection>).
+
+        # Alert 5: Latency P99 vượt ngưỡng 30 giây
         - alert: OmniHighLatency
           expr: histogram_quantile(0.99, rate(omni_worker_latency_seconds_bucket[5m])) > 30
           for: 2m

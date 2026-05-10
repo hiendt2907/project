@@ -54,3 +54,11 @@ def install_gateway_trace_logging() -> None:
         "aiohttp.web",
     ):
         logging.getLogger(name).addFilter(filt)
+    # Ensure gateway namespace emits INFO to stdout (uvicorn sets root to WARNING by default)
+    gw_logger = logging.getLogger("gateway")
+    if not gw_logger.handlers:
+        _h = logging.StreamHandler()
+        _h.setLevel(logging.INFO)
+        gw_logger.setLevel(logging.INFO)
+        gw_logger.addHandler(_h)
+        gw_logger.propagate = False

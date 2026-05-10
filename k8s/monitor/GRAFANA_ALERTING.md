@@ -29,6 +29,13 @@ kubectl create secret generic grafana-telegram-alerting \
 
 Do not commit real tokens. The **initContainer** mounts the Secret as files under `/var/secrets/telegram/` and writes `contact_points.yaml` with YAML **double-quoted** `bottoken` / `chatid` (numeric chat IDs stay valid strings; avoids Grafana env interpolation quirks).
 
+## Contact points (provisioned)
+
+- **`omni-gateway`** (default notification policy): HTTP POST to `http://omni-gateway.multi-agent.svc.cluster.local/webhook/prometheus`. This is the **operational** path: Grafana firing → gateway → Kafka `omni-alerts` → `omni-prober` diagnostics → `omni-analyst` (LLM advisory, CRAT) → Telegram advisory + `SUGGEST_REMEDIATION` on `omni-actions` (audit-only when auto-execute is off).
+- **`omni-telegram`**: direct Telegram from Grafana (raw notification). Still provisioned for **Test** in the UI or custom routes; it **does not** run the Omni analysis pipeline.
+
+Secret `grafana-telegram-alerting` is still required so the initContainer can render `omni-telegram` for tests; it does not affect `omni-gateway`.
+
 ## Apply and restart Grafana
 
 ```bash
@@ -40,8 +47,9 @@ Do not commit real tokens. The **initContainer** mounts the Secret as files unde
 
 ## Verify
 
-- **Alerting → Contact points**: `omni-telegram` is present.
-- Use **Test** on the contact point to confirm Telegram delivery.
+- **Alerting → Contact points**: `omni-gateway` and `omni-telegram` are present.
+- **Default policy** should show receiver **`omni-gateway`** (see `grafana-alerting-provisioning.yaml`).
+- Use **Test** on `omni-telegram` only for a raw Telegram ping; for full analysis, fire an alert that routes to `omni-gateway`, then check `omni-analyst` logs or Telegram for the advisory trace line.
 
 ## Troubleshooting (Telegram)
 
@@ -53,4 +61,4 @@ Do not commit real tokens. The **initContainer** mounts the Secret as files unde
 
 Prometheus rules in `k8s/monitor/prometheus.yaml` (`OmniBaselineCpuZHigh`, `OmniBaselineMemZHigh`, `OmniBaselineDiskZHigh`) fire in Prometheus; without Alertmanager they do not send Telegram. Grafana contact points apply to **Grafana Unified Alerting** (Grafana-managed rules or routes you configure).
 
-To test end-to-end without duplicating PromQL in two systems: create a **temporary** Grafana alert rule in the UI (Prometheus datasource, same expression as an OmniBaseline rule) and select contact point `omni-telegram`. If you later add provisioned Grafana rules mirroring those PromQL expressions, consider reducing or disabling the `omni_baseline_alerts` group in Prometheus to avoid duplicate firing in UIs.
+To test end-to-end without duplicating PromQL in two systems: create a **temporary** Grafana alert rule in the UI (Prometheus datasource, same expression as an OmniBaseline rule) and select contact point **`omni-gateway`** (or rely on the default policy after provisioning). If you later add provisioned Grafana rules mirroring those PromQL expressions, consider reducing or disabling the `omni_baseline_alerts` group in Prometheus to avoid duplicate firing in UIs.

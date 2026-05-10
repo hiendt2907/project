@@ -1,4 +1,4 @@
-"""Ingest 100k cli_hil_context: tiếng Việt + suggested_commands → Ollama embed → Postgres RAG."""
+"""Ingest 100k cli_hil_context: tiếng Việt + suggested_commands → Ollama embed → Redis RAG."""
 
 from __future__ import annotations
 
@@ -11,12 +11,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import redis.asyncio as aioredis
+
+from llm.vllm_client import VLLMClient
+from rag.redis_vector_store import RedisVectorStore, PostgresRAGSettings
 from rag.pgvector_store import (
-    COLLECTION_CLI_HIL_CONTEXT, 
-    PGVectorStore, 
-    PointStruct, 
-    PostgresRAGSettings, 
-    init_pg_pool
+    COLLECTION_CLI_HIL_CONTEXT,
+    PointStruct,
 )
 from training.cli_hil_pools import GENERATOR_VERSION, MAX_COMBINATIONS, cli_hil_payload, generate_cli_hil_entry
 from training import sop_ingest as sop_ingest_mod
@@ -60,8 +61,8 @@ def build_run_commands_json(
 ) -> dict[str, Any]:
     """Lệnh mẫu để chạy ingest (local + gợi ý Job K8s)."""
     local = (
-        f"PYTHONPATH=src OMNI_OLLAMA_BASE_URL={settings.ollama_base_url} "
-        f"POSTGRES_RAG_DSN=${{POSTGRES_RAG_DSN:-postgresql://appuser:${{OMNI_DB_PASSWORD}}@pgpool-gateway:5432/ragdb}} "
+        f"PYTHONPATH=src OMNI_VLLM_BASE_URL={settings.vllm_base_url} "
+        f"OMNI_REDIS_URL=${{OMNI_REDIS_URL:-redis://redis:6379/0}} "
         f"CLI_HIL_COLLECTION={collection} "
         f".venv/bin/python -m training.cli_hil_ingest --count {count}"
         + (" --dry-run" if dry_run else "")
@@ -119,11 +120,12 @@ async def run_cli_hil_ingest(
         )
         return total_to_process
 
-    ollama = OllamaClient(base_url=settings.ollama_base_url, timeout_s=120.0)
-    pg_settings = PostgresRAGSettings()
-    pg_pool = await init_pg_pool(pg_settings)
-    vector_store = PGVectorStore(pg_pool)
-    sem = asyncio.Semaphore(settings.training_ollama_concurrency)
+    llm = VLLMClient(base_url=settings.vllm_base_url, embed_url=settings.vllm_embed_url, timeout_s=120.0)
+    redis_url = os.environ.get("OMNI_REDIS_URL", "redis://redis:6379/0")
+    r = aioredis.from_url(redis_url, decode_responses=False)
+    vector_store = RedisVectorStore(r)
+    await vector_store.ensure_ready()
+    sem = asyncio.Semaphore(settings.training_llm_concurrency)
     done = 0
 
     try:
@@ -151,10 +153,10 @@ async def run_cli_hil_ingest(
 
             async with sem:
                 vecs = await sop_ingest_mod._embed_batch(
-                    ollama,
+                    llm,
                     model=settings.embed_model,
                     texts=texts,
-                    keep_alive=settings.ollama_keep_alive,
+                    
                 )
 
             for e, vec in zip(entries, vecs, strict=True):
@@ -176,12 +178,13 @@ async def run_cli_hil_ingest(
         logger.info("cli_hil_ingest complete: %s points", done)
         return done
     finally:
-        await ollama.aclose()
+        await llm.aclose()
         await vector_store.close()
+        await r.aclose()
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Ingest cli_hil_context (VN + CLI hints) → Postgres")
+    p = argparse.ArgumentParser(description="Ingest cli_hil_context (VN + CLI hints) → Redis RAG")
     p.add_argument("--count", type=int, default=DEFAULT_COUNT, help=f"Số điểm (max {MAX_COMBINATIONS})")
     p.add_argument("--start-index", type=int, default=None, help="Bắt đầu từ index (không dùng checkpoint)")
     p.add_argument("--dry-run", action="store_true", help="Không ghi Postgres RAG")

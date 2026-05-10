@@ -6,6 +6,10 @@ metadata:
   namespace: multi-agent
   labels:
     app: omni-gateway
+    app.kubernetes.io/name: omni-gateway
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/criticality: "P1"
 spec:
   replicas: 2
   selector:
@@ -15,6 +19,10 @@ spec:
     metadata:
       labels:
         app: omni-gateway
+        app.kubernetes.io/name: omni-gateway
+        app.kubernetes.io/part-of: omni-platform
+        omni.io/managed: "true"
+        omni.io/criticality: "P1"
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
@@ -34,6 +42,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: omni-worker-config
+            - secretRef:
+                name: omni-gateway-secret
+                optional: true
 ---
 apiVersion: v1
 kind: Service
@@ -48,3 +59,41 @@ spec:
       port: 80
       targetPort: 8000
   type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-gateway-netpol
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from: []
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

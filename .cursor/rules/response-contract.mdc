@@ -1,9 +1,0 @@
----
-description: Enforce concise structured answers
-alwaysApply: true
----
-
-- Keep responses concise and structured.
-- Use: Findings -> Root cause -> Next actions.
-- Avoid long logs/config dumps; quote only critical lines.
-- Prefer 1-line bullets, max 8 bullets by default.

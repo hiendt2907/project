@@ -33,6 +33,7 @@ from workers.promql_presets import (
     build_promql_from_intent,
     resolve_intent_from_keywords,
 )
+from workers.promql_workload_helpers import workload_prefix_from_tool_args
 from workers.telegram_ctx import effective_telegram_chat_id, should_send_telegram_chart
 from workers.metrics_exporter import inc_promql_placeholder_rejected
 from workers.settings import default_prometheus_http_base
@@ -265,19 +266,23 @@ def resolve_promql_for_args(args: dict[str, Any], ctx: Any) -> tuple[str, str]:
     ns = str(args.get("namespace") or "").strip() or _default_namespace(ctx)
     pod_raw = args.get("pod_name") if args.get("pod_name") is not None else args.get("pod")
     pod_s = str(pod_raw).strip() if pod_raw is not None else ""
-    if not pod_s:
+    wl = workload_prefix_from_tool_args(args)
+    if not pod_s and not wl:
         raise ValueError(
-            "Thiếu pod_name — pod (cAdvisor) cần namespace + pod; hoặc dùng "
+            "Thiếu pod_name hoặc deployment/workload — pod (cAdvisor) cần namespace + pod, "
+            "hoặc namespace + deployment/workload; hoặc dùng "
             "target_type=host | kube_deployment | kube_namespace."
         )
     built, note, _meta = build_dynamic_promql(
         "pod",
         intent,
-        pod_name=pod_s,
+        pod_name=pod_s if pod_s else None,
         namespace=ns,
         node=node_s,
+        workload_prefix=wl,
     )
-    return built, f"auto pod {note} ns={ns}"
+    src = "auto pod workload-regex" if wl else "auto pod"
+    return built, f"{src} {note} ns={ns}"
 
 
 async def _vm_instant_scalar(ctx: Any, query: str) -> float | None:
@@ -631,36 +636,6 @@ async def tool_redis_info(ctx: Any, args: dict[str, Any]) -> str:
         except Exception as e:
             return f"Lỗi Redis INFO: {e!s}"
     return await tool_redis_health(ctx, args)
-
-
-async def tool_pgvector_health(ctx: Any, args: dict[str, Any]) -> str:
-    """Kiểm tra bắt buộc `itops_sop_ledger` / `itops_error_ledger` qua Postgres HA."""
-    store = getattr(ctx, "vector_store", None)
-    if store is None:
-        return "Không có ctx.vector_store (Postgres)."
-    try:
-        async with store._pool.acquire() as conn:
-            rows = await conn.fetch("SELECT DISTINCT collection_name FROM rag_documents")
-            names = [r["collection_name"] for r in rows]
-            
-        lines: list[str] = ["=== pgvector_health (Postgres HA) ===", f"collections={names}"]
-        for must in (COLLECTION_SOP, COLLECTION_ERRORS):
-            if must in names:
-                async with store._pool.acquire() as conn:
-                    cnt = await conn.fetchval("SELECT count(*) FROM rag_documents WHERE collection_name = $1", must)
-                lines.append(f"OK {must}: points_count={cnt}")
-            else:
-                lines.append(f"MISSING {must} (Postgres partition empty)")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Lỗi Postgres pgvector: {e!s}"
-
-
-async def tool_pgvector_status(ctx: Any, args: dict[str, Any]) -> str:
-    return await tool_pgvector_health(ctx, args)
-
-async def tool_pgvector_health_audit(ctx: Any, args: dict[str, Any]) -> str:
-    return await tool_pgvector_health(ctx, args)
 
 
 async def tool_query_historical_metrics(ctx: Any, args: dict[str, Any]) -> str:
@@ -1254,28 +1229,9 @@ async def tool_net_scapy_interfaces(ctx: Any, args: dict[str, Any]) -> str:
         return f"scapy không khả dụng hoặc cần quyền: {e!s}"
 
 
-async def tool_postgres_ping(ctx: Any, args: dict[str, Any]) -> str:
-    """Thử kết nối Postgres qua asyncpg nếu OMNI_POSTGRES_DSN có."""
-    s = getattr(ctx, "settings", None)
-    dsn = (getattr(s, "postgres_dsn", None) or "").strip() if s else ""
-    if not dsn:
-        return "Chưa cấu hình OMNI_POSTGRES_DSN — bỏ qua."
-    try:
-        import asyncpg  # noqa: PLC0415
-
-        conn = await asyncpg.connect(dsn, timeout=10.0)
-        try:
-            v = await conn.fetchval("SELECT 1")
-            return f"PostgreSQL OK (SELECT 1 → {v})."
-        finally:
-            await conn.close()
-    except Exception as e:
-        return f"Lỗi asyncpg: {e!s}"
-
-
 async def tool_vendor_knowledge_search(ctx: Any, args: dict[str, Any]) -> str:
     """RAG trên ``vendor_knowledge`` (docs đã ingest). Không thay kubectl/SDK."""
-    from workers.handlers import _embedding_from_ollama
+    from workers.handlers import _embedding_from_response
     from rag.pgvector_store import COLLECTION_VENDOR_KNOWLEDGE
 
     q = str(args.get("query") or "").strip()
@@ -1285,12 +1241,11 @@ async def tool_vendor_knowledge_search(ctx: Any, args: dict[str, Any]) -> str:
     limit = int(args.get("limit") or 5)
     st = args.get("score_threshold")
     score_threshold = float(st) if st is not None else None
-    emb_resp = await ctx.ollama.embed(
+    emb_resp = await ctx.llm.embed(
         model=ctx.settings.embed_model,
         input=q[:8000],
-        keep_alive=ctx.settings.ollama_keep_alive,
     )
-    vec = _embedding_from_ollama(emb_resp)
+    vec = _embedding_from_response(emb_resp)
     pf = None
     if isinstance(layer, str) and layer.strip():
         pf = {"layer": layer.strip()}
@@ -1326,9 +1281,8 @@ async def tool_k8s_expert_search(ctx: Any, args: dict[str, Any]) -> str:
     resp = await ctx.vector_store.similarity_search(
         q,
         coll,
-        ollama=ctx.ollama,
+        llm=ctx.llm,
         embed_model=ctx.settings.embed_model,
-        keep_alive=ctx.settings.ollama_keep_alive,
         limit=limit,
         score_threshold=score_threshold,
     )

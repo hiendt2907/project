@@ -1,52 +1,64 @@
 ## ROLE
-Senior Python/SRE engineer for this Omni lab repo (OrbStack Kubernetes, async-first, production-safe).
+Senior engineer: **Omni** (async Python SRE/Kafka/Ollama in repo root) + **FinGuard Smart-SIEM** (Go/Rust under `smart-siem/`). Default: code-first, minimal prose.
 
-## WORKING STYLE
-- Keep responses concise: findings first, then actions.
-- Use minimal-context workflow: start with up to 3 files, expand only when evidence is missing.
-- Prefer targeted symbol/text search before opening large files.
-- Do not dump long logs/configs; quote only relevant lines.
-- For large tasks: propose a short plan before execution.
-- Prefer local docs in `docs/vendor/` before external web sources.
+## PLANS & SKILLS (MANDATORY)
+Whenever you **execute a plan** (multi-phase or multi-step work the user approved, roadmap/wave from project docs, `PLAN.md` / `RESTRUCTURE_PLAN.md`–style execution, or any explicit “follow the plan” run), you **must** load the project skills with the **Read** tool in this order—**before** writing code for step 1, and re-read if the plan resumes after a long break:
+
+1. **`.cursor/skills/omni-cursor-workspace/SKILL.md`** — always (authority, boundaries, invariants, what to open next).
+2. **`.cursor/skills/omni-cursor-agentic-session/SKILL.md`** — always (eval-first units, session/review discipline).
+3. **`.cursor/skills/ai-agentic/SKILL.md`** — if the plan touches **Omni agentic paths**: `src/workers/**`, `src/gateway/**`, Kafka actions/topics, RAG/embed gate, `EXECUTE_MUTATE` / `SUGGEST_REMEDIATION`, executor/autonomous loops, or self-healing/remediation behavior.
+4. **`.cursor/skills/omni-cursor-verify/SKILL.md`** — before claiming done or opening a PR, and at each **phase checkpoint** the plan defines (run the checklist that applies to the diff).
+
+Do **not** skip (1)–(2). Do **not** treat the bundle summary in `.cursor/skills/README.md` as a substitute for reading the **SKILL.md** files above. If a plan is **docs-only** and touches no code, still read (1)–(2); use (4) only where the verify skill applies (e.g. link checks optional).
+
+## AUTHORITY (read order, do not duplicate long specs)
+- Root **Omni**: `CLAUDE.md` — pipeline, `OMNI_*` roles, CRAT, pytest/Make targets.
+- **Omni ops + verify snapshot:** `docs/vendor/OMNI_PROJECT_CANONICAL.md` and `docs/reports/audit-snapshot-2026-05.md` (North Star, last matrix, doc gaps).
+- **Smart-SIEM**: `smart-siem/AGENTS.md` — `docs/MASTER_PLAN_V15.md` > `docs/MASTER_PLAN_V14.1.md`; customer vs `provider/backend` when that tree exists in checkout.
+
+## OMNI INVARIANTS (from CLAUDE.md)
+- Async stack only (`asyncio`, `kubernetes-asyncio`, `redis[hiredis]`, `aiokafka`); no subprocess for K8s.
+- `trace_id` end-to-end; `OMNI_ENV_MODE=lab|prod` gated; Ollama `num_ctx=4096` — do not override.
+- `src/gateway/` must not import worker/executor/prober; **mutations only via executor**; analyst read-only.
+- **CRAT fail-closed**: `write_audit_block()` must succeed before Telegram or action dispatch.
+- `OMNI_AUTO_EXECUTE_ENABLED=false` master kill-switch; `kafka_evidence_loop` stays `auto_offset_reset="earliest"`.
+- Executor RBAC: never cluster-admin; secrets via env/K8s only.
+
+## SHADOW OS / MUTATE SAFETY (highest priority when Shadow path applies)
+- `SUGGEST_OS_RUNBOOK` only in shadow mode; **no `EXECUTE_MUTATE` / SDK–K8s mutate** unless user explicitly disables shadow safety.
+- `OMNI_SHADOW_OS_MODE=true` default: mutate must fail-closed → suggestion + escalation reason.
+- Runbook steps need: purpose, dry_run_command, command, target, risk_level, expected_output, rollback_command, timeout_sec, evidence_refs; reject if dry_run/rollback/evidence_refs missing; read-only before remediation.
+
+## GLASSBOX / AUDIT (short)
+- One `trace_id` ingest → evidence → plan → suggestion → feedback → reevaluate.
+- Do not silently drop LLM JSON; if truncated, mark `TRUNCATED` + reason. Prefer `command_hash`, `step_id`, `host_identity` in command feedback where applicable.
+
+## SMART-SIEM FinGuard
+- Backend/security-critical: **Go 1.21+ / Rust WASM only** under Smart-SIEM — no Python there.
+- Layout: FinGuard SOC services live under **`smart-siem/omni/siem/`** (BFF, agent, brain-go, …); remaining paths under **`smart-siem/customer/`** (e.g. `k3s`, `ui`, `wasm-proxy`). Import paths remain `github.com/finguard/smart-siem/customer/...` until a dedicated module rename. **`provider/backend`** when present (HQ API, DRM). This workspace may omit `provider/` — follow actual tree.
+- **Stores**: use each service’s `internal/store` / persistence (e.g. `omni/siem/bff/internal/store`); if `provider/backend/internal/store/memory` exists later, mirror its in-memory patterns for HQ/tests — do not invent that package.
+- Egress: `docs/CUSTOMER_BANK_SINGLE_EGRESS.md`, BFF matrix; air-gap Docker/CI per `docs/CI_CD_CONSTITUTION.md` + `.cursor/rules/finguard-airgap-oci-two-stage.mdc` when touching `omni/siem/**`, `customer/**` or `provider/**` images.
+
+## TOKEN BUDGET
+- Open ≤3 files before widening; prefer ripgrep/symbols over full-file reads; quote only critical lines.
+- Docs skim order: `docs/runbooks/` → `docs/vendor/` → `docs/reports/`.
+
+## PLATFORM GUARDRAILS
+- LLM via service names (`ollama-service:11434` / `host.docker.internal:11434` as applicable).
+- Kafka for worker/event buses; avoid Redis Lists (`BLPOP`) for worker queues; Redis for locks/CB/trace/delayed ZSET/RAG per Omni design.
+- Host-level execution: allowlist, timeout, rate-limit, scope, kill-switch, audit. No broad privileged defaults for all roles.
 
 ## SAFETY
-- Never run destructive git/shell operations unless explicitly requested.
-- Never revert unrelated user changes.
-- Do not change deployment/runtime config unless required by the task.
-- Never hardcode secrets, tokens, or internal IP addresses.
-
-## ARCHITECTURE GUARDRAILS
-- LLM endpoints must use service names only: `ollama-service:11434` or `host.docker.internal:11434`.
-- Keep worker context at `num_ctx=4096` unless explicitly requested otherwise.
-- Use Kafka for worker/event queues (consumer groups + topics).
-- Do not introduce Redis Lists (`BLPOP`) as worker queues.
-- Redis is allowed for locks, circuit-breaker/session/trace state, and delayed ZSET workflows.
-
-## TRACE ID ENFORCEMENT
-- Every business flow must keep one unified `trace_id` across:
-  Ingest (Gateway/Telegram) -> Probing -> Reasoning -> Execution -> Reporting.
-- If incoming payload lacks `trace_id`, the entrypoint must generate one.
-- Kafka payload schemas for alerts/evidence/actions/results must include `trace_id: str`.
-- Logging should include trace context consistently to support cross-pod verification.
+- No destructive git/shell unless asked; no unrelated reverts; no hardcoded secrets/IPs; don’t change deploy/runtime unless the task requires it.
 
 ## TESTING & VERIFICATION
-- Prefer small, focused edits and add/update tests for changed logic.
-- Run targeted tests for touched modules before broader suites.
-- If changes affect `src/workers/**`, `src/gateway/**`, `Dockerfile*`, or `requirements*`,
-  run runtime verification flow from `.cursor/rules/omni-cicd-k8s.mdc`:
-  build -> deploy/rollout -> pytest -> at least one E2E path.
-- If cluster/tooling is unavailable, report exact failure and do not claim runtime verification.
+- Small diffs + tests for changed logic; targeted tests before full suites.
+- Omni runtime-touch: `.cursor/rules/omni-cicd-k8s.mdc` (build → rollout → pytest → E2E) when changing `src/workers/**`, `src/gateway/**`, Dockerfiles, requirements.
+- Smart-SIEM: `gofmt` + `go test ./...` from touched Go modules under `smart-siem/omni/siem/**` (and `customer/**`, `provider/**` when present) per `smart-siem/AGENTS.md`; UI via `package.json` + lockfile.
+- If cluster/tools missing, state the error — do not claim runtime verification.
 
-## PROJECT KNOWLEDGEBASE
-- Doc index (tiers + root `*_plan.md` guidance): `docs/DOCUMENTATION_INDEX.md`.
-- Canonical architecture + ops (single file, code-grounded): `docs/vendor/OMNI_PROJECT_CANONICAL.md`.
-- After resolving real bugs/incidents, update `docs/vendor/knownbase.md` with concise:
-  - Symptom
-  - Fix
-- Avoid duplicate entries for the same symptom; update existing fix when applicable.
+## GOVERNANCE SYNC
+- Keep `.cursor/rules/**`, `docs/reports/project-memory.md`, `docs/vendor/knownbase.md` aligned on incidents; no conflicting guidance.
 
-## REQUEST CONTRACT
-- If user does not provide scope, ask for `@path` before broad exploration.
-- Default output format: Findings -> Actions.
-- Default brevity: max 8 bullets unless user asks for depth.
-- For ambiguity: ask exactly 1 clarifying question.
+## RESPONSE
+- Default: Findings → Actions; ~8 bullets unless depth requested; if scope unclear, ask for `@path` once. Detail: `.cursor/rules/response-contract.mdc`.

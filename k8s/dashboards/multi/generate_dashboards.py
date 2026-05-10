@@ -127,18 +127,16 @@ panels_2 = [
 
 # --- DASHBOARD 3: INFRASTRUCTURE & DB ---
 panels_3 = [
-    {"type": "row", "id": 1, "title": "Datastore Resilience (Redis & Postgres/PGVector)", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}},
-    stat_panel(10, "Redis Mesh Nodes", 'count(redis_connected_clients{app="redis-exporter"}) or vector(0)', 0, 1, 4, 4, thresholds=[{"color": "red", "value": None}, {"color": "green", "value": 6}]),
-    stat_panel(11, "Redis Cluster Memory", 'sum(redis_memory_used_bytes{app="redis-exporter"}) or vector(0)', 4, 1, 4, 4, unit="bytes", thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 500000000}]),
-    stat_panel(12, "Redis Aggregate Ops/sec", 'sum(rate(redis_commands_processed_total{app="redis-exporter"}[1m])) or vector(0)', 8, 1, 4, 4, unit="ops", decimals=2),
-    stat_panel(13, "PGPool deployment replicas", 'max(kube_deployment_status_replicas_available{namespace="multi-agent",deployment="pgpool-gateway"}) or vector(0)', 12, 1, 4, 4),
-    stat_panel(14, "Postgres pods Ready", 'sum(kube_pod_status_ready{namespace="multi-agent",condition="true",pod=~"omni-postgres-.*"}) or vector(0)', 16, 1, 4, 4),
-    stat_panel(15, "PGVector write fail rate", 'sum(rate(omni_learning_upserts_total{outcome="fail"}[5m])) or vector(0)', 20, 1, 4, 4, unit="ops", thresholds=[{"color": "green", "value": None}, {"color": "red", "value": 0.01}]),
+    {"type": "row", "id": 1, "title": "Datastore Resilience (Redis Stack — HNSW + Semantic Cache)", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}},
+    stat_panel(10, "Redis Mesh Nodes", 'count(redis_connected_clients{app="redis-exporter"}) or vector(0)', 0, 1, 6, 4, thresholds=[{"color": "red", "value": None}, {"color": "green", "value": 6}]),
+    stat_panel(11, "Redis Cluster Memory", 'sum(redis_memory_used_bytes{app="redis-exporter"}) or vector(0)', 6, 1, 6, 4, unit="bytes", thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 500000000}]),
+    stat_panel(12, "Redis Aggregate Ops/sec", 'sum(rate(redis_commands_processed_total{app="redis-exporter"}[1m])) or vector(0)', 12, 1, 6, 4, unit="ops", decimals=2),
+    stat_panel(15, "Vector upsert fail rate", 'sum(rate(omni_learning_upserts_total{outcome="fail"}[5m])) or vector(0)', 18, 1, 6, 4, unit="ops", thresholds=[{"color": "green", "value": None}, {"color": "red", "value": 0.01}]),
     ts_panel(20, "Redis Compute Cost Trend", [
         ('sum(rate(redis_commands_processed_total{app="redis-exporter"}[1m]))', 'Ops/s'),
         ('sum(redis_connected_clients{app="redis-exporter"})', 'Clients Connected')
     ], 0, 5, 12, 8),
-    ts_panel(21, "PGVector learning write trend", [
+    ts_panel(21, "Vector learning write trend", [
         ('sum(increase(omni_learning_upserts_total{outcome="success"}[5m]))', 'action_experience write success (5m)'),
         ('sum(increase(omni_learning_upserts_total{outcome="fail"}[5m]))', 'action_experience write fail (5m)')
     ], 12, 5, 12, 8, unit="short"),

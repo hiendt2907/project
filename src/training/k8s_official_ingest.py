@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import html
 import logging
+import os
 import re
 import uuid
 from collections import deque
@@ -23,15 +24,14 @@ from typing import Any
 from urllib.parse import urldefrag, urljoin, urlparse
 
 import httpx
+import redis.asyncio as aioredis
 
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
+from rag.redis_vector_store import RedisVectorStore, PostgresRAGSettings
 from rag.pgvector_store import (
     COLLECTION_K8S_EXPERT,
     EMBED_DIM,
-    PGVectorStore,
     PointStruct,
-    PostgresRAGSettings,
-    init_pg_pool,
 )
 from workers.settings import WorkerSettings
 
@@ -282,22 +282,20 @@ async def run_k8s_official_ingest(*, dry_run: bool = False, max_pages_override: 
     if dry_run:
         return 0
 
-    pool = await init_pg_pool(PostgresRAGSettings())
-    store = PGVectorStore(pool)
+    redis_url = os.environ.get("OMNI_REDIS_URL", "redis://redis:6379/0")
+    r = aioredis.from_url(redis_url, decode_responses=False)
+    store = RedisVectorStore(r)
     await store.ensure_ready()
-    if collection != COLLECTION_K8S_EXPERT:
-        await store.ensure_partition_for_collection(collection)
-    ollama = OllamaClient(base_url=ws.ollama_base_url)
+    llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url)
     try:
         batch = 16
         n = 0
         for i in range(0, len(all_chunks), batch):
             slice_ = all_chunks[i : i + batch]
             texts = [c for _, _, c in slice_]
-            resp = await ollama.embed(
+            resp = await llm.embed(
                 model=ws.embed_model,
                 input=texts,
-                keep_alive=ws.ollama_keep_alive,
             )
             vecs = _vecs_from_embed_response(resp)
             if len(vecs) != len(texts):
@@ -328,8 +326,8 @@ async def run_k8s_official_ingest(*, dry_run: bool = False, max_pages_override: 
             n += len(points)
             logger.info("upserted %s / %s", n, len(all_chunks))
     finally:
-        await ollama.aclose()
-        await pool.close()
+        await llm.aclose()
+        await r.aclose()
     return 0
 
 

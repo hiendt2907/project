@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from workers import ollama_prompts_en as ope
+from workers import llm_prompts_en as ope
 
 # Greetings / filler lines (English) often emitted by chatty models.
 _FLUFF_LINE = re.compile(

@@ -1,0 +1,13 @@
+{
+  "id": "<<<INCIDENT_ID>>>",
+  "category": "<<<SIEM_CATEGORY>>>",
+  "severity": "<<<SIEM_SEVERITY>>>",
+  "tenant_id": "<<<SIEM_TENANT_ID>>>",
+  "source": "<<<SIEM_SOURCE>>>",
+  "affected_ip": "<<<SIEM_AFFECTED_IP>>>",
+  "description": "<<<SIEM_DESCRIPTION>>>",
+  "suggested_action": "<<<SIEM_SUGGESTED_ACTION>>>",
+  "timestamp": "<<<TIMESTAMP>>>",
+  "hitl_required": "<<<SIEM_HITL_REQUIRED>>>",
+  "trace_id": "<<<TRACE>>>"
+}

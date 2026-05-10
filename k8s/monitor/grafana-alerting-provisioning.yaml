@@ -12,7 +12,7 @@ data:
     apiVersion: 1
     policies:
       - orgId: 1
-        receiver: omni-telegram
+        receiver: omni-gateway
         group_by: ["alertname", "grafana_folder"]
         group_wait: 30s
         group_interval: 5m
@@ -23,6 +23,16 @@ data:
     deleteRules:
       - orgId: 1
         uid: omni_worker_no_processing
+      - orgId: 1
+        uid: omni_redis_cluster_nodes_lost
+      - orgId: 1
+        uid: omni_pgpool_unavailable
+      - orgId: 1
+        uid: omni_postgres_nodes_lost
+      - orgId: 1
+        uid: omni_postgres_not_ready
+      - orgId: 1
+        uid: omni_postgres_restart_spike
     groups:
       - orgId: 1
         name: omni-core-k8s-db-redis-dataflow
@@ -64,186 +74,6 @@ data:
             labels:
               severity: critical
               domain: dataflow
-            isPaused: false
-          - uid: omni_redis_cluster_nodes_lost
-            title: Redis Cluster Nodes Lost
-            condition: C
-            data:
-              - refId: A
-                relativeTimeRange:
-                  from: 300
-                  to: 0
-                datasourceUid: prometheus
-                model:
-                  datasource:
-                    type: prometheus
-                    uid: prometheus
-                  expr: count((kube_pod_status_ready{namespace="multi-agent", pod=~"redis-[0-9]+", condition="true"} == 1)) or vector(0)
-                  instant: true
-                  intervalMs: 1000
-                  maxDataPoints: 43200
-                  refId: A
-              - refId: C
-                relativeTimeRange:
-                  from: 0
-                  to: 0
-                datasourceUid: __expr__
-                model:
-                  type: math
-                  expression: $A < 1
-                  refId: C
-            noDataState: OK
-            execErrState: Error
-            for: 2m
-            annotations:
-              summary: "Redis standalone pod not ready"
-            labels:
-              severity: critical
-              domain: redis
-            isPaused: false
-          - uid: omni_pgpool_unavailable
-            title: PGPool Unavailable
-            condition: C
-            data:
-              - refId: A
-                relativeTimeRange:
-                  from: 300
-                  to: 0
-                datasourceUid: prometheus
-                model:
-                  datasource:
-                    type: prometheus
-                    uid: prometheus
-                  expr: max(kube_deployment_status_replicas_available{namespace="multi-agent", deployment="pgpool-gateway"})
-                  instant: true
-                  intervalMs: 1000
-                  maxDataPoints: 43200
-                  refId: A
-              - refId: C
-                relativeTimeRange:
-                  from: 0
-                  to: 0
-                datasourceUid: __expr__
-                model:
-                  type: math
-                  expression: $A < 1
-                  refId: C
-            noDataState: Alerting
-            execErrState: Error
-            for: 2m
-            annotations:
-              summary: "PGPool has no available replicas"
-            labels:
-              severity: critical
-              domain: db
-            isPaused: false
-          - uid: omni_postgres_nodes_lost
-            title: PostgreSQL Cluster Nodes Lost
-            condition: C
-            data:
-              - refId: A
-                relativeTimeRange:
-                  from: 300
-                  to: 0
-                datasourceUid: prometheus
-                model:
-                  datasource:
-                    type: prometheus
-                    uid: prometheus
-                  expr: count((kube_pod_status_ready{namespace="multi-agent", pod=~"omni-postgres-[0-9]+", condition="true"} == 1)) or vector(0)
-                  instant: true
-                  intervalMs: 1000
-                  maxDataPoints: 43200
-                  refId: A
-              - refId: C
-                relativeTimeRange:
-                  from: 0
-                  to: 0
-                datasourceUid: __expr__
-                model:
-                  type: math
-                  expression: $A < 3
-                  refId: C
-            noDataState: OK
-            execErrState: Error
-            for: 2m
-            annotations:
-              summary: "PostgreSQL healthy pod count < 3"
-            labels:
-              severity: critical
-              domain: db
-            isPaused: false
-          - uid: omni_postgres_not_ready
-            title: PostgreSQL Pod Not Ready
-            condition: C
-            data:
-              - refId: A
-                relativeTimeRange:
-                  from: 300
-                  to: 0
-                datasourceUid: prometheus
-                model:
-                  datasource:
-                    type: prometheus
-                    uid: prometheus
-                  expr: sum(kube_pod_status_ready{namespace="multi-agent", pod=~"omni-postgres-[0-9]+", condition="false"})
-                  instant: true
-                  intervalMs: 1000
-                  maxDataPoints: 43200
-                  refId: A
-              - refId: C
-                relativeTimeRange:
-                  from: 0
-                  to: 0
-                datasourceUid: __expr__
-                model:
-                  type: math
-                  expression: $A > 0
-                  refId: C
-            noDataState: NoData
-            execErrState: Error
-            for: 3m
-            annotations:
-              summary: "One or more PostgreSQL pods are NotReady"
-            labels:
-              severity: warning
-              domain: db
-            isPaused: false
-          - uid: omni_postgres_restart_spike
-            title: PostgreSQL Restart Spike
-            condition: C
-            data:
-              - refId: A
-                relativeTimeRange:
-                  from: 900
-                  to: 0
-                datasourceUid: prometheus
-                model:
-                  datasource:
-                    type: prometheus
-                    uid: prometheus
-                  expr: sum(increase(kube_pod_container_status_restarts_total{namespace="multi-agent", pod=~"omni-postgres-[0-9]+"}[15m]))
-                  instant: true
-                  intervalMs: 1000
-                  maxDataPoints: 43200
-                  refId: A
-              - refId: C
-                relativeTimeRange:
-                  from: 0
-                  to: 0
-                datasourceUid: __expr__
-                model:
-                  type: math
-                  expression: $A >= 2
-                  refId: C
-            noDataState: NoData
-            execErrState: Error
-            for: 5m
-            annotations:
-              summary: "PostgreSQL restart count increased in last 15m"
-            labels:
-              severity: warning
-              domain: db
             isPaused: false
           - uid: omni_learning_write_fail
             title: Action Experience Write Fail

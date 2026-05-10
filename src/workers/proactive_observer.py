@@ -211,7 +211,7 @@ def _allow_learning_upsert(tool: str, output: str, verified: bool) -> bool:
     return True
 
 
-def _embedding_from_ollama(resp: dict[str, Any]) -> list[float]:
+def _embedding_from_response(resp: dict[str, Any]) -> list[float]:
     if "embedding" in resp:
         emb = resp["embedding"]
         return list(emb) if not isinstance(emb, list) else emb
@@ -237,12 +237,11 @@ async def _save_proactive_learning_record(
     try:
         strip_pods = bool(getattr(ctx.settings, "memory_canonical_strip_pods", True))
         symptom_text = canonical_symptom_text(lesson[:4000], strip_pods=strip_pods)
-        emb = await ctx.ollama.embed(
+        emb = await ctx.llm.embed(
             model=ctx.settings.embed_model,
             input=symptom_text[:4000],
-            keep_alive=ctx.settings.ollama_keep_alive,
         )
-        vec = _embedding_from_ollama(emb)
+        vec = _embedding_from_response(emb)
         if len(vec) != EMBED_DIM:
             vec = (vec + [0.0] * EMBED_DIM)[:EMBED_DIM]
         args_pb = strip_ephemeral_from_args(args)
@@ -293,12 +292,11 @@ async def _resolve_from_action_experience(
     try:
         strip_pods = bool(getattr(ctx.settings, "memory_canonical_strip_pods", True))
         q = canonical_symptom_text((query_text or "").strip()[:4000], strip_pods=strip_pods)
-        emb = await ctx.ollama.embed(
+        emb = await ctx.llm.embed(
             model=ctx.settings.embed_model,
             input=q[:4000],
-            keep_alive=ctx.settings.ollama_keep_alive,
         )
-        vec = _embedding_from_ollama(emb)
+        vec = _embedding_from_response(emb)
         if len(vec) != EMBED_DIM:
             vec = (vec + [0.0] * EMBED_DIM)[:EMBED_DIM]
         resp = await ctx.vector_store.query_points(
@@ -336,7 +334,7 @@ async def _parse_fallback_tool_call(ctx: WorkerHandlerContext, user_prompt: str)
     conf = 0.0
     rationale = ""
     for attempt in range(ws.proactive_fallback_max_attempts):
-        resp = await ctx.ollama.chat(
+        resp = await ctx.llm.chat(
             model=ctx.settings.chat_model,
             messages=[
                 {
@@ -350,7 +348,6 @@ async def _parse_fallback_tool_call(ctx: WorkerHandlerContext, user_prompt: str)
                 {"role": "user", "content": user_prompt[:7000]},
             ],
             options={"temperature": 0.0, "num_ctx": 4096},
-            keep_alive=ctx.settings.ollama_keep_alive,
         )
         content = ((resp.get("message") or {}).get("content") or "").strip()
         try:

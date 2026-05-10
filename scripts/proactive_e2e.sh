@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Build image, apply worker manifests, restart, chạy full_system_audit (luồng proactive).
-# Yêu cầu: cluster kubectl (OrbStack), namespace multi-agent, Redis/Gateway/worker đã có.
+# Yêu cầu: cluster kubectl (OrbStack), NS set tới namespace Omni (lab: multi-agent), Redis/Gateway/worker đã có.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 KUBE="${ROOT}/scripts/with_working_kube.sh"
 PY="${ROOT}/.venv/bin/python"
+if [[ -z "${NS:-}" ]]; then
+  echo "proactive_e2e.sh: set NS to the Kubernetes namespace (no default)." >&2
+  exit 2
+fi
 DURATION_SEC="${DURATION_SEC:-90}"
 INTERVAL_SEC="${INTERVAL_SEC:-10}"
 STRICT_ROLLOUT="${STRICT_ROLLOUT:-1}"
@@ -16,6 +20,7 @@ usage() {
 Usage: scripts/proactive_e2e.sh [options]
 
 Environment:
+  NS             **required** — Kubernetes namespace for rollouts (lab: multi-agent)
   DURATION_SEC   Audit simulation window (default 90)
   INTERVAL_SEC   Seconds between gateway + XADD ticks (default 10)
   E2E_INJECT_PROACTIVE  Set to 1 to pass --inject-proactive to full_system_audit (Kafka proactive inject)
@@ -23,7 +28,7 @@ Environment:
 Steps:
   1. docker build worker + gateway (`multi-agent-system:latest`, `omni-gateway:latest`)
   2. kubectl apply omni-worker ConfigMap / RBAC / Deployment
-  3. kubectl rollout restart deployment/omni-worker -n multi-agent
+  3. kubectl rollout restart … -n "${NS}"
   4. python scripts/full_system_audit.py --strict --min-action-experience 0
 
 Options:
@@ -63,29 +68,29 @@ if [[ "${SKIP_RESTART}" -eq 0 ]]; then
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-core.yaml"
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-executor.yaml"
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-gateway.yaml"
-  "${KUBE}" rollout restart deployment/omni-worker deployment/omni-prober deployment/omni-analyst deployment/omni-core deployment/omni-executor deployment/omni-gateway -n multi-agent
+  "${KUBE}" rollout restart deployment/omni-worker deployment/omni-prober deployment/omni-analyst deployment/omni-core deployment/omni-executor deployment/omni-gateway -n "${NS}"
   if [[ "${STRICT_ROLLOUT}" == "1" ]]; then
-    "${KUBE}" rollout status deployment/omni-prober -n multi-agent --timeout=180s
-    "${KUBE}" rollout status deployment/omni-analyst -n multi-agent --timeout=180s
-    "${KUBE}" rollout status deployment/omni-core -n multi-agent --timeout=180s
-    "${KUBE}" rollout status deployment/omni-executor -n multi-agent --timeout=180s
-    "${KUBE}" rollout status deployment/omni-gateway -n multi-agent --timeout=180s
-    "${KUBE}" rollout status deployment/omni-worker -n multi-agent --timeout=60s || true
+    "${KUBE}" rollout status deployment/omni-prober -n "${NS}" --timeout=180s
+    "${KUBE}" rollout status deployment/omni-analyst -n "${NS}" --timeout=180s
+    "${KUBE}" rollout status deployment/omni-core -n "${NS}" --timeout=180s
+    "${KUBE}" rollout status deployment/omni-executor -n "${NS}" --timeout=180s
+    "${KUBE}" rollout status deployment/omni-gateway -n "${NS}" --timeout=180s
+    "${KUBE}" rollout status deployment/omni-worker -n "${NS}" --timeout=60s || true
   else
-    "${KUBE}" rollout status deployment/omni-prober -n multi-agent --timeout=180s || true
-    "${KUBE}" rollout status deployment/omni-analyst -n multi-agent --timeout=180s || true
-    "${KUBE}" rollout status deployment/omni-core -n multi-agent --timeout=180s || true
-    "${KUBE}" rollout status deployment/omni-executor -n multi-agent --timeout=180s || true
-    "${KUBE}" rollout status deployment/omni-gateway -n multi-agent --timeout=180s || true
-    "${KUBE}" rollout status deployment/omni-worker -n multi-agent --timeout=60s || true
+    "${KUBE}" rollout status deployment/omni-prober -n "${NS}" --timeout=180s || true
+    "${KUBE}" rollout status deployment/omni-analyst -n "${NS}" --timeout=180s || true
+    "${KUBE}" rollout status deployment/omni-core -n "${NS}" --timeout=180s || true
+    "${KUBE}" rollout status deployment/omni-executor -n "${NS}" --timeout=180s || true
+    "${KUBE}" rollout status deployment/omni-gateway -n "${NS}" --timeout=180s || true
+    "${KUBE}" rollout status deployment/omni-worker -n "${NS}" --timeout=60s || true
   fi
   METRICS_DEPLOY="omni-prober"
-  if replicas="$("${KUBE}" get deploy omni-worker -n multi-agent -o jsonpath='{.spec.replicas}' 2>/dev/null)" && [[ "${replicas:-0}" != "0" ]]; then
+  if replicas="$("${KUBE}" get deploy omni-worker -n "${NS}" -o jsonpath='{.spec.replicas}' 2>/dev/null)" && [[ "${replicas:-0}" != "0" ]]; then
     METRICS_DEPLOY="omni-worker"
   fi
   echo "[proactive_e2e] waiting for metrics on deploy/${METRICS_DEPLOY} (:9090) ..."
   for _ in $(seq 1 30); do
-    if code="$("${KUBE}" exec -n multi-agent "deploy/${METRICS_DEPLOY}" -- sh -lc \
+    if code="$("${KUBE}" exec -n "${NS}" "deploy/${METRICS_DEPLOY}" -- sh -lc \
       'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9090/metrics' 2>/dev/null)" && [[ "${code}" == "200" ]]; then
       echo "[proactive_e2e] metrics OK (${METRICS_DEPLOY})"
       break

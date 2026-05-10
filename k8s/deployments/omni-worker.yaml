@@ -45,11 +45,6 @@ spec:
                 name: omni-worker-config
           # Chỉ Secret / nhạy cảm — mọi giá trị khác nằm trong omni-worker-config
           env:
-            - name: POSTGRES_RAG_DSN
-              valueFrom:
-                secretKeyRef:
-                  name: omni-postgres-app
-                  key: uri
             - name: TELEGRAM_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -65,6 +60,13 @@ spec:
                 secretKeyRef:
                   name: telegram-bot
                   key: chat-id
+            - name: OMNI_CHAOS_PG_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: omni-chaos-lab
+                  key: pg-app-password
+            - name: OMNI_AUDIT_PRIVATE_KEY_PATH
+              value: /etc/omni/audit/private_key.pem
           resources:
             requests:
               cpu: "100m"
@@ -73,10 +75,11 @@ spec:
               cpu: "2"
               memory: 2Gi
           volumeMounts:
-            - name: source-code
-              mountPath: /app/src
+            - name: audit-keys
+              mountPath: /etc/omni/audit
+              readOnly: true
       volumes:
-        - name: source-code
-          hostPath:
-            path: /Users/hiendang/project/src
-            type: Directory
+        - name: audit-keys
+          secret:
+            secretName: omni-audit-keys
+            defaultMode: 0400

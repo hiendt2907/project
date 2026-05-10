@@ -4,16 +4,21 @@
 # Restore healthy deployment at end (unless REDIS_EXPORTER_LAB_NO_RESTORE=1).
 #
 # Usage:
-#   bash scripts/redis_exporter_probe_lab.sh
+#   NS=<ns> bash scripts/redis_exporter_probe_lab.sh
 # Env:
-#   KUBE_NS=multi-agent
+#   KUBE_NS= / NS=              **required** — redis-exporter + omni workload namespace (no default)
 #   REDIS_EXPORTER_LAB_NO_RESTORE=1   # keep broken deployment for manual inspection
 #   SLEEP_SEC=35                      # passed to gateway_alert_loki_verify.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KUBE="${ROOT}/scripts/with_working_kube.sh"
-NS="${KUBE_NS:-multi-agent}"
+NS="${KUBE_NS:-${NS:-}}"
+if [[ -z "${NS}" ]]; then
+  echo "redis_exporter_probe_lab.sh: set KUBE_NS or NS (no default)." >&2
+  exit 2
+fi
+export NS
 MON_NS="${MONITOR_NS:-monitor}"
 
 echo "=== [1/6] Apply redis-exporter (healthy) ==="

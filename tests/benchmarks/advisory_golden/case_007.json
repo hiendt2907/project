@@ -1,0 +1,13 @@
+{
+  "id": "case_007",
+  "description": "Deployment rollout stuck — ImagePullBackOff",
+  "lane": "SYS_HARD_FAIL",
+  "evidence_text": "Deployment omni-analyst in namespace multi-agent rollout stuck. 0/1 pods ready. Pod status: ImagePullBackOff. Error: rpc error: code = Unknown: failed to pull image multi-agent-system:v2.1.0: not found. Events: Back-off pulling image. Previous version omni-analyst with image multi-agent-system:latest was healthy.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["image", "ImagePullBackOff"],
+    "should_not_contain": ["memory", "5xx", "DDoS", "ConfigMap"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": true
+  }
+}

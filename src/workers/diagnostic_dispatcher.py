@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from workers.diagnostic_evidence import evidence_from_probe
-from workers.diagnostic_mapping import classify_event, load_diagnostic_matrix
+from workers.diagnostic_mapping import alertname_from_anomaly_event, classify_event, load_diagnostic_matrix
 from workers.diagnostic_pod_plan import get_smart_diagnostic_plan, snapshot_from_structured_hint
 from workers.diagnostic_probe_registry import run_probe
 from workers.diagnostic_resource import (
@@ -28,6 +28,20 @@ _LEGACY_TIER2: list[str] = [
     "prom_pod_cpu_cores",
     "prom_pod_memory_wss",
 ]
+
+# Prometheus alertname → security probes (bypass generic matrix catch-all).
+_ALERTNAME_PROBE_MAP: dict[str, list[str]] = {
+    "OmniRbacClusterAdminViolation": ["rbac_drift"],  # RBAC drift / cluster-admin binding
+    "OmniConfigMapGodModeProd": ["configmap_security_drift"],  # dangerous ConfigMap keys
+}
+
+
+def probe_ids_for_alertname(alertname: str) -> list[str]:
+    """Probes used for alertname (security self-remediation) — same as dispatcher plan."""
+    an = (alertname or "").strip()
+    if not an:
+        return []
+    return list(_ALERTNAME_PROBE_MAP.get(an, []))
 
 
 def _evidence_source_for_probe(probe_id: str) -> str:
@@ -52,6 +66,8 @@ async def _publish_diagnostic_evidence(
 ) -> None:
     ws = ctx.settings
     ev_obj = evidence_from_probe(raw, trace)
+    _ev_ns, _ev_pod, _ = pod_identity_from_event(ev)
+    _ev_dep = str(getattr(ev, "deployment", "") or "").strip()
     payload = {
         "kind": "diagnostic_evidence",
         "trace_id": trace,
@@ -64,7 +80,10 @@ async def _publish_diagnostic_evidence(
         "ts": str(int(time.time())),
         "alert_rule": getattr(ev, "rule_name", "") or "",
         "alert_hint": redact(ev.error_hint or "")[:800],
-        "canonical_query_snippet": redact(ev.canonical_query or "")[:500],
+        "canonical_query_snippet": redact(ev.canonical_query or "")[:1000],
+        "namespace": _ev_ns,
+        "pod": _ev_pod,
+        "deployment": _ev_dep,
         "evidence_source": _evidence_source_for_probe(pid),
         "clinical_priority_note": (
             "Primary: real-time Kubernetes API (SDK)."
@@ -87,6 +106,65 @@ async def _publish_diagnostic_evidence(
     )
 
 
+async def _publish_siem_synthetic_evidence(
+    ctx: WorkerHandlerContext,
+    ev: AnomalyEvent,
+    *,
+    trace: str,
+) -> None:
+    """Synthesize a SIEM incident evidence document from the AnomalyEvent (no K8s probes)."""
+    incident_facts: dict[str, Any] = {}
+    try:
+        cq = json.loads(ev.canonical_query)
+        labels = cq.get("labels") or {}
+        annot = cq.get("annotations") or {}
+        incident_facts = {
+            k: v for k, v in {
+                "category": labels.get("siem_category", ""),
+                "severity": labels.get("severity", ""),
+                "incident_id": labels.get("siem_incident_id", ""),
+                "tenant": labels.get("siem_tenant", ""),
+                "description": annot.get("description", ""),
+                "suggested_action": annot.get("suggested_action", ""),
+                "affected_ip": annot.get("affected_ip", ""),
+                "namespace": labels.get("namespace", ""),
+            }.items() if v
+        }
+    except Exception:
+        pass
+
+    payload = {
+        "kind": "diagnostic_evidence",
+        "trace_id": trace,
+        "symptom_group": "siem_incident",
+        "layer": "security",
+        "probe": "siem_incident_context",
+        "result": "SIEM_INCIDENT",
+        "extracted_fact": incident_facts,
+        "raw": redact(ev.error_hint)[:4000],
+        "ts": str(int(time.time())),
+        "alert_rule": ev.rule_name,
+        "alert_hint": redact(ev.error_hint)[:800],
+        "canonical_query_snippet": redact(ev.canonical_query)[:1000],
+        "namespace": incident_facts.get("namespace", ev.namespace),
+        "pod": "",
+        "deployment": "",
+        "evidence_source": "SIEM",
+        "clinical_priority_note": "Primary: FinGuard/Smart-SIEM real-time security incident.",
+    }
+    assert ctx.kafka is not None
+    await ctx.kafka.send_dict(
+        ctx.settings.kafka_topic_diagnostic_evidence,
+        {"data": json.dumps(payload, ensure_ascii=False)},
+    )
+    logger.info(
+        "[%s] event=siem_synthetic_evidence_published alertname=%s category=%s",
+        trace,
+        ev.rule_name,
+        incident_facts.get("category", ""),
+    )
+
+
 async def run_diagnostic_pipeline(ctx: WorkerHandlerContext, ev: AnomalyEvent) -> None:
     """Deterministic probes from YAML matrix or smart tier-1/tier-2 plan → Kafka diagnostic evidence."""
     ws = ctx.settings
@@ -94,6 +172,12 @@ async def run_diagnostic_pipeline(ctx: WorkerHandlerContext, ev: AnomalyEvent) -
         return
     matrix = load_diagnostic_matrix(ws.diagnostic_matrix_path)
     trace = ev.trace_id
+
+    # SIEM incidents: no K8s probes; synthesize evidence from AnomalyEvent directly.
+    if ev.rule_name.startswith("SIEM"):
+        await register_diag_expected_probes(ctx.redis, trace, ["siem_incident_context"])
+        await _publish_siem_synthetic_evidence(ctx, ev, trace=trace)
+        return
 
     if is_workload_resource_alert(ev) or is_kube_pod_container_state_alert(ev):
         symptom_group = "workload_resource" if is_workload_resource_alert(ev) else "pod_container_state"
@@ -138,6 +222,34 @@ async def run_diagnostic_pipeline(ctx: WorkerHandlerContext, ev: AnomalyEvent) -
         )
 
         for pid in plan:
+            raw = await run_probe(pid, ctx, ev)
+            await _publish_diagnostic_evidence(
+                ctx,
+                ev,
+                trace=trace,
+                pid=pid,
+                symptom_group=symptom_group,
+                layer=layer,
+                raw=raw,
+            )
+            if stop_on_first_failure and raw.status == "FAILED":
+                break
+        return
+
+    alertname = alertname_from_anomaly_event(ev)
+    if alertname in _ALERTNAME_PROBE_MAP:
+        probe_ids = _ALERTNAME_PROBE_MAP[alertname]
+        symptom_group = "security_hardening"
+        layer = "security"
+        stop_on_first_failure = False
+        await register_diag_expected_probes(ctx.redis, trace, list(probe_ids))
+        logger.info(
+            "[%s] event=diagnostic_dispatcher_plan kind=alertname_probe_map alertname=%s plan=%s",
+            trace,
+            alertname,
+            probe_ids,
+        )
+        for pid in probe_ids:
             raw = await run_probe(pid, ctx, ev)
             await _publish_diagnostic_evidence(
                 ctx,

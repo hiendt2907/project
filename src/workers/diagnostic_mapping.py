@@ -42,6 +42,12 @@ def load_diagnostic_matrix(path: str | Path) -> DiagnosticMatrixFile:
 
 
 def _row_matches(row: MatrixRow, ev: AnomalyEvent) -> bool:
+    """Match a matrix row against an event.
+
+    Label predicates apply only when the event carries that label key (Prometheus JSON).
+    If the key is absent, the predicate is waived so ``error_hint_pattern`` / ``canonical_query_pattern``
+    can still classify sparse alerts — avoids broad rows winning only because specific rows required labels.
+    """
     eh = ev.error_hint or ""
     cq = ev.canonical_query or ""
     labels: dict[str, str] = {}
@@ -57,25 +63,30 @@ def _row_matches(row: MatrixRow, ev: AnomalyEvent) -> bool:
     label_predicates = 0
     label_matches = 0
     if row.labels_alertname:
-        label_predicates += 1
-        if str(labels.get("alertname") or "").strip().lower() == row.labels_alertname.strip().lower():
-            label_matches += 1
+        if "alertname" in labels:
+            label_predicates += 1
+            if str(labels.get("alertname") or "").strip().lower() == row.labels_alertname.strip().lower():
+                label_matches += 1
     if row.labels_domain:
-        label_predicates += 1
-        if str(labels.get("domain") or "").strip().lower() == row.labels_domain.strip().lower():
-            label_matches += 1
+        if "domain" in labels:
+            label_predicates += 1
+            if str(labels.get("domain") or "").strip().lower() == row.labels_domain.strip().lower():
+                label_matches += 1
     if row.labels_workload:
-        label_predicates += 1
-        if str(labels.get("workload") or labels.get("deployment") or "").strip().lower() == row.labels_workload.strip().lower():
-            label_matches += 1
+        if "workload" in labels or "deployment" in labels:
+            label_predicates += 1
+            wl = str(labels.get("workload") or labels.get("deployment") or "").strip().lower()
+            if wl == row.labels_workload.strip().lower():
+                label_matches += 1
     if row.labels_reason_pattern:
-        label_predicates += 1
-        try:
-            ok_reason = bool(re.search(row.labels_reason_pattern, str(labels.get("reason") or "")))
-        except re.error:
-            ok_reason = False
-        if ok_reason:
-            label_matches += 1
+        if "reason" in labels:
+            label_predicates += 1
+            try:
+                ok_reason = bool(re.search(row.labels_reason_pattern, str(labels.get("reason") or "")))
+            except re.error:
+                ok_reason = False
+            if ok_reason:
+                label_matches += 1
     if label_predicates and label_matches == label_predicates:
         return True
     if label_predicates and label_matches < label_predicates:
@@ -104,7 +115,30 @@ def _row_matches(row: MatrixRow, ev: AnomalyEvent) -> bool:
     return False
 
 
+def alertname_from_anomaly_event(ev: AnomalyEvent) -> str:
+    """Return ``labels.alertname`` from JSON ``canonical_query`` when present."""
+    cq = ev.canonical_query or ""
+    if not cq.strip().startswith("{"):
+        return ""
+    try:
+        obj = json.loads(cq)
+        if not isinstance(obj, dict):
+            return ""
+        labels = obj.get("labels")
+        if isinstance(labels, dict):
+            an = str(labels.get("alertname") or "").strip()
+            return an
+    except Exception:
+        return ""
+    return ""
+
+
 def classify_event(ev: AnomalyEvent, matrix: DiagnosticMatrixFile) -> MatrixRow | None:
+    """Return the first matching matrix row.
+
+    Rows are tried in ascending **priority** (lower number = more specific; try first).
+    See ``config/diagnostic_matrix.yaml`` header for ordering rules.
+    """
     rows = sorted(matrix.rows, key=lambda r: int(getattr(r, "priority", 100) or 100))
     for row in rows:
         if _row_matches(row, ev):

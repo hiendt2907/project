@@ -1,0 +1,13 @@
+{
+  "id": "case_002",
+  "description": "Redis OOM — memory exhausted, eviction active",
+  "lane": "SYS_RESOURCE",
+  "evidence_text": "Redis node redis-master-0 in namespace multi-agent is reporting used_memory=7.8GB / maxmemory=8GB (97.5%). Eviction policy=allkeys-lru. OOM events in last 1h: 142. z_mem=4.2 (sigma baseline breach). Pod memory RSS growing linearly over last 3h. No restart yet but OOMKilled risk is HIGH.",
+  "expected": {
+    "verdict": "URGENT",
+    "root_cause_contains": ["Redis", "memory"],
+    "should_not_contain": ["ConfigMap", "network partition", "certificate"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": false
+  }
+}

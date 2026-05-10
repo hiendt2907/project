@@ -225,9 +225,16 @@ def main() -> None:
     )
     ap.add_argument("--catalog", default=str(ROOT / "config" / "prometheus_alert_label_catalog.yaml"))
     ap.add_argument("--scenario-id", required=True)
-    ap.add_argument("--namespace", default=os.environ.get("NS", "multi-agent"))
+    ap.add_argument(
+        "--namespace",
+        default=os.environ.get("NS"),
+        help="Kubernetes namespace for alert labels (default: env NS); required.",
+    )
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+
+    if not args.namespace or not str(args.namespace).strip():
+        ap.error("namespace is required: set --namespace or env NS")
 
     os.environ.setdefault("MATRIX_FILE", args.matrix)
     catalog_path = Path(args.catalog)

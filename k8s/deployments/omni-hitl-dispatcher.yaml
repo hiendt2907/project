@@ -1,0 +1,81 @@
+---
+# ServiceAccount: hitl-dispatcher needs no K8s API permissions.
+# It only talks to Kafka, Redis, and the FinGuard HITL API over HTTP.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omni-hitl-dispatcher
+  namespace: multi-agent
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-hitl-dispatcher
+  namespace: multi-agent
+  labels:
+    app: omni-hitl-dispatcher
+    app.kubernetes.io/component: hitl-dispatcher
+    app.kubernetes.io/part-of: omni
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omni-hitl-dispatcher
+  template:
+    metadata:
+      labels:
+        app: omni-hitl-dispatcher
+    spec:
+      serviceAccountName: omni-hitl-dispatcher
+      restartPolicy: Always
+      containers:
+        - name: hitl-dispatcher
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "workers.hitl_dispatcher"]
+          env:
+            # --- Kafka (same namespace as other workers) ---
+            - name: OMNI_KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:9092"
+            - name: OMNI_KAFKA_TOPIC_HITL_PENDING
+              value: "omni-hitl-pending"
+            - name: OMNI_KAFKA_TOPIC_ACTIONS
+              value: "omni-actions"
+            - name: OMNI_KAFKA_TOPIC_ACTION_FEEDBACK
+              value: "omni-action-feedback"
+            # --- Omni Redis (same cluster Redis as workers) ---
+            - name: OMNI_REDIS_URL
+              value: "redis://redis:6379/0"
+            # --- FinGuard HITL API (cross-namespace) ---
+            - name: HITL_API_BASE_URL
+              value: "http://finguard-hitl-api.finguard-customer.svc.cluster.local:8081"
+            - name: HITL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hitl-dispatcher-secret
+                  key: hitl_api_token
+            # --- Approval policy ---
+            - name: HITL_APPROVAL_TIMEOUT_SEC
+              value: "1800"
+            - name: HITL_POLL_INTERVAL_SEC
+              value: "10"
+            - name: HITL_DISPATCHER_GROUP
+              value: "omni-hitl-dispatcher"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+# Secret hitl-dispatcher-secret is managed OUT-OF-BAND — not rendered here.
+# Bootstrap (first-time) or rotate:
+#   bash scripts/rotate_hitl_token.sh
+# The script syncs the token to BOTH namespaces and verifies hash parity.

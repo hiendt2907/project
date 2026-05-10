@@ -8,12 +8,12 @@ from typing import Any
 
 import redis.asyncio as redis
 from ingest.telegram import TelegramClient
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
 from messaging.kafka_bus import KafkaBus
 from rag.error_ledger import ErrorLedger
-from rag.pgvector_store import PGVectorStore
+from rag.redis_vector_store import RedisVectorStore
 
-from workers.ollama_semaphore import RedisOllamaSemaphore
+from workers.llm_semaphore import LLMSemaphore
 from workers.settings import WorkerSettings
 
 
@@ -21,10 +21,10 @@ from workers.settings import WorkerSettings
 class WorkerHandlerContext:
     settings: WorkerSettings
     redis: redis.Redis
-    ollama: OllamaClient
-    vector_store: PGVectorStore
+    llm: VLLMClient
+    vector_store: RedisVectorStore
     ledger: ErrorLedger
-    semaphore: RedisOllamaSemaphore
+    semaphore: LLMSemaphore
     telegram: TelegramClient | None
     kafka: KafkaBus | None = None
     telegram_chat_id: int | None = None
@@ -35,7 +35,7 @@ class WorkerHandlerContext:
     scout_ready: asyncio.Event = field(default_factory=asyncio.Event)
     # Same id as Kafka omni-alerts / evidence / actions when set by consumer loops (ContextVar mirrors this).
     inbound_trace_id: str = "unknown"
-    ollama_slot_held: bool = False
+    llm_slot_held: bool = False
     inbound_proactive: bool = False
     k8s_mutated: bool = False
     fallback_inline_commands: list[str] | None = None

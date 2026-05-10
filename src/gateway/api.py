@@ -38,10 +38,18 @@ def _json_with_trace(content: dict[str, Any], *, trace_id: str, status_code: int
     )
 
 # ─── Config from env ──────────────────────────────────────────────────────────
+import hashlib
+import hmac as _hmac
 import os
 import re
 
+from pydantic import BaseModel, Field
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, Security
+
 _RE_TOPIC = re.compile(r"^[a-zA-Z0-9._-]+$")
+# Client-supplied trace (header X-Omni-Trace-Id or query trace_id): alphanumeric + _ - , length 8–128.
+_TRACE_ID_CLIENT = re.compile(r"^[a-zA-Z0-9_-]{8,128}$")
 
 
 def _kafka_topic_from_env() -> str:
@@ -62,6 +70,109 @@ SILENCE_CHAOS_LAB = os.getenv("OMNI_GATEWAY_SILENCE_CHAOS_LAB", "false").strip()
     "true",
     "yes",
 )
+# Zero-Trust: HMAC-SHA256 webhook signature (lab: empty = skip; prod: set via K8s Secret omni-gateway-secret)
+_WEBHOOK_SECRET: bytes = (os.getenv("OMNI_GATEWAY_WEBHOOK_SECRET") or "").strip().encode()
+
+
+class PrometheusAlert(BaseModel):
+    alertname: str = Field(default="")
+    labels: dict[str, str] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+    status: str = Field(default="firing")
+    startsAt: str = Field(default="")
+    endsAt: str = Field(default="")
+    generatorURL: str = Field(default="")
+
+
+class PrometheusWebhookBody(BaseModel):
+    receiver: str = Field(default="")
+    status: str = Field(default="")
+    alerts: list[PrometheusAlert] = Field(default_factory=list, max_length=1000)
+    groupLabels: dict[str, str] = Field(default_factory=dict)
+    commonLabels: dict[str, str] = Field(default_factory=dict)
+    commonAnnotations: dict[str, str] = Field(default_factory=dict)
+    externalURL: str = Field(default="")
+    version: str = Field(default="4")
+    groupKey: str = Field(default="")
+    truncatedAlerts: int = Field(default=0)
+
+
+def _str_header(request: Request, name: str) -> str | None:
+    """Safe header read: ignore MagicMock / non-str (tests)."""
+    try:
+        h = request.headers
+        if h is None or not hasattr(h, "get"):
+            return None
+        v = h.get(name)
+        return v.strip() if isinstance(v, str) else None
+    except Exception:
+        return None
+
+
+def _str_query(request: Request, name: str) -> str | None:
+    try:
+        qp = request.query_params
+        if qp is None or not hasattr(qp, "get"):
+            return None
+        v = qp.get(name)
+        return v.strip() if isinstance(v, str) else None
+    except Exception:
+        return None
+
+
+def _pick_valid_client_trace_id(header_val: str | None, query_val: str | None) -> str | None:
+    """First valid wins: header ``X-Omni-Trace-Id``, then ``trace_id`` query param."""
+    for raw in (header_val, query_val):
+        if not raw:
+            continue
+        s = raw.strip()
+        if _TRACE_ID_CLIENT.fullmatch(s):
+            return s
+    return None
+
+
+def _resolve_prometheus_trace_id(request: Request) -> str:
+    hv = _str_header(request, "x-omni-trace-id")
+    qv = _str_query(request, "trace_id")
+    picked = _pick_valid_client_trace_id(hv, qv)
+    if picked:
+        logger.info("[GATEWAY] trace_id=honor_client id=%s", picked)
+        return picked
+    tid = f"gw-prom-{uuid.uuid4().hex[:12]}"
+    logger.info("[GATEWAY] trace_id=generated id=%s", tid)
+    return tid
+
+
+def _verify_hmac_signature(request: Request, raw_body: bytes) -> bool:
+    """Verify X-Hub-Signature-256 header against OMNI_GATEWAY_WEBHOOK_SECRET.
+    Returns True unconditionally when secret is not configured (lab mode).
+    """
+    if not _WEBHOOK_SECRET:
+        return True
+    sig_header = (
+        _str_header(request, "x-hub-signature-256")
+        or _str_header(request, "x-omni-signature")
+    )
+    if not sig_header or not sig_header.startswith("sha256="):
+        return False
+    expected = _hmac.new(_WEBHOOK_SECRET, raw_body, hashlib.sha256).hexdigest()
+    return _hmac.compare_digest(sig_header[7:], expected)
+
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+async def _require_api_key(
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
+) -> None:
+    """API key guard for sensitive operational endpoints. Skip when key not configured (lab mode)."""
+    key = os.getenv("OMNI_GATEWAY_API_KEY", "").strip()
+    if not key:
+        return
+    if credentials is None or not _hmac.compare_digest(
+        credentials.credentials.encode(), key.encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 def _is_chaos_lab_prometheus_webhook(body: Any) -> bool:
@@ -112,6 +223,10 @@ def _build_redis_client() -> aioredis.Redis:
 async def lifespan(app: FastAPI):
     global _redis, _kafka, _rate_semaphore, _token_refill_task
     install_gateway_trace_logging()
+    if not _WEBHOOK_SECRET:
+        logger.warning(
+            "omni-gateway: OMNI_GATEWAY_WEBHOOK_SECRET not set — webhook signature verification DISABLED (lab mode)"
+        )
     _redis = _build_redis_client()
     await _redis.initialize()
     _kafka = AIOKafkaProducer(
@@ -129,6 +244,7 @@ async def lifespan(app: FastAPI):
         KAFKA_TOPIC_ALERTS,
         KAFKA_BOOTSTRAP,
     )
+    app.state.redis = _redis
     yield
     if _token_refill_task:
         _token_refill_task.cancel()
@@ -140,6 +256,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Omni Gateway", version="1.0.0", lifespan=lifespan)
+
+from fastapi import Depends as _Depends  # noqa: E402 (already imported above but alias for clarity)
+from gateway.routes.kpi import router as _kpi_router  # noqa: E402
+app.include_router(_kpi_router, dependencies=[_Depends(_require_api_key)])
 
 
 class GatewayTraceMiddleware(BaseHTTPMiddleware):
@@ -160,8 +280,15 @@ class GatewayTraceMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(GatewayTraceMiddleware)
 
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
-gw_requests = Counter("omni_gateway_requests_total", "Total requests received by gateway", ["status"])
+from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
+
+def _get_or_create_counter(name: str, doc: str, labels: list[str]) -> Counter:
+    try:
+        return Counter(name, doc, labels)
+    except ValueError:
+        return REGISTRY._names_to_collectors.get(name)  # type: ignore[return-value]
+
+gw_requests = _get_or_create_counter("omni_gateway_requests_total", "Total requests received by gateway", ["status"])
 
 @app.get("/metrics")
 async def metrics():
@@ -175,8 +302,8 @@ async def health():
 @app.post("/webhook/prometheus")
 async def prometheus_webhook(request: Request) -> JSONResponse:
     """Nhận Alert từ Prometheus/Alertmanager → produce Kafka topic ``OMNI_KAFKA_TOPIC_ALERTS``."""
-    # Trace ngay đầu luồng — ContextVar + filter: asyncio/uvicorn log cùng trace_id.
-    trace_id = f"gw-prom-{uuid.uuid4().hex[:12]}"
+    # Trace: optional ``X-Omni-Trace-Id`` / ``?trace_id=`` (validated); else ``gw-prom-…``.
+    trace_id = _resolve_prometheus_trace_id(request)
     request.state.trace_id = trace_id
     tok_gw = push_gateway_trace_id(trace_id)
     try:
@@ -220,10 +347,24 @@ async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONRespo
             )
 
         # ── 3. Parse & Enqueue ───────────────────────────────────────────────
+        raw_body = await request.body()
+
+        if not _verify_hmac_signature(request, raw_body):
+            logger.warning("[GATEWAY][%s] Webhook signature verification failed — rejecting.", trace_id)
+            gw_requests.labels(status="401_invalid_signature").inc()
+            return _json_with_trace(
+                {"error": "Unauthorized", "detail": "Invalid or missing webhook signature.", "trace_id": trace_id},
+                trace_id=trace_id,
+                status_code=401,
+            )
+
         try:
-            body: Any = await request.json()
+            body: Any = PrometheusWebhookBody.model_validate_json(raw_body).model_dump()
         except Exception:
-            body = {}
+            try:
+                body = json.loads(raw_body) if raw_body else {}
+            except Exception:
+                body = {}
 
         if SILENCE_CHAOS_LAB and _is_chaos_lab_prometheus_webhook(body):
             logger.info("[GATEWAY][%s] Dropped chaos-lab webhook (OMNI_GATEWAY_SILENCE_CHAOS_LAB=1)", trace_id)
@@ -254,9 +395,109 @@ async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONRespo
 
 
 @app.get("/metrics/circuit_breaker")
-async def cb_status():
+async def cb_status(_: None = Depends(_require_api_key)):
     """Quick status endpoint để Gateway tự expose trạng thái mạch."""
     assert _redis is not None
     flag = await _redis.get(CB_KEY)
     active = str(flag).strip() == "1"
     return {"circuit_breaker_active": active}
+
+
+# ─── Forecast Matrix ──────────────────────────────────────────────────────────
+
+import datetime as _dt
+
+def _linear_forecast(values: list[float], *, horizon_steps: int) -> tuple[list[float], dict[str, float]]:
+    """Inline linear regression — no scipy/numpy dependency in gateway image."""
+    import statistics as _st
+    n = len(values)
+    xs = list(range(n))
+    x_mean = _st.mean(xs)
+    y_mean = _st.mean(values)
+    ss_xy = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, values))
+    ss_xx = sum((x - x_mean) ** 2 for x in xs)
+    slope = ss_xy / ss_xx if ss_xx else 0.0
+    intercept = y_mean - slope * x_mean
+    y_hat = [slope * x + intercept for x in xs]
+    ss_res = sum((y - yh) ** 2 for y, yh in zip(values, y_hat))
+    ss_tot = sum((y - y_mean) ** 2 for y in values)
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot else 1.0
+    pred_x_start = n
+    pred_y = [slope * (pred_x_start + i) + intercept for i in range(horizon_steps)]
+    return pred_y, {"slope": slope, "intercept": intercept, "r_squared": r_squared}
+
+_FORECAST_HORIZONS_HOURS: list[float] = [1.0, 3.0, 6.0, 12.0, 24.0]
+_FORECAST_RISK_THRESHOLD: float = float(os.getenv("OMNI_FORECAST_RISK_THRESHOLD", "0.9"))
+
+
+class ForecastMatrixRequest(BaseModel):
+    metric_name: str = Field(..., min_length=1, max_length=256)
+    values: list[float] = Field(..., min_length=2, max_length=10000)
+    timestamps: list[float] = Field(..., min_length=2, max_length=10000)
+    step_seconds: float = Field(default=300.0, gt=0)
+
+
+class ForecastHorizon(BaseModel):
+    predicted: float
+    slope: float
+    r_squared: float
+    risk: bool
+    confidence: str = "ok"  # "ok" | "low" — low when r_squared below OMNI_FORECAST_MIN_R_SQUARED
+
+
+class ForecastMatrixResponse(BaseModel):
+    metric_name: str
+    current_value: float
+    step_seconds: float
+    horizons: dict[str, ForecastHorizon]
+    computed_at: str
+
+
+@app.post("/forecast/matrix", response_model=ForecastMatrixResponse)
+async def forecast_matrix(
+    body: ForecastMatrixRequest,
+    _: None = Depends(_require_api_key),
+) -> ForecastMatrixResponse:
+    """Dự báo metric tại 5 mốc thời gian (1h/3h/6h/12h/24h) bằng hồi quy tuyến tính."""
+    if len(body.values) != len(body.timestamps):
+        raise HTTPException(status_code=422, detail="values and timestamps must have the same length")
+    if len(body.values) < 2:
+        raise HTTPException(status_code=422, detail="at least 2 data points required")
+
+    current_value = body.values[-1]
+    horizons: dict[str, ForecastHorizon] = {}
+
+    for h_hours in _FORECAST_HORIZONS_HOURS:
+        horizon_steps = max(1, int(h_hours * 3600.0 / body.step_seconds))
+        try:
+            pred_y, meta = _linear_forecast(body.values, horizon_steps=horizon_steps)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"forecast error: {exc}") from exc
+
+        predicted = float(pred_y[-1])
+        slope = meta["slope"]
+        r_squared = meta["r_squared"]
+        low_confidence = bool(meta.get("low_confidence", False))
+        # Risk heuristic: only escalate when model fit is reliable (r_squared >= threshold)
+        risk = (
+            not low_confidence
+            and current_value > 0
+            and predicted / current_value > _FORECAST_RISK_THRESHOLD
+        ) if current_value != 0 else False
+
+        key = f"{int(h_hours)}h" if h_hours == int(h_hours) else f"{h_hours}h"
+        horizons[key] = ForecastHorizon(
+            predicted=predicted,
+            slope=slope,
+            r_squared=r_squared,
+            risk=risk,
+            confidence="low" if low_confidence else "ok",
+        )
+
+    return ForecastMatrixResponse(
+        metric_name=body.metric_name,
+        current_value=current_value,
+        step_seconds=body.step_seconds,
+        horizons=horizons,
+        computed_at=_dt.datetime.now(_dt.UTC).isoformat(),
+    )

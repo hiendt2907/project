@@ -92,6 +92,8 @@ def normalize_rag_query(raw_text: str, hints: dict[str, str] | None) -> str:
         svc = hints.get("service_name") if isinstance(hints.get("service_name"), str) else None
         an = hints.get("alertname") or hints.get("alert_name")
         an = an if isinstance(an, str) and an.strip() else None
+        sg = hints.get("symptom_group") if isinstance(hints.get("symptom_group"), str) else None
+        dp = hints.get("diagnostic_pattern") if isinstance(hints.get("diagnostic_pattern"), str) else None
         if ns:
             parts.append(f"namespace={ns}")
         if pod:
@@ -100,6 +102,10 @@ def normalize_rag_query(raw_text: str, hints: dict[str, str] | None) -> str:
             parts.append(f"service={svc}")
         if an:
             parts.append(f"alertname={an}")
+        if sg and sg.strip():
+            parts.append(f"symptom_group={sg.strip()}")
+        if dp and dp.strip():
+            parts.append(f"diagnostic_pattern={dp.strip()}")
     if parts:
         t = " ".join(parts) + "\n" + t
     t = t.strip()
@@ -158,7 +164,7 @@ def _format_hits(
     max_words: int,
     max_block_chars: int,
 ) -> tuple[str, list[str]]:
-    from workers.ollama_prompts_en import truncate_plain_text_to_max_words
+    from workers.llm_prompts_en import truncate_plain_text_to_max_words
 
     lines: list[str] = []
     chunk_ids: list[str] = []
@@ -285,10 +291,9 @@ async def evaluate_rag_gate(
             resp = await ctx.vector_store.similarity_search_hybrid(
                 q,
                 collection,
-                ollama=ctx.ollama,
+                llm=ctx.llm,
                 embed_model=ws.embed_model,
                 embed_model_fallback=emb_fb_s or None,
-                keep_alive=ws.ollama_keep_alive,
                 limit=limit,
                 score_threshold=thr,
                 query_max_chars=qmax,
@@ -298,18 +303,17 @@ async def evaluate_rag_gate(
             resp = await ctx.vector_store.similarity_search(
                 q,
                 collection,
-                ollama=ctx.ollama,
+                llm=ctx.llm,
                 embed_model=ws.embed_model,
                 embed_model_fallback=emb_fb_s or None,
-                keep_alive=ws.ollama_keep_alive,
                 limit=limit,
                 score_threshold=thr,
                 query_max_chars=qmax,
             )
     except Exception as e:
         msg = str(e)
-        if "rag_ollama_embed_failed" in msg:
-            phase = "ollama_embed"
+        if "rag_llm_embed_failed" in msg:
+            phase = "llm_embed"
         elif "rag_pgvector_query_failed" in msg:
             phase = "pgvector_query"
         else:

@@ -148,7 +148,7 @@ def _system_prompt_react(safe_tools: set[str], allowed_ns: set[str], schema_snip
         f"Allowed tools: {tools_csv}.\n"
         f"k8s_rollout_restart: args.namespace must be one of: {ns_csv}.\n"
         "If uncertain, use action CLEAR.\n"
-        f"Tool JSON Schemas (subset):\n{schema_snippet[:6000]}"
+        f"Tool catalog with preconditions (subset):\n{schema_snippet[:6000]}"
     )
 
 
@@ -158,7 +158,11 @@ def _schemas_for_safe_tools(safe: set[str]) -> str:
     for name in sorted(safe):
         if reg.has(name):
             try:
-                parts.append(f"{name}: {json.dumps(reg.json_schema_for(name), ensure_ascii=False)[:1500]}")
+                meta = reg.metadata_for(name)
+                parts.append(
+                    f"{name}: "
+                    f"{json.dumps({'args_schema': reg.json_schema_for(name), 'metadata': meta}, ensure_ascii=False)[:1800]}"
+                )
             except Exception as e:
                 logger.debug("schema for %s: %s", name, e)
     return "\n".join(parts) if parts else "(no typed tools in allowlist)"
@@ -255,8 +259,8 @@ async def _tick_legacy(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None
         )
         try:
             await ctx.redis.setex(ckey, cooldown_sec, "1")
-        except Exception as e:
-            logger.debug("autonomous_decider silent cooldown set: %s", e)
+        except (ConnectionError, OSError) as e:
+            logger.warning("autonomous_decider silent cooldown set failed fp=%s err=%r", fp, e)
         return
 
     try:
@@ -277,18 +281,21 @@ async def _tick_legacy(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None
 
     prev_proactive = getattr(ctx, "inbound_proactive", False)
     prev_trace = getattr(ctx, "inbound_trace_id", "")
+    llm_timeout = float(getattr(ws, "llm_chat_timeout_sec", 30.0))
     token = await ctx.semaphore.acquire_proactive()
     try:
         ctx.inbound_proactive = True
         ctx.inbound_trace_id = f"autonomous-decider-{fp}"
-        resp = await ctx.ollama.chat(
-            model=model,
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            options={"temperature": 0.1, "num_ctx": 4096},
-            keep_alive=ws.ollama_keep_alive,
+        resp = await asyncio.wait_for(
+            ctx.llm.chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                options={"temperature": 0.1, "num_ctx": 4096},
+            ),
+            timeout=llm_timeout,
         )
     finally:
         await ctx.semaphore.release(token)
@@ -401,8 +408,8 @@ async def _tick_react(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None:
         )
         try:
             await ctx.redis.setex(ckey, cooldown_sec, "1")
-        except Exception as e:
-            logger.debug("autonomous_decider silent cooldown set: %s", e)
+        except (ConnectionError, OSError) as e:
+            logger.warning("autonomous_decider silent cooldown set failed fp=%s err=%r", fp, e)
         return
 
     try:
@@ -480,11 +487,10 @@ async def _tick_react(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None:
         try:
             ctx.inbound_proactive = True
             ctx.inbound_trace_id = f"autonomous-decider-react-{fp}-t{turn}"
-            resp = await ctx.ollama.chat(
+            resp = await ctx.llm.chat(
                 model=model,
                 messages=messages,
                 options={"temperature": 0.1, "num_ctx": 4096},
-                keep_alive=ws.ollama_keep_alive,
             )
         finally:
             await ctx.semaphore.release(token)
@@ -547,7 +553,7 @@ async def _tick_react(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None:
 
         try:
             call = _parse_tool_payload(content)
-        except Exception:
+        except (json.JSONDecodeError, ValueError, KeyError):
             logger.warning("[AUTONOMOUS_REACT] parse failed fp=%s turn=%s", fp, turn)
             messages.append({"role": "assistant", "content": content[:4000]})
             messages.append(

@@ -9,7 +9,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-AGG_TIMEOUT_SEC = 3.0
 BATCH_TTL = 120
 FLUSH_LOCK_TTL = 30
 
@@ -48,6 +47,8 @@ async def append_evidence_and_take_flush_batch(
     redis: Any,
     trace: str,
     ev_doc: dict[str, Any],
+    *,
+    agg_timeout_sec: float = 3.0,
 ) -> list[dict[str, Any]] | None:
     """
     Thêm một probe vào batch. Trả về **list** các evidence dict khi **caller** là người flush
@@ -91,12 +92,17 @@ async def append_evidence_and_take_flush_batch(
     ready = False
     if workload:
         if expected_set is not None:
-            ready = expected_set <= keys or elapsed >= AGG_TIMEOUT_SEC
+            ready = expected_set <= keys or elapsed >= agg_timeout_sec
         else:
-            ready = _WORKLOAD_FULL_PROBE_SET <= keys or elapsed >= AGG_TIMEOUT_SEC
+            ready = _WORKLOAD_FULL_PROBE_SET <= keys or elapsed >= agg_timeout_sec
     else:
-        # Matrix / khác: gom tối đa 3s hoặc ≥2 probe (thường redis+kafka)
-        ready = elapsed >= AGG_TIMEOUT_SEC or len(keys) >= 2
+        # Security / matrix: khi dispatcher đã register_diag_expected_probes (vd. ['rbac_drift']),
+        # flush ngay khi đủ probe — tránh deadlock một message / một probe.
+        if expected_set is not None:
+            ready = expected_set <= keys or elapsed >= agg_timeout_sec
+        else:
+            # Không có expected: gom tối đa 3s hoặc ≥2 probe (thường redis+kafka)
+            ready = elapsed >= agg_timeout_sec or len(keys) >= 2
 
     if not ready:
         return None

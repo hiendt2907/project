@@ -18,7 +18,7 @@ from rag.pgvector_store import (
 )
 from ingest.telegram import TelegramClient
 from observability.normalize import redact
-from llm.ollama_client import OllamaClient
+from llm.vllm_client import VLLMClient
 from rag.error_ledger import ErrorLedger
 from workers.clarification import (
     is_ambiguous_resource_check,
@@ -37,6 +37,7 @@ from workers.metrics_exporter import (
     inc_messages_processed,
     inc_slow_path_exhausted,
 )
+from workers.health_server import record_message_processed as _hc_record_msg
 from execution.experience import (
     fetch_action_experience_context,
     record_routing_exhausted_no_data,
@@ -51,7 +52,7 @@ from pkg.executor import (
 from workers.baseline_snapshot import fetch_baseline_system_prompt
 from workers.promql_presets import resolve_intent_from_keywords
 from workers.model_routing import classify_route, dispatch_task
-from workers.ollama_semaphore import RedisOllamaSemaphore
+from workers.llm_semaphore import LLMSemaphore
 from workers.session_state import (
     PENDING_AWAIT_VM_SLOTS,
     SessionState,
@@ -76,8 +77,8 @@ from workers.settings import WorkerSettings
 from workers.tool_observation import prepare_tool_return_for_llm
 from workers.tool_registry import get_tool_registry
 from workers.tools import TOOL_REGISTRY, ToolCallPayload
-from workers import ollama_prompts_en as ope
-from workers.prometheus_alert_enrichment import build_ollama_anchor_en, infer_alert_trigger_dimension
+from workers import llm_prompts_en as ope
+from workers.prometheus_alert_enrichment import build_llm_anchor_en, infer_alert_trigger_dimension
 from workers.handler_context import WorkerHandlerContext
 from workers.vm_slot_accumulation import (
     enrich_slots_from_discovery,
@@ -176,7 +177,7 @@ def _effective_inbound_text_preview(payload: dict[str, Any]) -> str:
                 if extra_bits:
                     line += " | " + " ".join(extra_bits)
                 trig = infer_alert_trigger_dimension(labels, annots, aname, summ)
-                line += "\n" + build_ollama_anchor_en(
+                line += "\n" + build_llm_anchor_en(
                     namespace=ns,
                     pod=pod,
                     deployment=dep,
@@ -283,7 +284,7 @@ SLOW_SYSTEM_VI = (
     "**Đầu ra bắt buộc:** đúng **một** khối JSON `{\"tool\":\"...\",\"args\":{...}}` — không markdown, "
     "không ```, không văn giải thích trước/sau. Nếu chỉ nhắn user → `reply` + `args.text`. "
     "Role: **Senior SRE & DB Architect** — SDK-only (kubernetes_asyncio, psutil, httpx→Prometheus, "
-    "redis-py, asyncpg/pgvector). **Cấm** subprocess/shell/kubectl lệnh. "
+    "redis-py with Redis Stack HNSW vector search). **Cấm** subprocess/shell/kubectl lệnh. "
     "Mày là SRE kỹ tính: nếu yêu cầu **thiếu đối tượng** (vd CPU/RAM mà không rõ Host vs Pod vs Namespace), "
     "**không** được gọi tool; hỏi lại một câu ngắn. "
     "Sau khi user trả lời, hệ thống đã **đọc ngữ cảnh** (goal + hội thoại gần) bằng helper LLM — "
@@ -438,7 +439,7 @@ SLOW_SYSTEM_GOD_VI = (
 
 
 def _slow_path_system_messages_for_ctx(ctx: WorkerHandlerContext) -> list[dict[str, Any]]:
-    """Hai block system: Generator JSON + SRE body (god shell hoặc SDK-only). Ollama: English."""
+    """Hai block system: Generator JSON + SRE body (god shell hoặc SDK-only). LLM: English."""
     def _tool_catalog_text(unattended_alert: bool) -> str:
         names = sorted(TOOL_REGISTRY.keys())
         if unattended_alert:
@@ -575,7 +576,7 @@ async def _conversational_fallback(
     detail: str = "",
     learned_context: str = "",
 ) -> str:
-    """Khi không parse được JSON tool hoặc tool không tồn tại / lỗi — Ollama local (heavy cho SRE/ops)."""
+    """Khi không parse được JSON tool hoặc tool không tồn tại / lỗi — vLLM local (heavy cho SRE/ops)."""
     ctx.fallback_inline_commands = None
     hint = ""
     if detail:
@@ -599,18 +600,17 @@ async def _conversational_fallback(
         else ctx.settings.chat_model
     )
     try:
-        resp = await ctx.ollama.chat(
+        resp = await ctx.llm.chat(
             model=fb_model,
                 messages=[
                 {"role": "system", "content": ope.CONV_FALLBACK_SYSTEM_EN},
                 {"role": "user", "content": user_content[:12000]},
             ],
             options={"temperature": 0.1, "num_ctx": 4096},
-            keep_alive=ctx.settings.ollama_keep_alive,
         )
         out = ((resp.get("message") or {}).get("content") or "").strip()
     except Exception as e:
-        logger.warning("[%s] conversational_fallback ollama_error %s", trace, e)
+        logger.warning("[%s] conversational_fallback llm_error %s", trace, e)
         out = ""
     if not out:
         out = (
@@ -650,7 +650,7 @@ def _k8s_smart_target_hint(user_text: str) -> str | None:
     )
 
 
-def _embedding_from_ollama(resp: dict[str, Any]) -> list[float]:
+def _embedding_from_response(resp: dict[str, Any]) -> list[float]:
     if "embedding" in resp:
         emb = resp["embedding"]
         return list(emb) if not isinstance(emb, list) else emb
@@ -674,12 +674,11 @@ async def resolve_remediation_from_memory(
     """
     thr = score_threshold if score_threshold is not None else ctx.settings.rag_fast_path_score
     logger.info("[%s] remediation_embed collection=%s thr=%s", trace, collection_name, thr)
-    emb_resp = await ctx.ollama.embed(
+    emb_resp = await ctx.llm.embed(
         model=ctx.settings.embed_model,
         input=text[:8000],
-        keep_alive=ctx.settings.ollama_keep_alive,
     )
-    vector = _embedding_from_ollama(emb_resp)
+    vector = _embedding_from_response(emb_resp)
     resp = await ctx.vector_store.query_points(
         collection_name=collection_name,
         query=vector,
@@ -755,12 +754,11 @@ async def try_fast_path(
         logger.info("[%s] fast_path_miss action_exp_disabled", trace)
         return False, None
 
-    emb_resp = await ctx.ollama.embed(
+    emb_resp = await ctx.llm.embed(
         model=ctx.settings.embed_model,
         input=text[:8000],
-        keep_alive=ctx.settings.ollama_keep_alive,
     )
-    vector = _embedding_from_ollama(emb_resp)
+    vector = _embedding_from_response(emb_resp)
     r_resp = await ctx.vector_store.query_points(
         collection_name=COLLECTION_ACTION_EXPERIENCE,
         query=vector,
@@ -824,7 +822,7 @@ async def _repair_json_with_helper(
             f"Lỗi parse JSON (sửa cho đúng schema tool):\n{err[:1500]}\n\n"
             f"Nội dung model trả về:\n{raw[:3500]}"
         )
-    resp = await ctx.ollama.chat(
+    resp = await ctx.llm.chat(
         model=ctx.settings.model_helper,
         messages=[
             {
@@ -837,7 +835,6 @@ async def _repair_json_with_helper(
             {"role": "user", "content": user_blob[:8000]},
         ],
         options={"temperature": 0.1, "num_ctx": 4096},
-        keep_alive=ctx.settings.ollama_keep_alive,
     )
     return (resp.get("message") or {}).get("content") or ""
 
@@ -845,7 +842,7 @@ async def _repair_json_with_helper(
 async def _compress_history(ctx: WorkerHandlerContext, state: SessionState, trace: str) -> str:
     """Qwen 1.5B — nén summary + recent thành last_summary mới."""
     blob = (state.last_summary or "").strip() + "\n\n" + json.dumps(state.recent_messages, ensure_ascii=False)
-    resp = await ctx.ollama.chat(
+    resp = await ctx.llm.chat(
         model=ctx.settings.model_helper,
         messages=[
             {
@@ -858,7 +855,6 @@ async def _compress_history(ctx: WorkerHandlerContext, state: SessionState, trac
             {"role": "user", "content": blob[:8000]},
         ],
         options={"temperature": 0.1, "num_ctx": 4096},
-        keep_alive=ctx.settings.ollama_keep_alive,
     )
     out = ((resp.get("message") or {}).get("content") or "").strip()
     return out or state.last_summary
@@ -866,7 +862,7 @@ async def _compress_history(ctx: WorkerHandlerContext, state: SessionState, trac
 
 async def _deepseek_plan(ctx: WorkerHandlerContext, user_text: str, trace: str) -> str:
     """DeepSeek-r1:8b — lập kế hoạch bước; không thực thi tool."""
-    resp = await ctx.ollama.chat(
+    resp = await ctx.llm.chat(
         model=ctx.settings.model_reasoning_engine,
         messages=[
             {
@@ -885,7 +881,6 @@ async def _deepseek_plan(ctx: WorkerHandlerContext, user_text: str, trace: str) 
             },
         ],
         options={"temperature": 0.1, "num_ctx": 4096},
-        keep_alive=ctx.settings.ollama_keep_alive,
     )
     return (resp.get("message") or {}).get("content") or ""
 
@@ -941,7 +936,7 @@ async def slow_path_with_llm_and_tools(
     actx = await fetch_action_experience_context(ctx, user_text)
     logger.info("[%s] slow_path_acquire", trace)
     token = await ctx.semaphore.acquire()
-    ctx.ollama_slot_held = True
+    ctx.llm_slot_held = True
     try:
         if state is not None and state.turn_count > ctx.settings.compress_turn_threshold:
             state.last_summary = await _compress_history(ctx, state, trace)
@@ -1014,11 +1009,10 @@ async def slow_path_with_llm_and_tools(
             logger.info("[%s] slow_path_chat_attempt n=%s/%s model=%s", trace, attempt + 1, max_a, model)
             # Slow-path request to LLM (RAG score miss path).
             inc_llm_requests()
-            resp = await ctx.ollama.chat(
+            resp = await ctx.llm.chat(
                 model=model,
                 messages=messages,
                 options={"temperature": 0.1, "num_ctx": 4096},
-                keep_alive=ctx.settings.ollama_keep_alive,
             )
             content = (resp.get("message") or {}).get("content") or ""
             if not content.strip():
@@ -1202,7 +1196,7 @@ async def slow_path_with_llm_and_tools(
             last_detail=attempt_trace[-1].one_line if attempt_trace else "loop_exit",
         )
     finally:
-        ctx.ollama_slot_held = False
+        ctx.llm_slot_held = False
         await ctx.semaphore.release(token)
 
 
@@ -1273,6 +1267,7 @@ async def _handle_inbound_payload_impl(
     ctx.restart_rollout_explicit = bool(RE_RESTART_ROLLOUT_EXPLICIT.search(raw_user_text))
     ctx.pod_discovery_pairs = []
     inc_messages_processed(src or "unknown")
+    _hc_record_msg()
 
     if chat_id_int is not None:
         with child_span("redis_get_write_pending"):

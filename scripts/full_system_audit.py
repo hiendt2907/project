@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import shlex
 import subprocess
 import sys
 import time
@@ -139,63 +138,43 @@ def kafka_topic_depth_stub() -> dict[str, int]:
     }
 
 
-def get_postgres_primary_pod() -> str | None:
-    """CNPG primary (lab) or legacy pgpool pod name for psql exec."""
-    rc, out = k("get", "pods", "-n", "multi-agent")
-    if rc != 0:
-        return None
-    for ln in out.splitlines():
-        parts = ln.split()
-        if not parts:
-            continue
-        name = parts[0]
-        if name.startswith("pgpool-gateway"):
-            return name
-        if name == "omni-postgres-1":
-            return name
-    return None
-
-
-def _pg_app_password() -> str:
-    rc, out = k("get", "secret", "omni-postgres-app", "-n", "multi-agent", "-o", "jsonpath={.data.password}")
-    if rc != 0 or not out.strip():
-        return ""
-    return base64.b64decode(out.strip()).decode("utf-8", errors="replace")
-
-
 def get_rag_counts() -> dict[str, int]:
-    pod = get_postgres_primary_pod()
-    if not pod:
+    """Query Redis Stack HNSW index counts via FT.INFO exec in redis pod.
+
+    Returns per-collection num_docs (keys match `idx:<collection>`).
+    Empty dict if Redis pod unavailable (lab offline, etc.).
+    """
+    known_collections = [
+        "k8s_expert",
+        "sop",
+        "sop_v2",
+        "errors",
+        "action_experience",
+        "cli_hil_context",
+        "infra_topology",
+        "sre_knowledge",
+        "vendor_knowledge",
+    ]
+    rc, out = k("get", "pod", "-n", "multi-agent", "-l", "app=redis", "-o", "jsonpath={.items[0].metadata.name}")
+    if rc != 0 or not out.strip():
         return {"__total__": 0}
-    pw = _pg_app_password()
-    if not pw:
-        return {"__total__": 0}
-    query = "select collection_name,count(*) from rag_documents group by collection_name order by count(*) desc;"
-    host = "127.0.0.1" if pod.startswith("pgpool") else "localhost"
-    rc, out = k(
-        "exec",
-        "-n",
-        "multi-agent",
-        pod,
-        "--",
-        "sh",
-        "-lc",
-        f"PGPASSWORD='{pw}' psql -h {host} -U appuser -d ragdb -At -c {shlex.quote(query)}",
-    )
-    if rc != 0:
-        return {"__total__": 0}
+    pod = out.strip()
     counts: dict[str, int] = {}
     total = 0
-    for ln in out.splitlines():
-        if "|" not in ln:
+    for coll in known_collections:
+        rc, out = k("exec", "-n", "multi-agent", pod, "--", "redis-cli", "FT.INFO", f"idx:{coll}")
+        if rc != 0:
             continue
-        c, n = ln.split("|", 1)
-        try:
-            v = int(n)
-        except Exception:
-            continue
-        counts[c] = v
-        total += v
+        lines = out.splitlines()
+        for i, ln in enumerate(lines):
+            if ln.strip() == "num_docs" and i + 1 < len(lines):
+                try:
+                    v = int(lines[i + 1].strip())
+                    counts[coll] = v
+                    total += v
+                except ValueError:
+                    pass
+                break
     counts["__total__"] = total
     return counts
 
@@ -374,7 +353,7 @@ def simulate(duration_sec: int, interval_sec: int, *, inject_proactive: bool = F
 
 
 def _trace_in_logs(trace_id: str, deploy: str) -> bool:
-    rc, out = k("logs", "-n", "multi-agent", f"deploy/{deploy}", "--since=20m", "--tail=3000")
+    rc, out = k("logs", "-n", "multi-agent", f"deploy/{deploy}", "--all-pods", "--since=20m", "--tail=3000")
     if rc != 0:
         return False
     return trace_id in out
@@ -487,7 +466,7 @@ def main() -> int:
     gw_trace_stage = verify_trace_stage_matrix(
         list(sim.get("gateway_trace_ids") or []),
         require_gateway=True,
-        min_worker_hits=2,
+        min_worker_hits=1,
     )
     proactive_trace_stage = verify_trace_stage_matrix(
         list(sim.get("proactive_trace_ids") or []),

@@ -1,0 +1,13 @@
+{
+  "id": "case_010",
+  "description": "CRAT chain integrity failure — audit trail broken",
+  "lane": "SYS_HARD_FAIL",
+  "evidence_text": "omni_crat_integrity_ok=0 reason=hash_mismatch. CRAT chain verification failed at block seq=1847. Expected prev_hash does not match stored head_hash in Redis. Last verified block: seq=1846. Gap indicates possible Redis data corruption or concurrent write race. SOX §404 compliance alert triggered.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["CRAT", "audit"],
+    "should_not_contain": ["memory", "DDoS", "ConfigMap missing"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": true
+  }
+}

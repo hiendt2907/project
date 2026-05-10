@@ -1,0 +1,13 @@
+{
+  "id": "case_005",
+  "description": "SIEM DDoS detection — high rate from single IP",
+  "lane": "SIEM_SECURITY",
+  "evidence_text": "Smart-SIEM incident: category=ddos severity=HIGH. Source IP 203.0.113.42 sent 8420 requests in 60s to /webhook/prometheus. All requests return 429. tenant=default. CHAIN_DETECTED: 3 correlated events in 30s window. FinGuard incident_id=siem-ddos-abc456.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["DDoS", "rate"],
+    "should_not_contain": ["memory", "ConfigMap", "Kafka lag"],
+    "min_verification_steps": 1,
+    "remediation_approval_required": true
+  }
+}

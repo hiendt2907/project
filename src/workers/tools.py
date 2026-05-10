@@ -1,4 +1,4 @@
-"""Registry tool — Service Provider: SDK-only (psutil, kubernetes_asyncio, httpx, matplotlib, scapy, asyncpg)."""
+"""Registry tool — Service Provider: SDK-only (psutil, kubernetes_asyncio, httpx, matplotlib, scapy)."""
 
 from __future__ import annotations
 
@@ -32,13 +32,9 @@ from workers.sdk_service_tools import (
     tool_get_historical_series_dataframe,
     tool_metrics_promql_hints,
     tool_net_scapy_interfaces,
-    tool_postgres_ping,
     tool_k8s_expert_search,
     tool_vendor_knowledge_search,
     tool_predict_resource_exhaustion,
-    tool_pgvector_health,
-    tool_pgvector_health_audit,
-    tool_pgvector_status,
     tool_query_historical_metrics,
     tool_query_prometheus_metrics,
     tool_query_vm_timeseries,
@@ -96,7 +92,7 @@ async def tool_echo(ctx: Any, args: dict[str, Any]) -> str:
 
 async def tool_reply(ctx: Any, args: dict[str, Any]) -> str:
     """Trả lời text (hội thoại)."""
-    from workers.ollama_prompts_en import truncate_plain_text_to_max_words
+    from workers.llm_prompts_en import truncate_plain_text_to_max_words
 
     t = truncate_plain_text_to_max_words(str(args.get("text") or args.get("message") or ""))
     return t or "(empty)"
@@ -115,7 +111,7 @@ register_tool("escalate_to_human", tool_escalate_to_human)
 
 async def tool_omni_mark_resolved(ctx: Any, args: dict[str, Any]) -> str:
     """Đóng phiên agentic — playbook học từ trajectory (không auto trên fast-path)."""
-    from workers.ollama_prompts_en import truncate_plain_text_to_max_words
+    from workers.llm_prompts_en import truncate_plain_text_to_max_words
 
     summary = truncate_plain_text_to_max_words(str(args.get("summary") or args.get("text") or ""))
     setattr(ctx, "_agentic_session_resolved", True)
@@ -152,13 +148,9 @@ register_tool("query_vm_timeseries", tool_query_vm_timeseries)
 register_tool("forecast_memory_risk_vm", tool_forecast_memory_risk_vm)
 register_tool("predict_resource_exhaustion", tool_predict_resource_exhaustion)
 register_tool("redis_expert_check", tool_redis_expert_check)
-register_tool("pgvector_health_audit", tool_pgvector_health_audit)
 register_tool("redis_health", tool_redis_health)
 register_tool("redis_info", tool_redis_info)
-register_tool("pgvector_health", tool_pgvector_health)
-register_tool("pgvector_status", tool_pgvector_status)
 register_tool("net_scapy_interfaces", tool_net_scapy_interfaces)
-register_tool("postgres_ping", tool_postgres_ping)
 register_tool("vendor_knowledge_search", tool_vendor_knowledge_search)
 register_tool("k8s_expert_search", tool_k8s_expert_search)
 register_tool("audit_observability_stack", tool_audit_observability_stack)
@@ -183,10 +175,24 @@ def _bind_registry_tools(names: tuple[str, ...]) -> None:
 _bind_registry_tools(
     (
         "k8s_scale_deployment",
+        "k8s_scale_resource",
         "k8s_describe_resource",
         "k8s_tail_logs",
+        "k8s_get_logs",
+        "k8s_get_events",
+        "k8s_list_resources",
         "k8s_check_endpoints",
+        "k8s_get_deployment_state",
+        "k8s_list_workload_pods",
+        "k8s_get_pod_secret_refs",
+        "k8s_get_secret_keys",
+        "k8s_verify_rollout",
         "k8s_patch_resource",
+        "k8s_patch_configmap",
+        "k8s_patch_secret",
+        "k8s_create_or_patch_configmap",
+        "k8s_apply_rbac_least_privilege",
+        "k8s_delete_pod",
         "k8s_list_nodes",
         "k8s_node_conditions",
         "k8s_list_services",
