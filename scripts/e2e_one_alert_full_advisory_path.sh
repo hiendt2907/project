@@ -6,6 +6,7 @@
 # Env: TELEGRAM_BOT_TOKEN + OMNI_TELEGRAM_ADMIN_CHAT_ID (hoặc đọc Secret cluster như gateway_alert_loki_verify).
 #
 # Usage:
+#   export NS=multi-agent  # hoặc namespace đích (bắt buộc)
 #   export E2E_ASSERT_TELEGRAM_BOT_API=1   # assert Bot API (deleteMessage fallback)
 #   bash scripts/e2e_one_alert_full_advisory_path.sh
 #   bash scripts/e2e_one_alert_full_advisory_path.sh /path/to/alert.json
@@ -14,7 +15,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PAYLOAD="${1:-${ROOT}/scripts/alert_payloads/alertmanager_nginx_waiting_fault.json}"
 KUBE="${ROOT}/scripts/with_working_kube.sh"
-NS="${NS:-multi-agent}"
+if [[ -z "${NS:-}" ]]; then
+  echo "e2e_one_alert_full_advisory_path.sh: set NS to the Kubernetes namespace (no default)." >&2
+  exit 2
+fi
 
 # Đủ thời gian Ollama + vòng agentic (waiting fault / planner).
 export SLEEP_SEC="${SLEEP_SEC:-120}"

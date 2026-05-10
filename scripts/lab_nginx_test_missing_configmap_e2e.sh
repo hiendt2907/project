@@ -6,7 +6,7 @@
 #
 # Usage: bash scripts/lab_nginx_test_missing_configmap_e2e.sh
 # Env:
-#   NS=multi-agent
+#   NS=                          **required** — target namespace
 #   SLEEP_SEC — first wait after POST (default 180). Prober/evidence thường <60s; analyst PLAN_EMITTED nhanh.
 #   E2E_EXTRA_AGENTIC_SLEEP — second wait (default 240). Cần cho vòng agentic/Ollama nhiều bước sau PLAN_EMITTED
 #     (đơn giản chỉ thấy readonly_discovery_redirect step=1 nếu dừng quá sớm).
@@ -15,7 +15,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KUBE="${ROOT}/scripts/with_working_kube.sh"
-NS="${NS:-multi-agent}"
+if [[ -z "${NS:-}" && -z "${KUBE_NS:-}" ]]; then
+  echo "lab_nginx_test_missing_configmap_e2e.sh: set NS or KUBE_NS (no default)." >&2
+  exit 2
+fi
+NS="${NS:-${KUBE_NS:-}}"
 SLEEP_SEC="${SLEEP_SEC:-180}"
 E2E_EXTRA_AGENTIC_SLEEP="${E2E_EXTRA_AGENTIC_SLEEP:-240}"
 STRICT_ASSERT="${STRICT_ASSERT:-0}"

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Gửi lặp cùng payload tới gateway (Giai đoạn 3 — soak tùy chọn).
-# Usage: REPEAT=30 INTERVAL_SEC=2 ./scripts/alert_payload_soak.sh scripts/alert_payloads/replay/replay_example_minimal.json
+# Usage: NS=<ns> REPEAT=30 INTERVAL_SEC=2 ./scripts/alert_payload_soak.sh scripts/alert_payloads/replay/replay_example_minimal.json
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -z "${NS:-}" ]]; then
+  echo "alert_payload_soak.sh: set NS (passed to post_gateway_alert.sh)." >&2
+  exit 2
+fi
+export NS
 RAW="${1:?usage: $0 path/to/payload.json}"
 REPEAT="${REPEAT:-20}"
 INTERVAL_SEC="${INTERVAL_SEC:-3}"

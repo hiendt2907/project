@@ -111,20 +111,21 @@ Ghi rõ mã trong báo cáo run để không nhầm với “FALSE_NEGATIVE” c
 ## 8. Lệnh tham chiếu nhanh
 
 ```bash
-# Smoke (lab — case A)
+# Smoke (lab — case A); NS bắt buộc (multi-agent trong Makefile lab)
+export NS=multi-agent
 bash scripts/gateway_alert_loki_verify.sh
 STRICT_ASSERT=0 bash scripts/gateway_alert_loki_verify.sh   # nếu strict grep gây nhiễu
 
-# Matrix / gate
-make e2e-incident-matrix   # hoặc scripts/e2e_incident_matrix.sh
+# Matrix / gate (make sets NS=multi-agent)
+make e2e-incident-matrix   # hoặc NS=multi-agent bash scripts/e2e_incident_matrix.sh
 
 # Phase 1 — fault + gateway (sau Phase 0)
 # FAULT_NS=multi-agent FAULT_DEPLOY=nginx-test ./scripts/alert_flow_realistic/inject_fault_crashloop.sh
-# ./scripts/alert_flow_realistic/post_gateway_alert.sh scripts/alert_payloads/alertmanager_nginx_waiting_fault.json
+# NS=multi-agent ./scripts/alert_flow_realistic/post_gateway_alert.sh scripts/alert_payloads/alertmanager_nginx_waiting_fault.json
 # ./scripts/alert_flow_realistic/inject_fault_restore.sh
 
 # Phase 3 — soak
-# REPEAT=15 INTERVAL_SEC=5 ./scripts/alert_payload_soak.sh scripts/alert_payloads/replay/replay_example_minimal.json
+# NS=multi-agent REPEAT=15 INTERVAL_SEC=5 ./scripts/alert_payload_soak.sh scripts/alert_payloads/replay/replay_example_minimal.json
 ```
 
 ---

@@ -2,14 +2,14 @@
 
 Runbook **DoD** (definition of done) cho nghiệm thu Omni trên cluster: không chỉ “chạy script xanh”, mà phải **tam giác bằng chứng** và (khi scope yêu cầu) chứng minh **vòng feedback thoát có kiểm soát**.
 
-Tham chiếu nhanh: [e2e_cluster_after_deploy.md](e2e_cluster_after_deploy.md) · [e2e_telegram_bot_api_assert.md](e2e_telegram_bot_api_assert.md) · `scripts/e2e_one_alert_full_advisory_path.sh` · `scripts/gateway_alert_loki_verify.sh` · `scripts/e2e_collect_trace_evidence.sh`.
+Tham chiếu nhanh: [e2e_cluster_after_deploy.md](e2e_cluster_after_deploy.md) · [e2e_telegram_bot_api_assert.md](e2e_telegram_bot_api_assert.md) · gateway / matrix scripts **yêu cầu `NS`** (`NS=<ns> bash scripts/e2e_one_alert_full_advisory_path.sh`, `scripts/gateway_alert_loki_verify.sh`, …) · `scripts/e2e_collect_trace_evidence.sh`.
 
 ## Kịch bản (A / B / C)
 
 | ID | Tên | Mục đích | Entry |
 |----|-----|----------|--------|
-| **A** | Contrast / suggest nhanh | `STATE_MACHINE_CONTRAST` → `SUGGEST_REMEDIATION` + executor | `bash scripts/gateway_alert_loki_verify.sh` (payload HighCPU mặc định) |
-| **B** | Advisory LLM đầy đủ | RAG/LLM → CRAT → Telegram advisory + suggest | `bash scripts/e2e_one_alert_full_advisory_path.sh` |
+| **A** | Contrast / suggest nhanh | `STATE_MACHINE_CONTRAST` → `SUGGEST_REMEDIATION` + executor | `NS=<ns> bash scripts/gateway_alert_loki_verify.sh` (payload HighCPU mặc định; lab: `NS=multi-agent`) |
+| **B** | Advisory LLM đầy đủ | RAG/LLM → CRAT → Telegram advisory + suggest | `NS=<ns> bash scripts/e2e_one_alert_full_advisory_path.sh` |
 | **C** | Death loop / feedback | `omni-actions` → `omni-action-feedback` → analyst **lặp** tới **terminal** (cap / success / tombstone / REQUIRES_HUMAN) — chứng minh **không treo** | Lab fault có feedback (inject / stress) **hoặc** giảm tạm `OMNI_STATE_VERIFY_MAX_ATTEMPTS` **chỉ lab**; sau đó `scripts/e2e_collect_trace_evidence.sh <trace_id>` |
 
 Ghi trong artifact / PR: đang claim **A**, **B**, hay **C** (hoặc tổ hợp). Chỉ A/B **không** đủ nếu ticket yêu cầu explicit **death-loop**.

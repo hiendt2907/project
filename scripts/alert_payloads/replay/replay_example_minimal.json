@@ -7,7 +7,6 @@
       "labels": {
         "alertname": "ReplayExampleMinimal",
         "severity": "warning",
-        "namespace": "multi-agent",
         "pod": "REPLACE_WITH_LIVE_POD",
         "deployment": "nginx-test",
         "container": "nginx"

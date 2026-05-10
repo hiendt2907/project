@@ -13,8 +13,8 @@ Dùng sau `make deploy-worker` hoặc rollout tương đương — xác nhận k
 
 | ID | Mục đích | Lệnh chính |
 |----|----------|------------|
-| **A** | Smoke contrast / suggest (HighCPU mặc định) | `bash scripts/gateway_alert_loki_verify.sh` |
-| **B** | Full advisory LLM + CRAT + Telegram assert mặc định | `bash scripts/e2e_one_alert_full_advisory_path.sh` — mặc định `SLEEP_SEC=120`, `E2E_EXTRA_AGENTIC_SLEEP=300`, `STRICT_ASSERT_MIN_DEPLOY_HITS=2`, `STRICT_ASSERT_INCLUDE_ADVISORY_MARKERS=1`, `E2E_ASSERT_FULL_ADVISORY_LLM=1` |
+| **A** | Smoke contrast / suggest (HighCPU mặc định) | `NS=multi-agent bash scripts/gateway_alert_loki_verify.sh` (hoặc `export NS` trước) |
+| **B** | Full advisory LLM + CRAT + Telegram assert mặc định | `NS=multi-agent bash scripts/e2e_one_alert_full_advisory_path.sh` — mặc định `SLEEP_SEC=120`, `E2E_EXTRA_AGENTIC_SLEEP=300`, `STRICT_ASSERT_MIN_DEPLOY_HITS=2`, `STRICT_ASSERT_INCLUDE_ADVISORY_MARKERS=1`, `E2E_ASSERT_FULL_ADVISORY_LLM=1` |
 | **C** | Death loop / `omni-action-feedback` → analyst tới terminal | Sau A/B có `trace_id`: `bash scripts/e2e_collect_trace_evidence.sh '<trace_id>'` + fault lab / inject (xem checklist); **chỉ** giảm `OMNI_STATE_VERIFY_MAX_ATTEMPTS` trên **lab** nếu cần chạm cap nhanh |
 
 ## Bước verify

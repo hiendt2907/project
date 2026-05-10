@@ -21,7 +21,7 @@ Env:
   E2E_TELEGRAM_POLL_INTERVAL Sleep between getUpdates (default 4)
   E2E_TELEGRAM_VERIFY_DELETE_MESSAGE  1 (default) = allow deleteMessage delivery proof after logs
   E2E_TELEGRAM_STRICT_GETUPDATES 1 = require advisory visible in getUpdates; no deleteMessage; 409 Conflict → exit 10
-  E2E_KUBE_NS / E2E_ANALYST_DEPLOY    defaults multi-agent / omni-analyst
+  E2E_KUBE_NS / NS — required for kubectl analyst logs (no default)
   REPO root uses scripts/with_working_kube.sh for kubectl.
 """
 
@@ -70,7 +70,13 @@ def _parse_outbound_from_logs(trace: str, log_blob: str) -> tuple[int, int] | No
 
 
 def _kubectl_analyst_logs(trace: str) -> str | None:
-    ns = os.environ.get("E2E_KUBE_NS", "multi-agent")
+    ns = (os.environ.get("E2E_KUBE_NS") or os.environ.get("NS") or "").strip()
+    if not ns:
+        print(
+            "ERROR: set NS or E2E_KUBE_NS for kubectl logs target namespace",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     dep = os.environ.get("E2E_ANALYST_DEPLOY", "omni-analyst")
     kube = os.path.join(_repo_root(), "scripts/with_working_kube.sh")
     try:

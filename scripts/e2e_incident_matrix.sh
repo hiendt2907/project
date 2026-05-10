@@ -13,14 +13,15 @@
 #   nginx_waiting_fault        Live cluster: inject missing ConfigMap fault → Omni autonomously resolves.
 #
 # Usage:
-#   bash scripts/e2e_incident_matrix.sh
-#   SCENARIOS=phase_b_pytest,phase_b_unit_full bash scripts/e2e_incident_matrix.sh
-#   MVP_API_URL=http://localhost:8000 bash scripts/e2e_incident_matrix.sh
+#   NS=<ns> bash scripts/e2e_incident_matrix.sh
+#   NS=<ns> SCENARIOS=phase_b_pytest,phase_b_unit_full bash scripts/e2e_incident_matrix.sh
+#   NS=<ns> MVP_API_URL=http://localhost:8000 bash scripts/e2e_incident_matrix.sh
 #
 # Env:
-#   NS=multi-agent               Target namespace (default: multi-agent)
+#   NS=                          Target namespace (**required** — no default; export before run).
 #   SCENARIOS=a,b,c              Comma-separated subset (default: all)
-#   MVP_API_URL=                 mvp_api base URL (default: http://localhost:8000); HTTP scenarios skip if unreachable
+#   OUT_OF_SCOPE_TEST_NAMESPACE=  Phase B sec_audit + RBAC negative check: namespace outside omni scope (must differ from NS)
+#   RBAC_NEGATIVE_NAMESPACE=      Optional override for RBAC denial namespace (default: OUT_OF_SCOPE_TEST_NAMESPACE)
 #   STRICT_ASSERT=1              Fail on assertion errors (default: 1)
 #   REPORT_JSON=...              Output report path (default: reports/incident-matrix/latest.json)
 #   CLUSTER_MODE=auto            auto|yes|no — whether to attempt kubectl auth checks
@@ -35,7 +36,19 @@ else
   PYTHON_BIN="${PYTHON_BIN:-python3}"
 fi
 
-NS="${NS:-multi-agent}"
+if [[ -z "${NS:-}" ]]; then
+  echo "e2e_incident_matrix.sh: set NS to the target Kubernetes namespace (no default)." >&2
+  exit 2
+fi
+
+_phase_b_running_pod() {
+  "${KUBE}" kubectl get pods -n "${NS}" --field-selector=status.phase=Running \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
+}
+_phase_b_first_container() {
+  local pod="$1"
+  "${KUBE}" kubectl get pod "${pod}" -n "${NS}" -o jsonpath='{.spec.containers[0].name}' 2>/dev/null || true
+}
 SCENARIOS="${SCENARIOS:-}"
 STRICT_ASSERT="${STRICT_ASSERT:-1}"
 MVP_API_URL="${MVP_API_URL:-http://localhost:8000}"
@@ -302,7 +315,7 @@ _scenario_wave_a1_rbac_permissions() {
     _pass "omni-executor SA: no cluster-wide wildcard (cluster-admin removed)"
   fi
 
-  # Allowed: patch deployments in multi-agent.
+  # Allowed: patch deployments in target namespace (${NS}).
   if _kube auth can-i patch deployments -n "${NS}" --as="${SA}" 2>/dev/null | grep -q "^yes"; then
     _pass "omni-executor SA: can patch deployments in ${NS}"
   else
@@ -310,12 +323,19 @@ _scenario_wave_a1_rbac_permissions() {
     rc=1
   fi
 
-  # Blocked: patch deployments in production.
-  if _kube auth can-i patch deployments -n production --as="${SA}" 2>/dev/null | grep -q "^yes"; then
-    _fail "omni-executor SA can patch deployments in production — namespace scope too wide"
+  # Blocked: patch deployments in an out-of-scope namespace (must not be ${NS}).
+  local neg_ns="${RBAC_NEGATIVE_NAMESPACE:-${OUT_OF_SCOPE_TEST_NAMESPACE:-}}"
+  if [[ -z "${neg_ns}" ]]; then
+    _fail "Set RBAC_NEGATIVE_NAMESPACE or OUT_OF_SCOPE_TEST_NAMESPACE (namespace where omni-executor must NOT patch deployments)"
+    rc=1
+  elif [[ "${neg_ns}" == "${NS}" ]]; then
+    _fail "RBAC negative namespace must differ from NS (both are ${NS})"
+    rc=1
+  elif _kube auth can-i patch deployments -n "${neg_ns}" --as="${SA}" 2>/dev/null | grep -q "^yes"; then
+    _fail "omni-executor SA can patch deployments in ${neg_ns} — namespace scope too wide"
     rc=1
   else
-    _pass "omni-executor SA: cannot patch deployments in production (scope enforced)"
+    _pass "omni-executor SA: cannot patch deployments in ${neg_ns} (scope enforced)"
   fi
 
   # Blocked: delete nodes (cluster-level destructive).
@@ -368,7 +388,12 @@ _api_scenario_preamble() {
 
 _scenario_phase_b_api_resource() {
   if _api_scenario_preamble; then return 0; fi
-  local body='{"alertname":"HighCPUUsage","namespace":"multi-agent","pod":"api-server-7d9f8b6c4-xk2pq","container":"api-server","severity":"warning","memory_limit":"512Mi"}'
+  local pod="${API_TEST_POD:-$(_phase_b_running_pod)}"
+  if [[ -z "${pod}" ]]; then _log "SKIP: no Running pod in ${NS} (set API_TEST_POD)"; return 0; fi
+  local container="${API_TEST_CONTAINER:-$(_phase_b_first_container "${pod}")}"
+  if [[ -z "${container}" ]]; then container="api-server"; fi
+  local body
+  body="$(printf '%s' "{\"alertname\":\"HighCPUUsage\",\"namespace\":\"${NS}\",\"pod\":\"${pod}\",\"container\":\"${container}\",\"severity\":\"warning\",\"memory_limit\":\"512Mi\"}")"
   _log "POST resource lane alert: HighCPUUsage"
   local resp
   resp="$(_api_post "${body}")"
@@ -378,7 +403,12 @@ _scenario_phase_b_api_resource() {
 
 _scenario_phase_b_api_state() {
   if _api_scenario_preamble; then return 0; fi
-  local body='{"alertname":"KubePodOOMKilled","namespace":"multi-agent","pod":"api-server-7d9f8b6c4-xk2pq","container":"api-server","severity":"critical","memory_limit":"512Mi"}'
+  local pod="${API_TEST_POD:-$(_phase_b_running_pod)}"
+  if [[ -z "${pod}" ]]; then _log "SKIP: no Running pod in ${NS} (set API_TEST_POD)"; return 0; fi
+  local container="${API_TEST_CONTAINER:-$(_phase_b_first_container "${pod}")}"
+  if [[ -z "${container}" ]]; then container="api-server"; fi
+  local body
+  body="$(printf '%s' "{\"alertname\":\"KubePodOOMKilled\",\"namespace\":\"${NS}\",\"pod\":\"${pod}\",\"container\":\"${container}\",\"severity\":\"critical\",\"memory_limit\":\"512Mi\"}")"
   _log "POST state lane alert: KubePodOOMKilled"
   local resp
   resp="$(_api_post "${body}")"
@@ -399,7 +429,12 @@ _scenario_phase_b_api_state() {
 _scenario_phase_b_api_app_log_fc() {
   # app_log fail-closed: no LOKI_BASE_URL → noop with ERR_REA_LOG_SOURCE_UNAVAILABLE.
   if _api_scenario_preamble; then return 0; fi
-  local body='{"alertname":"HttpErrorRate5xx","namespace":"multi-agent","pod":"api-server-7d9f8b6c4-xk2pq","container":"api-server","severity":"critical","message":"sustained 503 errors"}'
+  local pod="${API_TEST_POD:-$(_phase_b_running_pod)}"
+  if [[ -z "${pod}" ]]; then _log "SKIP: no Running pod in ${NS} (set API_TEST_POD)"; return 0; fi
+  local container="${API_TEST_CONTAINER:-$(_phase_b_first_container "${pod}")}"
+  if [[ -z "${container}" ]]; then container="api-server"; fi
+  local body
+  body="$(printf '%s' "{\"alertname\":\"HttpErrorRate5xx\",\"namespace\":\"${NS}\",\"pod\":\"${pod}\",\"container\":\"${container}\",\"severity\":\"critical\",\"message\":\"sustained 503 errors\"}")"
   _log "POST app_log lane alert: HttpErrorRate5xx (expect fail-closed noop — no Loki in CI)"
   local resp
   resp="$(_api_post "${body}")"
@@ -421,8 +456,14 @@ _scenario_phase_b_sec_audit() {
   # SEC_AUDIT_CRITICAL: POST to out-of-scope namespace in lab mode.
   # In lab: warning logged, execution proceeds. In non-lab: 403.
   if _api_scenario_preamble; then return 0; fi
-  local body='{"alertname":"KubePodOOMKilled","namespace":"production","pod":"api-7d9f-xk2","container":"api","severity":"critical","memory_limit":"512Mi"}'
-  _log "POST out-of-scope namespace (production) — expect SEC_AUDIT_CRITICAL warning in lab"
+  local oos="${OUT_OF_SCOPE_TEST_NAMESPACE:-}"
+  if [[ -z "${oos}" ]]; then
+    _log "SKIP: OUT_OF_SCOPE_TEST_NAMESPACE unset (name a namespace outside allowed scope)"
+    return 0
+  fi
+  local body
+  body="$(printf '%s' "{\"alertname\":\"KubePodOOMKilled\",\"namespace\":\"${oos}\",\"pod\":\"api-placeholder\",\"container\":\"api\",\"severity\":\"critical\",\"memory_limit\":\"512Mi\"}")"
+  _log "POST out-of-scope namespace (${oos}) — expect SEC_AUDIT_CRITICAL warning in lab"
   local http_code
   http_code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
     -X POST "${MVP_API_URL}/alert" \
@@ -436,7 +477,7 @@ _scenario_phase_b_sec_audit() {
     if [[ "${http_code}" == "403" ]]; then
       _pass "SEC_AUDIT_CRITICAL: out-of-scope namespace blocked with HTTP 403 (non-lab mode)"
     else
-      _log "WARN: expected 403 for production namespace in non-lab mode, got ${http_code}"
+      _log "WARN: expected 403 for out-of-scope namespace in non-lab mode, got ${http_code}"
       _log "      (SEC_AUDIT_CRITICAL may be logged server-side — check mvp_api logs)"
     fi
   else

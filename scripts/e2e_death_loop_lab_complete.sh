@@ -2,8 +2,8 @@
 # Lab: gateway alert → trace → synthetic omni-action-feedback → grep analyst death-loop markers.
 #
 # Usage:
-#   NS=multi-agent bash scripts/e2e_death_loop_lab_complete.sh
-#   NS=multi-agent bash scripts/e2e_death_loop_lab_complete.sh '<existing_trace_id>'
+#   NS=<ns> bash scripts/e2e_death_loop_lab_complete.sh
+#   NS=<ns> bash scripts/e2e_death_loop_lab_complete.sh '<existing_trace_id>'
 #
 # Requires: kubectl, cluster with omni-gateway + omni-analyst + kafka; Python with aiokafka
 #   (default: repo .venv — override with PYTHON=/path/to/python).
@@ -11,7 +11,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KUBE="${ROOT}/scripts/with_working_kube.sh"
-NS="${NS:-multi-agent}"
+if [[ -z "${NS:-}" ]]; then
+  echo "e2e_death_loop_lab_complete.sh: set NS (no default)." >&2
+  exit 2
+fi
 TRACE="${1:-}"
 PY="${PYTHON:-${ROOT}/.venv/bin/python}"
 if [[ ! -x "${PY}" ]]; then

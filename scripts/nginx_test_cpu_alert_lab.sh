@@ -4,30 +4,26 @@
 # kubectl port-forward trên laptop vẫn là legacy (dễ không đạt ngưỡng CPU).
 #
 # Hai kịch bản E2E:
-#   (A) Synthetic (pipeline evidence + RAG/LLM): SKIP_STRESS=1 bash scripts/nginx_test_cpu_alert_lab.sh
-#   (B) CPU thật — tải xong rồi mới POST: bash scripts/nginx_test_cpu_alert_lab.sh
+#   (A) Synthetic (pipeline evidence + RAG/LLM): NS=<ns> SKIP_STRESS=1 bash scripts/nginx_test_cpu_alert_lab.sh
+#   (B) CPU thật — tải xong rồi mới POST: NS=<ns> bash scripts/nginx_test_cpu_alert_lab.sh
 #   (C) CPU thật — giữ tải trong lúc POST + verify (true alarm, SDK PodMetrics còn cao):
-#         STRESS_OVERLAP_ALERT=1 WARMUP_SEC=15 SLEEP_SEC=60 bash scripts/nginx_test_cpu_alert_lab.sh
+#         NS=<ns> STRESS_OVERLAP_ALERT=1 WARMUP_SEC=15 SLEEP_SEC=60 bash scripts/nginx_test_cpu_alert_lab.sh
 #
 # Env:
 #   STRESS_MODE=curl        # mặc định: Pod curlimages + N worker curl → LOAD_TARGET
 #   STRESS_MODE=portforward # legacy: port-forward host + curl
 #   CURL_IMAGE=curlimages/curl:8.5.0
-#   LOAD_TARGET=http://nginx-test.multi-agent.svc.cluster.local/
-#   LOAD_CONCURRENCY=256        # mặc định: ~256 worker (mỗi worker = vòng lặp curl). ĐỪNG để 5000+ — dễ OOM load pod.
-#   STRESS_SEC=15
-#   SKIP_STRESS=1
-#   STRESS_OVERLAP_ALERT=1   # giữ pod load chạy khi gọi gateway (khuyến nghị cho true alarm)
-#   OVERLAP_STRESS_SEC=300   # thời gian load pod còn sống (curl vòng lặp)
-#   WARMUP_SEC=10            # đợi sau Ready trước khi POST (PodMetrics/metrics-server)
-#   WAIT_PROM_CPU=1
-#   NS=multi-agent
+#   LOAD_TARGET — default http://nginx-test.<NS>.svc.cluster.local/ from env NS
+#   NS=                          **required**
 #
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KUBE="${ROOT}/scripts/with_working_kube.sh"
-NS="${NS:-multi-agent}"
+if [[ -z "${NS:-}" ]]; then
+  echo "nginx_test_cpu_alert_lab.sh: set NS (no default)." >&2
+  exit 2
+fi
 MANIFEST="${ROOT}/scripts/nginx-test-deployment.yaml"
 SLEEP_SEC="${SLEEP_SEC:-25}"
 STRESS_CPU="${STRESS_CPU:-1}"

@@ -3,10 +3,10 @@
 # gateway → worker → Ollama (embed/chat) → ghi RAG / experience trong cluster.
 #
 # Usage:
-#   ITERATIONS=8 STRICT_ASSERT=0 SLEEP_SEC=5 bash scripts/rag_llm_training_loop.sh
+#   ITERATIONS=8 NS=multi-agent STRICT_ASSERT=0 SLEEP_SEC=5 bash scripts/rag_llm_training_loop.sh
 # Env:
 #   ITERATIONS=5..10   (default 8)
-#   NS=multi-agent
+#   NS=<ns>                        **required** (lab: multi-agent)
 #   MATRIX_PATHS       (default: training + prometheus_firing_simulation, xem e2e_incident_matrix.sh)
 #   STRICT_ASSERT, SLEEP_SEC — truyền cho e2e
 #   SKIP_PYTEST=1      — chỉ chạy e2e matrix
@@ -14,6 +14,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -z "${NS:-}" ]]; then
+  echo "rag_llm_training_loop.sh: set NS to the Kubernetes namespace (no default)." >&2
+  exit 2
+fi
 ITERATIONS="${ITERATIONS:-8}"
 if [[ "${ITERATIONS}" -lt 1 ]] || [[ "${ITERATIONS}" -gt 20 ]]; then
   echo "ITERATIONS must be 1..20 (got ${ITERATIONS})" >&2
@@ -34,7 +38,7 @@ RUN_LOG="${LOG_DIR}/run_${STAMP}.log"
 _log() { echo "[rag-train-loop] $*" | tee -a "${RUN_LOG}"; }
 
 _log "iterations=${ITERATIONS} ROOT=${ROOT}"
-_log "STRICT_ASSERT=${STRICT_ASSERT:-} SLEEP_SEC=${SLEEP_SEC:-} NS=${NS:-multi-agent}"
+_log "STRICT_ASSERT=${STRICT_ASSERT:-} SLEEP_SEC=${SLEEP_SEC:-} NS=${NS}"
 
 results=()
 overall_ok=0
@@ -59,7 +63,7 @@ for i in $(seq 1 "${ITERATIONS}"); do
     if ! (
       cd "${ROOT}"
       STRICT_ASSERT="${STRICT_ASSERT:-0}" SLEEP_SEC="${SLEEP_SEC:-5}" \
-        NS="${NS:-multi-agent}" \
+        NS="${NS}" \
         bash "${ROOT}/scripts/e2e_incident_matrix.sh" >>"${RUN_LOG}" 2>&1
     ); then
       _log "FAIL: e2e_incident_matrix iteration ${i}"

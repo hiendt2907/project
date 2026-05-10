@@ -1,6 +1,6 @@
 # E2E: assert advisory qua Telegram Bot API (`getUpdates`)
 
-Nghiệm thu P0: sau khi inject alert (vd. `scripts/gateway_alert_loki_verify.sh`), **đọc trực tiếp** [getUpdates](https://core.telegram.org/bots/api#getupdates) và assert nội dung tin (trace, VERDICT, độ dài tối thiểu). Log Loki / worker chỉ là **P1** để debug khi API lệch thời gian.
+Nghiệm thu P0: sau khi inject alert (vd. `NS=<ns> bash scripts/gateway_alert_loki_verify.sh`; lab `NS=multi-agent`), **đọc trực tiếp** [getUpdates](https://core.telegram.org/bots/api#getupdates) và assert nội dung tin (trace, VERDICT, độ dài tối thiểu). Log Loki / worker chỉ là **P1** để debug khi API lệch thời gian.
 
 ## Telegram Bot API — hạn chế `getUpdates`
 
@@ -34,6 +34,7 @@ export TELEGRAM_BOT_TOKEN=...
 export OMNI_TELEGRAM_ADMIN_CHAT_ID=...
 export E2E_ASSERT_TELEGRAM_BOT_API=1
 export E2E_TELEGRAM_POLL_SEC=300   # optional; LLM chậm
+export NS=multi-agent   # hoặc namespace đích; script exit 2 nếu thiếu NS
 bash scripts/gateway_alert_loki_verify.sh
 ```
 
@@ -47,11 +48,11 @@ python3 scripts/e2e_telegram_bot_api_assert.py '<trace_id>'
 
 | Kịch bản | Script / entry | Bằng chứng tối thiểu (trust but verify) | Ghi chú |
 |----------|-----------------|----------------------------------------|--------|
-| **A** Contrast / suggest | `scripts/gateway_alert_loki_verify.sh` + tuỳ `E2E_ASSERT_TELEGRAM_BOT_API=1` | Log pod **+** Loki cùng `trace_id`; Telegram nếu contrast gửi tin | Smoke MPV3 nhanh |
-| **B** Full advisory LLM | `scripts/e2e_one_alert_full_advisory_path.sh` | Log `advisory_analyst_ok` / CRAT **+** Bot API hoặc `deleteMessage` OK **+** Loki | Mặc định `nginx_waiting_fault`; sleep dài |
+| **A** Contrast / suggest | `NS=<ns> bash scripts/gateway_alert_loki_verify.sh` + tuỳ `E2E_ASSERT_TELEGRAM_BOT_API=1` | Log pod **+** Loki cùng `trace_id`; Telegram nếu contrast gửi tin | Smoke MPV3 nhanh |
+| **B** Full advisory LLM | `NS=<ns> bash scripts/e2e_one_alert_full_advisory_path.sh` | Log `advisory_analyst_ok` / CRAT **+** Bot API hoặc `deleteMessage` OK **+** Loki | Mặc định `nginx_waiting_fault`; sleep dài |
 | **C** Death loop / feedback | Sau trace: `scripts/e2e_collect_trace_evidence.sh '<trace_id>'` + inject/stress lab | Counter `action_feedback_*` / `omni_actions_in` **+** dòng terminal (`STATE_VERIFY_MAX_ATTEMPTS` / success / tombstone) **+** log | Không dùng một dòng grep làm PASS duy nhất |
-| Proactive + build/deploy | `make e2e-proactive` / `scripts/proactive_e2e.sh` | Theo checklist khi cần Telegram | Có thể nối assert tương tự nếu advisory ra Telegram |
-| Ma trận fault | `make e2e-incident-matrix` | Tee + Loki + trace | Tăng `SLEEP_SEC` / `E2E_EXTRA_AGENTIC_SLEEP`; bật assert khi cần advisory |
+| Proactive + build/deploy | `make e2e-proactive` (`NS=multi-agent` trong Makefile) / `NS=<ns> bash scripts/proactive_e2e.sh` | Theo checklist khi cần Telegram | Có thể nối assert tương tự nếu advisory ra Telegram |
+| Ma trận fault | `make e2e-incident-matrix` (`NS=multi-agent` trong Makefile) / `NS=<ns> bash scripts/e2e_incident_matrix.sh` | Tee + Loki + trace | Tăng `SLEEP_SEC` / `E2E_EXTRA_AGENTIC_SLEEP`; bật assert khi cần advisory |
 | FinGuard Redis → bridge → Omni | `scripts/verify_e2e_crat_pipeline.py` | CRAT verifier **+** trace log | Cross-stack; assert Telegram **tách** bước nếu ingest không qua gateway — dùng cùng script assert với `trace_id` từ log |
 
 Checklist đầy đủ: [e2e_full_flow_evidence_checklist.md](e2e_full_flow_evidence_checklist.md).

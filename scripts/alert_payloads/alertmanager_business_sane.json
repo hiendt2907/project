@@ -7,7 +7,6 @@
       "labels": {
         "alertname": "ProbeFailureLab",
         "severity": "warning",
-        "namespace": "multi-agent",
         "pod": "redis-exporter-68547c8879-xw9j6",
         "deployment": "redis-exporter"
       },

@@ -7,7 +7,6 @@
       "labels": {
         "alertname": "HighCPUUsage",
         "severity": "warning",
-        "namespace": "multi-agent",
         "pod": "nginx-test-DYNAMIC",
         "deployment": "nginx-test",
         "container": "nginx"
