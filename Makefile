@@ -174,7 +174,12 @@ benchmark-advisory:
 	.venv/bin/python -m pytest tests/benchmarks/test_advisory_quality.py -q -m "not benchmark or benchmark" --tb=short 2>&1 || true
 	@echo "==> Run with live LLM: OMNI_OLLAMA_BASE_URL=http://... make benchmark-advisory"
 
+asyncio-lint:
+	@echo "==> Checking for time.sleep() in async functions"
+	.venv/bin/python scripts/check_asyncio_sleep.py src/
+
 autonomy-gate:
+	$(MAKE) asyncio-lint
 	$(MAKE) secret-gate
 	.venv/bin/python scripts/validate_env_mode_gate.py
 	.venv/bin/python scripts/validate_mutate_only_gate.py

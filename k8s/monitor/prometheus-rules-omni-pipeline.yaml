@@ -1,0 +1,68 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: omni-pipeline-alerts
+  namespace: monitor
+  labels:
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: omni.pipeline
+      interval: 30s
+      rules:
+        - alert: OmniAnalystProcessingLatencyHigh
+          expr: >
+            histogram_quantile(0.95,
+              sum(rate(omni_evidence_processing_duration_seconds_bucket[5m])) by (le)
+            ) > 30
+          for: 5m
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "Analyst evidence processing p95 latency > 30s"
+            description: >
+              p95 processing latency is {{ $value | humanizeDuration }}.
+              Check omni-analyst pod: LLM slow, Kafka lag, or Redis HNSW overloaded.
+
+        - alert: OmniEvidenceStaleness
+          expr: >
+            (time() - omni_evidence_last_received_timestamp_seconds) > 3600
+          for: 10m
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "No fresh evidence received in > 1h"
+            description: >
+              Last evidence received {{ $value | humanizeDuration }} ago.
+              Check omni-prober and omni-evidence-adapter are running and producing.
+
+        - alert: OmniPlaybookStateTTLExpiry
+          expr: >
+            omni_playbook_state_age_seconds{state="PENDING_APPROVAL"} > 7200
+          for: 5m
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "Playbook stuck in PENDING_APPROVAL > 2h"
+            description: >
+              Playbook {{ $labels.playbook_id }} has been pending approval for
+              {{ $value | humanizeDuration }}. HITL dispatcher may be stalled
+              or FinGuard API unreachable.
+
+        - alert: OmniKafkaProducerSendTimeout
+          expr: >
+            increase(omni_kafka_producer_send_timeout_total[5m]) > 0
+          for: 2m
+          labels:
+            severity: critical
+            team: omni-sre
+          annotations:
+            summary: "Kafka producer send timeouts detected"
+            description: >
+              {{ $value }} send timeout(s) in the last 5 minutes.
+              Messages may be lost. Check Kafka broker health and network.
+              Affected component: {{ $labels.component }}.
