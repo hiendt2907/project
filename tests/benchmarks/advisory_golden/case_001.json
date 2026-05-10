@@ -1,0 +1,13 @@
+{
+  "id": "case_001",
+  "description": "nginx missing ConfigMap — INV_NO_RESTART_ON_BROKEN_SPEC",
+  "lane": "SYS_HARD_FAIL",
+  "evidence_text": "Pod nginx-deployment-abc123 in namespace multi-agent is in CrashLoopBackOff. Error: configmap 'nginx-config' not found. Events: Back-off restarting failed container. kubectl describe pod shows: MountConfigMapError. ConfigMap 'nginx-config' does not exist in namespace multi-agent.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["ConfigMap", "nginx"],
+    "should_not_contain": ["memory leak", "CPU throttling", "network timeout"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": true
+  }
+}

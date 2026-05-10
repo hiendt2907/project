@@ -1,0 +1,13 @@
+{
+  "id": "case_008",
+  "description": "Auth failure surge — 401/403 spike from API clients",
+  "lane": "APP_HTTP",
+  "evidence_text": "Nginx access log analysis: 401 auth_failure errors: 892 in last 5 minutes (baseline: 8/5min). 403 Forbidden: 234. Dominant error class: auth_failure. Source IPs: distributed (top IP only 12% of requests). HMAC signature validation failed at gateway for 87% of 401s. Possible credential rotation issue.",
+  "expected": {
+    "verdict": "URGENT",
+    "root_cause_contains": ["auth", "401"],
+    "should_not_contain": ["memory", "Kafka lag", "ConfigMap"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": true
+  }
+}

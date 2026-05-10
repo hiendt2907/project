@@ -37,6 +37,7 @@ from workers.metrics_exporter import (
     inc_messages_processed,
     inc_slow_path_exhausted,
 )
+from workers.health_server import record_message_processed as _hc_record_msg
 from execution.experience import (
     fetch_action_experience_context,
     record_routing_exhausted_no_data,
@@ -1266,6 +1267,7 @@ async def _handle_inbound_payload_impl(
     ctx.restart_rollout_explicit = bool(RE_RESTART_ROLLOUT_EXPLICIT.search(raw_user_text))
     ctx.pod_discovery_pairs = []
     inc_messages_processed(src or "unknown")
+    _hc_record_msg()
 
     if chat_id_int is not None:
         with child_span("redis_get_write_pending"):

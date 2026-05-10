@@ -1,0 +1,13 @@
+{
+  "id": "case_009",
+  "description": "LLM Ollama down — all advisory generation blocked",
+  "lane": "SYS_HARD_FAIL",
+  "evidence_text": "omni_llm_up=0 for 8 minutes. Ollama pod status: CrashLoopBackOff. Error in Ollama logs: CUDA out of memory. omni-analyst kafka consumer still active but all evidence envelopes queued waiting for LLM response. omni_kafka_consumer_lag growing: current=342, 5min ago=12. Advisory pipeline effectively halted.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["Ollama", "LLM"],
+    "should_not_contain": ["ConfigMap", "DDoS", "auth failure"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": false
+  }
+}

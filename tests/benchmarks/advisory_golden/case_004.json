@@ -1,0 +1,13 @@
+{
+  "id": "case_004",
+  "description": "5xx surge — HTTP 502 from upstream gateway",
+  "lane": "APP_HTTP",
+  "evidence_text": "Nginx access log surge: 5xx error rate 34% in last 5 minutes. Dominant error: 502 Bad Gateway. upstream: omni-gateway:8000. omni-gateway pods: 2/3 Running (1 in Terminating). Error log: 'upstream prematurely closed connection'. Total 5xx in 10min window: 1842. Prior 10min baseline: 12.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["502", "gateway"],
+    "should_not_contain": ["ConfigMap", "Redis OOM", "certificate expired"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": true
+  }
+}

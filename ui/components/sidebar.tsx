@@ -10,6 +10,7 @@ import {
   Activity,
   LogOut,
   Bot,
+  BarChart3,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
 
@@ -17,6 +18,7 @@ const nav = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/playbooks", label: "Playbooks", icon: BookOpen },
   { href: "/ledger", label: "Error Ledger", icon: AlertTriangle },
+  { href: "/kpi", label: "KPI Dashboard", icon: BarChart3 },
 ];
 
 export function Sidebar() {

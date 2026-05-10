@@ -47,6 +47,8 @@ from workers.metrics_exporter import (
     set_last_scout_timestamp,
     start_prometheus_server,
 )
+from workers.health_server import configure as _configure_health, record_message_processed as _hc_record_msg, start_health_server
+from workers.kpi_metrics import run_kpi_collector as _kpi_run
 from workers.otel_tracing import setup_otel_tracing, shutdown_otel_tracing
 from workers.llm_semaphore import LLMSemaphore
 from workers.settings import WorkerSettings
@@ -418,6 +420,18 @@ async def kafka_alerts_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> N
         await consumer.stop()
 
 
+async def _run_kpi_collector(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+    """Wrapper: run KPI collector with graceful error handling."""
+    try:
+        await _kpi_run(
+            redis=ctx.redis,
+            kafka_bootstrap=ctx.settings.kafka_bootstrap_servers,
+            stop=stop,
+        )
+    except Exception as e:
+        logger.warning("kpi_collector exited with error: %s", e)
+
+
 async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
     """Analyst path: consume ``omni-diagnostic-evidence`` only (Master Plan V3)."""
     from aiokafka import AIOKafkaConsumer
@@ -441,6 +455,7 @@ async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) ->
                 fields = decode_kafka_value_to_fields(msg.value, msg.headers)
                 await reason_from_diagnostic_evidence(ctx, fields)
                 await consumer.commit()
+                _hc_record_msg()
                 _report_kafka_lag(consumer, msg, ws.consumer_group_analyst)
             except Exception as e:
                 await ctx.ledger.record_exception(e, phase="4", component="kafka_evidence_loop", swallow_errors=True)
@@ -559,6 +574,9 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
     if role in ("full", "analyst"):
         tasks.append(asyncio.create_task(kafka_evidence_loop(ctx, stop), name="kafka_evidence_loop"))
         tasks.append(asyncio.create_task(kafka_action_feedback_loop(ctx, stop), name="kafka_action_feedback_loop"))
+        tasks.append(asyncio.create_task(
+            _run_kpi_collector(ctx, stop), name="kpi_collector",
+        ))
     if role in ("full", "core"):
         tasks.extend(
             [
@@ -613,6 +631,8 @@ async def run_worker() -> None:
         enabled=bool(ctx.settings.otel_tracing_enabled and ctx.settings.otel_exporter_otlp_endpoint),
     )
     start_prometheus_server(ctx.settings.metrics_listen_host, ctx.settings.metrics_listen_port)
+    _configure_health(redis=ctx.redis, llm_base_url=ctx.settings.vllm_base_url)
+    start_health_server()
     asyncio.create_task(
         observability_metrics_loop(
             redis=ctx.redis,

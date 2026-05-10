@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate
+.PHONY: traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory
 
 NS ?= multi-agent
 
@@ -169,6 +169,11 @@ secret-history-audit:
 	docker run --rm -v "$$(pwd):/repo" zricethezav/gitleaks:v8.18.2 detect --source=/repo --config=/repo/.gitleaks.toml --report-path=/repo/leak_report_history.json --verbose
 
 # Phase 5 gate: fail when autonomy verification regresses.
+benchmark-advisory:
+	@echo "==> Advisory quality benchmark (informational — non-blocking)"
+	.venv/bin/python -m pytest tests/benchmarks/test_advisory_quality.py -q -m "not benchmark or benchmark" --tb=short 2>&1 || true
+	@echo "==> Run with live LLM: OMNI_OLLAMA_BASE_URL=http://... make benchmark-advisory"
+
 autonomy-gate:
 	$(MAKE) secret-gate
 	.venv/bin/python scripts/validate_env_mode_gate.py

@@ -244,6 +244,7 @@ async def lifespan(app: FastAPI):
         KAFKA_TOPIC_ALERTS,
         KAFKA_BOOTSTRAP,
     )
+    app.state.redis = _redis
     yield
     if _token_refill_task:
         _token_refill_task.cancel()
@@ -255,6 +256,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Omni Gateway", version="1.0.0", lifespan=lifespan)
+
+from fastapi import Depends as _Depends  # noqa: E402 (already imported above but alias for clarity)
+from gateway.routes.kpi import router as _kpi_router  # noqa: E402
+app.include_router(_kpi_router, dependencies=[_Depends(_require_api_key)])
 
 
 class GatewayTraceMiddleware(BaseHTTPMiddleware):

@@ -1,0 +1,13 @@
+{
+  "id": "case_006",
+  "description": "CPU throttling normal — z_cpu=1.2 below threshold",
+  "lane": "SYS_RESOURCE",
+  "evidence_text": "Pod omni-prober-xyz in namespace multi-agent. CPU usage: 450m / 500m (90%). z_cpu=1.2 (below 3-sigma threshold of 3.0). No OOMKilled events. Memory usage stable at 312Mi / 512Mi. Uptime: 8h. No anomaly detected by ThreeSigmaGate.",
+  "expected": {
+    "verdict": "NORMAL",
+    "root_cause_contains": ["CPU", "normal"],
+    "should_not_contain": ["OOMKilled", "CrashLoopBackOff", "ConfigMap missing"],
+    "min_verification_steps": 1,
+    "remediation_approval_required": false
+  }
+}
