@@ -42,6 +42,9 @@ spec:
             - name: metrics
               containerPort: 9090
               protocol: TCP
+            - name: health
+              containerPort: 8090
+              protocol: TCP
           envFrom:
             - configMapRef:
                 name: omni-worker-config
@@ -70,6 +73,20 @@ spec:
             limits:
               cpu: "2"
               memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8090
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            failureThreshold: 5
           volumeMounts:
             - name: source-code
               mountPath: /app/src

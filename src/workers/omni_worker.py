@@ -435,34 +435,48 @@ async def _run_kpi_collector(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
 async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
     """Analyst path: consume ``omni-diagnostic-evidence`` only (Master Plan V3)."""
     from aiokafka import AIOKafkaConsumer
+    from aiokafka.errors import KafkaConnectionError, UnknownTopicOrPartitionError
 
     ws = ctx.settings
     await ctx.scout_ready.wait()
-    consumer = AIOKafkaConsumer(
-        ws.kafka_topic_diagnostic_evidence,
-        bootstrap_servers=ws.kafka_bootstrap_servers,
-        group_id=ws.consumer_group_analyst,
-        enable_auto_commit=False,
-        auto_offset_reset="earliest",
-        client_id=ws.consumer_name_analyst,
-    )
-    await consumer.start()
-    try:
-        async for msg in consumer:
-            if stop.is_set():
-                break
-            try:
-                fields = decode_kafka_value_to_fields(msg.value, msg.headers)
-                await reason_from_diagnostic_evidence(ctx, fields)
-                await consumer.commit()
-                _hc_record_msg()
-                _report_kafka_lag(consumer, msg, ws.consumer_group_analyst)
-            except Exception as e:
-                await ctx.ledger.record_exception(e, phase="4", component="kafka_evidence_loop", swallow_errors=True)
-                logger.exception("kafka_evidence_loop message error: %s", e)
-                await asyncio.sleep(0.5)
-    finally:
-        await consumer.stop()
+    _TRANSIENT_ERRORS = (KafkaConnectionError, UnknownTopicOrPartitionError, ConnectionError)
+    _connect_backoff = 1
+
+    while not stop.is_set():
+        consumer = AIOKafkaConsumer(
+            ws.kafka_topic_diagnostic_evidence,
+            bootstrap_servers=ws.kafka_bootstrap_servers,
+            group_id=ws.consumer_group_analyst,
+            enable_auto_commit=False,
+            auto_offset_reset="earliest",
+            client_id=ws.consumer_name_analyst,
+        )
+        try:
+            await consumer.start()
+            _connect_backoff = 1  # reset on successful connect
+        except _TRANSIENT_ERRORS as e:
+            logger.warning("kafka_evidence_loop connect_failed err=%s backoff_s=%d", e, _connect_backoff)
+            await asyncio.sleep(_connect_backoff)
+            _connect_backoff = min(_connect_backoff * 2, 30)
+            continue
+        try:
+            async for msg in consumer:
+                if stop.is_set():
+                    break
+                try:
+                    fields = decode_kafka_value_to_fields(msg.value, msg.headers)
+                    await reason_from_diagnostic_evidence(ctx, fields)
+                    await consumer.commit()
+                    _hc_record_msg()
+                    _report_kafka_lag(consumer, msg, ws.consumer_group_analyst)
+                except Exception as e:
+                    await ctx.ledger.record_exception(e, phase="4", component="kafka_evidence_loop", swallow_errors=True)
+                    logger.exception("kafka_evidence_loop message error: %s", e)
+                    await asyncio.sleep(0.5)
+        except _TRANSIENT_ERRORS as e:
+            logger.warning("kafka_evidence_loop connection_lost err=%s reconnecting", e)
+        finally:
+            await consumer.stop()
 
 
 async def telegram_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
