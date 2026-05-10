@@ -83,14 +83,55 @@ kafka: omni-action-feedback → omni-analyst (re-evaluation cycle)
 | Role | Active loops |
 |---|---|
 | `prober` | kafka_alerts_loop, delayed_queue, circuit_breaker, telegram_polling |
-| `analyst` | kafka_evidence_loop, kafka_action_feedback_loop |
+| `analyst` | kafka_evidence_loop, kafka_action_feedback_loop, **kpi_collector** |
 | `core` | deep_scout, forecast, baseline_snapshot, proactive |
 | `executor` | kafka_actions_loop |
-| `full` | all (legacy monolith) |
+| `full` | all (legacy monolith) + kpi_collector |
 | `siem-bridge` | Redis XREADGROUP → kafka omni-alerts |
 | `evidence-adapter` | Redis XREADGROUP → kafka omni-diagnostic-evidence |
 | `hitl-dispatcher` | omni-hitl-pending → FinGuard HITL API |
 | `gateway` | FastAPI HTTP → kafka omni-alerts (separate image) |
+
+---
+
+## OBSERVABILITY & QUALITY (2026-05-10)
+
+### Self-monitoring — Worker Health Server
+`src/workers/health_server.py` — thread-based HTTP :8090, passive model (states pushed by async loop, không pull từ thread).
+- `GET /healthz` → `{"status":"ok|degraded|unhealthy","checks":{...}}` — 503 khi unhealthy
+- `GET /readyz` → 200 nếu status != "unhealthy" (connectivity-based, NOT message-based)
+- Checks: `kafka_lag` (>1000 = unhealthy), `redis_ping`, `llm_up` (0 = degraded), `last_message_age` (>600s = unhealthy)
+- States pushed bởi `observability_metrics_loop()` via `update_check_state(name, status, detail)`
+- `record_message_processed()` gọi từ `kafka_evidence_loop` (omni_worker.py) và handlers.py (Telegram path)
+- K8s: readinessProbe `/readyz` port 8090 `initialDelaySeconds:30`; livenessProbe `/healthz` port 8090 `initialDelaySeconds:90`
+
+`k8s/monitor/prometheus-rules-omni-health.yaml` — 7 alerts mới (không sửa file cũ):
+`OmniWorkerStalled` · `OmniWorkerHealthDegraded` · `OmniWorkerHealthUnhealthy` · `OmniRedisConnectionLost` · `OmniLLMSustainedDown` · `OmniAdvisoryAcceptanceRateLow` · `OmniFalsePositiveRateHigh`
+
+### Business KPI Dashboard
+`src/workers/kpi_metrics.py` — consumer group `omni-kpi-collector` trên `omni-action-feedback`. Rolling 24h window via ZADD+ZREMRANGEBYSCORE (KHÔNG dùng INCR — tránh overflow sau 24h).
+- Redis keys: `omni:kpi:z:accepted`, `omni:kpi:z:rejected`, `omni:kpi:z:false_positive`
+- MTTD/MTTR: `omni:kpi:detected:{lane}`, `omni:kpi:resolved:{lane}` (per lane: SYS_RESOURCE/SYS_HARD_FAIL/APP_HTTP/SIEM_SECURITY)
+- Outcomes mapped: `success|APPROVED|verified` → accepted; `rejected|REJECTED` → rejected; `fail|executor_fail` → false_positive
+
+`src/gateway/routes/kpi.py` — `GET /kpi/summary` + `GET /kpi/trend?window=1h|6h|24h|7d`. Require `request: Request` (FastAPI injection), NOT `request: Any`.
+- Mounted via `app.include_router(_kpi_router, dependencies=[_Depends(_require_api_key)])` trong `gateway/api.py`
+- `app.state.redis` set trong lifespan — gateway cần redis để serve KPI
+
+`ui/app/kpi/page.tsx` — read-only KPI dashboard: 4 stat cards, acceptance/false-positive pie charts, lane resolution bar chart.
+`ui/app/api/kpi/route.ts` — Next.js proxy với mock fallback khi gateway không available.
+
+### Advisory Quality Benchmark
+`tests/benchmarks/advisory_golden/case_001–010.json` — 10 golden cases từ post-mortems (missing ConfigMap, Redis OOM, Kafka lag, 5xx surge, DDoS, normal CPU, ImagePullBackOff, auth surge, LLM down, CRAT integrity).
+`tests/benchmarks/run_advisory_benchmark.py` — 100pt scoring rubric: verdict(30) + keywords(20) + no-hallucination(20) + remediation(15) + verification_steps(15). Pass threshold: 70/100.
+`tests/benchmarks/test_advisory_quality.py` — pytest wrapper: 10 schema validation tests (luôn pass) + 1 live LLM test (skip khi không có OMNI_OLLAMA_BASE_URL).
+`make benchmark-advisory` — chạy benchmark, informational (không block CI).
+
+### New metrics in metrics_exporter.py
+`omni_worker_last_message_age_seconds` · `omni_health_check_status{check_name}` · `omni_kpi_mttd_seconds{lane}` · `omni_kpi_mttr_seconds{lane}` · `omni_kpi_advisory_acceptance_rate` · `omni_kpi_false_positive_rate` · `omni_kpi_incidents_total{lane,outcome}` · `omni_advisory_benchmark_score{model,case_id}` · `omni_advisory_benchmark_pass_rate`
+
+### docs/CODEBASE.md
+723-line codebase map: module index (1 dòng/file ~400 files), Kafka topic map, Redis key map, 4 critical data flows, worker role map, dependency graph.
 
 ---
 
@@ -155,6 +196,9 @@ make ensure-kafka-topics deploy-siem-stack
 make e2e-proactive e2e-incident-matrix lab-nginx-cpu rag-hot-sync
 NS=multi-agent make omni-death-loop  # or: bash scripts/omni_dev_death_loop.sh
 # E2E scripts (gateway/matrix/nginx CPU): Makefile sets NS=multi-agent; invoking scripts directly requires NS (no default).
+make benchmark-advisory                        # advisory quality benchmark (informational)
+curl localhost:8090/healthz                    # worker health check
+curl localhost:8090/readyz                     # worker readiness check
 ```
 
 CI order: build → rollout → unit → E2E.
