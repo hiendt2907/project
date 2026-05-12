@@ -7,7 +7,7 @@ Usage (from repo root):
 
 Env overrides:
     OMNI_VLLM_BASE_URL  — default http://host.orb.internal:11434/v1
-    OMNI_CHAT_MODEL     — default qwen2.5-coder:7b
+    OMNI_CHAT_MODEL     — default qwen3.6
 """
 from __future__ import annotations
 
@@ -150,6 +150,20 @@ class _LoggingLLMProxy:
 
     async def chat(self, **kwargs):
         resp = await self._inner.chat(**kwargs)  # type: ignore[attr-defined]
+        self._print_exchange(kwargs, resp)
+        return resp
+
+    async def chat_plain(self, **kwargs):
+        resp = await self._inner.chat_plain(**kwargs)  # type: ignore[attr-defined]
+        self._print_exchange(kwargs, resp)
+        return resp
+
+    async def chat_structured(self, **kwargs):
+        resp = await self._inner.chat_structured(**kwargs)  # type: ignore[attr-defined]
+        self._print_exchange(kwargs, resp)
+        return resp
+
+    def _print_exchange(self, kwargs: dict, resp: dict) -> None:
         content = (resp.get("message") or {}).get("content", "")
         step = len(_EXCHANGE_LOG) + 1
         _EXCHANGE_LOG.append({"step": step, "model": kwargs.get("model"), "raw": content})
@@ -158,7 +172,6 @@ class _LoggingLLMProxy:
         print(f"  LLM Step {step}  model={kwargs.get('model')}")
         print(f"{'─' * width}")
         print(content[:1600])
-        return resp
 
     async def embed(self, **kwargs):
         return await self._inner.embed(**kwargs)  # type: ignore[attr-defined]
@@ -262,7 +275,7 @@ async def _ping_ollama(base_url: str) -> None:
     models = r.json()
     ids = [m["id"] for m in models.get("data", [])]
     print(f"  Reachable. Models available: {ids}")
-    for required in ("qwen2.5-coder:7b", "nomic-embed-text:latest"):
+    for required in ("qwen3.6", "nomic-embed-text:latest"):
         tag = "✓" if any(required.split(":")[0] in i for i in ids) else "✗ MISSING"
         print(f"  {tag}  {required}")
 

@@ -50,16 +50,8 @@ jobs:
       - name: Phase docs gate
         run: python scripts/validate_phase_docs_gate.py
 
-      - name: Contract pytest
-        run: pytest -q --tb=short tests/test_autonomous_contract.py tests/test_analyst_agentic_loop.py tests/test_diagnostic_mapping.py tests/test_evidence_proof_gate.py tests/test_proactive_guardrails.py tests/integration/test_autonomy_loop_transitions.py tests/integration/test_autonomy_transition_contract_strict.py
-
-      - name: HITL dispatcher unit gate
-        # Covers: _PartitionTracker watermark, bounded queue back-pressure, hitl_reason propagation.
-        # Full end-to-end proof (CAP-1 through CAP-6) is lab-only — see docs/runbooks/siem-capability-proof.md
-        run: pytest -q --tb=short tests/test_hitl_dispatcher.py
-
-      - name: Telegram Bot API assert helpers (unit)
-        run: pytest -q --tb=short tests/test_e2e_telegram_bot_api_assert.py
+      - name: Omni unit tests + coverage gate (>=90%)
+        run: pytest tests/ --ignore=tests/integration --ignore=tests/real_services -q --tb=short --cov=src --cov-config=.coveragerc.gate --cov-report=term --cov-fail-under=90
 
       - name: Script syntax check (SIEM scripts)
         # Validate scripts are syntactically correct without executing them.

@@ -8,7 +8,7 @@ from typing import Any
 
 import redis.asyncio as redis
 from ingest.telegram import TelegramClient
-from llm.vllm_client import VLLMClient
+from llm.protocol import LlmClient
 from messaging.kafka_bus import KafkaBus
 from rag.error_ledger import ErrorLedger
 from rag.redis_vector_store import RedisVectorStore
@@ -21,7 +21,7 @@ from workers.settings import WorkerSettings
 class WorkerHandlerContext:
     settings: WorkerSettings
     redis: redis.Redis
-    llm: VLLMClient
+    llm: LlmClient
     vector_store: RedisVectorStore
     ledger: ErrorLedger
     semaphore: LLMSemaphore

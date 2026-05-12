@@ -1846,6 +1846,27 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             meta={"batch_size": len(batch)},
         )
 
+        try:
+            from pkg.trace_orchestrator import (
+                TraceOrchestratorPhase,
+                TraceOrchestratorState,
+                enqueue_rag_candidate,
+                load_trace_orchestrator_state,
+                save_trace_orchestrator_state,
+            )
+
+            orch = await load_trace_orchestrator_state(ctx.redis, trace)
+            if orch is None:
+                orch = TraceOrchestratorState(
+                    trace_id=trace,
+                    phase=TraceOrchestratorPhase.RAG_TRIALS,
+                )
+            if matched_playbook is not None:
+                enqueue_rag_candidate(orch, f"playbook:{matched_playbook.playbook_id}")
+            await save_trace_orchestrator_state(ctx.redis, orch)
+        except Exception as _orch_err:
+            logger.debug("trace_orchestrator init trace=%s err=%s", trace, _orch_err)
+
         logger.info(
             "event=diag_batch_flush trace=%s probes=%s",
             trace,

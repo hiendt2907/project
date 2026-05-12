@@ -25,8 +25,11 @@ metadata:
   namespace: multi-agent
   labels:
     app.kubernetes.io/name: omni-executor
+    app.kubernetes.io/component: omni-executor
     app.kubernetes.io/part-of: omni-platform
     omni.io/managed: "true"
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 ---
 # ClusterRole: verb/resource matrix for executor mutations.
 # Bound only via RoleBinding (namespace-scoped) — never ClusterRoleBinding.
@@ -35,8 +38,11 @@ kind: ClusterRole
 metadata:
   name: omni-executor-mutate
   labels:
+    app.kubernetes.io/component: omni-executor
     app.kubernetes.io/part-of: omni-platform
     omni.io/managed: "true"
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 rules:
   # Workload mutations: rollout_restart + patch_deployment_resource
   - apiGroups: ["apps"]

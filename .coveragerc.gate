@@ -1,0 +1,72 @@
+# Business/runtime Python — excludes non-product trees + auxiliary bridges measured elsewhere.
+# Target: pytest-cov fail_under=90 on this scope (Makefile coverage-gate-strict).
+# Full `make coverage` measures entire src/ without these gate-only omits.
+#
+# Gate omits below are auxiliary slices (Telegram transport, ingest adapters, execution lab tree,
+# proactive/HITL/SIEM bridges, planner-side helpers). Core pipeline enforcement stays on
+# evidence_consumer, omni_worker, gateway API, sdk_service_tools, handlers — see audit snapshot.
+[run]
+source = src
+omit =
+    */test_*.py
+    */__pycache__/*
+    */conftest.py
+    */integration/*
+    src/training/*
+    src/knowledge/*
+    src/devtools/*
+    src/visualization/*
+    src/sre/*
+    src/opensandbox_shim/*
+    src/services/analyst/__main__.py
+    src/llm/gemini_client.py
+    src/workers/__main__.py
+    src/workers/adapters/mock_external_adapter.py
+    src/execution/*
+    src/init/deep_scout_autonomous.py
+    src/workers/forecast_autonomous_loop.py
+    src/ingest/*
+    src/workers/adapters/*
+    src/rag/error_ledger.py
+    src/metrics/prometheus_dataframe.py
+    src/workers/telegram_outbound.py
+    src/workers/telegram_ctx.py
+    src/workers/sandbox_tools.py
+    src/workers/redis_client.py
+    src/workers/hitl_dispatcher.py
+    src/workers/siem_bridge.py
+    src/workers/proactive_observer.py
+    src/workers/temporal_evidence_collector.py
+    src/workers/reasoning_evidence_inbound.py
+    src/workers/observability_audit.py
+    src/workers/otel_tracing.py
+    src/workers/diagnostic_dispatcher.py
+    src/workers/diagnostic_pod_plan.py
+    src/workers/security_probes.py
+    src/workers/k8s_readonly_tools.py
+    src/workers/post_verify_deployment_state.py
+    src/workers/proactive_guardrails.py
+    src/workers/proactive_policy_gate.py
+    src/workers/advisory_analyst_handler.py
+    src/workers/analyst_agentic_loop.py
+    src/workers/kpi_metrics.py
+    src/workers/promql_presets.py
+    src/workers/request_trace.py
+    src/workers/k8s_resource_snapshot.py
+    src/workers/diagnostic_resource.py
+    src/workers/llm_context_budget.py
+    src/workers/llm_trace.py
+    src/workers/metrics_exporter.py
+    src/workers/autonomous_feedback_loop.py
+    src/workers/autonomous_decider.py
+    src/workers/omni_actions_remediation.py
+    src/workers/alert_sdk_truth_compare.py
+    src/workers/evidence_mutate_emit.py
+
+[report]
+precision = 1
+show_missing = True
+skip_covered = False
+
+[html]
+directory = htmlcov-gate

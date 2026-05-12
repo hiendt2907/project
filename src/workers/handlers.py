@@ -814,7 +814,7 @@ async def _repair_json_with_helper(
     *,
     parse_error: str = "",
 ) -> str:
-    """HELPER (qwen2.5:1.5b): sửa JSON tool từ model lớn; có thông báo lỗi parse từ Pydantic/json."""
+    """HELPER (model_helper): sửa JSON tool từ model lớn; có thông báo lỗi parse từ Pydantic/json."""
     err = (parse_error or "").strip()
     user_blob = raw[:4000]
     if err:

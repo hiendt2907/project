@@ -42,7 +42,7 @@ def test_benchmark_pass_rate() -> None:
     import asyncio
     from tests.benchmarks.run_advisory_benchmark import run_benchmark
 
-    model = os.getenv("OMNI_OLLAMA_MODEL", "qwen2.5:7b")
+    model = os.getenv("OMNI_OLLAMA_MODEL", "qwen3.6")
     llm_url = os.getenv("OMNI_OLLAMA_BASE_URL", "http://localhost:11434")
     report = asyncio.run(run_benchmark(model, llm_url))
     assert report["pass_rate"] >= 0.7, (

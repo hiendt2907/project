@@ -50,7 +50,7 @@ async def interpret_monitoring_followup_llm(
     settings = getattr(ctx, "settings", None)
     if llm is None or settings is None:
         return None
-    model = getattr(settings, "model_helper", None) or "qwen2.5-coder-3b"
+    model = getattr(settings, "model_helper", None) or "qwen3.6"
 
     snippet = (recent_dialog_snippet or "").strip()
     if len(snippet) > 2000:

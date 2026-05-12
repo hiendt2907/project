@@ -46,7 +46,7 @@ KAFKA_TOPIC = os.getenv("OMNI_KAFKA_TOPIC_ALERTS", "omni-alerts")
 # Dual-emit: when true, also publish raw FinGuard incident to omni-siem-raw for brain-go Kafka mode.
 # Dedup note: analyst pipeline must subscribe ONLY ONE of omni-alerts or omni-siem-incidents —
 # not both simultaneously — to avoid duplicate evidence for the same incident_id.
-DUAL_EMIT = os.getenv("SIEM_BRIDGE_DUAL_EMIT", "false").lower() in ("true", "1", "yes")
+DUAL_EMIT = os.getenv("SIEM_BRIDGE_DUAL_EMIT", "true").lower() not in ("false", "0", "no")
 KAFKA_TOPIC_SIEM_RAW = os.getenv("OMNI_KAFKA_TOPIC_SIEM_RAW", "omni-siem-raw")
 
 

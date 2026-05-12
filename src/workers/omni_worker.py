@@ -14,7 +14,7 @@ import redis.asyncio as redis
 from init.deep_scout import DeepScoutSummary, deep_scout_periodic_loop, run_deep_scout
 from init.deep_scout_autonomous import run_deep_scout_autonomous
 from ingest.telegram import TelegramBotSettings, TelegramClient, summarize_message_update
-from llm.vllm_client import VLLMClient
+from llm.factory import build_llm_client
 from rag.error_ledger import ErrorLedger
 from rag.redis_vector_store import RedisVectorStore
 from rag.semantic_cache import SemanticCache
@@ -515,7 +515,11 @@ async def telegram_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
 async def build_context() -> WorkerHandlerContext:
     ws = WorkerSettings()
     r = await connect_redis(ws)
-    llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url)
+    llm = build_llm_client(
+        base_url=ws.vllm_base_url,
+        embed_url=ws.vllm_embed_url,
+        timeout_s=float(ws.llm_chat_timeout_sec),
+    )
     vector_store = RedisVectorStore(r)
     ledger = ErrorLedger(r)
     sem = LLMSemaphore(

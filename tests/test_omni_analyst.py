@@ -120,6 +120,42 @@ class TestVLLMClientChat:
 
         assert result["message"]["content"] == "ok"
 
+    @pytest.mark.asyncio
+    async def test_chat_json_format_sets_response_format(self) -> None:
+        from llm.vllm_client import VLLMClient
+
+        client = VLLMClient(
+            base_url="http://mock-vllm:8000",
+            embed_url="http://mock-embedder:8001",
+        )
+        completion = _make_chat_completion('{"ok":true}')
+        create_mock = AsyncMock(return_value=completion)
+
+        with patch.object(
+            client._chat_client.chat.completions, "create", new=create_mock
+        ):
+            await client.chat(
+                model="qwen2.5-coder-3b",
+                messages=[{"role": "user", "content": "emit json"}],
+                format="json",
+            )
+
+        assert create_mock.call_args.kwargs.get("response_format") == {"type": "json_object"}
+
+    @pytest.mark.asyncio
+    async def test_aclose_closes_chat_and_embed_clients(self) -> None:
+        from llm.vllm_client import VLLMClient
+
+        client = VLLMClient(
+            base_url="http://mock-vllm:8000",
+            embed_url="http://mock-embedder:8001",
+        )
+        with patch.object(client._chat_client, "close", new=AsyncMock()) as c_close:
+            with patch.object(client._embed_client, "close", new=AsyncMock()) as e_close:
+                await client.aclose()
+        c_close.assert_awaited_once()
+        e_close.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # VLLMClient — embed

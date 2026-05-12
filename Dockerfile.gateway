@@ -12,6 +12,8 @@ COPY requirements-gateway.txt .
 RUN pip install --no-cache-dir -r requirements-gateway.txt
 
 COPY src/gateway/ /app/src/gateway/
+COPY src/pkg/__init__.py /app/src/pkg/__init__.py
+COPY src/pkg/autonomy/ /app/src/pkg/autonomy/
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1

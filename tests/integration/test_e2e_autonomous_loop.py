@@ -171,6 +171,22 @@ class SmartLLMStub:
 
         raise AssertionError(f"unknown invocation_id={rid!r}")
 
+    async def chat_structured(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        return await self.chat(model=model, messages=messages, **kwargs)
+
+    async def chat_plain(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        return await self.chat(model=model, messages=messages, **kwargs)
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio

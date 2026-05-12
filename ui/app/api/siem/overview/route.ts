@@ -19,6 +19,8 @@ import { NextResponse } from "next/server";
 //   omni_worker_heartbeat_timestamp{role}
 
 const METRICS_URL = process.env.SIEM_METRICS_URL;
+const GATEWAY_URL = process.env.OMNI_GATEWAY_URL;
+const GATEWAY_API_KEY = process.env.OMNI_GATEWAY_API_KEY ?? "";
 
 type SiemOverview = {
   generated_at: string;
@@ -150,7 +152,7 @@ function buildMock(): SiemOverview {
       by_model: [
         { model: "ollama/llama3.1:8b", calls: 1_980, avg_latency_ms: 720, tokens: 1_520_000, failures: 18 },
         { model: "ollama/mistral:7b", calls: 612, avg_latency_ms: 880, tokens: 420_000, failures: 9 },
-        { model: "vllm/qwen2.5:14b", calls: 355, avg_latency_ms: 1_380, tokens: 315_400, failures: 20 },
+        { model: "vllm/qwen3.6", calls: 355, avg_latency_ms: 1_380, tokens: 315_400, failures: 20 },
       ],
       latency_timeline: hours.map((h) => ({ hour: h, p50: rand(600, 1100), p95: rand(1800, 3200) })),
       last_call_trace: `llm-tr-${rand(100000, 999999)}`,
@@ -273,7 +275,24 @@ async function fetchPrometheus(): Promise<SiemOverview | null> {
   }
 }
 
+async function fetchGatewaySiem(): Promise<{ crat: unknown } | null> {
+  if (!GATEWAY_URL) return null;
+  try {
+    const headers: HeadersInit = GATEWAY_API_KEY ? { Authorization: `Bearer ${GATEWAY_API_KEY}` } : {};
+    const res = await fetch(`${GATEWAY_URL}/siem/overview?limit=50`, { headers, cache: "no-store" });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function GET() {
-  const real = await fetchPrometheus();
-  return NextResponse.json(real ?? buildMock());
+  const [real, crat] = await Promise.all([fetchPrometheus(), fetchGatewaySiem()]);
+  const base = real ?? buildMock();
+  // Merge real CRAT chain metadata into the response when available
+  if (crat) {
+    return NextResponse.json({ ...base, crat });
+  }
+  return NextResponse.json(base);
 }

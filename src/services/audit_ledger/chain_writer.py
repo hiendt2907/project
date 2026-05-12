@@ -34,6 +34,21 @@ REDIS_AUDIT_SEQ_KEY = _REDIS_SEQ_KEY
 REDIS_AUDIT_BLOCKS_KEY = _REDIS_BLOCKS_KEY
 _GENESIS_HASH = "0" * 64
 
+
+def _tenant_keys(tenant_id: str) -> tuple[str, str, str]:
+    """Return (head_key, seq_key, blocks_key) for the given tenant.
+
+    The default tenant preserves original key names for backward compatibility.
+    Named tenants use an isolated prefix: ``audit_chain:{tenant_id}:*``.
+    """
+    if tenant_id == "default":
+        return _REDIS_HEAD_KEY, _REDIS_SEQ_KEY, _REDIS_BLOCKS_KEY
+    return (
+        f"audit_chain:{tenant_id}:head_hash",
+        f"audit_chain:{tenant_id}:seq",
+        f"audit_chain:{tenant_id}:blocks",
+    )
+
 # Serialize block writes so seq + prev_hash are always consistent.
 _LOCK: asyncio.Lock | None = None
 
@@ -70,18 +85,25 @@ async def write_audit_block(
     redis: Any,
     kafka: Any,
     kafka_topic: str,
+    tenant_id: str = "default",
 ) -> dict[str, Any]:
     """Write one tamper-evident block to Redis chain + Kafka topic.
 
     Raises AuditLedgerError on any failure — callers MUST abort the transaction.
+
+    Args:
+        tenant_id: Isolates Redis keys per tenant. ``"default"`` preserves the
+            original key names for backward compatibility with existing callers.
+            Named tenants use ``audit_chain:{tenant_id}:*`` keys.
     """
+    head_key, seq_key, blocks_key = _tenant_keys(tenant_id)
     async with _get_lock():
         try:
             _t0 = time.monotonic()
             # 1. Fetch prev_hash and increment seq atomically
             pipe = redis.pipeline()
-            pipe.get(_REDIS_HEAD_KEY)
-            pipe.incr(_REDIS_SEQ_KEY)
+            pipe.get(head_key)
+            pipe.incr(seq_key)
             results = await pipe.execute()
             prev_hash: str = results[0] or _GENESIS_HASH
             seq: int = int(results[1])
@@ -107,13 +129,14 @@ async def write_audit_block(
                 "public_key_hex": pub_hex,
                 "pub_key_version": public_key_version(),
                 "payload": payload,
+                "tenant_id": tenant_id,
             }
             block_json = json.dumps(block, default=str)
 
             # 4. Atomically persist chain head + append block
             pipe2 = redis.pipeline()
-            pipe2.set(_REDIS_HEAD_KEY, block_hash)
-            pipe2.rpush(_REDIS_BLOCKS_KEY, block_json)
+            pipe2.set(head_key, block_hash)
+            pipe2.rpush(blocks_key, block_json)
             await pipe2.execute()
 
             # 5. Publish to Kafka — round-trip through block_json for JSON-safety;
@@ -126,19 +149,21 @@ async def write_audit_block(
                 )
             else:
                 logger.warning(
-                    "event=audit_kafka_unavailable seq=%d trace=%s — Kafka not configured",
+                    "event=audit_kafka_unavailable seq=%d trace=%s tenant=%s — Kafka not configured",
                     seq,
                     trace_id,
+                    tenant_id,
                 )
 
             _elapsed = time.monotonic() - _t0
             _crat_write_ms = int(_elapsed * 1000)
             _observe_crat_write_seconds(_elapsed)
             logger.info(
-                "event=audit_block_written seq=%d event_type=%s trace=%s signed=%s crat_write_ms=%d",
+                "event=audit_block_written seq=%d event_type=%s trace=%s tenant=%s signed=%s crat_write_ms=%d",
                 seq,
                 event_type,
                 trace_id,
+                tenant_id,
                 sig_hex is not None,
                 _crat_write_ms,
             )

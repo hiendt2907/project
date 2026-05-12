@@ -48,9 +48,10 @@ async def probe_redis_ping(ctx: WorkerHandlerContext, _ev: AnomalyEvent) -> Prob
 
 async def probe_k8s_list_pods_namespace(ctx: WorkerHandlerContext, ev: AnomalyEvent) -> ProbeRunRaw:
     await _load_k8s_config()
-    v1 = client.CoreV1Api()
     ns = (ev.namespace or "").strip() or ctx.settings.k8s_default_namespace
+    v1: client.CoreV1Api | None = None
     try:
+        v1 = client.CoreV1Api()
         resp = await v1.list_namespaced_pod(namespace=ns)
         n = len(resp.items or [])
         return ProbeRunRaw(
@@ -67,10 +68,11 @@ async def probe_k8s_list_pods_namespace(ctx: WorkerHandlerContext, ev: AnomalyEv
         )
     finally:
         # Tránh aiohttp "Unclosed client session" (kubernetes_asyncio dùng aiohttp bên dưới).
-        try:
-            await v1.api_client.close()
-        except Exception:
-            pass
+        if v1 is not None:
+            try:
+                await v1.api_client.close()
+            except Exception:
+                pass
 
 
 def _prom_label_esc(s: str) -> str:

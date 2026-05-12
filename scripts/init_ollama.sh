@@ -2,8 +2,8 @@
 # Pull models required by Omni into the local Ollama instance.
 set -euo pipefail
 
-echo "Pulling qwen2.5-coder:7b ..."
-ollama pull qwen2.5-coder:7b
+echo "Pulling qwen3.6 ..."
+ollama pull qwen3.6
 
 echo "Pulling nomic-embed-text ..."
 ollama pull nomic-embed-text

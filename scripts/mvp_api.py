@@ -120,8 +120,8 @@ def _default_vllm_url() -> str:
 
 
 VLLM_BASE_URL = _default_vllm_url()
-# Model name as registered in Ollama (ollama pull qwen2.5-coder:7b).
-VLLM_MODEL = os.getenv("VLLM_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b"))
+# Model name as registered in Ollama (ollama pull qwen3.6).
+VLLM_MODEL = os.getenv("VLLM_MODEL", os.getenv("OLLAMA_MODEL", "qwen3.6"))
 
 MAX_LOOP_ITERATIONS = int(os.getenv("OMNI_MAX_LOOP_ITERATIONS", "3"))
 VERIFY_BACKOFF_SECONDS = float(os.getenv("OMNI_VERIFY_BACKOFF_SECONDS", "5"))

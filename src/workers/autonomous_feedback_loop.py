@@ -446,7 +446,7 @@ async def _llm_replan_after_feedback(
             snippet = ""
     ws = ctx.settings
     llm = ctx.llm
-    model = getattr(ws, "diag_evidence_llm_model", None) or getattr(ws, "chat_model", "qwen2.5-coder-3b")
+    model = getattr(ws, "diag_evidence_llm_model", None) or getattr(ws, "chat_model", "qwen3.6")
     user = (
         f"Previous mutate failed. exit_code={exit_code}\n"
         f"stdout:\n{stdout[:3000]}\nstderr:\n{stderr[:1500]}\n\n"

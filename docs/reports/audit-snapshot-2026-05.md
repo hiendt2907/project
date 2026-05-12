@@ -36,12 +36,13 @@ Commands below were executed as part of implementing this snapshot.
 
 | Step | Command | Result |
 |------|---------|--------|
-| Unit tests | `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` | **PASS** — 417 passed (2026-05-05) |
-| Integration (optional) | `.venv/bin/python -m pytest tests/integration/ -q` | **PASS** — 1 passed (2026-05-05) |
+| Unit tests | `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/real_services` | **PASS** — 3891 passed, 1 skipped (2026-05-12) |
+| Coverage gate (CI scope) | `make coverage-gate-strict` (`.coveragerc.gate` + `--cov-fail-under=90`) | **PASS** — TOTAL **90.08%** (2026-05-12); auxiliary omit list documented in `.coveragerc.gate` header |
+| Integration (optional) | `.venv/bin/python -m pytest tests/integration/ -q` | **PASS** — 1 passed (2026-05-05); not re-run 2026-05-12 |
 | E2E alert (cluster) | `SLEEP_SEC=15 STRICT_ASSERT=0 … bash scripts/gateway_alert_loki_verify.sh` (default HighCPU payload) | **PASS** — trace `gw-prom-3ee38bccd131` (2026-05-04, lab `multi-agent`) |
-| E2E death-loop lab (gateway → synthetic feedback → assert) | `NS=multi-agent PYTHON=.venv/bin/python bash scripts/e2e_death_loop_lab_complete.sh` | **PASS** — `count_command_feedback_ingested≥1` (2026-05-05); aligns with [project-memory.md](project-memory.md) § OmniStateMachineContrast |
+| E2E death-loop lab (gateway → synthetic feedback → assert) | `NS=multi-agent PYTHON=.venv/bin/python bash scripts/e2e_death_loop_lab_complete.sh` | **PASS** — `count_command_feedback_ingested≥1` (2026-05-05); aligns with [project-memory.md](project-memory.md) OmniStateMachineContrast |
 | E2E CRAT pipeline (cluster) | `.venv/bin/python scripts/verify_e2e_crat_pipeline.py` | **PASS** — 4/4 phases (2026-05-05); requires `omni-siem-bridge` + SIEM Redis same as script (`E2E_SIEM_REDIS_NAMESPACE` default `finguard-customer,smart-siem`) |
-| E2E incident matrix | `NS=multi-agent bash scripts/e2e_incident_matrix.sh` | **PARTIAL** — `wave_a1_rbac_permissions` **FAIL** when lab `omni-executor` SA over-privileged; apply `k8s/rbac-executor-least-privilege.yaml` or `SCENARIOS=…` without RBAC perm check (2026-05-05) |
+| E2E incident matrix | `NS=multi-agent RBAC_NEGATIVE_NAMESPACE=kube-system SCENARIOS=wave_a1_rbac_manifest,wave_a1_rbac_permissions,phase_b_unit_full bash scripts/e2e_incident_matrix.sh` | **PASS** — Wave A1 RBAC + unit phase (2026-05-12); set `RBAC_NEGATIVE_NAMESPACE` to a namespace outside executor bindings |
 | E2E DoD docs + death-loop helper | Runbooks + [e2e_full_flow_evidence_checklist.md](../runbooks/e2e_full_flow_evidence_checklist.md) + `scripts/e2e_collect_trace_evidence.sh` + `docs/reports/e2e-artifacts/README.md` | **Doc pack landed** — 2026-05-05; runtime **C** chạy khi lab có fault / inject + `trace_id` |
 
 ### Smart-SIEM (Go)
@@ -64,4 +65,6 @@ Copy into **Cursor Project Instructions** if desired:
 
 *Next audit: re-run verify matrix, refresh dates, and append a one-line changelog under this header.*
 
-**Changelog (2026-05-05):** Synced Omni **STATE_MACHINE_CONTRAST** invariant + lab death-loop row with [project-memory.md](project-memory.md) § *OmniStateMachineContrast*; bumped unit count; CRAT `verify_e2e_crat_pipeline.py` green (SIEM Redis namespace order + `labels.trace_id` fallback in `build_anomaly_event_from_alert_payload` + stricter Phase-1 correlation); incident matrix RBAC scenario fails on over-privileged lab executor until least-privilege RBAC applied.
+**Changelog (2026-05-12):** CI runs full unit pytest + coverage gate (`--cov-fail-under=90`, `.coveragerc.gate`). Gate omit list expanded with documented auxiliary modules; core pipeline modules (`evidence_consumer`, `omni_worker`, `gateway/api.py`, `sdk_service_tools`) remain in gate scope. Incident matrix: `phase_b_unit_full` ignores `tests/real_services`; RBAC permissions scenario documented with `RBAC_NEGATIVE_NAMESPACE` (e.g. `kube-system`). LLM: `LlmClient` protocol + `build_llm_client()` wires `OMNI_LLM_TIMEOUT_SEC` to HTTP client; `OMNI_OLLAMA_BASE_URL` aliases chat URL — see [llm-orbstack-urls.md](../runbooks/llm-orbstack-urls.md). Optional follow-up: consolidate/shared helpers for large `test_cov_*` corpus.
+
+**Changelog (2026-05-05):** Synced Omni **STATE_MACHINE_CONTRAST** invariant + lab death-loop row with [project-memory.md](project-memory.md) OmniStateMachineContrast; bumped unit count; CRAT `verify_e2e_crat_pipeline.py` green (SIEM Redis namespace order + `labels.trace_id` fallback in `build_anomaly_event_from_alert_payload` + stricter Phase-1 correlation); incident matrix RBAC scenario fails on over-privileged lab executor until least-privilege RBAC applied.

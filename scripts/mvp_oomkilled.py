@@ -129,7 +129,7 @@ def build_user_message(alert: dict) -> str:
 # ---------------------------------------------------------------------------
 
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"))
-VLLM_MODEL = os.getenv("VLLM_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b"))
+VLLM_MODEL = os.getenv("VLLM_MODEL", os.getenv("OLLAMA_MODEL", "qwen3.6"))
 
 
 def call_vllm(system: str, user: str) -> str:

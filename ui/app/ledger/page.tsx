@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { AlertTriangle, AlertCircle, Info, Search, RefreshCw, Clock } from "lucide-react";
+import { AlertTriangle, AlertCircle, Info, Search, RefreshCw, Clock, Download } from "lucide-react";
 
 type LedgerEntry = {
   id: string;
@@ -44,18 +44,26 @@ export default function LedgerPage() {
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [levelFilter, setLevelFilter] = useState("all");
   const [workerFilter, setWorkerFilter] = useState("all");
   const [lastRefresh, setLastRefresh] = useState(new Date());
 
   async function fetchLedger() {
-    const res = await fetch("/api/ledger");
-    const data = await res.json();
-    setEntries(data.entries);
-    setTotal(data.total);
-    setLastRefresh(new Date());
-    setLoading(false);
+    setFetchError(null);
+    try {
+      const res = await fetch("/api/ledger");
+      if (!res.ok) throw new Error(`API ${res.status}`);
+      const data = await res.json();
+      setEntries(data.entries ?? []);
+      setTotal(data.total ?? 0);
+      setLastRefresh(new Date());
+    } catch (e: unknown) {
+      setFetchError(e instanceof Error ? e.message : "Failed to load ledger");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -84,13 +92,53 @@ export default function LedgerPage() {
             <h1 className="text-base font-semibold text-zinc-100">Error Ledger</h1>
             <p className="text-xs text-zinc-500">Redis TTL-keyed error log · auto-expires</p>
           </div>
-          <div className="flex items-center gap-2 text-xs text-zinc-600">
-            <RefreshCw className="h-3 w-3" />
-            {lastRefresh.toLocaleTimeString()}
+          <div className="flex items-center gap-3 text-xs text-zinc-600">
+            <button
+              onClick={() => {
+                const header = "id,level,worker,message,trace_id,timestamp,ttl_remaining_s\n";
+                const rows = filtered
+                  .map((e) =>
+                    [
+                      e.id,
+                      e.level,
+                      e.worker,
+                      `"${e.message.replace(/"/g, '""')}"`,
+                      e.trace_id,
+                      e.timestamp,
+                      e.ttl_remaining_s,
+                    ].join(",")
+                  )
+                  .join("\n");
+                const blob = new Blob([header + rows], { type: "text/csv" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `ledger-${new Date().toISOString().slice(0, 10)}.csv`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="flex items-center gap-1.5 rounded border border-zinc-700 px-2.5 py-1 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200 transition-colors"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export CSV
+            </button>
+            <span className="flex items-center gap-1">
+              <RefreshCw className="h-3 w-3" />
+              {lastRefresh.toLocaleTimeString()}
+            </span>
           </div>
         </header>
 
         <div className="p-6 space-y-4">
+          {fetchError && (
+            <div className="flex items-center justify-between rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-red-400" />
+                <span className="text-sm text-red-400">{fetchError}</span>
+              </div>
+              <button onClick={fetchLedger} className="text-xs text-red-400/70 hover:text-red-400 underline">Retry</button>
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-3">
             {(["critical", "error", "warning"] as const).map((lvl) => {
               const cfg = levelConfig[lvl];

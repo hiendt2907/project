@@ -318,7 +318,7 @@ export default function KpiPage() {
                     <Tooltip
                       contentStyle={{ background: "#18181b", border: "1px solid #3f3f46", borderRadius: 6 }}
                       itemStyle={{ color: "#e4e4e7" }}
-                      labelFormatter={(v: string) => LANE_LABELS[v] ?? v}
+                      labelFormatter={(v: unknown) => LANE_LABELS[String(v)] ?? String(v)}
                     />
                     <Bar dataKey="detected" name="Detected" radius={[2, 2, 0, 0]}>
                       {data.trend.map((entry) => (

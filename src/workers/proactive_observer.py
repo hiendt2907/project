@@ -334,7 +334,7 @@ async def _parse_fallback_tool_call(ctx: WorkerHandlerContext, user_prompt: str)
     conf = 0.0
     rationale = ""
     for attempt in range(ws.proactive_fallback_max_attempts):
-        resp = await ctx.llm.chat(
+        resp = await ctx.llm.chat_structured(
             model=ctx.settings.chat_model,
             messages=[
                 {

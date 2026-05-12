@@ -487,7 +487,7 @@ async def _tick_react(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None:
         try:
             ctx.inbound_proactive = True
             ctx.inbound_trace_id = f"autonomous-decider-react-{fp}-t{turn}"
-            resp = await ctx.llm.chat(
+            resp = await ctx.llm.chat_structured(
                 model=model,
                 messages=messages,
                 options={"temperature": 0.1, "num_ctx": 4096},

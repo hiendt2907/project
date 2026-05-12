@@ -254,11 +254,10 @@ async def agentic_slow_path_with_llm_and_tools(
                     )
                 inc_llm_requests()
                 with _agentic_span("llm_generate"):
-                    resp = await ctx.llm.chat(
+                    resp = await ctx.llm.chat_structured(
                         model=model,
                         messages=messages,
                         options={"temperature": 0.1, "num_ctx": 4096},
-                        format="json",
                     )
                 content = (resp.get("message") or {}).get("content") or ""
                 if getattr(ctx.settings, "agentic_debug_io", False):

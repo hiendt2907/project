@@ -22,6 +22,8 @@ _semaphore: Any = None
 _anomaly: Any = None
 _baseline_z_cpu: Any = None
 _baseline_z_mem: Any = None
+_baseline_z_disk: Any = None
+_baseline_z_iops: Any = None
 _baseline_dr: Any = None
 _baseline_chs: Any = None
 _baseline_remediation_silent: Any = None
@@ -76,7 +78,7 @@ _started = False
 def _ensure_metrics() -> None:
     global _build_info, _messages, _scout_ts, _exhausted
     global _kill_switch, _llm_up, _semaphore, _anomaly
-    global _baseline_z_cpu, _baseline_z_mem, _baseline_dr
+    global _baseline_z_cpu, _baseline_z_mem, _baseline_z_disk, _baseline_z_iops, _baseline_dr
     global _baseline_chs, _baseline_remediation_silent
     global _circuit_breaker, _lag_size, _error_rate, _latency
     global _learning_upserts, _learning_unique_patterns, _proactive_fallback, _proactive_verify, _learning_governance
@@ -475,12 +477,12 @@ def set_baseline_snapshot_gauges(
     _ensure_metrics()
     _baseline_z_cpu.set(float(z_cpu) if z_cpu is not None else 0.0)
     _baseline_z_mem.set(float(z_mem) if z_mem is not None else 0.0)
-    # create ad-hoc gauges if not instantiated statically to save tokens:
-    if "omni_baseline_z_disk" not in globals():
-        global _baseline_z_disk, _baseline_z_iops
-        _baseline_z_disk = Gauge("omni_baseline_z_disk", "Disk Z-Score")
-        _baseline_z_iops = Gauge("omni_baseline_z_iops", "IOPS Z-Score")
-    
+    # create ad-hoc gauges if not instantiated statically:
+    global _baseline_z_disk, _baseline_z_iops
+    if _baseline_z_disk is None:
+        from prometheus_client import Gauge as _Gauge
+        _baseline_z_disk = _Gauge("omni_baseline_z_disk", "Disk Z-Score")
+        _baseline_z_iops = _Gauge("omni_baseline_z_iops", "IOPS Z-Score")
     _baseline_z_disk.set(float(z_disk) if z_disk is not None else 0.0)
     _baseline_z_iops.set(float(z_iops) if z_iops is not None else 0.0)
 
@@ -746,6 +748,34 @@ async def observability_metrics_loop(
                 else:
                     update_check_state("llm_up", "degraded", "llm_up=0")
                     set_health_check_status("llm_up", 0.5)
+            except Exception:
+                pass
+
+            # ── Agent heartbeat → Redis (gateway /agents reads this) ──────
+            try:
+                import os as _os
+                import time as _time
+                from workers.health_server import _read_check_states
+                _role = _os.getenv("OMNI_WORKER_ROLE", "unknown")
+                _checks = _read_check_states()
+                _overall = "ok"
+                for _chk_status, _ in _checks.values():
+                    if _chk_status == "unhealthy":
+                        _overall = "unhealthy"
+                        break
+                    if _chk_status == "degraded":
+                        _overall = "degraded"
+                _hb = {
+                    "role": _role,
+                    "status": _overall,
+                    "checks": {k: v[0] for k, v in _checks.items()},
+                    "updated_at": int(_time.time()),
+                }
+                await redis.setex(
+                    f"omni:agent:heartbeat:{_role}",
+                    60,  # TTL 60s — gone if worker stops
+                    __import__("json").dumps(_hb),
+                )
             except Exception:
                 pass
 

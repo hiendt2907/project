@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -11,18 +12,105 @@ import {
   LogOut,
   Bot,
   BarChart3,
+  Wifi,
+  WifiOff,
+  AlertCircle,
+  Bell,
+  Server,
+  Shield,
+  Settings,
+  Rocket,
+  CircleHelp,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
 
-const nav = [
+type NavItem =
+  | { href: string; label: string; icon: typeof LayoutDashboard; badge?: boolean }
+  | { section: string };
+
+const nav: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/playbooks", label: "Playbooks", icon: BookOpen },
   { href: "/ledger", label: "Error Ledger", icon: AlertTriangle },
   { href: "/kpi", label: "KPI Dashboard", icon: BarChart3 },
+  { href: "/incidents", label: "Incidents", icon: Bell, badge: true },
+  { href: "/workers", label: "Workers", icon: Server },
+  { href: "/siem", label: "SIEM", icon: Shield },
+  { href: "/deploy", label: "Deploy", icon: Rocket },
+  { section: "Config" },
+  { href: "/config/autonomy", label: "Autonomy", icon: Settings },
+  { href: "/onboarding", label: "Setup", icon: CircleHelp },
 ];
+
+function useHitlCount(): number {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function check() {
+      try {
+        const res = await fetch("/api/incidents", { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) setCount(data.hitl_pending_count ?? 0);
+      } catch {
+        // ignore
+      }
+    }
+
+    check();
+    const id = setInterval(check, 15_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  return count;
+}
+
+type SystemStatus = "online" | "degraded" | "offline" | "loading";
+
+function useSystemStatus(): SystemStatus {
+  const [status, setStatus] = useState<SystemStatus>("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function check() {
+      try {
+        const res = await fetch("/api/agents", { cache: "no-store" });
+        if (!res.ok) { if (!cancelled) setStatus("offline"); return; }
+        const data = await res.json();
+        if (cancelled) return;
+        const overall: string = data.overall ?? "unknown";
+        if (overall === "ok") setStatus("online");
+        else if (overall === "degraded") setStatus("degraded");
+        else if (overall === "unhealthy") setStatus("offline");
+        else setStatus("offline");
+      } catch {
+        if (!cancelled) setStatus("offline");
+      }
+    }
+
+    check();
+    const id = setInterval(check, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  return status;
+}
+
+const statusConfig: Record<SystemStatus, { label: string; sub: string; icon: typeof Wifi; color: string }> = {
+  online:   { label: "System Online",   sub: "all workers healthy",  icon: Wifi,        color: "text-emerald-400" },
+  degraded: { label: "Degraded",        sub: "some checks failing",  icon: AlertCircle, color: "text-amber-400"   },
+  offline:  { label: "System Offline",  sub: "workers unreachable",  icon: WifiOff,     color: "text-red-400"     },
+  loading:  { label: "Checking…",       sub: "multi-agent ns",       icon: Activity,    color: "text-zinc-500"    },
+};
 
 export function Sidebar() {
   const pathname = usePathname();
+  const systemStatus = useSystemStatus();
+  const cfg = statusConfig[systemStatus];
+  const hitlCount = useHitlCount();
 
   return (
     <aside className="flex h-screen w-60 flex-col border-r border-zinc-800 bg-zinc-950">
@@ -36,30 +124,48 @@ export function Sidebar() {
         </div>
       </div>
 
-      <nav className="flex-1 space-y-0.5 px-3 py-4">
-        {nav.map(({ href, label, icon: Icon }) => (
-          <Link
-            key={href}
-            href={href}
-            className={cn(
-              "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
-              pathname === href
-                ? "bg-cyan-500/10 text-cyan-400 ring-1 ring-inset ring-cyan-500/20"
-                : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-100"
-            )}
-          >
-            <Icon className="h-4 w-4 shrink-0" />
-            {label}
-          </Link>
-        ))}
+      <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-4">
+        {nav.map((item, idx) => {
+          if ("section" in item) {
+            return (
+              <div key={`section-${idx}`} className="mb-1 mt-3 px-3">
+                <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+                  {item.section}
+                </p>
+              </div>
+            );
+          }
+          const { href, label, icon: Icon, badge } = item;
+          const showBadge = badge && hitlCount > 0;
+          return (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
+                pathname === href
+                  ? "bg-cyan-500/10 text-cyan-400 ring-1 ring-inset ring-cyan-500/20"
+                  : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-100"
+              )}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              <span className="flex-1">{label}</span>
+              {showBadge && (
+                <span className="ml-auto flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 font-mono text-[9px] font-bold text-white">
+                  {hitlCount}
+                </span>
+              )}
+            </Link>
+          );
+        })}
       </nav>
 
       <div className="border-t border-zinc-800 px-3 py-4 space-y-1">
         <div className="flex items-center gap-3 rounded-md px-3 py-2">
-          <Activity className="h-4 w-4 text-emerald-400" />
+          <cfg.icon className={`h-4 w-4 shrink-0 ${cfg.color}`} />
           <div>
-            <p className="text-xs font-medium text-zinc-300">System Live</p>
-            <p className="text-[10px] text-zinc-600">multi-agent ns</p>
+            <p className={`text-xs font-medium ${cfg.color}`}>{cfg.label}</p>
+            <p className="text-[10px] text-zinc-600">{cfg.sub}</p>
           </div>
         </div>
         <button

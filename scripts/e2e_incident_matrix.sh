@@ -365,11 +365,12 @@ _scenario_phase_b_pytest() {
 # ---------------------------------------------------------------------------
 
 _scenario_phase_b_unit_full() {
-  _log "running: full unit suite (ignore integration)"
+  _log "running: full unit suite (ignore integration + live real_services)"
   "${PYTHON_BIN}" -m pytest \
     "${ROOT}/tests/" \
     -q --tb=short \
-    --ignore="${ROOT}/tests/integration" 2>&1
+    --ignore="${ROOT}/tests/integration" \
+    --ignore="${ROOT}/tests/real_services" 2>&1
 }
 
 # ---------------------------------------------------------------------------

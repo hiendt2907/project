@@ -195,7 +195,7 @@ Dùng `promql_range` (hoặc `vm_promql_range`) với start/end/step để lấy
 
 
 def _prometheus_base_url(ctx: Any) -> str:
-    s = getattr(ctx, "settings", None)
+    s = getattr(ctx, "settings", ctx)
     if s is not None:
         u = getattr(s, "prometheus_url", None)
         if isinstance(u, str) and u.strip():

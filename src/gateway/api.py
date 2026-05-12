@@ -259,7 +259,18 @@ app = FastAPI(title="Omni Gateway", version="1.0.0", lifespan=lifespan)
 
 from fastapi import Depends as _Depends  # noqa: E402 (already imported above but alias for clarity)
 from gateway.routes.kpi import router as _kpi_router  # noqa: E402
+from gateway.routes.playbooks import router as _playbooks_router  # noqa: E402
+from gateway.routes.siem import router as _siem_router  # noqa: E402
+from gateway.routes.agents import router as _agents_router  # noqa: E402
+from gateway.routes.autonomy import router as _autonomy_router  # noqa: E402
+from gateway.routes.compliance import router as _compliance_router  # noqa: E402
+
 app.include_router(_kpi_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_playbooks_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_siem_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_agents_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_autonomy_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_compliance_router, dependencies=[_Depends(_require_api_key)])
 
 
 class GatewayTraceMiddleware(BaseHTTPMiddleware):

@@ -151,6 +151,10 @@ def pod_identity_from_event(ev: AnomalyEvent) -> tuple[str, str, str]:
             pass
     if not pod:
         pod = _pod_name_from_free_text(cq, annot_blob, ev.error_hint or "")
+    if not pod and isinstance(ev.gigo_metadata, dict):
+        pod = str(ev.gigo_metadata.get("pod") or ev.gigo_metadata.get("pod_name") or "").strip()
+    if not ns and isinstance(ev.gigo_metadata, dict):
+        ns = str(ev.gigo_metadata.get("namespace") or "").strip() or ns
     return ns, pod, container
 
 

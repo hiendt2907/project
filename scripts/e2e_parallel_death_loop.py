@@ -762,7 +762,7 @@ def print_findings(results: list[LaneResult]) -> None:
             print("  Nguyên nhân có thể:")
             print("  • Kafka consumer group lag: omni-analyst chưa consume evidence batch")
             print("  • evidence_consumer batch flush: single-probe lane cần đủ 2 probe hoặc elapsed>=3s")
-            print("  • Ollama LLM slow: qwen2.5:7b trả về sau >240s (tăng E2E_LLM_TIMEOUT=360)")
+            print("  • Ollama LLM slow: qwen3.6 trả về sau >240s (tăng E2E_LLM_TIMEOUT=360)")
             print("  Khuyến nghị: kubectl logs -n multi-agent deploy/omni-analyst --since=5m | grep diag_batch")
 
         if dl_fail_lanes:

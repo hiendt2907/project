@@ -24,7 +24,11 @@ async def create_producer(bootstrap_servers: str) -> AIOKafkaProducer:
         enable_idempotence=True,
         acks="all",
     )
-    await p.start()
+    try:
+        await p.start()
+    except Exception:
+        await p.stop()
+        raise
     return p
 
 

@@ -704,7 +704,7 @@ async def infer_blind_proof_lane_hint(
     ]
     for model in model_candidates:
         try:
-            resp = await llm.chat(model=model, messages=messages, stream=False)
+            resp = await llm.chat_plain(model=model, messages=messages, stream=False)
             msg = (resp or {}).get("message") or {}
             raw = str(msg.get("content") or "").strip().lower()
             m = re.search(r"\b(resource|state|app_log)\b", raw)
@@ -954,8 +954,8 @@ async def run_agentic_mutate_plan(
             last_content = ""
             for model in model_candidates:
                 try:
-                    resp = await llm.chat(
-                        model=model, messages=messages, stream=False, format="json"
+                    resp = await llm.chat_structured(
+                        model=model, messages=messages, stream=False
                     )
                 except Exception as me:
                     logger.warning("agentic step %s model=%s: %s", step + 1, model, me)
@@ -1500,7 +1500,7 @@ async def run_post_verify_react_loop(
         last_pv_content = ""
         for model in model_candidates:
             try:
-                resp = await llm.chat(model=model, messages=messages, stream=False, format="json")
+                resp = await llm.chat_structured(model=model, messages=messages, stream=False)
             except Exception as me:
                 logger.warning("post_verify_react model=%s: %s", model, me)
                 log_llm_trace(

@@ -2,10 +2,27 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
+
+_MAX_VERIFICATION_STEPS = 5
+_MAX_REMEDIATION_STEPS = 4
+_ROOT_CAUSE_MAX_WORDS = 48
+_AFFECTED_WORKLOAD_MAX_CHARS = 200
+_VERIFICATION_RATIONALE_MAX_WORDS = 45
+_VERIFICATION_EXPECTED_OUTPUT_MAX_WORDS = 48
+_FORECAST_PREDICTION_MAX_WORDS = 40
+_FORECAST_NOTE_MAX_WORDS = 80
+_FORECAST_BASIS_MAX_CHARS = 320
+_ESCALATION_MAX_WORDS = 48
+_REMEDIATION_ACTION_MAX_WORDS = 72
+_REMEDIATION_ROLLBACK_MAX_WORDS = 48
+_PRECONDITION_MAX_WORDS = 28
 
 _LAYER_PATTERNS: list[tuple[str, list[str]]] = [
     ("prometheus", ["rate(", "predict_linear(", "irate(", "increase(", "avg_over_time("]),
@@ -24,6 +41,24 @@ def _infer_layer(command: str) -> _LAYER_TYPE:
         if any(p in cmd_lower for p in patterns):
             return layer  # type: ignore[return-value]
     return "kubernetes"
+
+
+def _truncate_words(text: str, max_words: int) -> tuple[str, bool]:
+    if max_words <= 0:
+        return "", bool((text or "").strip())
+    words = (text or "").split()
+    if len(words) <= max_words:
+        return (text or "").strip(), False
+    return " ".join(words[:max_words]).strip(), True
+
+
+def _truncate_chars(text: str, max_chars: int) -> tuple[str, bool]:
+    t = text or ""
+    if max_chars <= 0:
+        return "", bool(t.strip())
+    if len(t) <= max_chars:
+        return t, False
+    return t[:max_chars].rstrip(), True
 
 
 class VerificationStep(BaseModel):
@@ -46,6 +81,22 @@ class VerificationStep(BaseModel):
             inferred = _infer_layer(self.command)
             if inferred != "kubernetes":
                 object.__setattr__(self, "layer", inferred)
+        return self
+
+    @model_validator(mode="after")
+    def clamp_verbose_fields(self) -> "VerificationStep":
+        rationale, rc = _truncate_words(self.rationale, _VERIFICATION_RATIONALE_MAX_WORDS)
+        expected_output, ec = _truncate_words(self.expected_output, _VERIFICATION_EXPECTED_OUTPUT_MAX_WORDS)
+        if rc or ec:
+            logger.warning(
+                "event=advisory_field_clamped component=verification_step order=%s "
+                "rationale_clamped=%s expected_output_clamped=%s",
+                self.order,
+                rc,
+                ec,
+            )
+        object.__setattr__(self, "rationale", rationale)
+        object.__setattr__(self, "expected_output", expected_output)
         return self
 
 
@@ -71,6 +122,26 @@ class ProposedRemediationStep(BaseModel):
         description="How to undo this action if it causes harm",
     )
 
+    @model_validator(mode="after")
+    def clamp_remediation_text(self) -> "ProposedRemediationStep":
+        action, ca = _truncate_words(self.action, _REMEDIATION_ACTION_MAX_WORDS)
+        rollback, cr = _truncate_words(self.rollback_plan, _REMEDIATION_ROLLBACK_MAX_WORDS)
+        new_pre: list[str] = []
+        pre_changed = False
+        for line in self.preconditions:
+            pl, pcl = _truncate_words(line, _PRECONDITION_MAX_WORDS)
+            new_pre.append(pl)
+            pre_changed = pre_changed or pcl
+        if ca or cr or pre_changed:
+            logger.warning(
+                "event=advisory_field_clamped component=proposed_remediation order=%s",
+                self.order,
+            )
+        object.__setattr__(self, "action", action)
+        object.__setattr__(self, "rollback_plan", rollback)
+        object.__setattr__(self, "preconditions", new_pre)
+        return self
+
 
 class ImpactForecast(BaseModel):
     """Time-based degradation forecast if the issue is left unaddressed."""
@@ -90,6 +161,17 @@ class ImpactForecast(BaseModel):
             return "healthy"
         return v
 
+    @model_validator(mode="after")
+    def clamp_prediction(self) -> "ImpactForecast":
+        pred, clipped = _truncate_words(self.prediction, _FORECAST_PREDICTION_MAX_WORDS)
+        if clipped:
+            logger.warning(
+                "event=advisory_field_clamped component=impact_forecast timeframe=%s",
+                self.timeframe,
+            )
+        object.__setattr__(self, "prediction", pred)
+        return self
+
 
 class ForecastTimeline(BaseModel):
     """Complete time-series degradation model."""
@@ -104,6 +186,16 @@ class ForecastTimeline(BaseModel):
         default="",
         description="If forecast is degraded, explain why (e.g., 'missing rate data')",
     )
+
+    @model_validator(mode="after")
+    def clamp_timeline_text(self) -> "ForecastTimeline":
+        note, nc = _truncate_words(self.note, _FORECAST_NOTE_MAX_WORDS)
+        basis, bc = _truncate_chars(self.basis, _FORECAST_BASIS_MAX_CHARS)
+        if nc or bc:
+            logger.warning("event=advisory_field_clamped component=forecast_timeline")
+        object.__setattr__(self, "note", note)
+        object.__setattr__(self, "basis", basis)
+        return self
 
 
 class AnalystAdvisory(BaseModel):
@@ -154,6 +246,48 @@ class AnalystAdvisory(BaseModel):
         if "iso8601" in sl and len(s) < 20:
             return {k: v for k, v in data.items() if k != "timestamp"}
         return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _cap_step_counts(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        vs = out.get("verification_steps")
+        if isinstance(vs, list) and len(vs) > _MAX_VERIFICATION_STEPS:
+            logger.warning(
+                "event=advisory_step_list_truncated kind=verification_steps before=%s after=%s",
+                len(vs),
+                _MAX_VERIFICATION_STEPS,
+            )
+            out["verification_steps"] = vs[:_MAX_VERIFICATION_STEPS]
+        pr = out.get("proposed_remediation")
+        if isinstance(pr, list) and len(pr) > _MAX_REMEDIATION_STEPS:
+            logger.warning(
+                "event=advisory_step_list_truncated kind=proposed_remediation before=%s after=%s",
+                len(pr),
+                _MAX_REMEDIATION_STEPS,
+            )
+            out["proposed_remediation"] = pr[:_MAX_REMEDIATION_STEPS]
+        return out
+
+    @model_validator(mode="after")
+    def clamp_top_level_prose(self) -> "AnalystAdvisory":
+        root, rcl = _truncate_words(self.root_cause, _ROOT_CAUSE_MAX_WORDS)
+        esc, ecl = _truncate_words(self.escalation_reason, _ESCALATION_MAX_WORDS)
+        aff, acl = _truncate_chars(self.affected_workload, _AFFECTED_WORKLOAD_MAX_CHARS)
+        if rcl or ecl or acl:
+            logger.warning(
+                "event=advisory_field_clamped component=analyst_advisory "
+                "root_cause_clamped=%s escalation_clamped=%s affected_workload_clamped=%s",
+                rcl,
+                ecl,
+                acl,
+            )
+        object.__setattr__(self, "root_cause", root)
+        object.__setattr__(self, "escalation_reason", esc)
+        object.__setattr__(self, "affected_workload", aff)
+        return self
 
 
 class AnalystAdvisoryAggregated(BaseModel):

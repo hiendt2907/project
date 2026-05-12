@@ -586,15 +586,28 @@ class WorkerSettings(BaseSettings):
     idempotency_ttl_sec: int = Field(default=120, ge=30, le=3600, description="TTL cho Atomic PENDING Lock của Action Guard.")
     gateway_rate_limit_tps: int = Field(default=1000, ge=10, le=10_000, description="Maximum TPS cho Gateway Ingress /webhook/prometheus.")
 
-    llm_num_parallel: int = Field(default=2, ge=1, le=32)
+    llm_num_parallel: int = Field(
+        default=2,
+        ge=1,
+        le=32,
+        description="Parallel LLM slots (semaphore); env OMNI_LLM_NUM_PARALLEL.",
+    )
     # OrbStack DNS: pods reach Ollama on macOS host via host.orb.internal (see omni-worker-configmap).
-    vllm_base_url: str = Field(default="http://host.orb.internal:11434/v1")
-    vllm_embed_url: str = Field(default="http://host.orb.internal:11434/v1")
+    vllm_base_url: str = Field(
+        default="http://host.orb.internal:11434/v1",
+        validation_alias=AliasChoices("OMNI_VLLM_BASE_URL", "OMNI_OLLAMA_BASE_URL"),
+        description="OpenAI-compat chat base URL (/v1 optional). Alias OMNI_OLLAMA_BASE_URL for legacy env.",
+    )
+    vllm_embed_url: str = Field(
+        default="http://host.orb.internal:11434/v1",
+        validation_alias=AliasChoices("OMNI_VLLM_EMBED_URL", "OMNI_OLLAMA_EMBED_URL"),
+        description="Embeddings endpoint base URL; alias OMNI_OLLAMA_EMBED_URL.",
+    )
     # Tier-1 DEFAULT_WORKER — SDK tool JSON, status, chart
-    chat_model: str = Field(default="qwen2.5-coder:7b")
-    model_reasoning_engine: str = Field(default="qwen2.5-coder:7b")
-    model_heavy_lifter: str = Field(default="qwen2.5-coder:7b")
-    model_helper: str = Field(default="qwen2.5-coder:7b")
+    chat_model: str = Field(default="qwen3.6")
+    model_reasoning_engine: str = Field(default="qwen3.6")
+    model_heavy_lifter: str = Field(default="qwen3.6")
+    model_helper: str = Field(default="qwen3.6")
     embed_model: str = Field(default="nomic-embed-text")
     #: Fallback embed model; empty = chỉ retry truncate khi error.
     embed_model_fallback: str = Field(
@@ -670,6 +683,15 @@ class WorkerSettings(BaseSettings):
         ge=10,
         le=200,
         description="Phản hồi analyst/RAG/Telegram proactive — tối đa từ (local LLM; mặc định ~30).",
+    )
+    omni_advisory_num_predict: int = Field(
+        default=1024,
+        ge=256,
+        le=4096,
+        description=(
+            "Ollama num_predict for Advisory JSON (omni-advisory-analyst). Lower=faster; too low may truncate JSON. "
+            "OMNI_ADVISORY_NUM_PREDICT"
+        ),
     )
     infra_enrich_max_total_chars: int = Field(
         default=6000,
@@ -1130,7 +1152,10 @@ class WorkerSettings(BaseSettings):
         ge=5.0,
         le=300.0,
         validation_alias=AliasChoices("OMNI_LLM_TIMEOUT_SEC"),
-        description="asyncio.wait_for timeout for each llm.chat() call.",
+        description=(
+            "asyncio gates on llm.chat/embed AND AsyncOpenAI HTTP timeout "
+            "(via build_llm_client); env OMNI_LLM_TIMEOUT_SEC."
+        ),
     )
     telegram_send_timeout_sec: float = Field(
         default=10.0,

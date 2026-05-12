@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbound signals arrive via three paths: HTTP alerts through the FastAPI Gateway (→ Kafka `omni-alerts`), SIEM incidents from FinGuard Redis streams (siem-bridge → `omni-alerts`), and direct SIEM evidence injection (evidence-adapter → `omni-diagnostic-evidence`). The **prober** role consumes `omni-alerts`, runs K8s SDK + Prometheus probes, and publishes per-probe evidence to `omni-diagnostic-evidence`. The **analyst** role batches evidence by `trace_id`, runs RAG gate + Ollama LLM (qwen2.5:7b), and emits `SUGGEST_REMEDIATION` → `omni-actions` with mandatory CRAT audit writes before any Telegram or action emission. Approved mutations flow through `omni-hitl-pending` → HITL dispatcher → `omni-actions` → **executor**; feedback returns to analyst via `omni-action-feedback` for re-evaluation or learning. Smart-SIEM (Go) runs as a parallel pipeline: brain-go correlates events → agent applies LLM analysis → BFF serves the React UI.
+Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbound signals arrive via three paths: HTTP alerts through the FastAPI Gateway (→ Kafka `omni-alerts`), SIEM incidents from FinGuard Redis streams (siem-bridge → `omni-alerts`), and direct SIEM evidence injection (evidence-adapter → `omni-diagnostic-evidence`). The **prober** role consumes `omni-alerts`, runs K8s SDK + Prometheus probes, and publishes per-probe evidence to `omni-diagnostic-evidence`. The **analyst** role batches evidence by `trace_id`, runs RAG gate + Ollama LLM (qwen3.6), and emits `SUGGEST_REMEDIATION` → `omni-actions` with mandatory CRAT audit writes before any Telegram or action emission. Approved mutations flow through `omni-hitl-pending` → HITL dispatcher → `omni-actions` → **executor**; feedback returns to analyst via `omni-action-feedback` for re-evaluation or learning. Smart-SIEM (Go) runs as a parallel pipeline: brain-go correlates events → agent applies LLM analysis → BFF serves the React UI.
 
 ---
 
@@ -581,7 +581,7 @@ omni_worker [analyst]
     → HIT: build_suggest_remediation_body → SUGGEST_REMEDIATION
     → MISS: run_advisory_analyst_handler()
       → build_advisory_system_prompt (L1→L4 bottom-up)
-      → llm.chat (Ollama qwen2.5:7b, num_ctx=4096)
+      → llm.chat (Ollama qwen3.6, num_ctx=4096)
       → AnalystAdvisory.model_validate (schema validation)
       → write_audit_block (CRAT: Redis hash-chain + Kafka omni-audit-chain)  ← FAIL-CLOSED
       → emit SUGGEST_REMEDIATION → omni-actions (Kafka)
@@ -675,7 +675,7 @@ graph TD
 
     KAFKA -->|omni-diagnostic-evidence| ANALYST[omni_worker analyst]
     ANALYST -->|FT KNN| RAG[(Redis Stack HNSW)]
-    ANALYST -->|chat/embed| LLM[(Ollama qwen2.5:7b)]
+    ANALYST -->|chat/embed| LLM[(Ollama qwen3.6)]
     ANALYST -->|hash-chain| CRAT[(Redis audit_chain)]
     ANALYST -->|omni-audit-chain| KAFKA
     ANALYST -->|omni-actions SUGGEST| KAFKA

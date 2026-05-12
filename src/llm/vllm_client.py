@@ -11,6 +11,7 @@ Ollama's /v1/chat/completions and /v1/embeddings are OpenAI-standard.
 from __future__ import annotations
 
 import logging
+from enum import StrEnum
 from typing import Any
 
 import openai
@@ -23,6 +24,13 @@ _API_KEY = "ollama"
 
 # Default context window passed as max_tokens when options.num_ctx is absent.
 DEFAULT_MAX_TOKENS = 4096
+
+
+class LLMCallKind(StrEnum):
+    """Explicit call semantics for routing / logs (chat vs tool JSON contracts)."""
+
+    CHAT = "chat"
+    STRUCTURED = "structured"
 
 
 def _base_url(url: str) -> str:
@@ -77,6 +85,7 @@ class VLLMClient(BaseModel):
         options: dict[str, Any] | None = None,
         format: str | None = None,  # "json" → response_format=json_object
         keep_alive: str | None = None,  # accepted for call-site compat, unused
+        llm_call_kind: str | LLMCallKind | None = None,
     ) -> dict[str, Any]:
         """POST /v1/chat/completions.
 
@@ -85,10 +94,23 @@ class VLLMClient(BaseModel):
 
         Pass ``format="json"`` to enable ``response_format={"type": "json_object"}``
         (Ollama + OpenAI both honour this for structured CoT/ReAct output).
+
+        ``llm_call_kind`` is for logs only (CHAT vs STRUCTURED); prefer
+        :meth:`chat_plain` / :meth:`chat_structured` at new call sites.
         """
         opts = options or {}
         temperature: float = float(opts.get("temperature", 0.0))
         max_tokens: int = int(opts.get("num_ctx", DEFAULT_MAX_TOKENS))
+
+        kind_s = str(llm_call_kind) if llm_call_kind is not None else ""
+        fmt_json = format == "json"
+        if kind_s:
+            logger.debug(
+                "event=ollama_chat model=%s llm_call_kind=%s format_json=%s",
+                model,
+                kind_s,
+                fmt_json,
+            )
 
         kwargs: dict[str, Any] = dict(
             model=model,
@@ -103,6 +125,46 @@ class VLLMClient(BaseModel):
         completion = await self._chat_client.chat.completions.create(**kwargs)
         content = (completion.choices[0].message.content or "").strip()
         return {"message": {"role": "assistant", "content": content}}
+
+    async def chat_plain(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        stream: bool = False,
+        options: dict[str, Any] | None = None,
+        keep_alive: str | None = None,
+    ) -> dict[str, Any]:
+        """Unstructured completion (no ``response_format``)."""
+        return await self.chat(
+            model=model,
+            messages=messages,
+            stream=stream,
+            options=options,
+            format=None,
+            keep_alive=keep_alive,
+            llm_call_kind=LLMCallKind.CHAT,
+        )
+
+    async def chat_structured(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        stream: bool = False,
+        options: dict[str, Any] | None = None,
+        keep_alive: str | None = None,
+    ) -> dict[str, Any]:
+        """JSON object completion (maps to OpenAI ``json_object``)."""
+        return await self.chat(
+            model=model,
+            messages=messages,
+            stream=stream,
+            options=options,
+            format="json",
+            keep_alive=keep_alive,
+            llm_call_kind=LLMCallKind.STRUCTURED,
+        )
 
     # ------------------------------------------------------------------
     # Embed — same signature as OllamaClient.embed()

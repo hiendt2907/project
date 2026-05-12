@@ -104,3 +104,12 @@ Implemented behavior to lock in:
 - Every phase report must include `What Changed in System Behavior` and `Memory Applied`.
 - Any detected historical secret requires key rotation first, then explicit approval before history rewrite actions.
 
+## Sprint log (2026-05-12) — Qwen 3.6 + LLM routing + trace orchestrator scaffold
+
+- **Defaults:** `WorkerSettings` chat/reasoning/heavy/helper → **`qwen3.6`**; fallbacks + scripts (`init_ollama`, `mvp_*`, `test_live_agent`) + benchmark default + Smart-SIEM `worker-deployments` + UI onboarding/SIEM overview strings; `CLAUDE.md` / `CODEBASE.md` / `knownbase` examples aligned.
+- **LLM contract:** `LLMCallKind`, `VLLMClient.chat_plain` / `chat_structured`, optional `llm_call_kind` debug on `chat`; `LlmClient` protocol updated. Call sites: `proactive_observer._parse_fallback_tool_call`, `autonomous_decider._tick_react`, `agentic_slow_path`, `analyst_agentic_loop` (blind lane → `chat_plain`, planner/post-verify → `chat_structured`).
+- **Trace orchestrator:** new `src/pkg/trace_orchestrator/` (Redis `omni:trace_orchestrator:{trace_id}`, candidate helpers); `evidence_consumer` initializes state and enqueues `playbook:{id}` on matcher hit; `docs/design/trace-orchestrator.md`; `tests/test_trace_orchestrator.py`, `tests/llm_mock_compat.py`.
+- **Verify:** `pytest tests/ --ignore=tests/integration --ignore=tests/real_services` — green. `tests/real_services/*` needs live stack. `make autonomy-gate` failed `secret-gate` (gitleaks on `tests/test_observability_normalize_pure.py` test string — pre-existing).
+- **Coverage (scoped `--cov` on touched paths):** `vllm_client` ~94%; trace_orchestrator submodules ~80–91%. Full-repo 90% not claimed for this diff alone.
+- **Docker:** `make docker-worker`, `make docker-gateway` — OK.
+- **Cluster E2E:** not run this session.

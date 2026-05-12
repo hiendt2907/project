@@ -58,7 +58,7 @@ Advisory system prompt: bottom-up L1→L4 layered diagnosis (os_baremetal → ne
 kafka: omni-diagnostic-evidence
     → omni-analyst (role=analyst)
         → RAG gate (Redis HNSW + semantic_cache)
-        → Ollama LLM (qwen2.5:7b, num_ctx=4096)
+        → Ollama LLM (qwen3.6, num_ctx=4096)
         → AnalystAdvisory schema (read-only)
         → AdvisoryModeKillSwitch (OMNI_AUTO_EXECUTE_ENABLED=false → fail-closed)
         → CRAT: write_audit_block() → Redis chain + kafka: omni-audit-chain  ← FAIL-CLOSED
@@ -175,7 +175,7 @@ L1=os_baremetal · L2=network · L3=kubernetes (read-only) · L4=prometheus
 
 - **K8s**: OrbStack, namespace `multi-agent`; `finguard-customer` for HITL API
 - **Python**: async-first, Pydantic settings (`WorkerSettings`, `OMNI_` prefix)
-- **LLM**: Ollama `VLLMClient` — `qwen2.5:7b` + `nomic-embed-text:latest` (768-dim)
+- **LLM**: Ollama `VLLMClient` — `qwen3.6` + `nomic-embed-text:latest` (768-dim)
 - **RAG**: Redis Stack HNSW `redis_vector_store.py` + `semantic_cache.py`
 - **Kafka**: `aiokafka`; `KafkaBus.send_dict(topic, dict)`
 - **Tests**: pytest `asyncio_mode=auto` `pythonpath=src`; `FakeAsyncRedis(decode_responses=True)`; `_KafkaCapture.send_dict(topic, envelope)`. Context: `SimpleNamespace(redis, kafka, settings)`.
@@ -205,7 +205,7 @@ CI order: build → rollout → unit → E2E.
 
 ## Env
 
-`OMNI_WORKER_ROLE` (prober|analyst|core|executor|full) · `OMNI_ENV_MODE` (lab|prod) · `OMNI_KAFKA_BOOTSTRAP_SERVERS` · `OMNI_REDIS_URL` · `OMNI_OLLAMA_BASE_URL` · `OMNI_AUDIT_PRIVATE_KEY_PATH`. Postgres removed — RAG on Redis Stack HNSW + semantic cache.
+`OMNI_WORKER_ROLE` (prober|analyst|core|executor|full) · `OMNI_ENV_MODE` (lab|prod) · `OMNI_KAFKA_BOOTSTRAP_SERVERS` · `OMNI_REDIS_URL` · `OMNI_OLLAMA_BASE_URL` · `OMNI_AUDIT_PRIVATE_KEY_PATH` · `OMNI_ADVISORY_NUM_PREDICT` (optional; default 1024, advisory JSON generation cap). Postgres removed — RAG on Redis Stack HNSW + semantic cache.
 
 **Smart-SIEM (brain-go) Kafka transport env:**
 `BRAIN_TRANSPORT=redis|kafka` (default=redis) · `BRAIN_KAFKA_BOOTSTRAP` · `BRAIN_KAFKA_CONSUME_TOPIC` (omni-siem-raw) · `BRAIN_KAFKA_PRODUCE_TOPIC` (omni-siem-incidents) · `BRAIN_KAFKA_CONSUMER_GROUP`.

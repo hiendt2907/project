@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, Pencil, Trash2, Search, Bot, CheckCircle2, XCircle } from "lucide-react";
+import { Plus, Pencil, Trash2, Search, Bot, CheckCircle2, XCircle, AlertTriangle, ShieldCheck, ShieldX } from "lucide-react";
 
 type PlaybookStep = string | { action_type?: string; target?: string; [k: string]: unknown };
 
@@ -132,26 +132,64 @@ function PlaybookForm({
   );
 }
 
+type HitlPending = { incident_id: string; trace_id: string; playbook_id: string; reason?: string };
+
 export default function PlaybooksPage() {
   const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("all");
   const [sevFilter, setSevFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Playbook | null>(null);
+  const [hitlPending, setHitlPending] = useState<HitlPending | null>(null);
+  const [hitlDeciding, setHitlDeciding] = useState(false);
+  const [hitlReason, setHitlReason] = useState("");
 
   async function fetchPlaybooks() {
-    const params = new URLSearchParams();
-    if (catFilter !== "all") params.set("category", catFilter);
-    if (sevFilter !== "all") params.set("severity", sevFilter);
-    const res = await fetch(`/api/playbooks?${params}`);
-    const data = await res.json();
-    setPlaybooks(data);
-    setLoading(false);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      if (catFilter !== "all") params.set("category", catFilter);
+      if (sevFilter !== "all") params.set("severity", sevFilter);
+      const res = await fetch(`/api/playbooks?${params}`);
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      const data = await res.json();
+      setPlaybooks(Array.isArray(data) ? data : data.playbooks ?? []);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load playbooks");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => { fetchPlaybooks(); }, [catFilter, sevFilter]);
+
+  async function handleHitlDecision(decision: "approved" | "rejected") {
+    if (!hitlPending) return;
+    setHitlDeciding(true);
+    try {
+      const res = await fetch("/api/hitl", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          incident_id: hitlPending.incident_id,
+          decision,
+          trace_id: hitlPending.trace_id,
+          reason: hitlReason,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? `API ${res.status}`);
+      setHitlPending(null);
+      setHitlReason("");
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "Decision failed");
+    } finally {
+      setHitlDeciding(false);
+    }
+  }
 
   async function handleSave(data: Partial<Playbook>) {
     if (editing) {
@@ -227,6 +265,20 @@ export default function PlaybooksPage() {
               </SelectContent>
             </Select>
           </div>
+
+          {error && (
+            <div className="flex items-start gap-3 rounded-lg border border-red-500/20 bg-red-500/5 p-4">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-red-400">Failed to load playbooks</p>
+                <p className="text-xs text-red-400/70 mt-0.5">{error}</p>
+              </div>
+              <Button size="sm" variant="ghost" onClick={fetchPlaybooks}
+                className="h-7 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10">
+                Retry
+              </Button>
+            </div>
+          )}
 
           {loading ? (
             <div className="space-y-3">
@@ -315,6 +367,68 @@ export default function PlaybooksPage() {
               onSave={handleSave}
               onCancel={() => { setDialogOpen(false); setEditing(null); }}
             />
+          </DialogContent>
+        </Dialog>
+
+        {/* HITL Approval Modal */}
+        <Dialog open={!!hitlPending} onOpenChange={(open) => { if (!open) { setHitlPending(null); setHitlReason(""); } }}>
+          <DialogContent className="max-w-lg border-amber-500/20 bg-zinc-900 text-zinc-100">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-amber-400">
+                <AlertTriangle className="h-4 w-4" />
+                HITL Approval Required
+              </DialogTitle>
+            </DialogHeader>
+            {hitlPending && (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-zinc-500 uppercase tracking-widest">Incident</span>
+                    <code className="text-xs text-amber-300 font-mono">{hitlPending.incident_id}</code>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-zinc-500 uppercase tracking-widest">Playbook</span>
+                    <code className="text-xs text-zinc-300 font-mono">{hitlPending.playbook_id}</code>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-zinc-500 uppercase tracking-widest">Trace</span>
+                    <code className="text-xs text-zinc-500 font-mono">{hitlPending.trace_id.slice(0, 20)}…</code>
+                  </div>
+                  {hitlPending.reason && (
+                    <p className="text-xs text-zinc-400 pt-1 border-t border-zinc-700">{hitlPending.reason}</p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs uppercase tracking-widest text-zinc-500">Reason (optional)</Label>
+                  <Textarea
+                    value={hitlReason}
+                    onChange={(e) => setHitlReason(e.target.value)}
+                    placeholder="Add context for the audit trail…"
+                    className="border-zinc-700 bg-zinc-800 text-zinc-100 resize-none text-sm"
+                    rows={2}
+                  />
+                </div>
+                <div className="flex gap-3 pt-1">
+                  <Button
+                    onClick={() => handleHitlDecision("approved")}
+                    disabled={hitlDeciding}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+                  >
+                    <ShieldCheck className="mr-2 h-4 w-4" />
+                    {hitlDeciding ? "Submitting…" : "Approve"}
+                  </Button>
+                  <Button
+                    onClick={() => handleHitlDecision("rejected")}
+                    disabled={hitlDeciding}
+                    variant="outline"
+                    className="flex-1 border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                  >
+                    <ShieldX className="mr-2 h-4 w-4" />
+                    Reject
+                  </Button>
+                </div>
+              </div>
+            )}
           </DialogContent>
         </Dialog>
       </main>

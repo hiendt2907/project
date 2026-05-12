@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory
+.PHONY: traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry
 
 NS ?= multi-agent
 
@@ -173,6 +173,33 @@ benchmark-advisory:
 	@echo "==> Advisory quality benchmark (informational — non-blocking)"
 	.venv/bin/python -m pytest tests/benchmarks/test_advisory_quality.py -q -m "not benchmark or benchmark" --tb=short 2>&1 || true
 	@echo "==> Run with live LLM: OMNI_OLLAMA_BASE_URL=http://... make benchmark-advisory"
+
+coverage:  ## Run test coverage report
+	.venv/bin/python -m pytest tests/ --ignore=tests/integration --ignore=tests/real_services --cov=src --cov-report=term-missing --cov-report=html:htmlcov -q
+
+coverage-html:  ## Open HTML coverage report
+	open htmlcov/index.html
+
+coverage-gate:  ## Business scope coverage (see .coveragerc.gate); prints TOTAL — no fail until ≥90%
+	.venv/bin/python -m pytest tests/ --ignore=tests/integration --ignore=tests/real_services --cov=src --cov-config=.coveragerc.gate --cov-report=term -q
+
+coverage-gate-strict:  ## Same as coverage-gate but fails CI if TOTAL < 90% (non-product dirs only omitted; see .coveragerc.gate)
+	.venv/bin/python -m pytest tests/ --ignore=tests/integration --ignore=tests/real_services --cov=src --cov-config=.coveragerc.gate --cov-report=term -q --cov-fail-under=90
+
+coverage-waves:  ## Full src/ pytest+cov then W1/W2/W3 gap table + top files (see scripts/coverage_gap_report.py)
+	.venv/bin/python scripts/coverage_gap_report.py --top 40
+
+coverage-project-real:  ## This machine: Python gate cov + optional live Redis (OMNI_REDIS_URL) + smart-siem go test -cover
+	bash scripts/coverage_project_real.sh
+
+sbom:  ## Generate Software Bill of Materials (requires syft)
+	@which syft > /dev/null 2>&1 && syft packages dir:. -o cyclonedx-json > omni-sbom.json && echo "SBOM written to omni-sbom.json" || echo "syft not installed — brew install anchore/syft/syft"
+
+chaos-drill:  ## Run chaos drill on all lanes
+	.venv/bin/python scripts/chaos_lane_drill.py --lane all
+
+chaos-drill-dry:  ## Dry run chaos drill (no actual injection)
+	.venv/bin/python scripts/chaos_lane_drill.py --lane all --dry-run
 
 asyncio-lint:
 	@echo "==> Checking for time.sleep() in async functions"

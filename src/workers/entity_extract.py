@@ -21,7 +21,7 @@ Nếu câu có dạng "namespace X pod Y" hoặc "pod Y namespace X" — tách �
 async def extract_entities_llm(ctx: Any, user_text: str) -> dict[str, Any]:
     """Gọi model_helper — JSON entities."""
     settings = getattr(ctx, "settings", None)
-    model = getattr(settings, "model_helper", None) or "qwen2.5:1.5b"
+    model = getattr(settings, "model_helper", None) or "qwen3.6"
     llm = getattr(ctx, "llm", None)
     if llm is None or not (user_text or "").strip():
         return {}

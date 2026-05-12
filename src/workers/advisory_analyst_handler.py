@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 _LLM_TRANSIENT_ERRORS = (ConnectionError, TimeoutError, OSError)
 
 
-_LLM_CHAT_TIMEOUT_SEC = 30.0  # overridden by ctx.settings.llm_chat_timeout_sec
+_LLM_CHAT_TIMEOUT_SEC = 120.0  # fallback only; align with WorkerSettings.llm_chat_timeout_sec default
 
 
 @retry(
@@ -124,6 +124,20 @@ async def run_advisory_analyst(
 
         system_prompt = build_advisory_system_prompt(ws)
         max_words = effective_reply_max_words(ws)
+        num_predict = int(getattr(ws, "omni_advisory_num_predict", 1024))
+        user_evidence_budget = 24000
+        user_blob = evidence_text[:user_evidence_budget]
+
+        logger.info(
+            "event=advisory_llm_budget trace=%s model=%s num_predict=%s "
+            "system_len=%s user_len=%s llm_timeout_sec=%s",
+            trace,
+            model,
+            num_predict,
+            len(system_prompt),
+            len(user_blob),
+            float(getattr(ctx.settings, "llm_chat_timeout_sec", _LLM_CHAT_TIMEOUT_SEC)),
+        )
 
         inc_llm_requests()
         log_llm_trace(
@@ -133,14 +147,14 @@ async def run_advisory_analyst(
             model=model,
             parse_ok=True,
             detail=(
-                f"system_len={len(system_prompt)} user_len={len(evidence_text[:24000])} "
-                f"max_words={max_words} temperature=0.2 num_predict=2048"
+                f"system_len={len(system_prompt)} user_len={len(user_blob)} "
+                f"max_words={max_words} temperature=0.2 num_predict={num_predict}"
             ),
             raw_response=(
                 "[SYSTEM_EXCERPT]\n"
                 f"{system_prompt[:1600]}\n\n"
                 "[USER_EXCERPT]\n"
-                f"{evidence_text[:1600]}"
+                f"{user_blob[:1600]}"
             ),
         )
 
@@ -150,9 +164,9 @@ async def run_advisory_analyst(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt[:16000]},
-                {"role": "user", "content": evidence_text[:24000]},
+                {"role": "user", "content": user_blob},
             ],
-            options={"num_predict": 2048, "temperature": 0.2},
+            options={"num_predict": num_predict, "temperature": 0.2},
             timeout=llm_timeout,
         )
 

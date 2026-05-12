@@ -44,8 +44,18 @@ def _match_labels_from_workload_obj(obj: Any) -> dict[str, str] | None:
     sel = getattr(spec, "selector", None)
     if not sel:
         return None
-    ml = getattr(sel, "match_labels", None)
-    if not isinstance(ml, dict) or not ml:
+    ml_raw = getattr(sel, "match_labels", None)
+    if ml_raw is None:
+        return None
+    if isinstance(ml_raw, dict):
+        ml = ml_raw
+    else:
+        ml_d = getattr(ml_raw, "__dict__", None)
+        if isinstance(ml_d, dict) and ml_d:
+            ml = ml_d
+        else:
+            return None
+    if not ml:
         return None
     return {str(k): str(v) for k, v in ml.items()}
 
@@ -438,10 +448,13 @@ async def probe_k8s_clinical_pod_status(ctx: WorkerHandlerContext, ev: AnomalyEv
             raw_text="missing namespace or pod",
         )
     await _load_k8s_config()
-    v1 = client.CoreV1Api()
-    apps = client.AppsV1Api()
-    batch_api = client.BatchV1Api()
+    v1: client.CoreV1Api | None = None
+    apps: client.AppsV1Api | None = None
+    batch_api: client.BatchV1Api | None = None
     try:
+        v1 = client.CoreV1Api()
+        apps = client.AppsV1Api()
+        batch_api = client.BatchV1Api()
         res = await resolve_workload_probe_targets(v1, apps, batch_api, ev, ns, pod)
         prefix = res.evidence_prefix
         if not res.target_pods:
@@ -500,7 +513,7 @@ async def probe_k8s_clinical_pod_status(ctx: WorkerHandlerContext, ev: AnomalyEv
             structured_hint={"source": "K8s_SDK", "error": str(e)[:500]},
         )
     finally:
-        for api in (v1, apps, batch_api):
+        for api in (x for x in (v1, apps, batch_api) if x is not None):
             try:
                 await api.api_client.close()
             except Exception:
@@ -517,11 +530,15 @@ async def probe_k8s_clinical_pod_metrics(ctx: WorkerHandlerContext, ev: AnomalyE
             raw_text="missing namespace or pod",
         )
     await _load_k8s_config()
-    v1 = client.CoreV1Api()
-    apps = client.AppsV1Api()
-    batch_api = client.BatchV1Api()
-    custom = client.CustomObjectsApi()
+    v1: client.CoreV1Api | None = None
+    apps: client.AppsV1Api | None = None
+    batch_api: client.BatchV1Api | None = None
+    custom: client.CustomObjectsApi | None = None
     try:
+        v1 = client.CoreV1Api()
+        apps = client.AppsV1Api()
+        batch_api = client.BatchV1Api()
+        custom = client.CustomObjectsApi()
         res = await resolve_workload_probe_targets(v1, apps, batch_api, ev, ns, alert_pod)
         prefix = res.evidence_prefix
         targets = res.target_pods if res.target_pods else [alert_pod]
@@ -655,7 +672,7 @@ async def probe_k8s_clinical_pod_metrics(ctx: WorkerHandlerContext, ev: AnomalyE
             structured_hint={"source": "K8s_SDK", "error": str(e)[:500]},
         )
     finally:
-        for api in (v1, apps, batch_api, custom):
+        for api in (x for x in (v1, apps, batch_api, custom) if x is not None):
             try:
                 await api.api_client.close()
             except Exception:
@@ -672,10 +689,13 @@ async def probe_k8s_clinical_pod_log_tail(ctx: WorkerHandlerContext, ev: Anomaly
             raw_text="missing namespace or pod",
         )
     await _load_k8s_config()
-    v1 = client.CoreV1Api()
-    apps = client.AppsV1Api()
-    batch_api = client.BatchV1Api()
+    v1: client.CoreV1Api | None = None
+    apps: client.AppsV1Api | None = None
+    batch_api: client.BatchV1Api | None = None
     try:
+        v1 = client.CoreV1Api()
+        apps = client.AppsV1Api()
+        batch_api = client.BatchV1Api()
         res = await resolve_workload_probe_targets(v1, apps, batch_api, ev, ns, alert_pod)
         prefix = res.evidence_prefix
         if not res.target_pods:
@@ -762,7 +782,7 @@ async def probe_k8s_clinical_pod_log_tail(ctx: WorkerHandlerContext, ev: Anomaly
             structured_hint={"source": "K8s_SDK", "error": str(e)[:500]},
         )
     finally:
-        for api in (v1, apps, batch_api):
+        for api in (x for x in (v1, apps, batch_api) if x is not None):
             try:
                 await api.api_client.close()
             except Exception:
@@ -791,10 +811,13 @@ async def probe_k8s_clinical_pod_events(ctx: WorkerHandlerContext, ev: AnomalyEv
             raw_text="missing namespace or pod",
         )
     await _load_k8s_config()
-    v1 = client.CoreV1Api()
-    apps = client.AppsV1Api()
-    batch_api = client.BatchV1Api()
+    v1: client.CoreV1Api | None = None
+    apps: client.AppsV1Api | None = None
+    batch_api: client.BatchV1Api | None = None
     try:
+        v1 = client.CoreV1Api()
+        apps = client.AppsV1Api()
+        batch_api = client.BatchV1Api()
         res = await resolve_workload_probe_targets(v1, apps, batch_api, ev, ns, alert_pod)
         prefix = res.evidence_prefix
         targets = res.target_pods if res.target_pods else [alert_pod]
@@ -825,7 +848,7 @@ async def probe_k8s_clinical_pod_events(ctx: WorkerHandlerContext, ev: AnomalyEv
             structured_hint={"source": "K8s_SDK", "error": str(e)[:500]},
         )
     finally:
-        for api in (v1, apps, batch_api):
+        for api in (x for x in (v1, apps, batch_api) if x is not None):
             try:
                 await api.api_client.close()
             except Exception:
@@ -842,8 +865,9 @@ async def probe_k8s_resource_quota_probe(ctx: WorkerHandlerContext, ev: AnomalyE
             raw_text="missing namespace",
         )
     await _load_k8s_config()
-    v1 = client.CoreV1Api()
+    v1: client.CoreV1Api | None = None
     try:
+        v1 = client.CoreV1Api()
         rq = await v1.list_namespaced_resource_quota(namespace=ns)
         items = list(getattr(rq, "items", None) or [])
         lines: list[str] = []
@@ -875,10 +899,11 @@ async def probe_k8s_resource_quota_probe(ctx: WorkerHandlerContext, ev: AnomalyE
             structured_hint={"source": "K8s_SDK", "error": str(e)[:500]},
         )
     finally:
-        try:
-            await v1.api_client.close()
-        except Exception:
-            pass
+        if v1 is not None:
+            try:
+                await v1.api_client.close()
+            except Exception:
+                pass
 
 
 async def probe_k8s_clinical_pod_log_previous(ctx: WorkerHandlerContext, ev: AnomalyEvent) -> ProbeRunRaw:
@@ -891,10 +916,13 @@ async def probe_k8s_clinical_pod_log_previous(ctx: WorkerHandlerContext, ev: Ano
             raw_text="missing namespace or pod",
         )
     await _load_k8s_config()
-    v1 = client.CoreV1Api()
-    apps = client.AppsV1Api()
-    batch_api = client.BatchV1Api()
+    v1: client.CoreV1Api | None = None
+    apps: client.AppsV1Api | None = None
+    batch_api: client.BatchV1Api | None = None
     try:
+        v1 = client.CoreV1Api()
+        apps = client.AppsV1Api()
+        batch_api = client.BatchV1Api()
         res = await resolve_workload_probe_targets(v1, apps, batch_api, ev, ns, alert_pod)
         prefix = res.evidence_prefix
         if not res.target_pods:
@@ -974,7 +1002,7 @@ async def probe_k8s_clinical_pod_log_previous(ctx: WorkerHandlerContext, ev: Ano
             structured_hint={"source": "K8s_SDK", "error": str(e)[:500]},
         )
     finally:
-        for api in (v1, apps, batch_api):
+        for api in (x for x in (v1, apps, batch_api) if x is not None):
             try:
                 await api.api_client.close()
             except Exception:

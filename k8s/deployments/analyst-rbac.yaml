@@ -6,12 +6,20 @@ kind: ServiceAccount
 metadata:
   name: omni-analyst
   namespace: multi-agent
+  labels:
+    app.kubernetes.io/component: omni-analyst
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: omni-analyst-uses-prober-read
   namespace: multi-agent
+  labels:
+    app.kubernetes.io/component: omni-analyst
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -25,6 +33,10 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: omni-analyst-security-read
+  labels:
+    app.kubernetes.io/component: omni-analyst
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

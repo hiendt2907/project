@@ -92,6 +92,8 @@ class SIEMEvidenceAdapter:
             "alert_hint": alert_hint,
             "symptom_group": category,
             "canonical_query_snippet": canonical_snippet,
+            "lane": "SIEM_SECURITY",
+            "stream_tags": ["SIEM_SECURITY"],
             "extracted_fact": {
                 "incident_id": incident_id,
                 "category": category,
@@ -123,6 +125,8 @@ class SIEMEvidenceAdapter:
                 "alert_hint": f"Network context: affected_ip={affected_ip}. {raw_log[:400]}",
                 "symptom_group": category,
                 "canonical_query_snippet": canonical_snippet,
+                "lane": "SIEM_SECURITY",
+                "stream_tags": ["SIEM_SECURITY"],
                 "extracted_fact": {
                     "affected_ip": affected_ip,
                     "raw_log_excerpt": raw_log[:2000],

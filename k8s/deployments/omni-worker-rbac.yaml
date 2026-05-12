@@ -8,12 +8,20 @@ kind: ServiceAccount
 metadata:
   name: omni-worker
   namespace: multi-agent
+  labels:
+    app.kubernetes.io/component: omni-worker
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: omni-worker-pod-reader
   namespace: multi-agent
+  labels:
+    app.kubernetes.io/component: omni-worker
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -34,6 +42,10 @@ kind: RoleBinding
 metadata:
   name: omni-worker-pod-reader
   namespace: multi-agent
+  labels:
+    app.kubernetes.io/component: omni-worker
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -49,6 +61,10 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: omni-temporal-prober-role
+  labels:
+    app.kubernetes.io/component: omni-worker
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 rules:
   - apiGroups: [""]
     resources:
@@ -98,6 +114,10 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: omni-temporal-prober-binding
+  labels:
+    app.kubernetes.io/component: omni-worker
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -112,6 +132,10 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: omni-worker-metrics-nodes-reader
+  labels:
+    app.kubernetes.io/component: omni-worker
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 rules:
   - apiGroups: ["metrics.k8s.io"]
     resources: ["nodes"]
@@ -127,6 +151,10 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: omni-worker-metrics-nodes-reader
+  labels:
+    app.kubernetes.io/component: omni-worker
+    omni.io/tenant-scope: platform
+    omni.io/multi-tenant-ready: "true"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

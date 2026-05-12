@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 import fakeredis.aioredis
 import pytest
 
+from tests.llm_mock_compat import CompatLLM
+
 from pkg.reasoning.reason_codes import PLANNER_PHASE_DONE
 
 
@@ -32,7 +34,7 @@ async def test_run_agentic_mutate_plan_react_off_includes_readonly_observations_
             "extracted_fact": {},
         }
     ]
-    llm = AsyncMock()
+    llm = CompatLLM()
     llm.chat = AsyncMock(
         side_effect=[
             {
@@ -104,7 +106,7 @@ async def test_run_agentic_mutate_plan_calls_llm_on_credential_batch_no_early_ex
             "extracted_fact": {"status": "PASSED"},
         }
     ]
-    llm = AsyncMock()
+    llm = CompatLLM()
     llm.chat = AsyncMock(
         return_value={
             "message": {
@@ -155,7 +157,7 @@ async def test_run_agentic_mutate_plan_still_calls_llm_without_credential_signal
             "extracted_fact": {"has_crash_loop": True},
         }
     ]
-    llm = AsyncMock()
+    llm = CompatLLM()
     llm.chat = AsyncMock(
         return_value={
             "message": {
@@ -201,7 +203,7 @@ async def test_run_agentic_mutate_plan_done_with_resolution_summary_updates_memo
     from workers import analyst_agentic_loop as aal
 
     batch = [{"probe": "k8s_clinical_pod_status", "result": "PASSED", "raw": "", "extracted_fact": {}}]
-    llm = AsyncMock()
+    llm = CompatLLM()
     llm.chat = AsyncMock(
         return_value={
             "message": {
@@ -257,7 +259,7 @@ async def test_run_agentic_mutate_plan_rejects_done_with_tool_until_steps_exhaus
     from workers import analyst_agentic_loop as aal
 
     batch = [{"probe": "x", "result": "PASSED", "raw": "", "extracted_fact": {}}]
-    llm = AsyncMock()
+    llm = CompatLLM()
     llm.chat = AsyncMock(
         return_value={
             "message": {
@@ -303,7 +305,7 @@ async def test_run_agentic_mutate_plan_loop_guard_blocks_repeated_readonly(monke
         readonly_calls.append((tool_name, dict(args)))
         return "[DATA] ok\n[DIAGNOSIS] same output"
 
-    monkey_llm = AsyncMock()
+    monkey_llm = CompatLLM()
     monkey_llm.chat = AsyncMock(
         return_value={
             "message": {
@@ -396,7 +398,7 @@ async def test_planner_missing_preconditions_honors_default_required_fields():
 async def test_run_agentic_mutate_plan_accepts_tool_args_for_mutate():
     from workers import analyst_agentic_loop as aal
 
-    llm = AsyncMock()
+    llm = CompatLLM()
     llm.chat = AsyncMock(
         return_value={
             "message": {
