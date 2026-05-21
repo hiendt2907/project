@@ -50,14 +50,16 @@ def _tenant_keys(tenant_id: str) -> tuple[str, str, str]:
     )
 
 # Serialize block writes so seq + prev_hash are always consistent.
-_LOCK: asyncio.Lock | None = None
+# One Lock per event loop — tests spin up fresh loops; production has one.
+_LOCKS: dict[int, asyncio.Lock] = {}
 
 
 def _get_lock() -> asyncio.Lock:
-    global _LOCK
-    if _LOCK is None:
-        _LOCK = asyncio.Lock()
-    return _LOCK
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+    if loop_id not in _LOCKS:
+        _LOCKS[loop_id] = asyncio.Lock()
+    return _LOCKS[loop_id]
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:

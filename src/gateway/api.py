@@ -63,6 +63,7 @@ def _kafka_topic_from_env() -> str:
 REDIS_URL = os.getenv("OMNI_REDIS_URL", "redis://redis:6379/0")
 KAFKA_BOOTSTRAP = os.getenv("OMNI_KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 KAFKA_TOPIC_ALERTS = _kafka_topic_from_env()
+KAFKA_TOPIC_EVIDENCE = (os.getenv("OMNI_KAFKA_TOPIC_DIAGNOSTIC_EVIDENCE") or "omni-diagnostic-evidence").strip()
 RATE_LIMIT_TPS = int(os.getenv("OMNI_GATEWAY_RATE_LIMIT_TPS", "1000"))
 CB_KEY = "omni:circuit_breaker:active"
 SILENCE_CHAOS_LAB = os.getenv("OMNI_GATEWAY_SILENCE_CHAOS_LAB", "false").strip().lower() in (
@@ -161,18 +162,81 @@ def _verify_hmac_signature(request: Request, raw_body: bytes) -> bool:
 
 _bearer = HTTPBearer(auto_error=False)
 
+from gateway.tenant_context import TenantContext  # noqa: E402
+
+
+def _parse_tenant_apikeys() -> dict[str, str]:
+    """Parse OMNI_TENANT_APIKEYS=tid1:key1,tid2:key2 → {key: tenant_id}."""
+    raw = os.getenv("OMNI_TENANT_APIKEYS", "").strip()
+    if not raw:
+        return {}
+    result: dict[str, str] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if ":" in pair:
+            tid, _, key = pair.partition(":")
+            tid, key = tid.strip(), key.strip()
+            if tid and key:
+                result[key] = tid
+    return result
+
 
 async def _require_api_key(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
-) -> None:
-    """API key guard for sensitive operational endpoints. Skip when key not configured (lab mode)."""
-    key = os.getenv("OMNI_GATEWAY_API_KEY", "").strip()
-    if not key:
-        return
-    if credentials is None or not _hmac.compare_digest(
-        credentials.credentials.encode(), key.encode()
-    ):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+) -> TenantContext:
+    """API key guard. Injects TenantContext into request.state.tenant.
+
+    Per-tenant keys: OMNI_TENANT_APIKEYS=tid1:key1,tid2:key2
+    Admin keys: OMNI_ADMIN_API_KEYS (comma-separated).
+    Master key: OMNI_GATEWAY_API_KEY (backward compat, treated as admin).
+    Lab mode (no key configured, non-prod): injects is_admin=True.
+    """
+    master_key = os.getenv("OMNI_GATEWAY_API_KEY", "").strip()
+    tenant_keys = _parse_tenant_apikeys()
+    admin_keys_raw = os.getenv("OMNI_ADMIN_API_KEYS", "").strip()
+    admin_keys = frozenset(k.strip() for k in admin_keys_raw.split(",") if k.strip())
+
+    has_any_key = bool(master_key or tenant_keys or admin_keys)
+    if not has_any_key:
+        if os.getenv("OMNI_ENV_MODE", "prod").strip().lower() == "prod":
+            raise HTTPException(status_code=503, detail="Gateway API key not configured")
+        ctx = TenantContext(tenant_id="lab", is_admin=True)
+        request.state.tenant = ctx
+        return ctx
+
+    incoming = credentials.credentials if credentials else ""
+
+    # Check per-tenant keys first
+    if tenant_keys and incoming:
+        for key, tid in tenant_keys.items():
+            if _hmac.compare_digest(incoming.encode(), key.encode()):
+                is_admin = bool(admin_keys and any(
+                    _hmac.compare_digest(incoming.encode(), ak.encode()) for ak in admin_keys
+                ))
+                ctx = TenantContext(tenant_id=tid, is_admin=is_admin)
+                request.state.tenant = ctx
+                return ctx
+
+    # Check explicit admin keys
+    if admin_keys and incoming:
+        for ak in admin_keys:
+            if _hmac.compare_digest(incoming.encode(), ak.encode()):
+                ctx = TenantContext(tenant_id="admin", is_admin=True)
+                request.state.tenant = ctx
+                return ctx
+
+    # Backward compat: master key (OMNI_GATEWAY_API_KEY)
+    if master_key and incoming:
+        if _hmac.compare_digest(incoming.encode(), master_key.encode()):
+            is_admin = not admin_keys or any(
+                _hmac.compare_digest(incoming.encode(), ak.encode()) for ak in admin_keys
+            )
+            ctx = TenantContext(tenant_id="default", is_admin=is_admin)
+            request.state.tenant = ctx
+            return ctx
+
+    raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 def _is_chaos_lab_prometheus_webhook(body: Any) -> bool:
@@ -192,26 +256,17 @@ def _is_chaos_lab_prometheus_webhook(body: Any) -> bool:
 # ─── State ────────────────────────────────────────────────────────────────────
 _redis: aioredis.Redis | None = None
 _kafka: AIOKafkaProducer | None = None
-# Token Bucket (asyncio): giới hạn N concurrent request mỗi giây
-_rate_semaphore: asyncio.Semaphore | None = None
+# Token Bucket: integer counter — asyncio single-threaded, no lock needed.
+_rate_tokens: int = 0
 _token_refill_task: asyncio.Task | None = None
 
 
 async def _refill_tokens() -> None:
-    """Refill rate semaphore every second up to RATE_LIMIT_TPS."""
-    global _rate_semaphore
+    """Reset token bucket to RATE_LIMIT_TPS every second."""
+    global _rate_tokens
     while True:
         await asyncio.sleep(1.0)
-        if _rate_semaphore is None:
-            continue
-        # Nhả tối đa RATE_LIMIT_TPS token vào bucket mỗi giây
-        released = 0
-        while _rate_semaphore._value < RATE_LIMIT_TPS and released < RATE_LIMIT_TPS:
-            try:
-                _rate_semaphore.release()
-                released += 1
-            except Exception:
-                break
+        _rate_tokens = RATE_LIMIT_TPS
 
 
 def _build_redis_client() -> aioredis.Redis:
@@ -221,7 +276,7 @@ def _build_redis_client() -> aioredis.Redis:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _redis, _kafka, _rate_semaphore, _token_refill_task
+    global _redis, _kafka, _rate_tokens, _token_refill_task
     install_gateway_trace_logging()
     if not _WEBHOOK_SECRET:
         logger.warning(
@@ -235,8 +290,8 @@ async def lifespan(app: FastAPI):
         acks="all",
     )
     await _kafka.start()
-    # Khởi tạo với đúng RATE_LIMIT_TPS token ban đầu
-    _rate_semaphore = asyncio.Semaphore(RATE_LIMIT_TPS)
+    global _rate_tokens
+    _rate_tokens = RATE_LIMIT_TPS
     _token_refill_task = asyncio.create_task(_refill_tokens())
     logger.info(
         "omni-gateway started. rate_limit=%d tps kafka_topic=%s bootstrap=%s",
@@ -245,6 +300,9 @@ async def lifespan(app: FastAPI):
         KAFKA_BOOTSTRAP,
     )
     app.state.redis = _redis
+    app.state.kafka = _kafka
+    app.state.kafka_topic_evidence = KAFKA_TOPIC_EVIDENCE
+    app.state.kafka_topic_alerts = KAFKA_TOPIC_ALERTS
     yield
     if _token_refill_task:
         _token_refill_task.cancel()
@@ -264,6 +322,8 @@ from gateway.routes.siem import router as _siem_router  # noqa: E402
 from gateway.routes.agents import router as _agents_router  # noqa: E402
 from gateway.routes.autonomy import router as _autonomy_router  # noqa: E402
 from gateway.routes.compliance import router as _compliance_router  # noqa: E402
+from gateway.routes.agent_webhook import router as _agent_webhook_router  # noqa: E402
+from gateway.routes.agent_push import router as _agent_push_router  # noqa: E402
 
 app.include_router(_kpi_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_playbooks_router, dependencies=[_Depends(_require_api_key)])
@@ -271,6 +331,8 @@ app.include_router(_siem_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_agents_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_autonomy_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_compliance_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_agent_webhook_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_agent_push_router)  # agent_push has its own auth — no gateway API key guard
 
 
 class GatewayTraceMiddleware(BaseHTTPMiddleware):
@@ -291,7 +353,7 @@ class GatewayTraceMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(GatewayTraceMiddleware)
 
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
+from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, Counter, Gauge, generate_latest
 
 def _get_or_create_counter(name: str, doc: str, labels: list[str]) -> Counter:
     try:
@@ -299,7 +361,19 @@ def _get_or_create_counter(name: str, doc: str, labels: list[str]) -> Counter:
     except ValueError:
         return REGISTRY._names_to_collectors.get(name)  # type: ignore[return-value]
 
+
+def _get_or_create_gauge(name: str, doc: str) -> Gauge:
+    try:
+        return Gauge(name, doc)
+    except ValueError:
+        return REGISTRY._names_to_collectors.get(name)  # type: ignore[return-value]
+
+
 gw_requests = _get_or_create_counter("omni_gateway_requests_total", "Total requests received by gateway", ["status"])
+gw_circuit_open = _get_or_create_gauge(
+    "omni_gateway_circuit_open",
+    "1 when Redis omni:circuit_breaker:active blocks Prometheus webhook ingest (503 path).",
+)
 
 @app.get("/metrics")
 async def metrics():
@@ -327,10 +401,9 @@ async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONRespo
     logger.info("[GATEWAY][%s] webhook_prometheus enter", trace_id)
 
     # ── 1. Rate Limiting (Token Bucket) ──────────────────────────────────────
-    assert _rate_semaphore is not None
-    acquired = _rate_semaphore._value > 0
-    if acquired:
-        await _rate_semaphore.acquire()
+    global _rate_tokens
+    if _rate_tokens > 0:
+        _rate_tokens -= 1
     else:
         logger.warning("[GATEWAY][%s] Rate limit exceeded (%d TPS). Dropping request.", trace_id, RATE_LIMIT_TPS)
         gw_requests.labels(status="429_rate_limit").inc()
@@ -344,6 +417,10 @@ async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONRespo
         # ── 2. Circuit Breaker Backpressure Check ─────────────────────────────
         assert _redis is not None
         cb_flag = await _redis.get(CB_KEY)
+        try:
+            gw_circuit_open.set(1.0 if str(cb_flag).strip() == "1" else 0.0)
+        except Exception:
+            pass
         if str(cb_flag).strip() == "1":
             logger.warning("[GATEWAY][%s] Circuit Breaker ACTIVE. Rejecting inbound alert.", trace_id)
             gw_requests.labels(status="503_circuit_breaker").inc()
