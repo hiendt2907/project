@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -24,6 +25,7 @@ from workers.baseline_snapshot import baseline_snapshot_loop
 from workers.forecast_autonomous_loop import autonomous_forecast_loop
 from workers.alert_to_event import build_anomaly_event_from_alert_payload
 from workers.autonomous_feedback_loop import kafka_action_feedback_loop
+from workers.dlq_archiver import dlq_archiver_loop
 from workers.diagnostic_dispatcher import run_diagnostic_pipeline
 from workers.evidence_consumer import reason_from_diagnostic_evidence
 from workers.handler_context import WorkerHandlerContext
@@ -61,6 +63,8 @@ from workers.autonomy_contract import (
     emit_terminal_tombstone,
     emit_transition,
 )
+from anomaly.sigma_calibrator import run_sigma_calibration_pass
+from pkg.temporal.pattern_matcher import emit_due_predictions
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +125,8 @@ async def _handle_telegram_fallback_callback(ctx: WorkerHandlerContext, u: dict[
             "message_id": msg.get("message_id"),
             "trace_id": trace_id,
         }
-        assert ctx.kafka is not None
+        if ctx.kafka is None:
+            raise RuntimeError("Kafka bus not initialized — cannot send message")
         await ctx.kafka.send_envelope_inner(ctx.settings.kafka_topic_alerts, payload)
         logger.info("[%s] telegram_callback_in -> kafka topic=%s", trace_id, ctx.settings.kafka_topic_alerts)
     except Exception:
@@ -147,6 +152,37 @@ async def _lock_heartbeat(redis_cli: redis.Redis, lock_key: str, stop_event: asy
                 await redis_cli.expire(lock_key, 15)
     except asyncio.CancelledError:
         pass
+
+
+def _alert_fingerprint(payload: dict[str, Any]) -> str | None:
+    """Stable fingerprint for cross-incident dedup. None for non-alert sources."""
+    source = str(payload.get("source") or "").strip()
+    if source not in ("prometheus", "siem"):
+        return None
+    try:
+        body = payload.get("data") or {}
+        if isinstance(body, str):
+            body = json.loads(body)
+        alerts = body.get("alerts") or []
+        if not alerts or not isinstance(alerts[0], dict):
+            return None
+        labels = alerts[0].get("labels") or {}
+        if not isinstance(labels, dict):
+            return None
+        alertname = str(labels.get("alertname") or "unknown")
+        namespace = str(
+            labels.get("namespace") or labels.get("exported_namespace") or ""
+        )
+        deployment = str(
+            labels.get("deployment")
+            or labels.get("workload")
+            or labels.get("statefulset")
+            or ""
+        )
+        raw = f"{source}:{alertname}:{namespace}:{deployment}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:20]
+    except Exception:
+        return None
 
 
 async def _process_stream_entry(
@@ -223,6 +259,22 @@ async def _process_stream_entry(
             component="omni_worker_stream_consumer",
             detail="payload_ready_for_diagnostic",
         )
+        # Cross-incident dedup: same (source:alertname:ns:deploy) within window → skip pipeline.
+        dedup_window = int(getattr(ctx.settings, "alert_dedup_window_sec", 300) or 0)
+        if dedup_window > 0:
+            alert_fp = _alert_fingerprint(payload)
+            if alert_fp:
+                dedup_key = f"omni:alert:dedup:{alert_fp}"
+                is_new = await ctx.redis.set(dedup_key, trace, nx=True, ex=dedup_window)
+                if not is_new:
+                    existing = await ctx.redis.get(dedup_key)
+                    existing_str = existing.decode() if isinstance(existing, bytes) else str(existing or "")
+                    logger.info(
+                        "[%s] event=alert_dedup_skip fp=%s existing_trace=%s window_sec=%d",
+                        trace, alert_fp, existing_str, dedup_window,
+                    )
+                    return
+
         # Master Plan V3: omni-alerts → prober only (diagnostic pipeline → evidence topic); reasoning in kafka_evidence_loop.
         if payload.get("chat_id") is not None:
             try:
@@ -234,6 +286,24 @@ async def _process_stream_entry(
             except Exception:
                 logger.warning("[%s] evidence_reply context not stored", trace)
         ev = build_anomaly_event_from_alert_payload(payload)
+
+        # S3.1: Assign alert to incident cluster (best-effort, non-blocking).
+        try:
+            from pkg.clustering.incident_cluster import assign_to_cluster
+            _cluster_fp = _alert_fingerprint(payload) or ""
+            _error_hint = str(ev.rule_name or "") + " " + str((ev.evt or [{}])[0].get("description") or "")
+            _ns = str(ev.namespace or "")
+            _cluster_id = await assign_to_cluster(
+                ctx,
+                alert_fp=_cluster_fp or trace[:20],
+                error_hint=_error_hint[:500],
+                namespace=_ns,
+            )
+            ev = ev._replace(cluster_id=_cluster_id) if hasattr(ev, "_replace") else ev
+            logger.debug("event=cluster_assigned trace=%s cluster_id=%s", trace, _cluster_id)
+        except Exception as _ce:
+            logger.debug("event=cluster_assign_skip trace=%s err=%s", trace, _ce)
+
         await run_diagnostic_pipeline(ctx, ev)
         await emit_transition(
             ctx,
@@ -304,7 +374,8 @@ async def _process_stream_entry(
                 "trace_id": dlq_trace
             }
             dlq_payload = {"error_context": json.dumps(error_ctx), "trace_id": dlq_trace, "data": raw}
-            assert ctx.kafka is not None
+            if ctx.kafka is None:
+                raise RuntimeError("Kafka bus not initialized — cannot send message")
             await ctx.kafka.send_dict(ctx.settings.kafka_topic_dlq, dlq_payload)
             inc_dlq_published(ctx.settings.kafka_topic_dlq)
             await ctx.redis.delete(retry_key)
@@ -463,16 +534,58 @@ async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) ->
             async for msg in consumer:
                 if stop.is_set():
                     break
-                try:
-                    fields = decode_kafka_value_to_fields(msg.value, msg.headers)
-                    await reason_from_diagnostic_evidence(ctx, fields)
-                    await consumer.commit()
-                    _hc_record_msg()
-                    _report_kafka_lag(consumer, msg, ws.consumer_group_analyst)
-                except Exception as e:
-                    await ctx.ledger.record_exception(e, phase="4", component="kafka_evidence_loop", swallow_errors=True)
-                    logger.exception("kafka_evidence_loop message error: %s", e)
-                    await asyncio.sleep(0.5)
+                fields: dict[str, str] = {}
+                attempt = 0
+                max_poison_retries = 3
+                while attempt <= max_poison_retries:
+                    try:
+                        fields = decode_kafka_value_to_fields(msg.value, msg.headers)
+                        await reason_from_diagnostic_evidence(ctx, fields)
+                        await consumer.commit()
+                        _hc_record_msg()
+                        _report_kafka_lag(consumer, msg, ws.consumer_group_analyst)
+                        break
+                    except Exception as e:
+                        attempt += 1
+                        await ctx.ledger.record_exception(
+                            e, phase="4", component="kafka_evidence_loop", swallow_errors=True
+                        )
+                        logger.exception("kafka_evidence_loop message error: %s", e)
+                        if attempt > max_poison_retries:
+                            logger.error(
+                                "event=evidence_consumer_poison_ack partition=%s offset=%s attempts=%s",
+                                msg.partition,
+                                msg.offset,
+                                attempt,
+                            )
+                            trace_poison = ""
+                            try:
+                                raw_data = fields.get("data") or "{}"
+                                ev_poison = json.loads(raw_data)
+                                trace_poison = str(ev_poison.get("trace_id") or "").strip()
+                            except Exception:
+                                trace_poison = ""
+                            if trace_poison:
+                                try:
+                                    from workers.autonomy_contract import emit_terminal_tombstone
+
+                                    await emit_terminal_tombstone(
+                                        ctx,
+                                        trace_id=trace_poison,
+                                        reason_code="EVIDENCE_CONSUMER_POISON",
+                                        component="kafka_evidence_loop",
+                                        detail=(
+                                            f"partition={msg.partition} offset={msg.offset} "
+                                            f"attempts={attempt}"
+                                        ),
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "emit_terminal_tombstone_failed trace=%s", trace_poison
+                                    )
+                            await consumer.commit()
+                            break
+                        await asyncio.sleep(0.5)
         except _TRANSIENT_ERRORS as e:
             logger.warning("kafka_evidence_loop connection_lost err=%s reconnecting", e)
         finally:
@@ -572,6 +685,32 @@ async def _run_autonomous_safe(ctx: WorkerHandlerContext) -> None:
         await ctx.ledger.record_exception(e, phase="4", component="deep_scout_autonomous", swallow_errors=True)
 
 
+async def _temporal_prediction_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+    """S3.4: Emit scheduled temporal predictions every 60s."""
+    while not stop.is_set():
+        try:
+            await emit_due_predictions(ctx)
+        except Exception as e:
+            logger.debug("event=temporal_prediction_loop_err err=%s", e)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=60.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _sigma_calibration_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+    """S3.2: Run sigma calibration pass every 24h."""
+    while not stop.is_set():
+        try:
+            await run_sigma_calibration_pass(ctx)
+        except Exception as e:
+            logger.debug("event=sigma_calibration_loop_err err=%s", e)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=86400.0)
+        except asyncio.TimeoutError:
+            pass
+
+
 def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> list[asyncio.Task[Any]]:
     """Split Kafka and periodic loops by ``OMNI_WORKER_ROLE`` (Master Plan V3)."""
     role = ctx.settings.worker_role
@@ -595,6 +734,7 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
         tasks.append(asyncio.create_task(
             _run_kpi_collector(ctx, stop), name="kpi_collector",
         ))
+        tasks.append(asyncio.create_task(dlq_archiver_loop(ctx, stop), name="dlq_archiver"))
     if role in ("full", "core"):
         tasks.extend(
             [
@@ -608,6 +748,8 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
         if ctx.settings.proactive_enabled:
             tasks.append(asyncio.create_task(proactive_evaluate_loop(ctx, stop), name="proactive_evaluate"))
             tasks.append(asyncio.create_task(kafka_proactive_incidents_loop(ctx, stop), name="kafka_proactive_incidents"))
+        tasks.append(asyncio.create_task(_temporal_prediction_loop(ctx, stop), name="temporal_prediction"))
+        tasks.append(asyncio.create_task(_sigma_calibration_loop(ctx, stop), name="sigma_calibration"))
     return tasks
 
 
@@ -657,7 +799,11 @@ async def run_worker() -> None:
             kill_switch_key=ctx.settings.proactive_kill_switch_key,
             llm_base_url=ctx.settings.vllm_base_url,
             stop=stop,
-            stream_keys=(),
+            stream_keys=tuple(
+                k.strip()
+                for k in (ctx.settings.metrics_redis_stream_keys or "").split(",")
+                if k.strip()
+            ),
             interval_sec=15.0,
         ),
         name="observability_metrics",
