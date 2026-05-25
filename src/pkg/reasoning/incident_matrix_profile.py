@@ -222,7 +222,8 @@ def proof_lane_from_annotation(batch: list[dict[str, Any]]) -> str | None:
 
 _RE_STATE_LANE = re.compile(
     r"(createcontainerconfigerror|errimagepull|imagepullbackoff|crashloop|oomkilled|"
-    r"failedmount|configmap|createcontainer|unschedul|pending|evicted)",
+    r"failedmount|configmap|createcontainer|unschedul|pending|evicted|"
+    r"syshardfail)",
     re.I,
 )
 
@@ -274,6 +275,36 @@ def app_log_heuristic(batch: list[dict[str, Any]]) -> bool:
     return False
 
 
+# SIEM / security-incident patterns — route to siem lane.
+_RE_SIEM_LANE = re.compile(
+    r"(?i)(siem|ddos|malware|lateral.?mov|data.?exfil|intrusion|k8s.?threat|"
+    r"auth.?breach|brute.?force|port.?scan|ransomware|chaosdrillsiem)",
+)
+
+
+def siem_heuristic(batch: list[dict[str, Any]]) -> bool:
+    """SIEM security-incident signals that belong in the siem lane."""
+    for b in batch:
+        hint = str(b.get("alert_hint") or "")
+        if _RE_SIEM_LANE.search(hint):
+            return True
+        snip = str(b.get("canonical_query_snippet") or "").strip()
+        if snip.startswith("{"):
+            try:
+                j = json.loads(snip)
+                labels = j.get("labels") if isinstance(j, dict) else None
+                if isinstance(labels, dict):
+                    # Match on alertname or presence of siem_source/siem_category labels
+                    if labels.get("siem_source") or labels.get("siem_category"):
+                        return True
+                    for k in ("alertname",):
+                        if _RE_SIEM_LANE.search(str(labels.get(k) or "")):
+                            return True
+            except Exception:
+                pass
+    return False
+
+
 def resolve_proof_lane(
     batch: list[dict[str, Any]],
     *,
@@ -319,6 +350,8 @@ def resolve_proof_lane(
         return "state", "heuristic"
     if app_log_heuristic(batch):
         return "app_log", "heuristic"
+    if siem_heuristic(batch):
+        return "siem", "heuristic"
     return "resource", "default"
 
 

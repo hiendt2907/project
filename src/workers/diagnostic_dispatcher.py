@@ -165,6 +165,63 @@ async def _publish_siem_synthetic_evidence(
     )
 
 
+async def _publish_syshardtail_synthetic_evidence(
+    ctx: WorkerHandlerContext,
+    ev: AnomalyEvent,
+    *,
+    trace: str,
+) -> None:
+    """Synthesize evidence for SysHardFail* OS/DB/network alerts (no K8s probes available)."""
+    facts: dict[str, Any] = {}
+    try:
+        cq = json.loads(ev.canonical_query)
+        labels = cq.get("labels") or {}
+        annot = cq.get("annotations") or {}
+        facts = {
+            k: v for k, v in {
+                "alertname": labels.get("alertname", ""),
+                "host": labels.get("host", "") or labels.get("instance", ""),
+                "severity": labels.get("severity", ""),
+                "job": labels.get("job", ""),
+                "summary": annot.get("summary", ""),
+                "description": annot.get("description", ""),
+            }.items() if v
+        }
+    except Exception:
+        pass
+
+    payload = {
+        "kind": "diagnostic_evidence",
+        "trace_id": trace,
+        "symptom_group": "infra_hard_fail",
+        "layer": "os_baremetal",
+        "probe": "alert_context",
+        "result": "FAILED",
+        "extracted_fact": facts,
+        "raw": redact(ev.error_hint or "")[:4000],
+        "ts": str(int(time.time())),
+        "alert_rule": ev.rule_name,
+        "alert_hint": redact(ev.error_hint or "")[:800],
+        "canonical_query_snippet": redact(ev.canonical_query or "")[:1000],
+        "namespace": ev.namespace or "",
+        "pod": "",
+        "deployment": "",
+        "evidence_source": "other",
+        "clinical_priority_note": "Primary: Prometheus alert from OS/DB/network monitoring.",
+    }
+    assert ctx.kafka is not None
+    await ctx.kafka.send_dict(
+        ctx.settings.kafka_topic_diagnostic_evidence,
+        {"data": json.dumps(payload, ensure_ascii=False)},
+    )
+    logger.info(
+        "[%s] event=syshardtail_synthetic_evidence_published alertname=%s host=%s",
+        trace,
+        facts.get("alertname") or ev.rule_name,
+        facts.get("host", ""),
+    )
+
+
 async def run_diagnostic_pipeline(ctx: WorkerHandlerContext, ev: AnomalyEvent) -> None:
     """Deterministic probes from YAML matrix or smart tier-1/tier-2 plan → Kafka diagnostic evidence."""
     ws = ctx.settings
@@ -174,7 +231,17 @@ async def run_diagnostic_pipeline(ctx: WorkerHandlerContext, ev: AnomalyEvent) -
     trace = ev.trace_id
 
     # SIEM incidents: no K8s probes; synthesize evidence from AnomalyEvent directly.
-    if ev.rule_name.startswith("SIEM"):
+    # Detect SIEM via rule_name (siem-bridge path) OR alert labels (Prometheus webhook path).
+    _is_siem = ev.rule_name.startswith("SIEM")
+    if not _is_siem:
+        try:
+            _cq = json.loads(ev.canonical_query or "{}")
+            _lbl = _cq.get("labels") if isinstance(_cq, dict) else None
+            if isinstance(_lbl, dict) and (_lbl.get("siem_source") or _lbl.get("siem_category")):
+                _is_siem = True
+        except Exception:
+            pass
+    if _is_siem:
         await register_diag_expected_probes(ctx.redis, trace, ["siem_incident_context"])
         await _publish_siem_synthetic_evidence(ctx, ev, trace=trace)
         return
@@ -266,7 +333,13 @@ async def run_diagnostic_pipeline(ctx: WorkerHandlerContext, ev: AnomalyEvent) -
 
     row = classify_event(ev, matrix)
     if not row:
-        logger.debug("diagnostic: no matrix row for trace=%s", ev.trace_id)
+        alertname = alertname_from_anomaly_event(ev)
+        an_lower = alertname.lower()
+        if an_lower.startswith("syshardfail") or an_lower.startswith("chaosdrillbare") or an_lower.startswith("chaosdrillsiem"):
+            await register_diag_expected_probes(ctx.redis, trace, ["alert_context"])
+            await _publish_syshardtail_synthetic_evidence(ctx, ev, trace=trace)
+        else:
+            logger.debug("diagnostic: no matrix row for trace=%s alertname=%s", ev.trace_id, alertname)
         return
     probe_ids = row.probe_ids
     symptom_group = row.symptom_group

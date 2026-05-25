@@ -446,4 +446,9 @@ async def run_probe(probe_id: str, ctx: WorkerHandlerContext, ev: AnomalyEvent) 
     fn = PROBE_REGISTRY.get(probe_id)
     if not fn:
         return ProbeRunRaw(probe_name=probe_id, status="SKIPPED", raw_text="unknown_probe_id")
-    return await fn(ctx, ev)
+    result = await fn(ctx, ev)
+    # Normalize probe_name so aliased probes (e.g. redis_stream_len_inbound → probe_kafka_alerts_topic)
+    # publish under the canonical registry key, not the underlying function's hardcoded name.
+    if result.probe_name != probe_id:
+        result = result.model_copy(update={"probe_name": probe_id})
+    return result
