@@ -1,0 +1,644 @@
+"""Multi-turn closed-loop diagnosis for RemoteAgent evidence.
+
+INVARIANT INV_NO_SINGLE_TURN: Minimum 2 LLM turns before emitting conclusion.
+INVARIANT INV_DIAG_STORED: Full session stored in Redis before Telegram emit.
+INVARIANT INV_READONLY_CMDS: Commands dispatched via Redis queue, enforced at agent.
+
+Flow per turn:
+  1. Build context (vm_profile + evidence + previous turns)
+  2. Call LLM → parse DiagnosisTurnResponse
+  3. If diagnosis_complete or max turns → finalize
+  4. Else: enqueue commands via Redis → wait for results → next turn
+
+Redis keys:
+  omni:agent:profile:{agent_id}          VMProfile from discovery
+  omni:agent:cmd:{agent_id}              Command queue (LPUSH) to agent
+  omni:diag:cmdresult:{cmd_id}           Command result from agent (poll)
+  omni:diag:session:{trace_id}           FinalDiagnosis stored here
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import uuid
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+_MAX_TURNS = 8
+_MIN_TURNS = 2
+_CMD_RESULT_POLL_INTERVAL_S = 5.0
+_CMD_RESULT_TIMEOUT_S = 90.0
+_CMD_QUEUE_PREFIX = "omni:agent:cmd:"
+_CMD_RESULT_PREFIX = "omni:diag:cmdresult:"
+_PROFILE_KEY_PREFIX = "omni:agent:profile:"
+_REGISTRY_KEY_PREFIX = "omni:remote_agent:registry:"
+_SESSION_KEY_PREFIX = "omni:diag:session:"
+_SESSION_TTL = 86400
+_CMD_QUEUE_TTL = 300
+# Agent counts as online if it re-registered within this window (gateway TTL=120s).
+_AGENT_ONLINE_MAX_AGE_S = 120
+
+_DIAGNOSIS_SYSTEM_PROMPT = """You are an SRE diagnostic AI for Linux bare-metal and VM systems.
+You perform ROOT CAUSE ANALYSIS through iterative evidence gathering.
+
+EVIDENCE PRIORITY — follow this order strictly:
+1. EXTRACTED FACTS FIRST: The [INITIAL EVIDENCE] block contains pre-collected metrics in "Facts:" JSON.
+   Treat facts like disk_usage_pct, error_count, inode_free as CONFIRMED measurements — do NOT re-verify them.
+   If facts already establish the root cause (e.g. disk_usage_pct >= 95), set diagnosis_complete=true immediately.
+2. RAW LOG LINES: The "Alert:" and kernel/syslog lines in the evidence are real observed events.
+3. COMMAND OUTPUT: Use commands only to fill gaps not covered by facts or logs.
+
+COMMAND RULES — subprocess exec (no shell):
+- Commands run via subprocess.exec — shell features DO NOT work.
+- NEVER use globs like /var/* or /etc/*. Use exact paths: /var/log, /var/lib, /var/cache.
+  A glob will FAIL — "du -sh /var/*" is wrong; emit one entry per path instead.
+- NEVER use pipes (|), redirects (>), semicolons (;), or backticks.
+- One command per entry. Multiple paths = multiple command entries.
+- Prefer specific paths over wildcards. Wrong: "df -h /var/*". Correct: "df -h /var".
+- If a command fails (rc != 0), do NOT retry the SAME command. Move to an alternative.
+
+TOOL SELECTION — match the symptom to the RIGHT tool (critical for quality):
+- INODE exhaustion / "no space" with free bytes → df -i <path>   (NOT du; du measures bytes, df -i measures inodes).
+  Then find the dir with most files: for inodes, prefer "ls" counts on suspect dirs, not "du -sh".
+- DISK BYTES full → df -h <path>, then du -sh <exact subdir> (e.g. /var/log, /var/lib/docker).
+- RUNAWAY LOGS → ls -lS /var/log (LARGEST FILES FIRST — never -lrS), du -sh /var/log, journalctl --disk-usage.
+  CRITICAL: use -lS not -lrS. The card previews the FIRST output lines, so the biggest file must be on top.
+- SERVICE DOWN / crashloop → systemctl status <unit>, journalctl -u <unit> -n 200, systemctl is-failed <unit>.
+- HIGH MEMORY / OOM → free -h, ps aux --sort=-%rss, dmesg (grep oom not allowed — read dmesg raw).
+- PORT / CONNECTION → ss -ltnp, ss -s.
+- Pick the tool that DIRECTLY measures the quantity named in the alert. Re-read alert_hint before choosing.
+
+DIAGNOSIS RULES:
+1. If extracted facts already show the problem (high disk, service down, error spike) → conclude in turn 1-2.
+2. Only request commands to fill gaps NOT covered by existing evidence.
+3. After 2 consecutive rc=1 on the same target, skip it and reason from what you have.
+4. A result marked TIMEOUT / agent_unreachable means the command DID NOT RUN (agent offline) — it is NOT a
+   permission error and NOT evidence about the host. Do NOT infer anything from it; do NOT retry it; conclude
+   from the pre-collected facts instead.
+5. Minimum 2 turns before concluding. Maximum 8 turns.
+6. Always populate remediation_steps — even when confidence is moderate (>= 0.5).
+7. Commands must be read-only: df, du, ls, stat, ps, ss, systemctl status, journalctl, free, lsblk.
+
+OUTPUT FORMAT (strict JSON, no markdown):
+{
+  "reasoning": "<your thinking — cite specific fact values or log lines>",
+  "hypothesis": "<current best hypothesis with specific component>",
+  "evidence_gaps": ["<only list gaps NOT already in facts>"],
+  "commands_to_run": [
+    {"command": "df", "args": ["-h", "/var"], "purpose": "verify current disk usage on /var partition"}
+  ],
+  "diagnosis_complete": false,
+  "confidence": 0.4,
+  "root_cause": null,
+  "affected_components": [],
+  "impact_summary": "",
+  "remediation_steps": []
+}
+
+When diagnosis_complete=true, set root_cause to a single concrete sentence (e.g. "Disk /var is 99% full
+due to log accumulation in /var/log — inode exhaustion confirmed"), list affected_components, and
+provide 3-5 remediation_steps.
+
+REMEDIATION FORMAT — each step MUST be a concrete, copy-pasteable shell command, NOT prose.
+The operator runs these by hand, so vague advice is useless.
+- WRONG (prose): "Archive or delete unnecessary log files in /var/log"
+- RIGHT (command): "sudo journalctl --vacuum-size=500M  # truncate journal to 500M"
+- RIGHT (command): "sudo truncate -s 0 /var/log/vmware/hostd.log  # zero the largest offender"
+Reference the EXACT paths/files/services you found in the command output. If you saw
+/var/log/vmware/*.log is the biggest, name that path in the remediation — do not say "VMware logs"."""
+
+
+def _format_command(cmd: dict[str, Any]) -> str:
+    """Render a command dict as the exact shell-like string that was executed.
+
+    Used to show the operator WHAT was run on the host (e.g. "ls -lS /var/log"),
+    not just the LLM's free-text purpose.
+    """
+    name = str(cmd.get("command", "")).strip()
+    args = [str(a) for a in cmd.get("args", [])]
+    return " ".join([name, *args]).strip()
+
+
+def _fallback_remediation(text: str) -> list[str]:
+    """Generate keyword-based remediation steps when LLM leaves remediation_steps empty."""
+    t = text.lower()
+    if "disk" in t or "inode" in t or "space" in t or "partition" in t:
+        return [
+            "Run: df -h (identify which partition is full)",
+            "Run: du -sh /var/log /var/lib /var/cache (find largest dirs)",
+            "Free space: journalctl --vacuum-size=500M",
+            "Free space: find /var/tmp -mtime +7 -delete",
+            "If log rotation broken: logrotate --force /etc/logrotate.conf",
+        ]
+    if "service" in t or "process" in t or "crash" in t or "failed" in t:
+        return [
+            "Check service: systemctl status <service>",
+            "Review logs: journalctl -xe -n 200",
+            "Restart if safe: systemctl restart <service>",
+        ]
+    if "memory" in t or "oom" in t or "swap" in t:
+        return [
+            "Check memory: free -h",
+            "Find consumers: ps aux --sort=-%mem | head -10",
+            "Review OOM: journalctl -k | grep -i oom",
+        ]
+    if "mysql" in t or "database" in t or "db" in t:
+        return [
+            "Check MySQL: systemctl status mysql",
+            "Check connections: mysqladmin status",
+            "Review slow queries: mysqladmin processlist",
+        ]
+    return [
+        "Review system logs: journalctl -xe -n 200",
+        "Check disk: df -h",
+        "Check memory: free -h",
+        "Check failed services: systemctl --failed",
+    ]
+
+
+async def _load_vm_profile(redis: Any, agent_id: str) -> dict[str, Any]:
+    key = f"{_PROFILE_KEY_PREFIX}{agent_id}"
+    try:
+        raw = await redis.get(key)
+        if raw:
+            return json.loads(raw)
+    except Exception as exc:
+        logger.debug("[diag-loop] vm_profile load failed agent=%s err=%s", agent_id, exc)
+    return {}
+
+
+async def _agent_is_online(redis: Any, agent_id: str) -> bool:
+    """True if the agent re-registered within _AGENT_ONLINE_MAX_AGE_S.
+
+    Commands are only dispatched to a live agent — enqueuing to an unregistered
+    or stale agent_id means nobody polls the queue and every command would time
+    out after 90s. We short-circuit that wasted 8×90s and run a degraded,
+    facts-only diagnosis instead.
+    """
+    try:
+        raw = await redis.get(f"{_REGISTRY_KEY_PREFIX}{agent_id}")
+        if not raw:
+            return False
+        rec = json.loads(raw)
+        last_seen = int(rec.get("last_seen", 0))
+        return (time.time() - last_seen) <= _AGENT_ONLINE_MAX_AGE_S
+    except Exception as exc:
+        logger.debug("[diag-loop] agent_online check failed agent=%s err=%s", agent_id, exc)
+        return False
+
+
+async def _enqueue_commands(
+    redis: Any,
+    agent_id: str,
+    commands: list[dict[str, Any]],
+    trace_id: str,
+) -> list[str]:
+    """Enqueue commands to Redis list for agent to poll. Returns list of cmd_ids."""
+    cmd_ids: list[str] = []
+    queue_key = f"{_CMD_QUEUE_PREFIX}{agent_id}"
+    for cmd in commands[:5]:  # cap per turn
+        cmd_id = f"cmd-{uuid.uuid4().hex[:12]}"
+        payload = json.dumps({
+            "cmd_id": cmd_id,
+            "command": cmd.get("command", ""),
+            "args": cmd.get("args", []),
+            "timeout_s": cmd.get("timeout_s", 30),
+            "trace_id": trace_id,
+            "purpose": cmd.get("purpose", ""),
+            "enqueued_at": int(time.time()),
+        })
+        try:
+            await redis.lpush(queue_key, payload)
+            await redis.expire(queue_key, _CMD_QUEUE_TTL)
+            cmd_ids.append(cmd_id)
+        except Exception as exc:
+            logger.warning("[diag-loop] enqueue_cmd failed cmd=%s err=%s", cmd.get("command"), exc)
+    return cmd_ids
+
+
+async def _wait_for_results(
+    redis: Any,
+    cmd_ids: list[str],
+    timeout_s: float = _CMD_RESULT_TIMEOUT_S,
+) -> list[dict[str, Any]]:
+    """Poll Redis until all cmd_ids have results or timeout. Returns list of result dicts."""
+    deadline = time.monotonic() + timeout_s
+    pending = set(cmd_ids)
+    results: list[dict[str, Any]] = []
+
+    while pending and time.monotonic() < deadline:
+        await asyncio.sleep(_CMD_RESULT_POLL_INTERVAL_S)
+        for cmd_id in list(pending):
+            key = f"{_CMD_RESULT_PREFIX}{cmd_id}"
+            try:
+                raw = await redis.get(key)
+                if raw:
+                    results.append(json.loads(raw))
+                    pending.discard(cmd_id)
+            except Exception:
+                pass
+
+    if pending:
+        logger.warning(
+            "[diag-loop] timeout waiting for cmd results: %s", list(pending)
+        )
+        for cmd_id in pending:
+            results.append({
+                "cmd_id": cmd_id,
+                "blocked": False,
+                "status": "timeout",  # command never executed — agent unreachable
+                "stdout": "",
+                "stderr": "TIMEOUT: agent did not poll/execute this command in time (agent likely offline)",
+                "rc": 124,  # standard timeout exit code — distinct from a real rc=1 failure
+                "duration_ms": int(timeout_s * 1000),
+            })
+
+    return results
+
+
+def _parse_llm_response(raw_text: str) -> dict[str, Any]:
+    """Parse LLM JSON output, handle markdown fences and partial JSON."""
+    text = raw_text.strip()
+    # Strip markdown code fence if present
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(
+            l for l in lines
+            if not l.startswith("```")
+        ).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Try to extract JSON object
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start >= 0 and end > start:
+            try:
+                return json.loads(text[start:end])
+            except Exception:
+                pass
+    logger.warning("[diag-loop] LLM response not parseable: %s", text[:200])
+    return {
+        "reasoning": text[:500],
+        "hypothesis": "parse_error",
+        "commands_to_run": [],
+        "diagnosis_complete": False,
+        "confidence": 0.0,
+    }
+
+
+def _build_initial_context(
+    vm_profile: dict[str, Any],
+    ev_doc: dict[str, Any],
+) -> str:
+    """Build the FIRST user message: VM profile + initial evidence.
+
+    INV_ONE_ALERT_ONE_SESSION: this is sent exactly once at turn 1. Subsequent
+    turns append only the NEW command results via _build_followup_context — the
+    LLM keeps the prior context in its own conversation history, so we never
+    re-send the initial evidence or replay earlier turns as flat text.
+    """
+    parts: list[str] = []
+
+    # VM profile summary (no file content)
+    if vm_profile:
+        services = [s["name"] for s in vm_profile.get("services", [])[:20]]
+        listeners = [f":{l['port']}({l.get('service','')})" for l in vm_profile.get("listeners", [])[:15]]
+        os_info = vm_profile.get("os_info", {})
+        parts.append(
+            f"[VM PROFILE]\n"
+            f"Hostname: {vm_profile.get('hostname', 'unknown')}\n"
+            f"OS: {os_info.get('distro', 'unknown')} kernel={os_info.get('kernel', '')}\n"
+            f"Running services: {', '.join(services) or 'none detected'}\n"
+            f"Listening ports: {', '.join(listeners) or 'none detected'}\n"
+        )
+
+    # Initial evidence — highlight extracted facts so LLM uses them as primary evidence
+    alert_hint = ev_doc.get("alert_hint", "")
+    probe = ev_doc.get("probe", "")
+    lane = ev_doc.get("lane", "")
+    extracted_raw = ev_doc.get("extracted_fact", {})
+    if isinstance(extracted_raw, str):
+        try:
+            extracted = json.loads(extracted_raw)
+        except Exception:
+            extracted = {}
+    else:
+        extracted = extracted_raw if isinstance(extracted_raw, dict) else {}
+
+    # Build a human-readable summary of key metrics from extracted_fact
+    key_metrics: list[str] = []
+    for k, v in (extracted or {}).items():
+        if k in ("agent_id", "hostname", "e2e_test", "simulated"):
+            continue
+        key_metrics.append(f"{k}={v}")
+
+    metrics_block = (
+        "KEY METRICS (pre-collected, treat as CONFIRMED):\n  " + "\n  ".join(key_metrics)
+        if key_metrics else "No pre-collected metrics."
+    )
+
+    parts.append(
+        f"[INITIAL EVIDENCE]\n"
+        f"Probe: {probe} | Lane: {lane}\n"
+        f"Alert: {alert_hint[:500]}\n"
+        f"{metrics_block}\n"
+        f"Raw facts JSON: {json.dumps(extracted, ensure_ascii=False)[:600]}\n"
+    )
+
+    parts.append(
+        f"\nAnalyze the evidence above. If you have enough to conclude, set "
+        f"diagnosis_complete=true. Otherwise request read-only commands. "
+        f"Turn 1 of {_MAX_TURNS}."
+    )
+
+    return "\n\n".join(parts)
+
+
+def _build_followup_context(
+    command_results: list[dict[str, Any]],
+    next_turn: int,
+) -> str:
+    """Build the user message for turn >= 2 — ONLY the new command results.
+
+    The LLM already has the initial evidence and all prior hypotheses/results
+    in its conversation history (message-history is accumulated, not reset).
+    Resending them would waste context and risk contradicting the model's own
+    remembered reasoning, so we send only what is new since the last turn.
+    """
+    parts: list[str] = ["[COMMAND RESULTS from your previous request]"]
+    if not command_results:
+        parts.append("(no commands were dispatched)")
+    for cmd_result in command_results:
+        cmd_id = cmd_result.get("cmd_id", "")
+        purpose = cmd_result.get("purpose", "")
+        stdout = cmd_result.get("stdout", "")[:1500]
+        stderr = (cmd_result.get("stderr", "") or "")[:300]
+        rc = cmd_result.get("rc", 0)
+        header = f"[CMD {cmd_id}]{' (' + purpose + ')' if purpose else ''}"
+        if cmd_result.get("blocked"):
+            parts.append(f"{header} BLOCKED: {cmd_result.get('block_reason', '')}")
+        elif cmd_result.get("status") == "timeout":
+            # The command never ran — make this unambiguous so the LLM does not
+            # mistake an unreachable agent for a permission error or host evidence.
+            parts.append(
+                f"{header}\nTIMEOUT — agent_unreachable: command did NOT execute. "
+                f"Ignore as evidence; diagnose from pre-collected facts."
+            )
+        elif rc != 0:
+            # Real non-zero exit: surface stderr so the LLM can pick an alternative.
+            parts.append(f"{header}\nrc={rc}\nstderr: {stderr}\n{stdout}")
+        else:
+            parts.append(f"{header}\nrc={rc}\n{stdout}")
+
+    parts.append(
+        f"\nIncorporate these results with everything you already reasoned about. "
+        f"Do NOT re-request commands you already ran. If you can now conclude, set "
+        f"diagnosis_complete=true. Turn {next_turn} of {_MAX_TURNS}."
+    )
+    return "\n\n".join(parts)
+
+
+def _extract_raw_content(resp: Any) -> str:
+    """Pull the assistant text out of whatever shape the LLM client returns."""
+    if hasattr(resp, "message"):
+        return resp.message.content or ""
+    if hasattr(resp, "choices") and resp.choices:
+        return resp.choices[0].message.content or ""
+    if isinstance(resp, dict):
+        return (resp.get("message") or {}).get("content", "") or ""
+    return ""
+
+
+async def _call_llm_turn(
+    llm_client: Any,
+    model: str,
+    messages: list[dict[str, str]],
+    num_ctx: int = 8192,
+) -> tuple[dict[str, Any], str]:
+    """Call LLM for one diagnosis turn using the ACCUMULATED message history.
+
+    INV_ONE_ALERT_ONE_SESSION: `messages` carries the full conversation (system
+    + every prior user/assistant turn). Returns (parsed_response, raw_text) so
+    the caller can append the assistant turn back into the history before the
+    next iteration — keeping the session stateful across turns 2..8.
+    """
+    try:
+        resp = await llm_client.chat(
+            model=model,
+            messages=messages,
+            format="json",
+            options={"num_ctx": num_ctx, "temperature": 0.1, "num_predict": 1024},
+        )
+        raw = _extract_raw_content(resp)
+        return _parse_llm_response(raw), raw
+    except Exception as exc:
+        logger.error("[diag-loop] LLM turn failed: %s", exc)
+        return (
+            {
+                "reasoning": f"LLM error: {exc}",
+                "hypothesis": "llm_error",
+                "commands_to_run": [],
+                "diagnosis_complete": False,
+                "confidence": 0.0,
+            },
+            "",
+        )
+
+
+async def run_diagnosis_loop(
+    redis: Any,
+    llm_client: Any,
+    agent_id: str,
+    ev_doc: dict[str, Any],
+    trace_id: str,
+    model: str = "qwen2.5-coder:7b",
+    num_ctx: int = 8192,
+) -> dict[str, Any]:
+    """Run multi-turn diagnosis loop. Returns FinalDiagnosis dict.
+
+    INVARIANT INV_NO_SINGLE_TURN: runs at least MIN_TURNS regardless of confidence.
+    INVARIANT INV_DIAG_STORED: saves session to Redis before returning.
+    """
+    logger.info(
+        "[diag-loop] START trace_id=%s agent_id=%s probe=%s",
+        trace_id, agent_id, ev_doc.get("probe", ""),
+    )
+
+    vm_profile = await _load_vm_profile(redis, agent_id)
+    turns: list[dict[str, Any]] = []
+    final: dict[str, Any] = {}
+
+    # Gate command dispatch on agent liveness. Enqueuing to an offline/unknown
+    # agent_id means nobody polls the queue → every command times out (8×90s)
+    # and the LLM gets fed empty results it misreads as host evidence.
+    agent_online = await _agent_is_online(redis, agent_id)
+    if not agent_online:
+        logger.warning(
+            "[diag-loop] agent OFFLINE trace=%s agent=%s — degraded facts-only diagnosis",
+            trace_id, agent_id,
+        )
+
+    # Signatures (command + args) already dispatched — prevents the LLM from
+    # re-requesting the same command across turns (rule 'do NOT re-request').
+    executed_signatures: set[tuple[str, tuple[str, ...]]] = set()
+
+    initial_context = _build_initial_context(vm_profile, ev_doc)
+    if not agent_online:
+        initial_context += (
+            "\n\n[COMMAND EXECUTION UNAVAILABLE]\n"
+            "The remote agent is OFFLINE — no diagnostic commands can be run. "
+            "Diagnose ROOT CAUSE from the pre-collected facts above and conclude "
+            "within 2 turns. Do NOT request commands; set commands_to_run=[]."
+        )
+
+    # INV_ONE_ALERT_ONE_SESSION: a SINGLE conversation per trace_id. The system
+    # prompt + initial evidence are seeded once; each turn appends the assistant
+    # reply and the next user message (new command results) so the LLM retains
+    # every hypothesis it already explored or ruled out.
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": _DIAGNOSIS_SYSTEM_PROMPT},
+        {"role": "user", "content": initial_context},
+    ]
+
+    for turn_n in range(1, _MAX_TURNS + 1):
+        logger.info(
+            "[diag-loop] turn=%d/%d trace=%s msg_history=%d",
+            turn_n, _MAX_TURNS, trace_id, len(messages),
+        )
+
+        llm_resp, raw = await _call_llm_turn(llm_client, model, messages, num_ctx)
+        # Append the assistant turn so the next call continues this same session.
+        messages.append({"role": "assistant", "content": raw or json.dumps(llm_resp)})
+
+        commands_requested = llm_resp.get("commands_to_run", [])
+        command_results: list[dict[str, Any]] = []
+
+        is_complete = bool(llm_resp.get("diagnosis_complete")) and turn_n >= _MIN_TURNS
+
+        # Drop commands already run this session (dedup) — keeps the loop from
+        # spinning on the same df/lsblk request when it yields nothing new.
+        fresh_commands: list[dict[str, Any]] = []
+        for c in commands_requested:
+            sig = (c.get("command", ""), tuple(str(a) for a in c.get("args", [])))
+            if sig in executed_signatures:
+                continue
+            fresh_commands.append(c)
+
+        # Only dispatch to a LIVE agent, when not yet concluding, and only fresh cmds.
+        has_commands = bool(fresh_commands) and not is_complete and agent_online
+
+        if has_commands:
+            cmd_ids = await _enqueue_commands(redis, agent_id, fresh_commands, trace_id)
+            if cmd_ids:
+                # cmd_ids are returned in the same order fresh_commands were enqueued.
+                purpose_by_id = {
+                    cid: fresh_commands[i].get("purpose", "")
+                    for i, cid in enumerate(cmd_ids)
+                    if i < len(fresh_commands)
+                }
+                for c in fresh_commands:
+                    executed_signatures.add(
+                        (c.get("command", ""), tuple(str(a) for a in c.get("args", [])))
+                    )
+                # Map the ACTUAL command string back onto each result so the
+                # Telegram card can show "what was run" verbatim — the polled
+                # result dict from the agent only carries stdout/stderr/rc.
+                cmd_str_by_id = {
+                    cid: _format_command(fresh_commands[i])
+                    for i, cid in enumerate(cmd_ids)
+                    if i < len(fresh_commands)
+                }
+                command_results = await _wait_for_results(redis, cmd_ids)
+                for r in command_results:
+                    cid = r.get("cmd_id", "")
+                    r["purpose"] = purpose_by_id.get(cid, "")
+                    r["command_str"] = cmd_str_by_id.get(cid, "")
+
+        turn_record = {
+            "turn": turn_n,
+            "reasoning": llm_resp.get("reasoning", ""),
+            "hypothesis": llm_resp.get("hypothesis", ""),
+            "evidence_gaps": llm_resp.get("evidence_gaps", []),
+            "confidence": llm_resp.get("confidence", 0.0),
+            "commands_requested": commands_requested,
+            "command_results": command_results,
+            "diagnosis_complete_claimed": bool(llm_resp.get("diagnosis_complete")),
+        }
+        turns.append(turn_record)
+
+        if is_complete:
+            remediation = llm_resp.get("remediation_steps") or []
+            root_cause = llm_resp.get("root_cause") or llm_resp.get("hypothesis", "")
+            # Ensure remediation_steps is never empty when root cause is known
+            if not remediation and root_cause:
+                remediation = _fallback_remediation(root_cause)
+            final = {
+                "root_cause": root_cause,
+                "affected_components": llm_resp.get("affected_components", []),
+                "impact_summary": llm_resp.get("impact_summary", ""),
+                "remediation_steps": remediation,
+                "confidence": llm_resp.get("confidence", 0.0),
+            }
+            logger.info(
+                "[diag-loop] COMPLETE turn=%d confidence=%.2f trace=%s",
+                turn_n, final["confidence"], trace_id,
+            )
+            break
+
+        # Offline agent: no commands will ever run. Once the minimum-turn floor is
+        # met, stop spinning empty turns and finalize from the facts.
+        if not agent_online and turn_n >= _MIN_TURNS:
+            logger.info(
+                "[diag-loop] agent offline — finalizing facts-only at turn=%d trace=%s",
+                turn_n, trace_id,
+            )
+            break
+
+        # Not complete → feed the new command results into the SAME session so
+        # the next turn continues the conversation (INV_ONE_ALERT_ONE_SESSION).
+        if turn_n < _MAX_TURNS:
+            messages.append({
+                "role": "user",
+                "content": _build_followup_context(command_results, turn_n + 1),
+            })
+
+    if not final:
+        last = turns[-1] if turns else {}
+        hypothesis = last.get("hypothesis", "")
+        final = {
+            "root_cause": hypothesis or "Diagnosis inconclusive after max turns — see hypothesis per turn",
+            "affected_components": [],
+            "impact_summary": "Diagnosis reached maximum turns. Best-effort root cause from available evidence.",
+            "remediation_steps": _fallback_remediation(hypothesis),
+            "confidence": last.get("confidence", 0.0),
+        }
+        logger.warning("[diag-loop] max_turns reached trace=%s", trace_id)
+
+    session = {
+        "trace_id": trace_id,
+        "agent_id": agent_id,
+        "probe": ev_doc.get("probe", ""),
+        "lane": ev_doc.get("lane", ""),
+        "alert_hint": ev_doc.get("alert_hint", ""),
+        "turns": turns,
+        "total_turns": len(turns),
+        "final": final,
+        "degraded": not agent_online,
+        "degraded_reason": "" if agent_online else "agent_offline: no command execution available",
+        "completed_at": int(time.time()),
+    }
+
+    # INVARIANT INV_DIAG_STORED: persist before any Telegram emit
+    try:
+        key = f"{_SESSION_KEY_PREFIX}{trace_id}"
+        await redis.set(key, json.dumps(session, ensure_ascii=False), ex=_SESSION_TTL)
+        logger.info("[diag-loop] session stored key=%s", key)
+    except Exception as exc:
+        logger.error("[diag-loop] session store FAILED trace=%s err=%s — ABORTING emit", trace_id, exc)
+        raise RuntimeError(f"INV_DIAG_STORED violated: {exc}") from exc
+
+    return session
