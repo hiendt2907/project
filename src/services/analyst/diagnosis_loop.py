@@ -64,8 +64,7 @@ TOOL SELECTION — match the symptom to the RIGHT tool (critical for quality):
 - INODE exhaustion / "no space" with free bytes → df -i <path>   (NOT du; du measures bytes, df -i measures inodes).
   Then find the dir with most files: for inodes, prefer "ls" counts on suspect dirs, not "du -sh".
 - DISK BYTES full → df -h <path>, then du -sh <exact subdir> (e.g. /var/log, /var/lib/docker).
-- RUNAWAY LOGS → ls -lS /var/log (LARGEST FILES FIRST — never -lrS), du -sh /var/log, journalctl --disk-usage.
-  CRITICAL: use -lS not -lrS. The card previews the FIRST output lines, so the biggest file must be on top.
+- RUNAWAY LOGS → ls -lS /var/log (largest first), du -sh /var/log, journalctl --disk-usage.
 - SERVICE DOWN / crashloop → systemctl status <unit>, journalctl -u <unit> -n 200, systemctl is-failed <unit>.
 - HIGH MEMORY / OOM → free -h, ps aux --sort=-%rss, dmesg (grep oom not allowed — read dmesg raw).
 - PORT / CONNECTION → ss -ltnp, ss -s.
@@ -82,6 +81,24 @@ DIAGNOSIS RULES:
 6. Always populate remediation_steps — even when confidence is moderate (>= 0.5).
 7. Commands must be read-only: df, du, ls, stat, ps, ss, systemctl status, journalctl, free, lsblk.
 
+SECURITY — METADATA ONLY (INV_NO_DATA_EXFIL, non-negotiable):
+- You inspect METADATA: sizes, counts, listings, process/network/disk/service STATUS.
+- You MUST NOT read the CONTENT of any file or database. These are HARD-BLOCKED by the
+  agent and will fail: cat, head, tail, grep, awk, sed, cut, strings, less, more, wc,
+  mysql/psql SELECT, curl, nc. Do NOT request them — pick a metadata alternative.
+- To find big logs: use "ls -lS <dir>" and "du -sh <dir>" (sizes), NEVER "cat"/"tail" the log.
+- To inspect a service: "systemctl status <unit>" and "journalctl -u <unit> --no-pager -n 50"
+  (operational logs are allowed); never cat the app's own data/log files.
+- Omni commits to the operator: we never exfiltrate a single line of their VM's data.
+
+SYSTEM-THINKING — BLAST RADIUS:
+- Every alert affects the wider system. Beyond the local fault, reason about what ELSE is
+  impacted: dependent services, listeners/ports, databases, downstream APIs — using the
+  discovered VM PROFILE (services + listeners) as your dependency baseline.
+- When you need to confirm impact scope, request metadata commands that measure it
+  (e.g. "systemctl is-active <dependent-unit>", "ss -ltnp" for affected listeners).
+- Populate the "blast_radius" field with the system-wide impact assessment.
+
 OUTPUT FORMAT (strict JSON, no markdown):
 {
   "reasoning": "<your thinking — cite specific fact values or log lines>",
@@ -94,6 +111,7 @@ OUTPUT FORMAT (strict JSON, no markdown):
   "confidence": 0.4,
   "root_cause": null,
   "affected_components": [],
+  "blast_radius": "",
   "impact_summary": "",
   "remediation_steps": []
 }
@@ -579,6 +597,7 @@ async def run_diagnosis_loop(
             final = {
                 "root_cause": root_cause,
                 "affected_components": llm_resp.get("affected_components", []),
+                "blast_radius": llm_resp.get("blast_radius", ""),
                 "impact_summary": llm_resp.get("impact_summary", ""),
                 "remediation_steps": remediation,
                 "confidence": llm_resp.get("confidence", 0.0),
@@ -612,6 +631,7 @@ async def run_diagnosis_loop(
         final = {
             "root_cause": hypothesis or "Diagnosis inconclusive after max turns — see hypothesis per turn",
             "affected_components": [],
+            "blast_radius": "",
             "impact_summary": "Diagnosis reached maximum turns. Best-effort root cause from available evidence.",
             "remediation_steps": _fallback_remediation(hypothesis),
             "confidence": last.get("confidence", 0.0),

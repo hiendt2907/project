@@ -66,15 +66,35 @@ def _render_section1_problem(final: dict[str, Any]) -> str:
 def _render_section2_impact(final: dict[str, Any]) -> str:
     affected = final.get("affected_components", [])
     impact = final.get("impact_summary", "")
+    blast = (final.get("blast_radius") or "").strip()
     lines = ["🎯 <b>ẢNH HƯỞNG</b>"]
     if affected:
         for comp in affected[:5]:
             lines.append(f"• {_e(str(comp))}")
     else:
         lines.append("• Chưa xác định được component bị ảnh hưởng")
+    if blast:
+        # System-thinking: how the fault ripples beyond the local component.
+        lines.append(f"\n🌐 <b>Lan toả hệ thống:</b> {_e(_truncate(blast, 280))}")
     if impact:
         lines.append(f"\n<i>{_e(_truncate(impact, 200))}</i>")
     return "\n".join(lines)
+
+
+def _preview_output(stdout: str, max_chars: int = 320) -> str:
+    """Format-agnostic preview: show head + tail so the meaningful rows survive
+    regardless of sort direction (ls -lS vs -lrS) or output length.
+
+    The renderer must not assume where the interesting line is — that is what
+    coupled the LLM's tool choice to the UI. Showing both ends removes the need
+    for the LLM to sort a specific way.
+    """
+    rows = [ln for ln in stdout.splitlines() if ln.strip()]
+    if len(rows) <= 6:
+        return "\n".join(rows)[:max_chars]
+    head = rows[:3]
+    tail = rows[-3:]
+    return "\n".join([*head, f"… (+{len(rows) - 6} dòng) …", *tail])[:max_chars]
 
 
 def _render_section3_diagnosed(turns: list[dict[str, Any]]) -> str:
@@ -108,11 +128,9 @@ def _render_section3_diagnosed(turns: list[dict[str, Any]]) -> str:
             stdout = result.get("stdout", "").strip()
             stderr = (result.get("stderr", "") or "").strip()[:200]
             if rc == 0 and stdout:
-                # Show the first 3 non-empty lines — enough to read top offenders
-                # from a size-sorted (ls -lS / du) listing.
-                preview = "\n".join(
-                    ln for ln in stdout.splitlines() if ln.strip()
-                )[:280]
+                # Format-agnostic head+tail preview — robust to any sort order,
+                # so the LLM is free to pick whatever command it judges best.
+                preview = _preview_output(stdout)
                 lines.append(f"  ✅\n  <code>{_e(preview)}</code>")
             elif rc == 0:
                 lines.append("  ✅ <i>(không có output)</i>")
