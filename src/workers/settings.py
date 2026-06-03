@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -48,13 +48,15 @@ class WorkerSettings(BaseSettings):
             self.god_mode = False
             self.lab_unchained = False
             self.proactive_fallback_bypass_policy_in_god_mode = False
+            self.omni_unrestricted_tool_execution = False
+            self.ingest_secrets_raw = False
             # Chaos credential lab (OrbStack inject): allow only when explicitly enabled **and**
             # OMNI_CHAOS_PG_APP_PASSWORD is set in the overlay — otherwise strip (fail-closed).
             lab_chaos = bool(self.lab_chaos_credential_autofix_enabled)
-            pwd_chaos = str(self.chaos_pg_app_password or "").strip()
+            pwd_chaos = self.chaos_pg_app_password.get_secret_value().strip() if self.chaos_pg_app_password else ""
             if not lab_chaos or not pwd_chaos:
                 self.lab_chaos_credential_autofix_enabled = False
-                self.chaos_pg_app_password = ""
+                self.chaos_pg_app_password = SecretStr("")
         return self
 
     @model_validator(mode="after")
@@ -113,6 +115,11 @@ class WorkerSettings(BaseSettings):
     kafka_topic_diagnostic_evidence: str = Field(
         default="omni-diagnostic-evidence",
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_DIAGNOSTIC_EVIDENCE", "OMNI_DIAGNOSTIC_EVIDENCE_STREAM"),
+    )
+    kafka_topic_siem_chains: str = Field(
+        default="omni-siem-chains",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_SIEM_CHAINS"),
+        description="Smart-SIEM correlation chains from brain-go graph correlator.",
     )
     kafka_topic_tool_audit: str = Field(
         default="omni-tool-audit",
@@ -353,11 +360,28 @@ class WorkerSettings(BaseSettings):
         ),
     )
     omni_unrestricted_tool_execution: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices("OMNI_UNRESTRICTED_TOOL_EXECUTION"),
         description=(
-            "When true, do not block EXECUTE_MUTATE by tool allowlist/proof/invariant gates; "
-            "executor may run any registered tool."
+            "When true, EXECUTE_MUTATE bypasses mutate-only allowlist at executor boundary "
+            "(still subject to mutate_governance: prod kubectl_cluster / high-risk gates). "
+            "Default false — lab may set true for broad tool experiments."
+        ),
+    )
+    omni_kubectl_cluster_mutate_allowed: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_KUBECTL_CLUSTER_MUTATE_ALLOWED"),
+        description=(
+            "Prod only: allow kubectl_cluster via EXECUTE_MUTATE when unrestricted or allowlisted. "
+            "Default false — prefer SDK mutating tools."
+        ),
+    )
+    omni_high_risk_mutate_allowed: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_HIGH_RISK_MUTATE_ALLOWED"),
+        description=(
+            "Prod only: allow high-risk mutating tools (delete pod, patch secret, apply RBAC). "
+            "Default false — pair with tight RBAC and namespace allowlist."
         ),
     )
     omni_planner_precondition_gate_enabled: bool = Field(
@@ -421,8 +445,8 @@ class WorkerSettings(BaseSettings):
             "chaos_pg_app_password. Disable in prod; pair with OMNI_CHAOS_PG_APP_PASSWORD in ConfigMap."
         ),
     )
-    chaos_pg_app_password: str = Field(
-        default="",
+    chaos_pg_app_password: SecretStr = Field(
+        default=SecretStr(""),
         validation_alias=AliasChoices("OMNI_CHAOS_PG_APP_PASSWORD"),
         description="Lab chaos-pg: plain APP_PASSWORD value for autofix (omit in prod).",
     )
@@ -552,6 +576,15 @@ class WorkerSettings(BaseSettings):
         description="Kafka group for analyst — consumes omni-action-feedback.",
     )
     consumer_name_analyst: str = Field(default="omni-analyst-1")
+    consumer_group_chain: str = Field(
+        default="omni-analyst-siem-chains",
+        description="Kafka group for analyst — consumes omni-siem-chains correlation chains.",
+    )
+    siem_chain_consumer_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_SIEM_CHAIN_CONSUMER_ENABLED"),
+        description="Enable the omni-siem-chains correlation-chain consumer loop (analyst role).",
+    )
     consumer_group_executor: str = Field(
         default="omni-executor-actions",
         description="Kafka group for svc-executor — consumes omni-actions only.",
@@ -604,10 +637,10 @@ class WorkerSettings(BaseSettings):
         description="Embeddings endpoint base URL; alias OMNI_OLLAMA_EMBED_URL.",
     )
     # Tier-1 DEFAULT_WORKER — SDK tool JSON, status, chart
-    chat_model: str = Field(default="qwen3.6")
-    model_reasoning_engine: str = Field(default="qwen3.6")
-    model_heavy_lifter: str = Field(default="qwen3.6")
-    model_helper: str = Field(default="qwen3.6")
+    chat_model: str = Field(default="qwen2.5-coder:7b")
+    model_reasoning_engine: str = Field(default="qwen2.5-coder:7b")
+    model_heavy_lifter: str = Field(default="qwen2.5-coder:7b")
+    model_helper: str = Field(default="qwen2.5-coder:7b")
     embed_model: str = Field(default="nomic-embed-text")
     #: Fallback embed model; empty = chỉ retry truncate khi error.
     embed_model_fallback: str = Field(
@@ -834,6 +867,18 @@ class WorkerSettings(BaseSettings):
         ge=400,
         le=4096,
         description="Giới hạn độ dài JSON System Health Manifest (Redis).",
+    )
+    baseline_smart_trim_window_min: int = Field(
+        default=10,
+        ge=1,
+        le=60,
+        validation_alias=AliasChoices("OMNI_BASELINE_SMART_TRIM_WINDOW_MIN"),
+        description="Smart trim: events older than N minutes (relative to manifest t) are trimmed first.",
+    )
+    baseline_smart_trim_keywords: str = Field(
+        default="OOM|panic|deadlock|segfault|Timeout|refused|Exception|Failed",
+        validation_alias=AliasChoices("OMNI_BASELINE_SMART_TRIM_KEYWORDS"),
+        description="Pipe-separated regex keywords that protect events/logs from smart trim. Covers K8s, bare-metal, VMs, DBs, middleware.",
     )
     baseline_cpu_drift_threshold: float = Field(
         default=0.15,
@@ -1171,6 +1216,20 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_FORECAST_MIN_R_SQUARED"),
         description="Minimum r_squared for forecast to be considered reliable.",
     )
+    forecast_ewma_alpha: float = Field(
+        default=0.3,
+        ge=0.01,
+        le=0.99,
+        validation_alias=AliasChoices("OMNI_FORECAST_EWMA_ALPHA"),
+        description="EWMA level smoothing factor α (Holt's method). Higher = more reactive to recent data.",
+    )
+    forecast_ewma_beta: float = Field(
+        default=0.1,
+        ge=0.01,
+        le=0.99,
+        validation_alias=AliasChoices("OMNI_FORECAST_EWMA_BETA"),
+        description="EWMA trend smoothing factor β (Holt's method). Lower = smoother trend, less micro-burst sensitivity.",
+    )
     proactive_event_timeout_sec: float = Field(
         default=600.0,
         ge=30.0,
@@ -1422,6 +1481,14 @@ class WorkerSettings(BaseSettings):
     # Prometheus metrics exporter (omni-worker pod)
     metrics_listen_host: str = Field(default="0.0.0.0")
     metrics_listen_port: int = Field(default=9090, ge=1024, le=65535)
+    metrics_redis_stream_keys: str = Field(
+        default="",
+        validation_alias=AliasChoices("OMNI_METRICS_REDIS_STREAM_KEYS"),
+        description=(
+            "Comma-separated Redis Streams keys for XLEN→omni_redis_stream_backlog gauge "
+            "(lab: e.g. stream:actionable_incidents)."
+        ),
+    )
     monitor_stack_namespace: str = Field(
         default="monitor",
         min_length=1,
@@ -1456,3 +1523,115 @@ class WorkerSettings(BaseSettings):
     knowledge_enrich_enabled: bool = Field(default=False)
     knowledge_ingest_embed_batch: int = Field(default=16, ge=1, le=128)
     knowledge_ingest_concurrency: int = Field(default=2, ge=1, le=8)
+
+    # Pre-execute snapshot + auto-rollback (S1.2)
+    omni_auto_rollback_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_AUTO_ROLLBACK_ENABLED"),
+        description="Auto-restore K8s resource to pre-mutate state when verify is exhausted.",
+    )
+    omni_rollback_snapshot_ttl_sec: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        validation_alias=AliasChoices("OMNI_ROLLBACK_SNAPSHOT_TTL_SEC"),
+        description="TTL for pre-mutate snapshots stored in Redis.",
+    )
+
+    # Cross-incident alert deduplication (S1.1)
+    alert_dedup_window_sec: int = Field(
+        default=300,
+        ge=0,
+        le=3600,
+        validation_alias=AliasChoices("OMNI_ALERT_DEDUP_WINDOW_SEC"),
+        description=(
+            "Cross-incident dedup window (seconds). Same (source:alertname:namespace:deployment) "
+            "within this window → skip pipeline to prevent alert storm. Set 0 to disable."
+        ),
+    )
+
+    # Dynamic LLM context window (S2.1)
+    llm_num_ctx: int = Field(
+        default=8192,
+        ge=512,
+        le=131072,
+        validation_alias=AliasChoices("OMNI_LLM_NUM_CTX"),
+        description=(
+            "Ollama num_ctx for main LLM calls. "
+            "4096 keeps KV cache fully in GPU/unified memory on M4 (no swap). "
+            "Increase only if evidence texts regularly exceed 3k tokens."
+        ),
+    )
+    proactive_llm_num_ctx: int = Field(
+        default=4096,
+        ge=2048,
+        le=131072,
+        validation_alias=AliasChoices("OMNI_PROACTIVE_LLM_NUM_CTX"),
+        description=(
+            "Ollama num_ctx for proactive observer and forecast LLM calls. "
+            "Lower than main num_ctx to save VRAM on high-frequency probes."
+        ),
+    )
+
+    # Forecast → Proactive Pipeline Integration (S2.3)
+    forecast_proactive_integration_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_FORECAST_PROACTIVE_INTEGRATION_ENABLED"),
+        description=(
+            "When True, forecast threshold breaches emit to omni-proactive-incidents "
+            "AND set an elevated watch key so proactive observer doubles its check frequency."
+        ),
+    )
+
+    # Auto-Promote SOP Pipeline (S2.2)
+    omni_sop_auto_promote_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_SOP_AUTO_PROMOTE_ENABLED"),
+        description="Enable automatic SOP promotion after repeated VERIFIED_SUCCESS on same pattern.",
+    )
+    omni_sop_promotion_min_success: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        validation_alias=AliasChoices("OMNI_SOP_PROMOTION_MIN_SUCCESS"),
+        description="Minimum VERIFIED_SUCCESS count before auto-promoting to SOP ledger.",
+    )
+    omni_sop_promotion_max_fp_rate: float = Field(
+        default=0.05,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("OMNI_SOP_PROMOTION_MAX_FP_RATE"),
+        description="Maximum global false-positive rate allowed for SOP promotion.",
+    )
+
+    # HITL Fallback Channel + Dead-Letter Queue (S1.3)
+    omni_hitl_fallback_channel: str = Field(
+        default="none",
+        validation_alias=AliasChoices("OMNI_HITL_FALLBACK_CHANNEL"),
+        description=(
+            "Secondary escalation channel when HITL has no decision after escalation_timeout. "
+            "Supported: 'slack' | 'none'. Extend hitl_fallback.py for pagerduty/email."
+        ),
+    )
+    omni_hitl_fallback_webhook_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("OMNI_HITL_FALLBACK_WEBHOOK_URL"),
+        description="Slack incoming webhook URL for HITL escalation fallback.",
+    )
+    omni_hitl_escalation_timeout_sec: int = Field(
+        default=900,
+        ge=60,
+        le=3600,
+        validation_alias=AliasChoices("OMNI_HITL_ESCALATION_TIMEOUT_SEC"),
+        description=(
+            "Seconds after HITL registration before emitting to fallback channel. "
+            "Must be less than HITL_APPROVAL_TIMEOUT_SEC (default 1800)."
+        ),
+    )
+    omni_hitl_dead_letter_ttl_sec: int = Field(
+        default=86400,
+        ge=3600,
+        le=604800,
+        validation_alias=AliasChoices("OMNI_HITL_DEAD_LETTER_TTL_SEC"),
+        description="TTL for timed-out HITL actions stored in Redis dead-letter hash (seconds).",
+    )

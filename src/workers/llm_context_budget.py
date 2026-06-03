@@ -1,4 +1,4 @@
-"""Configurable truncation for LLM-bound strings (prompt, memory windows)."""
+"""Configurable truncation and LLM option helpers for Omni workers."""
 
 from __future__ import annotations
 
@@ -6,6 +6,36 @@ import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def llm_num_ctx(ctx_or_settings: Any, default: int = 8192) -> int:
+    """Read llm_num_ctx from a WorkerSettings or a context object that wraps one."""
+    ws = getattr(ctx_or_settings, "settings", ctx_or_settings)
+    raw = getattr(ws, "llm_num_ctx", None)
+    return int(raw) if isinstance(raw, (int, float)) else default
+
+
+def build_llm_options(
+    ctx_or_settings: Any,
+    *,
+    temperature: float = 0.1,
+    think: bool | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a consistent Ollama options dict from WorkerSettings / context.
+
+    num_ctx is read from settings.llm_num_ctx (default 8192).
+    Callers that need num_predict should set it in *extra*.
+    """
+    opts: dict[str, Any] = {
+        "temperature": temperature,
+        "num_ctx": llm_num_ctx(ctx_or_settings),
+    }
+    if think is not None:
+        opts["think"] = think
+    if extra:
+        opts.update(extra)
+    return opts
 
 
 def effective_reply_max_words(ws: Any) -> int:

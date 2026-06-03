@@ -26,7 +26,7 @@ from workers.clarification import (
 )
 from workers.entity_extract import extract_entities_llm, merge_llm_entities_into_slots
 from workers.infra_context import enrich_working_text_with_infra, fetch_infra_injection_for_fallback
-from workers.llm_context_budget import effective_reply_max_words
+from workers.llm_context_budget import build_llm_options, effective_reply_max_words
 from workers.autonomous_route import try_autonomous_sdk_route
 from workers.infra_preflight import LearnedContext, preflight_infra_kb
 from pkg.rag.gate import evaluate_rag_gate
@@ -606,7 +606,7 @@ async def _conversational_fallback(
                 {"role": "system", "content": ope.CONV_FALLBACK_SYSTEM_EN},
                 {"role": "user", "content": user_content[:12000]},
             ],
-            options={"temperature": 0.1, "num_ctx": 4096},
+            options=build_llm_options(ctx, temperature=0.1),
         )
         out = ((resp.get("message") or {}).get("content") or "").strip()
     except Exception as e:
@@ -834,7 +834,7 @@ async def _repair_json_with_helper(
             },
             {"role": "user", "content": user_blob[:8000]},
         ],
-        options={"temperature": 0.1, "num_ctx": 4096},
+        options=build_llm_options(ctx, temperature=0.1),
     )
     return (resp.get("message") or {}).get("content") or ""
 
@@ -854,7 +854,7 @@ async def _compress_history(ctx: WorkerHandlerContext, state: SessionState, trac
             },
             {"role": "user", "content": blob[:8000]},
         ],
-        options={"temperature": 0.1, "num_ctx": 4096},
+        options=build_llm_options(ctx, temperature=0.1),
     )
     out = ((resp.get("message") or {}).get("content") or "").strip()
     return out or state.last_summary
@@ -880,7 +880,7 @@ async def _deepseek_plan(ctx: WorkerHandlerContext, user_text: str, trace: str) 
                 ),
             },
         ],
-        options={"temperature": 0.1, "num_ctx": 4096},
+        options=build_llm_options(ctx, temperature=0.1),
     )
     return (resp.get("message") or {}).get("content") or ""
 
@@ -1012,7 +1012,7 @@ async def slow_path_with_llm_and_tools(
             resp = await ctx.llm.chat(
                 model=model,
                 messages=messages,
-                options={"temperature": 0.1, "num_ctx": 4096},
+                options=build_llm_options(ctx, temperature=0.1),
             )
             content = (resp.get("message") or {}).get("content") or ""
             if not content.strip():
@@ -1274,7 +1274,22 @@ async def _handle_inbound_payload_impl(
             wp_raw = await ctx.redis.get(redis_key_write_pending(chat_id_int))
         if wp_raw and _user_confirms_rollout_telegram(raw_user_text):
             try:
+                from services.audit_ledger.chain_writer import write_audit_block
+                from services.audit_ledger.crat_event_types import CRAT_EVENT_MUTATION_ENQUEUED
+                from services.audit_ledger.signer import AuditLedgerError
                 wdata = json.loads(wp_raw)
+                try:
+                    await write_audit_block(
+                        event_type=CRAT_EVENT_MUTATION_ENQUEUED,
+                        trace_id=trace,
+                        payload={"trace_id": trace, "action": "write_pending", "source": "telegram_confirm"},
+                        redis=ctx.redis,
+                        kafka=getattr(ctx, "kafka", None),
+                        kafka_topic=getattr(ctx.settings, "kafka_topic_audit_chain", "omni-audit-chain"),
+                    )
+                except AuditLedgerError as _crat_err:
+                    logger.critical("[%s] write_pending_crat_failed err=%s FAIL_CLOSED", trace, _crat_err)
+                    return "[DATA] error\n[DIAGNOSIS] Audit write failed — action blocked (CRAT fail-closed)"
                 out = await execute_write_pending_from_redis(ctx, wdata)
                 with child_span("redis_del_write_pending"):
                     await ctx.redis.delete(redis_key_write_pending(chat_id_int))
@@ -1290,7 +1305,22 @@ async def _handle_inbound_payload_impl(
             pend_raw = await ctx.redis.get(redis_key_rollout_pending(chat_id_int))
         if pend_raw and _user_confirms_rollout_telegram(raw_user_text):
             try:
+                from services.audit_ledger.chain_writer import write_audit_block
+                from services.audit_ledger.crat_event_types import CRAT_EVENT_MUTATION_ENQUEUED
+                from services.audit_ledger.signer import AuditLedgerError
                 data = json.loads(pend_raw)
+                try:
+                    await write_audit_block(
+                        event_type=CRAT_EVENT_MUTATION_ENQUEUED,
+                        trace_id=trace,
+                        payload={"trace_id": trace, "action": "rollout_restart", "source": "telegram_confirm"},
+                        redis=ctx.redis,
+                        kafka=getattr(ctx, "kafka", None),
+                        kafka_topic=getattr(ctx.settings, "kafka_topic_audit_chain", "omni-audit-chain"),
+                    )
+                except AuditLedgerError as _crat_err:
+                    logger.critical("[%s] rollout_crat_failed err=%s FAIL_CLOSED", trace, _crat_err)
+                    return "[DATA] error\n[DIAGNOSIS] Audit write failed — action blocked (CRAT fail-closed)"
                 out = await execute_rollout_restart_from_pending(ctx, data)
                 with child_span("redis_del_rollout_pending"):
                     await ctx.redis.delete(redis_key_rollout_pending(chat_id_int))

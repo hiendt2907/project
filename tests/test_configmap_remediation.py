@@ -324,12 +324,15 @@ def test_fallback_cm_wins_over_sec_when_both_present():
 import os
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_LAB_RBAC = os.path.join(_REPO_ROOT, "k8s", "deployments", "executor-rbac-lab.yaml")
-_PROD_RBAC = os.path.join(_REPO_ROOT, "k8s", "deployments", "executor-rbac.yaml")
+# Split-role RBAC consolidated into omni-fullstack-rbac.yaml (2026-06-03). The lab
+# ClusterRoleBinding + lab executor ClusterRole now live there. Prod least-privilege
+# (namespace-scoped, no ClusterRoleBinding) is rbac-executor-least-privilege.yaml.
+_LAB_RBAC = os.path.join(_REPO_ROOT, "k8s", "deployments", "omni-fullstack-rbac.yaml")
+_PROD_RBAC = os.path.join(_REPO_ROOT, "k8s", "rbac-executor-least-privilege.yaml")
 
 
 def test_lab_rbac_file_exists():
-    assert os.path.isfile(_LAB_RBAC), "executor-rbac-lab.yaml must exist for lab ClusterRoleBinding"
+    assert os.path.isfile(_LAB_RBAC), "omni-fullstack-rbac.yaml must exist for lab ClusterRoleBinding"
 
 
 def test_lab_rbac_has_clusterrolebinding():

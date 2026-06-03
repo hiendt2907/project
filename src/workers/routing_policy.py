@@ -7,9 +7,6 @@ from workers.settings import WorkerSettings
 # Đồng bộ với seed SOP — chỉ read-only / an toàn; không rollout/sandbox shell.
 READ_ONLY_FAST_PATH_TOOLS: frozenset[str] = frozenset(
     {
-        "pgvector_health",
-        "pgvector_status",
-        "pgvector_health_audit",
         "redis_health",
         "redis_info",
         "redis_expert_check",
@@ -40,6 +37,16 @@ READ_ONLY_FAST_PATH_TOOLS: frozenset[str] = frozenset(
         "timeseries_analyze",
         "echo",
         "reply",
+        # domain: database (read-only MySQL + ProxySQL diagnostic)
+        "mysql_health",
+        "proxysql_stats",
+        "database_replication_lag",
+        # domain: services (read-only HAProxy + systemd diagnostic)
+        "haproxy_stats",
+        "systemd_service_health",
+        # domain: storage (read-only disk + NFS diagnostic)
+        "disk_health",
+        "nfs_health",
     }
 )
 
