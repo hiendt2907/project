@@ -60,6 +60,11 @@ _crat_write: Any = None
 _telegram_timeout: Any = None
 _kafka_consumer_lag: Any = None
 _dlq_published: Any = None
+_dlq_archived: Any = None
+_llm_ttft_seconds: Any = None
+_llm_client_completion_seconds: Any = None
+_llm_completion_tokens: Any = None
+_llm_prompt_tokens: Any = None
 # Feature: Self-monitoring health checks
 _worker_last_message_age: Any = None
 _health_check_status: Any = None
@@ -72,6 +77,11 @@ _kpi_incidents: Any = None
 # Feature: Advisory benchmark
 _advisory_benchmark_score: Any = None
 _advisory_benchmark_pass_rate: Any = None
+_executor_execute_skipped: Any = None
+# Feature: SIEM correlation chains (Phase 5)
+_siem_chains_total: Any = None
+_chain_confidence: Any = None
+_chain_llm_skipped: Any = None
 _started = False
 
 
@@ -87,10 +97,13 @@ def _ensure_metrics() -> None:
     global _proactive_tombstone_no_k8s, _proactive_lease_conflict, _proactive_skip_frozen
     global _wilson_confidence_score, _redis_stream_backlog
     global _proactive_outcome, _proactive_incident_duration, _promql_placeholder_rejected
-    global _evidence_llm_contradiction, _rag_empty_result, _crat_write, _telegram_timeout, _kafka_consumer_lag, _dlq_published
+    global _evidence_llm_contradiction, _rag_empty_result, _crat_write, _telegram_timeout, _kafka_consumer_lag, _dlq_published, _dlq_archived
+    global _executor_execute_skipped
+    global _llm_ttft_seconds, _llm_client_completion_seconds, _llm_completion_tokens, _llm_prompt_tokens
     global _worker_last_message_age, _health_check_status
     global _kpi_mttd, _kpi_mttr, _kpi_advisory_acceptance_rate, _kpi_false_positive_rate, _kpi_incidents
     global _advisory_benchmark_score, _advisory_benchmark_pass_rate
+    global _siem_chains_total, _chain_confidence, _chain_llm_skipped
     if _build_info is not None:
         return
     from prometheus_client import Counter, Gauge, Histogram, Info
@@ -281,6 +294,11 @@ def _ensure_metrics() -> None:
         "Wall time to persist one CRAT block (Redis chain + optional Kafka publish), success only.",
         buckets=[0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5],
     )
+    _executor_execute_skipped = Counter(
+        "omni_executor_execute_skipped_total",
+        "EXECUTE_MUTATE skipped before SDK invocation (shadow OS, auto_execute off, rate limit).",
+        ["reason"],
+    )
     _telegram_timeout = Counter(
         "omni_telegram_send_timeout_total",
         "Telegram send_message calls that exceeded the timeout and were dropped.",
@@ -295,6 +313,49 @@ def _ensure_metrics() -> None:
         "omni_dlq_published_total",
         "Messages published to the DLQ after exhausting retries.",
         ["topic"],
+    )
+    _dlq_archived = Counter(
+        "omni_dlq_archived_total",
+        "DLQ messages consumed and archived by dlq_archiver_loop.",
+        ["origin_topic"],
+    )
+    # LLM client boundary — TTFT / completion wall time / tokens (NOT end-to-end Kafka latency).
+    _llm_ttft_seconds = Histogram(
+        "omni_llm_ttft_seconds",
+        "Time from chat.completions request until first streamed token (VLLMClient boundary).",
+        ["model", "call_kind"],
+        buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0],
+    )
+    _llm_client_completion_seconds = Histogram(
+        "omni_llm_client_completion_seconds",
+        "Wall time for full streamed completion at VLLMClient (same request as TTFT).",
+        ["model", "call_kind"],
+        buckets=[0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0],
+    )
+    _llm_completion_tokens = Counter(
+        "omni_llm_completion_tokens_total",
+        "Completion output tokens observed at VLLMClient (usage.completion_tokens or heuristic).",
+        ["model", "call_kind"],
+    )
+    _llm_prompt_tokens = Counter(
+        "omni_llm_prompt_tokens_total",
+        "Prompt input tokens observed at VLLMClient (usage.prompt_tokens / Ollama prompt_eval_count).",
+        ["model", "call_kind"],
+    )
+    # SIEM correlation chains (Phase 5)
+    _siem_chains_total = Counter(
+        "omni_siem_chains_total",
+        "Correlation chains classified by the analyst chain consumer.",
+        ["attack_category"],
+    )
+    _chain_confidence = Histogram(
+        "omni_chain_confidence",
+        "Confidence score of correlated attack chains at classification time.",
+        buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    )
+    _chain_llm_skipped = Counter(
+        "omni_chain_llm_skipped_total",
+        "Chains whose classification was served from recall (LLM skipped).",
     )
     # Self-monitoring
     _worker_last_message_age = Gauge(
@@ -369,6 +430,8 @@ def _ensure_metrics() -> None:
         _proactive_outcome.labels(outcome=_po).inc(0)
     _promql_placeholder_rejected.inc(0)
     _evidence_llm_contradiction.inc(0)
+    for _es in ("shadow_os", "auto_execute_disabled", "rate_limited"):
+        _executor_execute_skipped.labels(reason=_es).inc(0)
 
 
 def start_prometheus_server(host: str, port: int) -> None:
@@ -396,6 +459,16 @@ def inc_messages_processed(source: str) -> None:
     if src not in ("telegram", "stream", "http"):
         src = "other"
     _messages.labels(source=src).inc()
+
+
+def executor_execute_skipped_inc(reason: str) -> None:
+    """Reasons: shadow_os | auto_execute_disabled | rate_limited | unknown."""
+    try:
+        _ensure_metrics()
+        r = (reason or "unknown").lower()[:48]
+        _executor_execute_skipped.labels(reason=r).inc()
+    except Exception:
+        logger.debug("executor_execute_skipped_inc skip reason=%s", reason, exc_info=True)
 
 
 def set_last_scout_timestamp(ts: float | None = None) -> None:
@@ -676,6 +749,33 @@ def inc_dlq_published(topic: str = "omni-dlq") -> None:
     _dlq_published.labels(topic=(topic or "omni-dlq")[:64]).inc()
 
 
+def inc_dlq_archived(origin_topic: str = "unknown") -> None:
+    _ensure_metrics()
+    _dlq_archived.labels(origin_topic=(origin_topic or "unknown")[:64]).inc()
+
+
+def observe_llm_client_sli(
+    *,
+    ttft_seconds: float,
+    completion_seconds: float,
+    output_tokens: int,
+    model: str,
+    call_kind: str,
+    prompt_tokens: int = 0,
+) -> None:
+    """Record LLM SLI at OpenAI/Ollama transport boundary (worker process only)."""
+    _ensure_metrics()
+    m = (model or "unknown")[:64]
+    k = (call_kind or "unknown")[:32]
+    ttft = max(0.0, float(ttft_seconds))
+    dur = max(ttft, float(completion_seconds))
+    _llm_ttft_seconds.labels(model=m, call_kind=k).observe(ttft)
+    _llm_client_completion_seconds.labels(model=m, call_kind=k).observe(dur)
+    _llm_completion_tokens.labels(model=m, call_kind=k).inc(max(0, int(output_tokens)))
+    if prompt_tokens > 0:
+        _llm_prompt_tokens.labels(model=m, call_kind=k).inc(int(prompt_tokens))
+
+
 async def observability_metrics_loop(
     *,
     redis: Any,
@@ -800,6 +900,17 @@ def set_health_check_status(check_name: str, value: float) -> None:
     """value: 1.0=ok, 0.5=degraded, 0.0=unhealthy."""
     _ensure_metrics()
     _health_check_status.labels(check_name=(check_name or "unknown")[:48]).set(float(value))
+
+
+# ── SIEM correlation chain setters ──────────────────────────────────────────────
+
+def observe_chain_correlated(*, attack_category: str, confidence: float, llm_skipped: bool) -> None:
+    """Record one classified correlation chain."""
+    _ensure_metrics()
+    _siem_chains_total.labels(attack_category=(attack_category or "unknown")[:48]).inc()
+    _chain_confidence.observe(max(0.0, min(1.0, float(confidence))))
+    if llm_skipped:
+        _chain_llm_skipped.inc()
 
 
 # ── KPI setters ────────────────────────────────────────────────────────────────

@@ -11,9 +11,12 @@ Ollama's /v1/chat/completions and /v1/embeddings are OpenAI-standard.
 from __future__ import annotations
 
 import logging
+import os
+import time
 from enum import StrEnum
 from typing import Any
 
+import httpx
 import openai
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -24,6 +27,35 @@ _API_KEY = "ollama"
 
 # Default context window passed as max_tokens when options.num_ctx is absent.
 DEFAULT_MAX_TOKENS = 4096
+
+_STREAM_FOR_SLI = os.getenv("OMNI_VLLM_STREAM_FOR_SLI", "false").strip().lower() in ("1", "true", "yes")
+_SLI_METRICS = os.getenv("OMNI_LLM_SLI_METRICS_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+
+
+def _record_llm_client_sli(
+    *,
+    ttft_seconds: float,
+    completion_seconds: float,
+    output_tokens: int,
+    model: str,
+    call_kind: str,
+    prompt_tokens: int = 0,
+) -> None:
+    if not _SLI_METRICS:
+        return
+    try:
+        from workers.metrics_exporter import observe_llm_client_sli
+
+        observe_llm_client_sli(
+            ttft_seconds=ttft_seconds,
+            completion_seconds=completion_seconds,
+            output_tokens=output_tokens,
+            model=model,
+            call_kind=call_kind,
+            prompt_tokens=prompt_tokens,
+        )
+    except ImportError:
+        pass
 
 
 class LLMCallKind(StrEnum):
@@ -55,22 +87,43 @@ class VLLMClient(BaseModel):
 
     _chat_client: openai.AsyncOpenAI = PrivateAttr()
     _embed_client: openai.AsyncOpenAI = PrivateAttr()
+    _native_client: httpx.AsyncClient = PrivateAttr()
 
     def model_post_init(self, _context: Any) -> None:
-        self._chat_client = openai.AsyncOpenAI(
+        chat = openai.AsyncOpenAI(
             api_key=_API_KEY,
             base_url=_base_url(self.base_url),
             timeout=self.timeout_s,
         )
-        self._embed_client = openai.AsyncOpenAI(
+        embed = openai.AsyncOpenAI(
             api_key=_API_KEY,
             base_url=_base_url(self.embed_url),
             timeout=self.timeout_s,
         )
+        try:
+            native = httpx.AsyncClient(timeout=self.timeout_s)
+        except Exception:
+            # Close already-opened clients before re-raising to avoid leaks.
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(chat.close())
+                    loop.create_task(embed.close())
+                else:
+                    loop.run_until_complete(chat.close())
+                    loop.run_until_complete(embed.close())
+            except Exception:
+                pass
+            raise
+        self._chat_client = chat
+        self._embed_client = embed
+        self._native_client = native
 
     async def aclose(self) -> None:
         await self._chat_client.close()
         await self._embed_client.close()
+        await self._native_client.aclose()
 
     # ------------------------------------------------------------------
     # Chat — same signature as OllamaClient.chat()
@@ -100,7 +153,9 @@ class VLLMClient(BaseModel):
         """
         opts = options or {}
         temperature: float = float(opts.get("temperature", 0.0))
-        max_tokens: int = int(opts.get("num_ctx", DEFAULT_MAX_TOKENS))
+        # num_predict caps output tokens; num_ctx is the context window (input+output).
+        # Prefer num_predict for max_tokens so thinking-mode models don't exhaust the budget.
+        max_tokens: int = int(opts.get("num_predict") or opts.get("num_ctx", DEFAULT_MAX_TOKENS))
 
         kind_s = str(llm_call_kind) if llm_call_kind is not None else ""
         fmt_json = format == "json"
@@ -115,15 +170,136 @@ class VLLMClient(BaseModel):
         kwargs: dict[str, Any] = dict(
             model=model,
             messages=messages,  # type: ignore[arg-type]
-            stream=False,
             temperature=temperature,
             max_tokens=max_tokens,
         )
         if format == "json":
             kwargs["response_format"] = {"type": "json_object"}
+        # Pass think=False by default to disable Qwen3 extended thinking mode.
+        # Thinking mode burns num_predict budget on internal reasoning, leaving no
+        # tokens for the actual JSON response.  Call sites can opt-in via options={"think": True}.
+        # think=None means "caller didn't specify" → use OpenAI compat endpoint (unchanged).
+        # think=False means "caller explicitly disabled thinking" → use native /api/chat,
+        # because Ollama's /v1/chat/completions ignores the think parameter for Qwen3 models.
+        think_val = opts.get("think", None)
 
-        completion = await self._chat_client.chat.completions.create(**kwargs)
-        content = (completion.choices[0].message.content or "").strip()
+        kind_label = kind_s or "unspecified"
+
+        if think_val is False:
+            return await self._chat_ollama_native(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                num_ctx=int(opts.get("num_ctx", DEFAULT_MAX_TOKENS)),
+                format_json=fmt_json,
+                kind_label=kind_label,
+            )
+
+        if not _STREAM_FOR_SLI:
+            kwargs["stream"] = False
+            _t0 = time.perf_counter()
+            completion = await self._chat_client.chat.completions.create(**kwargs)
+            _dur = max(0.0, time.perf_counter() - _t0)
+            content = (completion.choices[0].message.content or "").strip()
+            usage = getattr(completion, "usage", None)
+            out_tok = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+            in_tok = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+            if out_tok <= 0:
+                out_tok = max(1, len(content) // 4)
+            _record_llm_client_sli(
+                ttft_seconds=_dur,
+                completion_seconds=_dur,
+                output_tokens=out_tok,
+                model=model,
+                call_kind=kind_label,
+                prompt_tokens=in_tok,
+            )
+            return {"message": {"role": "assistant", "content": content}}
+
+        kwargs["stream"] = True
+        t_req = time.perf_counter()
+        stream_resp = await self._chat_client.chat.completions.create(**kwargs)
+        ttft: float | None = None
+        parts: list[str] = []
+        usage_tokens: int | None = None
+        prompt_tokens: int | None = None
+        async for chunk in stream_resp:
+            try:
+                ch = chunk.choices[0] if chunk.choices else None
+                if ch is None:
+                    continue
+                delta = getattr(ch, "delta", None)
+                piece = getattr(delta, "content", None) if delta is not None else None
+                if piece:
+                    if ttft is None:
+                        ttft = time.perf_counter() - t_req
+                    parts.append(piece)
+                u = getattr(chunk, "usage", None)
+                if u is not None and getattr(u, "completion_tokens", None) is not None:
+                    usage_tokens = int(u.completion_tokens or 0)
+                if u is not None and getattr(u, "prompt_tokens", None) is not None:
+                    prompt_tokens = int(u.prompt_tokens or 0)
+            except (IndexError, AttributeError, TypeError):
+                continue
+
+        total_s = max(0.0, time.perf_counter() - t_req)
+        if ttft is None:
+            ttft = total_s
+        content = "".join(parts).strip()
+        out_tok = int(usage_tokens or 0)
+        if out_tok <= 0:
+            out_tok = max(1, len(content) // 4)
+        _record_llm_client_sli(
+            ttft_seconds=float(ttft),
+            completion_seconds=total_s,
+            output_tokens=out_tok,
+            model=model,
+            call_kind=kind_label,
+            prompt_tokens=int(prompt_tokens or 0),
+        )
+        return {"message": {"role": "assistant", "content": content}}
+
+    async def _chat_ollama_native(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+        num_ctx: int,
+        format_json: bool,
+        kind_label: str,
+    ) -> dict[str, Any]:
+        """POST /api/chat with think=false — native Ollama API, bypasses OpenAI compat layer."""
+        base = self.base_url.rstrip("/").removesuffix("/v1").rstrip("/")
+        url = f"{base}/api/chat"
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "think": False,
+            "stream": False,
+            "options": {"num_predict": max_tokens, "num_ctx": num_ctx, "temperature": temperature},
+        }
+        if format_json:
+            body["format"] = "json"
+        _t0 = time.perf_counter()
+        resp = await self._native_client.post(url, json=body)
+        resp.raise_for_status()
+        _dur = max(0.0, time.perf_counter() - _t0)
+        data = resp.json()
+        content = (data.get("message") or {}).get("content") or ""
+        content = content.strip()
+        out_tok = int(data.get("eval_count") or 0) or max(1, len(content) // 4)
+        in_tok = int(data.get("prompt_eval_count") or 0)
+        _record_llm_client_sli(
+            ttft_seconds=_dur,
+            completion_seconds=_dur,
+            output_tokens=out_tok,
+            model=model,
+            call_kind=kind_label,
+            prompt_tokens=in_tok,
+        )
         return {"message": {"role": "assistant", "content": content}}
 
     async def chat_plain(

@@ -42,11 +42,28 @@ for t in "${TOPICS[@]}"; do
     --create --if-not-exists --topic "$t" --partitions 1 --replication-factor 1
 done
 
+# DLQ: 7-day retention, delete policy (not compacted — replay not needed, just inspection).
+echo "Enforcing omni-dlq config: retention.ms=604800000 (7d), cleanup.policy=delete"
+"${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
+  /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$BOOTSTRAP" \
+  --alter --entity-type topics --entity-name omni-dlq \
+  --add-config "cleanup.policy=delete,retention.ms=604800000"
+echo "  [OK] omni-dlq retention=7d"
+
+# Proactive incidents: 1-day retention (short-lived autonomous detection events).
+echo "Enforcing omni-proactive-incidents config: retention.ms=86400000 (1d), cleanup.policy=delete"
+"${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
+  /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$BOOTSTRAP" \
+  --alter --entity-type topics --entity-name omni-proactive-incidents \
+  --add-config "cleanup.policy=delete,retention.ms=86400000"
+echo "  [OK] omni-proactive-incidents retention=1d"
+
 # SIEM integration topics (Phase 2): brain-go Kafka transport.
 # omni-siem-raw: raw FinGuard incidents from siem_bridge (SIEM_BRIDGE_DUAL_EMIT=true).
 # omni-siem-incidents: correlated incidents from brain-go (BRAIN_TRANSPORT=kafka).
 # Retention: broker default (set OMNI_SIEM_RAW_RETENTION_MS to override at create).
-for SIEM_TOPIC in "omni-siem-raw" "omni-siem-incidents"; do
+# omni-siem-chains: graph-correlated attack chains from brain-go (CORR_GRAPH_ENABLED=true).
+for SIEM_TOPIC in "omni-siem-raw" "omni-siem-incidents" "omni-siem-chains"; do
   echo "Ensuring topic: $SIEM_TOPIC (partitions=6)"
   "${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
     /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BOOTSTRAP" \
