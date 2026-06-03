@@ -37,7 +37,7 @@ def _raw(incident_id: str, severity: str, category: str, source_ip: str, desc: s
         "id": incident_id,
         "tenant_id": TENANT,
         "severity": severity,
-        "source": "e2e-injector",
+        "source": "agent",  # must be in contract AllowedSources
         "category": category,
         "timestamp_unix": int(time.time()),
         "source_ip": source_ip,

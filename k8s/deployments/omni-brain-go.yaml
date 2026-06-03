@@ -1,0 +1,79 @@
+# brain-go — Smart SIEM graph correlation engine (Kafka transport).
+# Consumes omni-siem-raw, produces correlated incidents to omni-siem-incidents,
+# and emits graph-correlated attack chains to omni-siem-chains.
+# Union-find correlation state lives in the multi-agent Redis.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-brain-go
+  namespace: multi-agent
+  labels:
+    app: omni-brain-go
+    role: siem-correlator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omni-brain-go
+  template:
+    metadata:
+      labels:
+        app: omni-brain-go
+        role: siem-correlator
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: brain-go
+          image: docker.io/finguard/brain-go:siem-v2-corr
+          imagePullPolicy: Never
+          env:
+            - name: BRAIN_TRANSPORT
+              value: "kafka"
+            - name: BRAIN_KAFKA_BOOTSTRAP
+              value: "kafka.multi-agent.svc.cluster.local:9092"
+            - name: BRAIN_KAFKA_CONSUME_TOPIC
+              value: "omni-siem-raw"
+            - name: BRAIN_KAFKA_PRODUCE_TOPIC
+              value: "omni-siem-incidents"
+            - name: BRAIN_KAFKA_CONSUMER_GROUP
+              value: "brain-go-kafka"
+            - name: BRAIN_KAFKA_CHAINS_TOPIC
+              value: "omni-siem-chains"
+            # Graph correlation (the crux) — union-find on shared entities.
+            - name: CORR_GRAPH_ENABLED
+              value: "true"
+            - name: CORR_GRAPH_WINDOW_SECONDS
+              value: "600"
+            - name: CORR_GRAPH_THRESHOLD
+              value: "3"
+            - name: CORR_MIN_ENTITY_SPAN
+              value: "1"
+            - name: CORR_MIN_CONFIDENCE
+              value: "0.5"
+            # Union-find state store — multi-agent Redis is passwordless (lab).
+            - name: BRAIN_REDIS_ADDR
+              value: "redis.multi-agent.svc.cluster.local:6379"
+            - name: BRAIN_REDIS_ALLOW_NO_AUTH
+              value: "true"
+            - name: TMPDIR
+              value: "/tmp"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
