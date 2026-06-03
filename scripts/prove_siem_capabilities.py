@@ -662,7 +662,7 @@ async def cap2_decide(approved_action_from_cap4a: dict | None = None) -> bool:
         # Fallback: check recent analyst pod logs for evidence of plan generation
         evidence("No CAP-4A action body available — checking analyst pod logs", "fallback path")
         ANALYST_POD = os.popen(
-            "kubectl get pod -n multi-agent -l app=omni-analyst "
+            "kubectl get pod -n multi-agent -l app=omni-fullstack "
             "--field-selector=status.phase=Running "
             "-o jsonpath='{.items[0].metadata.name}' 2>/dev/null"
         ).read().strip().strip("'")

@@ -1,0 +1,15 @@
+# Default-deny ingress for multi-agent namespace.
+# Any pod without an explicit allow NetworkPolicy will reject all inbound traffic.
+# Pods that need inbound (e.g. omni-gateway) must have their own allow policy.
+#
+#   kubectl apply -f k8s/network-policies/default-deny-ingress.yaml
+#
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: multi-agent
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress

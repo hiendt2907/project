@@ -1,13 +1,13 @@
 {
   "schema_version": "2",
   "wave": "A1+PhaseB",
-  "started_at": 1778570094,
-  "ended_at": 1778570140,
-  "duration_sec": 46,
-  "git_sha": "62cdb9b0e182ca440ad9ba44d671e8561deeef61",
+  "started_at": 1779505346,
+  "ended_at": 1779505412,
+  "duration_sec": 66,
+  "git_sha": "de69bafee437d28d715cedc04633612b84852638",
   "summary": {
-    "total": 3,
-    "passed": 3,
+    "total": 9,
+    "passed": 9,
     "failed": 0,
     "ok": true
   },
@@ -25,9 +25,45 @@
       "note": ""
     },
     {
+      "scenario": "phase_b_pytest",
+      "status": "passed",
+      "duration_sec": 3,
+      "note": ""
+    },
+    {
       "scenario": "phase_b_unit_full",
       "status": "passed",
-      "duration_sec": 45,
+      "duration_sec": 61,
+      "note": ""
+    },
+    {
+      "scenario": "phase_b_api_resource",
+      "status": "passed",
+      "duration_sec": 0,
+      "note": ""
+    },
+    {
+      "scenario": "phase_b_api_state",
+      "status": "passed",
+      "duration_sec": 0,
+      "note": ""
+    },
+    {
+      "scenario": "phase_b_api_app_log_fc",
+      "status": "passed",
+      "duration_sec": 0,
+      "note": ""
+    },
+    {
+      "scenario": "phase_b_sec_audit",
+      "status": "passed",
+      "duration_sec": 0,
+      "note": ""
+    },
+    {
+      "scenario": "nginx_waiting_fault",
+      "status": "passed",
+      "duration_sec": 1,
       "note": ""
     }
   ]

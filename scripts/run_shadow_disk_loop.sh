@@ -29,9 +29,9 @@ echo "[shadow-loop] run local mock generator..."
 bash scripts/mock_shadow_os_errors.sh diskpressure "${TRACE_ID}"
 
 echo "[shadow-loop] publish command feedback..."
-EXECUTOR_POD="$(./scripts/with_working_kube.sh kubectl -n "${NAMESPACE}" get pods -l app=omni-executor -o jsonpath='{.items[0].metadata.name}')"
+EXECUTOR_POD="$(./scripts/with_working_kube.sh kubectl -n "${NAMESPACE}" get pods -l app=omni-fullstack -o jsonpath='{.items[0].metadata.name}')"
 if [[ -z "${EXECUTOR_POD}" ]]; then
-  echo "[shadow-loop] ERROR: cannot find omni-executor pod"
+  echo "[shadow-loop] ERROR: cannot find omni-fullstack pod"
   exit 1
 fi
 ./scripts/with_working_kube.sh kubectl -n "${NAMESPACE}" exec "${EXECUTOR_POD}" -- \
@@ -45,14 +45,14 @@ fi
     --kafka-topic "${TOPIC}"
 
 echo "[shadow-loop] verify analyst consumed trace..."
-if ./scripts/with_working_kube.sh logs -n "${NAMESPACE}" deploy/omni-analyst --since=10m | grep -q "${TRACE_ID}"; then
+if ./scripts/with_working_kube.sh logs -n "${NAMESPACE}" deploy/omni-fullstack --since=10m | grep -q "${TRACE_ID}"; then
   echo "[shadow-loop] analyst trace observed: ${TRACE_ID}"
 else
   echo "[shadow-loop] ERROR: analyst trace not found: ${TRACE_ID}"
   exit 1
 fi
 
-if ./scripts/with_working_kube.sh logs -n "${NAMESPACE}" deploy/omni-analyst --since=10m | grep -q "COMMAND_FEEDBACK_INGESTED"; then
+if ./scripts/with_working_kube.sh logs -n "${NAMESPACE}" deploy/omni-fullstack --since=10m | grep -q "COMMAND_FEEDBACK_INGESTED"; then
   echo "[shadow-loop] feedback transition observed"
 else
   echo "[shadow-loop] ERROR: COMMAND_FEEDBACK_INGESTED not observed"

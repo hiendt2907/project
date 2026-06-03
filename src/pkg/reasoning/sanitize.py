@@ -8,6 +8,41 @@ from typing import Any, cast
 
 from pkg.rag.embed_utils import truncate_for_embedding
 
+# Prompt injection patterns to strip from evidence fields before LLM ingestion.
+# These patterns can appear in attacker-controlled SIEM events or log content.
+_INJECTION_PATTERNS: list[re.Pattern[str]] = [
+    # ChatML / special tokens used by LLM tokenizers
+    re.compile(r"<\|im_(start|end|sep)\|>", re.IGNORECASE),
+    re.compile(r"</s>|<s>|<\|endoftext\|>", re.IGNORECASE),
+    # Classic prompt override phrases
+    re.compile(
+        r"(?i)\b(ignore|disregard|forget)\s+(the\s+)?(previous|prior|above|all)\s+"
+        r"(instruction|command|directive|context|system\s+prompt)s?\b"
+    ),
+    re.compile(r"(?i)\bnew\s+(instruction|directive|system\s+prompt)\s*:", re.IGNORECASE),
+    re.compile(r"(?i)\boverride\s+(previous|prior|all)\s+(instruction|command)s?\b"),
+    # Role injection at line start (e.g. "\nsystem: do X")
+    re.compile(r"(?im)^(system|assistant|user)\s*:\s*"),
+]
+
+# Collapse runs of more than 2 consecutive newlines (attacker padding / whitespace smuggling).
+_RE_EXCESS_NEWLINES = re.compile(r"\n{3,}")
+
+
+def sanitize_evidence_field(text: str) -> str:
+    """Strip prompt injection patterns from a single evidence field value.
+
+    Applies whitelist-pattern removal, not semantic analysis — fast and deterministic.
+    Legitimate evidence (log lines, k8s events, metric values) is not affected.
+    """
+    if not text:
+        return text
+    s = text
+    for pat in _INJECTION_PATTERNS:
+        s = pat.sub(" ", s)
+    s = _RE_EXCESS_NEWLINES.sub("\n\n", s)
+    return s.strip()
+
 # Probes chỉ kiểm tra hạ tầng chung; không đo CPU/memory của workload cụ thể.
 _GENERIC_INFRA_PROBES = frozenset(
     {
@@ -80,7 +115,7 @@ def format_sanitized_analyst_user_text(ev: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append("[ALERT_CONTEXT]")
     lines.append(f"  rule: {ev.get('alert_rule') or 'n/a'}")
-    hint = str(ev.get("alert_hint") or "").strip()
+    hint = sanitize_evidence_field(str(ev.get("alert_hint") or "").strip())
     if hint:
         lines.append(f"  error_hint: {hint[:700]}")
     cq = str(ev.get("canonical_query_snippet") or "").strip()
@@ -99,8 +134,9 @@ def format_sanitized_analyst_user_text(ev: dict[str, Any]) -> str:
     lines.append(f"  layer: {ev.get('layer') or ''}")
     ef = ev.get("extracted_fact")
     if ef is not None and str(ef).strip():
-        lines.append(f"  metrics_or_facts: {str(ef)[:600]}")
-    raw = str(ev.get("raw") or "").strip()
+        ef_clean = sanitize_evidence_field(str(ef))
+        lines.append(f"  metrics_or_facts: {ef_clean[:600]}")
+    raw = sanitize_evidence_field(str(ev.get("raw") or "").strip())
     if raw:
         lines.append(f"  error_or_raw: {raw[:600]}")
     lines.append(f"  ts: {ev.get('ts') or ''}")

@@ -38,6 +38,8 @@ from workers.alert_sdk_truth_compare import (
     build_contrast_operator_telegram_body,
     compare_alert_claim_to_sdk_state,
 )
+from workers.os_state_validator import compare_alert_claim_to_os_state
+from workers.os_diagnostic_loop import run_os_diagnostic_loop
 from workers.analyst_agentic_loop import infer_blind_proof_lane_hint, run_agentic_mutate_plan
 from workers.memory.initial_symptom import initial_symptom_from_evidence_batch
 from workers.memory.trace_memory import load_trace_memory
@@ -53,7 +55,7 @@ from workers.evidence_mutate_emit import (
     store_autonomous_trace_context,
 )
 from workers.handler_context import WorkerHandlerContext
-from workers.baseline_snapshot import REDIS_KEY_SNAPSHOT
+from workers.baseline_snapshot import REDIS_KEY_SNAPSHOT, REDIS_KEY_TS
 from workers.autonomous_execute import MUTATE_TOOL_ALLOWLIST
 from workers.k8s_tools import deployment_evidence_snapshot
 from workers.llm_context_budget import effective_reply_max_words
@@ -92,6 +94,7 @@ from workers.telegram_escalation import (
     format_operator_triage_card,
 )
 from workers.request_trace import pop_trace_id, push_trace_id
+from workers.remote_agent_pipeline import handle_remote_agent_evidence
 from workers.telegram_outbound import send_telegram_out_for_inbound
 from workers.telegram_advisory_emitter import (
     _e,
@@ -541,6 +544,28 @@ def _rag_search_failed(detail: Any) -> bool:
     return isinstance(detail, dict) and str(detail.get("reason") or "") == "search_error"
 
 
+def _extract_alert_ctx(batch: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract alert context fields from the first evidence item in batch."""
+    if not batch:
+        return {}
+    b0 = batch[0]
+    # canonical_query_snippet may carry JSON-encoded alert metadata
+    raw_q = b0.get("canonical_query_snippet") or ""
+    parsed_q: dict[str, Any] = {}
+    if isinstance(raw_q, str) and raw_q.strip().startswith("{"):
+        try:
+            parsed_q = json.loads(raw_q) if isinstance(json.loads(raw_q), dict) else {}
+        except Exception:
+            pass
+    return {
+        "alertname": b0.get("alert_rule") or parsed_q.get("alertname") or "",
+        "namespace": b0.get("namespace") or parsed_q.get("namespace") or "",
+        "source": b0.get("evidence_source") or b0.get("source") or "",
+        "labels": parsed_q.get("labels") or {},
+        "annotations": parsed_q.get("annotations") or {},
+    }
+
+
 def build_sdk_fact_only_prompt(batch: list[dict[str, Any]]) -> str:
     """Compact SDK facts for LLM when RAG is unavailable (no raw log dumps)."""
     if not batch:
@@ -651,8 +676,16 @@ async def _proof_of_fault_gate(
     if snap_raw:
         try:
             snap = json.loads(snap_raw.decode() if isinstance(snap_raw, bytes) else snap_raw)
-        except Exception:
+        except Exception as _je:
+            logger.warning("event=baseline_snapshot_corrupt trace=%s err=%r raw_len=%d",
+                           trace, _je, len(snap_raw) if snap_raw else 0)
             snap = {}
+    ts_raw = await ctx.redis.get(REDIS_KEY_TS)
+    if ts_raw:
+        import time as _time
+        _snap_age = _time.time() - float(ts_raw)
+        if _snap_age > 300:
+            logger.warning("event=baseline_snapshot_stale age_sec=%.0f trace=%s", _snap_age, trace)
     z_thr = float(getattr(ctx.settings, "baseline_dr_z_threshold", 3.0) or 3.0)
     dr = bool(snap.get("dr"))
     z_cpu = _f64(snap.get("z_cpu"))
@@ -1115,7 +1148,7 @@ async def _emit_agentic_mutate_if_any(
         return True  # handled — caller must not fall through to RAG_MISS escalation
 
     llm_first = bool(getattr(ctx.settings, "omni_llm_first_autonomy_enabled", False))
-    unrestricted = bool(getattr(ctx.settings, "omni_unrestricted_tool_execution", True))
+    unrestricted = bool(getattr(ctx.settings, "omni_unrestricted_tool_execution", False))
     legacy_det_fallback = bool(getattr(ctx.settings, "omni_legacy_deterministic_fallback", False))
     # In LLM-first mode, force planner-led diagnose→verify→mutate flow.
     # "unrestricted" controls execution gates, not whether deterministic shortcuts bypass planner.
@@ -1150,6 +1183,16 @@ async def _emit_agentic_mutate_if_any(
         recall_result = await recall_playbook_advisory(
             ctx, query_text=sanitized_text, trace=trace
         )
+        # S2.4: persist point_id so feedback loop can downvote on failure.
+        if recall_result and recall_result.top_point_id:
+            try:
+                await ctx.redis.setex(
+                    f"omni:recall:trace_point_id:{trace}",
+                    7200,
+                    recall_result.top_point_id,
+                )
+            except Exception:
+                pass
         strong_prefix: str | None = None
         if recall_result:
             # Suppress strong recall prefix when evidence clearly shows credential failure.
@@ -1772,7 +1815,7 @@ async def _emit_agentic_mutate_if_any(
             advise=str((plan or {}).get("advise") or ""),
         )
     else:
-        await emit_execute_mutate(
+        enqueued = await emit_execute_mutate(
             ctx,
             trace=trace,
             tool_name=tn,
@@ -1780,6 +1823,33 @@ async def _emit_agentic_mutate_if_any(
             attempt_count=ac,
             reasoning_chain=exec_rc if isinstance(exec_rc, dict) else None,
         )
+        if not enqueued:
+            await emit_terminal_tombstone(
+                ctx,
+                trace_id=trace,
+                reason_code="MUTATE_ENQUEUE_FAILED",
+                component="evidence_consumer",
+                detail=f"tool={tn} CRAT_fail_closed_or_kafka_unavailable",
+            )
+            await _emit_suggest_remediation(
+                ctx,
+                trace=trace,
+                diagnosis=(
+                    "EXECUTE_MUTATE was not enqueued: audit ledger write failed (fail-closed) "
+                    "or Kafka publish failed. Check CRAT health and omni-actions availability; "
+                    "apply remediation manually if appropriate."
+                ),
+                confidence=0.55,
+                source="MUTATE_ENQUEUE_FAILED",
+                suggested_tool="k8s_describe_resource",
+            )
+            await emit_telegram_escalation(
+                ctx,
+                trace,
+                f"MUTATE_ENQUEUE_FAILED tool={tn} trace={trace}",
+                reason="MUTATE_ENQUEUE_FAILED",
+            )
+            return False
     return True
 
 
@@ -1792,9 +1862,57 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         ev_doc = {"kind": "parse_error", "raw": raw[:8000]}
     ev_doc = coerce_evidence_dict(ev_doc)
     trace = str(ev_doc.get("trace_id") or "evidence-unknown")
+
+    # Remote agent evidence (all domains: os, database, services, storage, k8s, logs)
+    # probe prefix routing via detect_domain() inside handle_remote_agent_evidence
+    if ev_doc.get("evidence_source") == "RemoteAgent":
+        tok = push_trace_id(trace)
+        try:
+            ctx.inbound_trace_id = trace
+            return await handle_remote_agent_evidence(ctx, ev_doc, trace)
+        finally:
+            pop_trace_id(tok)
+
+    # Direct database health-check evidence (ProxySQL admin, MySQL direct injection)
+    # probe values: mysql_health, proxysql_stats, db_*
+    if ev_doc.get("evidence_source") == "DirectDatabase":
+        tok = push_trace_id(trace)
+        try:
+            ctx.inbound_trace_id = trace
+            return await handle_remote_agent_evidence(ctx, ev_doc, trace)
+        finally:
+            pop_trace_id(tok)
+
+    # Direct storage evidence (NFS mounts, disk health outside remote agent wrapper)
+    # probe values: disk_usage, storage_nfs, disk_*, storage_*
+    if ev_doc.get("evidence_source") == "DirectStorage":
+        tok = push_trace_id(trace)
+        try:
+            ctx.inbound_trace_id = trace
+            return await handle_remote_agent_evidence(ctx, ev_doc, trace)
+        finally:
+            pop_trace_id(tok)
+
+    # Direct services evidence (HAProxy, systemd units outside remote agent wrapper)
+    # probe values: service_haproxy, service_systemd_units
+    if ev_doc.get("evidence_source") == "DirectServices":
+        tok = push_trace_id(trace)
+        try:
+            ctx.inbound_trace_id = trace
+            return await handle_remote_agent_evidence(ctx, ev_doc, trace)
+        finally:
+            pop_trace_id(tok)
+
     tok = push_trace_id(trace)
     try:
         ctx.inbound_trace_id = trace
+        # MTTD early registration: persist detection timestamp before analysis begins.
+        # kpi_metrics.py reads this key to compute accurate MTTD (vs. receiving it from feedback).
+        import time as _mttd_time
+        try:
+            await ctx.redis.set(f"omni:incident:ts:{trace}", str(_mttd_time.time()), ex=7200)
+        except Exception as _mttd_err:
+            logger.debug("event=mttd_ts_register_fail trace=%s err=%s", trace, _mttd_err)
         await emit_transition(
             ctx,
             trace_id=trace,
@@ -1863,7 +1981,12 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 )
             if matched_playbook is not None:
                 enqueue_rag_candidate(orch, f"playbook:{matched_playbook.playbook_id}")
-            await save_trace_orchestrator_state(ctx.redis, orch)
+            saved_orch = await save_trace_orchestrator_state(ctx.redis, orch)
+            if not saved_orch:
+                logger.warning(
+                    "event=trace_orchestrator_persist_failed trace=%s — continuing without durable orch state",
+                    trace,
+                )
         except Exception as _orch_err:
             logger.debug("trace_orchestrator init trace=%s err=%s", trace, _orch_err)
 
@@ -1884,7 +2007,19 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             except Exception:
                 logger.warning("evidence_reply context parse failed")
 
-        by_probe = {str(b.get("probe") or ""): dict(b) for b in batch}
+        by_probe: dict[str, dict[str, Any]] = {}
+        for _b in batch:
+            _key = str(_b.get("probe") or "")
+            if not _key:
+                continue
+            _existing = by_probe.get(_key)
+            if _existing is None:
+                by_probe[_key] = dict(_b)
+            else:
+                _ex_r = str(_existing.get("result") or "").upper()
+                _new_r = str(_b.get("result") or "").upper()
+                if _ex_r == "PASSED" and _new_r != "PASSED":
+                    by_probe[_key] = dict(_b)
         contrast = compare_alert_claim_to_sdk_state(by_probe)
         if contrast is not None:
             contrast_st = contrast.strip()
@@ -1941,11 +2076,92 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             )
             return contrast
 
+        # Lane 2 (state/SYS_HARD_FAIL): iterative OS diagnostic loop.
+        # Guard: only run when batch is actually classified as lane=state to avoid
+        # running OS probe checks on resource/app_log lanes where they don't apply.
+        _pre_lane, _ = resolve_proof_lane(batch)
+        _alert_ctx = _extract_alert_ctx(batch)
+        os_contrast = (
+            await run_os_diagnostic_loop(ctx, batch, by_probe, _alert_ctx, trace)
+            if _pre_lane == "state" else None
+        )
+        if os_contrast is not None:
+            os_contrast_st = os_contrast.strip()
+            os_diagnosis_rich = build_contrast_diagnosis_for_action(by_probe, os_contrast_st)
+            await _emit_suggest_remediation(
+                ctx,
+                trace=trace,
+                diagnosis=os_diagnosis_rich,
+                confidence=0.90,
+                source="OS_STATE_CONTRAST",
+                suggested_tool="k8s_describe_resource",
+            )
+            admin_cid = getattr(ctx.settings, "telegram_admin_chat_id", None)
+            digest_loc = str(getattr(ctx.settings, "omni_operator_digest_locale", "both") or "both").lower()
+            if digest_loc not in ("en", "vi", "both"):
+                digest_loc = "both"
+            if admin_cid and ctx.telegram:
+                try:
+                    t_msg = build_contrast_operator_telegram_body(
+                        by_probe, os_contrast_st, str(trace), locale=digest_loc
+                    )
+                    await ctx.telegram.send_message(int(admin_cid), t_msg[:3900], parse_mode=None)
+                except Exception as _te:
+                    logger.warning("event=os_contrast_telegram_failed trace=%s err=%r", trace, _te)
+            await emit_transition(
+                ctx,
+                trace_id=trace,
+                transition=TRANSITION_PLAN_EMITTED,
+                component="evidence_consumer",
+                detail="os_state_contrast_suggested",
+            )
+            return os_contrast
+
         # **ADVISORY MODE INTEGRATION (Phase 5)**
         # Check if we should run advisory analyst instead of traditional flow
         if bool(getattr(ctx.settings, "omni_siem_suggest_only", True)) and not bool(
             getattr(ctx.settings, "omni_auto_execute_enabled", False)
         ):
+            # Lane 1 (resource): 3σ gate must pass before advisory — alert may be wrong, sigma is ground truth.
+            _adv_lane, _ = resolve_proof_lane(batch)
+            if _adv_lane == "resource":
+                _adv_snap_raw = await ctx.redis.get(REDIS_KEY_SNAPSHOT)
+                _adv_snap_ts = await ctx.redis.get(REDIS_KEY_TS)
+                if _adv_snap_raw and _adv_snap_ts:
+                    import time as _time
+                    _adv_snap_age = _time.time() - float(_adv_snap_ts)
+                    if _adv_snap_age > 300:
+                        logger.warning(
+                            "event=advisory_sigma_stale trace=%s age_sec=%.0f — fail closed",
+                            trace,
+                            _adv_snap_age,
+                        )
+                        _adv_snap_raw = None
+                if _adv_snap_raw:
+                    try:
+                        _adv_snap = json.loads(
+                            _adv_snap_raw.decode() if isinstance(_adv_snap_raw, bytes) else _adv_snap_raw
+                        )
+                        _adv_z_thr = float(getattr(ctx.settings, "baseline_dr_z_threshold", 3.0) or 3.0)
+                        _adv_z_cpu = _f64(_adv_snap.get("z_cpu"))
+                        _adv_z_mem = _f64(_adv_snap.get("z_mem"))
+                        _adv_dr = bool(_adv_snap.get("dr"))
+                        _adv_sigma_ok = _adv_dr or bool(
+                            (_adv_z_cpu is not None and abs(_adv_z_cpu) >= _adv_z_thr)
+                            or (_adv_z_mem is not None and abs(_adv_z_mem) >= _adv_z_thr)
+                        )
+                        if not _adv_sigma_ok:
+                            logger.info(
+                                "event=advisory_sigma_gate_blocked trace=%s lane=resource "
+                                "z_cpu=%s z_mem=%s threshold=%.1f — alert within normal bounds, no advisory",
+                                trace,
+                                _adv_z_cpu,
+                                _adv_z_mem,
+                                _adv_z_thr,
+                            )
+                            return ""
+                    except Exception as _adv_snap_err:
+                        logger.debug("advisory_sigma_gate snap parse error trace=%s err=%s", trace, _adv_snap_err)
             from workers.temporal_evidence_collector import fetch_temporal_evidence_for_batch
             from workers.advisory_analyst_handler import run_advisory_analyst
 
@@ -2047,15 +2263,29 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                         tg_advisory = copy_advisory_for_telegram_if_mismatch(
                             advisory, sanitized_text
                         )
-                        await render_advisory_to_telegram(ctx, tg_advisory, int(effective_cid))
+                        # Resolve lane for badge — best-effort, no extra Redis call.
+                        try:
+                            _tg_lane, _ = resolve_proof_lane(batch)
+                        except Exception:
+                            _tg_lane = ""
+                        await render_advisory_to_telegram(
+                            ctx, tg_advisory, int(effective_cid), lane_label=_tg_lane
+                        )
                     elif ctx.telegram:
                         logger.error(
                             "event=advisory_no_chat_id trace=%s — set OMNI_TELEGRAM_ADMIN_CHAT_ID to receive autonomous advisories",
                             trace,
                         )
-                    # Phase 7.3 — Controlled HITL Routing (default off)
+                    # Log escalation tier for observability and CRAT record.
+                    _tier = getattr(advisory, "escalation_tier", "L2_SUGGEST")
+                    logger.info(
+                        "event=advisory_escalation_tier trace=%s tier=%s confidence=%s verdict=%s",
+                        trace, _tier, advisory.confidence, advisory.verdict,
+                    )
+
+                    # Phase 7.3 — HITL routing: tier=L3_HITL or escalation_reason (default gate off)
                     if (
-                        advisory.escalation_reason
+                        (_tier == "L3_HITL" or advisory.escalation_reason)
                         and getattr(ctx.settings, "omni_hitl_routing_enabled", False)
                     ):
                         from workers.advisory_hitl_compat import AdvisoryHITLCompat
@@ -2096,13 +2326,14 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                                     trace,
                                     advisory.escalation_reason[:200],
                                 )
-                    # Emit as SUGGEST_REMEDIATION (not mutations)
+                    # Emit as SUGGEST_REMEDIATION (not mutations); tier is metadata only at this point.
+                    _tier = getattr(advisory, "escalation_tier", "L2_SUGGEST")
                     await _emit_suggest_remediation(
                         ctx,
                         trace=trace,
                         diagnosis=advisory.root_cause,
                         confidence=0.9,
-                        source="ADVISORY_MODE_ANALYST",
+                        source=f"ADVISORY_MODE_ANALYST/{_tier}",
                         suggested_tool="kubectl_describe",
                     )
                     logger.info(

@@ -38,7 +38,7 @@ automation.
 
 - `scripts/prove_siem_capabilities.py` — env-var driven, localhost is documented fallback
 - `scripts/backfill_playbooks.py` — reads `OMNI_REDIS_URL`, localhost is documented fallback
-- `scripts/mvp_api.py` — standalone dev tool, not in CI path
+
 - `k8s/monitor/*.yaml` — `127.0.0.1` is pod-local sidecar pattern, correct
 
 ---

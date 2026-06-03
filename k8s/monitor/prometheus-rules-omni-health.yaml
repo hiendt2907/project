@@ -109,3 +109,18 @@ spec:
             description: >
               P95 MTTD={{ $value | humanizeDuration }}.
               Detection pipeline may be slow — check evidence adapter and prober latency.
+
+    - name: omni.executor.mutate
+      interval: 60s
+      rules:
+        - alert: OmniExecutorMutateSkippedBurst
+          expr: sum(rate(omni_executor_execute_skipped_total[15m])) > 0.2
+          for: 20m
+          labels:
+            severity: warning
+            team: omni-sre
+          annotations:
+            summary: "Executor mutate skips elevated (shadow / kill-switch / rate limit)"
+            description: >
+              Sustained omni_executor_execute_skipped_total rate suggests shadow OS,
+              OMNI_AUTO_EXECUTE_ENABLED=false, or rate limiting. Inspect reason label and executor logs.

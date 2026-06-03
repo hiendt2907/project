@@ -26,6 +26,7 @@ from workers.metrics_exporter import (
     inc_experience_saved,
     inc_llm_requests,
 )
+from workers.llm_context_budget import build_llm_options
 from workers.model_routing import dispatch_task
 from workers.session_state import SessionState
 from workers.slow_path_trace import truncate_for_prompt
@@ -257,7 +258,7 @@ async def agentic_slow_path_with_llm_and_tools(
                     resp = await ctx.llm.chat_structured(
                         model=model,
                         messages=messages,
-                        options={"temperature": 0.1, "num_ctx": 4096},
+                        options=build_llm_options(ctx, temperature=0.1),
                     )
                 content = (resp.get("message") or {}).get("content") or ""
                 if getattr(ctx.settings, "agentic_debug_io", False):

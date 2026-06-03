@@ -8,6 +8,7 @@ stringData:
   NEXTAUTH_SECRET: "change-me-omni-ui-secret-32chars-min"
   ADMIN_USERNAME: "admin"
   ADMIN_PASSWORD: "omni-admin-2024"
+  OMNI_GATEWAY_API_KEY: "IMYjG-5dbFzKzGq_zDHQMG_h3TzNaU8ZQt_YXpbw6CA"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -40,12 +41,16 @@ spec:
               value: "0.0.0.0"
             - name: NEXTAUTH_URL
               value: "http://omni.ai-agent.local"
+            - name: AUTH_COOKIE_DOMAIN
+              value: ".ai-agent.local"
             - name: SIEM_METRICS_URL
               value: "http://prometheus.monitor.svc.cluster.local:9090/api/v1/query"
             - name: OMNI_GATEWAY_URL
               value: "http://omni-gateway.multi-agent.svc.cluster.local"
             - name: OMNI_REDIS_URL
               value: "redis://redis.multi-agent.svc.cluster.local:6379"
+            - name: OMNI_PROVISIONER_URL
+              value: "http://host.orb.internal:9901"
           envFrom:
             - secretRef:
                 name: omni-ui-secrets

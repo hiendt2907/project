@@ -51,11 +51,12 @@ def parse_metric_block(text: str, prefixes: list[str]) -> dict[str, float]:
 
 
 def _worker_metrics_deploy() -> str:
-    """Master Plan V3 split: omni-worker replicas 0 → scrape omni-prober :9090."""
-    rc, out = k("get", "deploy", "omni-worker", "-n", "multi-agent", "-o", "jsonpath={.spec.replicas}")
-    if rc == 0 and out.strip() == "0":
-        return "omni-prober"
-    return "omni-worker"
+    """Sole worker deployment after split-role consolidation (2026-06-03)."""
+    for dep in ("omni-fullstack",):
+        rc, out = k("get", "deploy", dep, "-n", "multi-agent", "-o", "jsonpath={.spec.replicas}")
+        if rc == 0 and out.strip() not in ("", "0"):
+            return dep
+    return "omni-fullstack"
 
 
 def get_worker_metrics() -> dict[str, float]:
@@ -325,7 +326,7 @@ def simulate(duration_sec: int, interval_sec: int, *, inject_proactive: bool = F
                 "exec",
                 "-n",
                 "multi-agent",
-                "deploy/omni-core",
+                "deploy/omni-fullstack",
                 "--",
                 "python",
                 "-m",
@@ -361,7 +362,7 @@ def _trace_in_logs(trace_id: str, deploy: str) -> bool:
 
 def _active_worker_deploys() -> list[str]:
     out: list[str] = []
-    for dep in ("omni-prober", "omni-analyst", "omni-executor", "omni-core", "omni-worker"):
+    for dep in ("omni-fullstack",):
         rc, rep = k("get", "deploy", dep, "-n", "multi-agent", "-o", "jsonpath={.spec.replicas}")
         if rc != 0 or rep.strip() == "0":
             continue

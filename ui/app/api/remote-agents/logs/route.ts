@@ -6,6 +6,13 @@ export const dynamic = "force-dynamic";
 const GATEWAY_URL = process.env.OMNI_GATEWAY_URL;
 const GATEWAY_API_KEY = process.env.OMNI_GATEWAY_API_KEY ?? "";
 
+function gatewayError(agentId: string, detail: string) {
+  return NextResponse.json(
+    { agent_id: agentId, generated_at: new Date().toISOString(), logs: [], metrics: null, source: "error", error: detail },
+    { status: 502 }
+  );
+}
+
 export async function GET(request: NextRequest) {
   const agentId = request.nextUrl.searchParams.get("agent_id");
   const nRaw = request.nextUrl.searchParams.get("n") ?? "50";
@@ -16,13 +23,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (!GATEWAY_URL) {
-    return NextResponse.json({
-      agent_id: agentId,
-      generated_at: new Date().toISOString(),
-      logs: [],
-      metrics: null,
-      source: "mock",
-    });
+    return gatewayError(agentId, "OMNI_GATEWAY_URL not configured");
   }
 
   try {
@@ -33,16 +34,10 @@ export async function GET(request: NextRequest) {
         cache: "no-store",
       }
     );
-    if (!res.ok) throw new Error(`${res.status}`);
+    if (!res.ok) return gatewayError(agentId, `gateway logs ${res.status}`);
     const data = await res.json();
     return NextResponse.json({ ...data, source: "gateway" });
   } catch {
-    return NextResponse.json({
-      agent_id: agentId,
-      generated_at: new Date().toISOString(),
-      logs: [],
-      metrics: null,
-      source: "error",
-    }, { status: 502 });
+    return gatewayError(agentId, "gateway logs unreachable");
   }
 }

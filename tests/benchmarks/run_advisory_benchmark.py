@@ -79,37 +79,65 @@ def _score_result(expected: dict, advisory: dict | None) -> tuple[float, dict]:
 async def _run_case(case: dict, model: str, llm_url: str) -> dict:
     """Run one golden case and return scored result."""
     from workers.advisory_analyst_handler import run_advisory_analyst
+    from llm.factory import build_llm_client
     from unittest.mock import AsyncMock, MagicMock
 
     # Minimal WorkerSettings stub — benchmark only needs llm_base_url
     ws = MagicMock()
+    ws.vllm_base_url = llm_url
     ws.ollama_base_url = llm_url
     ws.ollama_model = model
+    ws.diag_evidence_llm_model = model
+    ws.model_reasoning_engine = model
+    ws.llm_num_ctx = int(os.getenv("BENCHMARK_NUM_CTX", "4096"))
     ws.llm_semaphore_limit = 1
+    _timeout = float(os.getenv("BENCHMARK_LLM_TIMEOUT_SEC", "120"))
+    ws.llm_chat_timeout_sec = _timeout
+    ws.omni_advisory_num_predict = int(os.getenv("BENCHMARK_NUM_PREDICT", "512"))
     ws.rag_top_k = 3
     ws.rag_min_score = 0.0
+    ws.max_reply_words = 800
+    ws.reply_language = "en"
 
     # Minimal fake redis that returns empty for RAG
     redis = AsyncMock()
     redis.hgetall = AsyncMock(return_value={})
     redis.zadd = AsyncMock()
     redis.rpush = AsyncMock()
+    redis.setex = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
 
     # Fake kafka capture
     kafka = MagicMock()
     kafka.send_dict = AsyncMock()
 
-    ctx = SimpleNamespace(redis=redis, kafka=kafka, settings=ws)
+    # Real LLM client — HTTP timeout must exceed asyncio timeout to let wait_for fire cleanly
+    llm = build_llm_client(base_url=llm_url, embed_url=llm_url, timeout_s=_timeout + 30)
+
+    ctx = SimpleNamespace(redis=redis, kafka=kafka, settings=ws, llm=llm)
+
+    # Bypass retry decorator (3 retries × timeout = too slow on local LLM).
+    # Call the unwrapped function directly for benchmark.
+    import workers.advisory_analyst_handler as _aah
+    from unittest.mock import patch as _patch
+    _orig_retry_fn = _aah._llm_chat_with_retry
+    _unwrapped = getattr(_orig_retry_fn, "__wrapped__", None)
+    if _unwrapped is not None:
+        _aah._llm_chat_with_retry = _unwrapped
 
     t0 = time.time()
     try:
-        advisory = await run_advisory_analyst(
-            ctx=ctx,
-            evidence_text=case["evidence_text"],
-            trace=f"benchmark-{case['id']}",
-        )
+        # Patch write_audit_block — benchmark only tests LLM quality, not audit chain.
+        # redis.pipeline() doesn't work with AsyncMock so CRAT would fail-closed otherwise.
+        with _patch("workers.advisory_analyst_handler.write_audit_block", new=AsyncMock()):
+            advisory = await run_advisory_analyst(
+                ctx=ctx,
+                payload={},
+                evidence_text=case["evidence_text"],
+                trace=f"benchmark-{case['id']}",
+            )
         elapsed = time.time() - t0
-        advisory_dict = advisory.model_dump() if advisory else None
+        advisory_dict = advisory.model_dump(mode="json") if advisory else None
     except Exception as e:
         elapsed = time.time() - t0
         advisory_dict = None
@@ -119,9 +147,13 @@ async def _run_case(case: dict, model: str, llm_url: str) -> dict:
             "elapsed_s": round(elapsed, 2),
             "score": 0.0,
             "pass": False,
-            "error": str(e),
+            "error": type(e).__name__,
             "breakdown": {},
         }
+    finally:
+        # Restore retry wrapper
+        if _unwrapped is not None:
+            _aah._llm_chat_with_retry = _orig_retry_fn
 
     score, breakdown = _score_result(case["expected"], advisory_dict)
     return {

@@ -62,6 +62,7 @@ omit =
     src/workers/omni_actions_remediation.py
     src/workers/alert_sdk_truth_compare.py
     src/workers/evidence_mutate_emit.py
+    src/workers/dlq_archiver.py
 
 [report]
 precision = 1

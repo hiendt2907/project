@@ -107,7 +107,7 @@ def write_incident_postmortem(
 class RecallResult:
     """Structured recall output: advisory text plus strength indicator."""
 
-    __slots__ = ("advisory", "strong", "top_score", "top_tool", "top_arg_keys")
+    __slots__ = ("advisory", "strong", "top_score", "top_tool", "top_arg_keys", "top_point_id")
 
     def __init__(
         self,
@@ -116,12 +116,14 @@ class RecallResult:
         top_score: float,
         top_tool: str,
         top_arg_keys: list[str],
+        top_point_id: str = "",
     ) -> None:
         self.advisory = advisory
         self.strong = strong
         self.top_score = top_score
         self.top_tool = top_tool
         self.top_arg_keys = top_arg_keys
+        self.top_point_id = top_point_id  # S2.4: track for negative feedback
 
 
 async def recall_playbook_advisory(
@@ -159,7 +161,45 @@ async def recall_playbook_advisory(
     if not result.points:
         return None
 
-    top = result.points[0]
+    # S2.4: load negative recall set and apply score decay.
+    redis = getattr(ctx, "redis", None)
+    negative_set: set[str] = set()
+    negative_counts: dict[str, int] = {}
+    if redis is not None:
+        try:
+            raw_neg = await redis.smembers("omni:recall:negative_set")
+            negative_set = {
+                (m.decode() if isinstance(m, bytes) else m) for m in (raw_neg or [])
+            }
+        except Exception:
+            pass
+
+    # Filter hard-negative points and apply decay to soft-negative ones.
+    filtered_points = []
+    for pt in result.points:
+        pid = str(pt.id or "")
+        if pid in negative_set:
+            logger.debug("event=recall_negative_filtered trace=%s point_id=%s", trace, pid)
+            continue
+        neg_count = 0
+        if redis is not None and pid:
+            try:
+                raw_cnt = await redis.get(f"omni:recall:negative:{pid}")
+                neg_count = int(raw_cnt or 0)
+                negative_counts[pid] = neg_count
+            except Exception:
+                pass
+        if neg_count > 0:
+            decay = max(0.5, 1.0 - 0.15 * neg_count)
+            pt.score = (pt.score or 0) * decay
+        filtered_points.append(pt)
+
+    if not filtered_points:
+        return None
+
+    # Re-sort after potential score decay.
+    filtered_points.sort(key=lambda p: float(p.score or 0), reverse=True)
+    top = filtered_points[0]
     top_p = top.payload or {}
     top_tool = str(top_p.get("tool") or top_p.get("resolution_tool") or "").strip()
     top_keys: list[str] = top_p.get("arg_keys") or sorted(
@@ -167,11 +207,12 @@ async def recall_playbook_advisory(
     )
     top_score = round(float(top.score or 0), 3)
     strong = top_score >= _RECALL_STRONG_THRESHOLD
+    top_point_id = str(top.id or "")
 
     advisory_lines = [
         "Verified incident playbooks from memory (advisory — do NOT copy secret values):",
     ]
-    for pt in result.points:
+    for pt in filtered_points:
         p = pt.payload or {}
         tool = str(p.get("tool") or p.get("resolution_tool") or "").strip()
         keys = p.get("arg_keys") or sorted(str(k) for k in (p.get("args_playbook") or {}).keys())
@@ -199,6 +240,7 @@ async def recall_playbook_advisory(
         top_score=top_score,
         top_tool=top_tool,
         top_arg_keys=top_keys,
+        top_point_id=top_point_id,
     )
 
 

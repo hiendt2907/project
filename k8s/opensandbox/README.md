@@ -20,7 +20,7 @@ kubectl apply -f k8s/opensandbox/shim-deployment.yaml
 kubectl rollout status deployment/opensandbox-shim -n opensandbox --timeout=120s
 ```
 
-Omni-worker đã set `OMNI_OPENSANDBOX_ENABLED=true` và base URL shim trong `k8s/deployments/omni-worker.yaml`.
+Omni worker đã set `OMNI_OPENSANDBOX_ENABLED=true` và base URL shim trong `k8s/deployments/omni-worker-configmap.yaml`.
 
 Upstream đầy đủ: [alibaba/OpenSandbox](https://github.com/alibaba/OpenSandbox) (thay shim bằng operator khi cần).
 

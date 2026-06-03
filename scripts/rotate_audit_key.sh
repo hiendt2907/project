@@ -31,7 +31,7 @@ echo "[rotate_audit_key] Key version: $NEW_VERSION"
 
 if $DRY_RUN; then
   echo "[DRY-RUN] Would apply new omni-audit-keys secret to namespace $NS"
-  echo "[DRY-RUN] Would restart: omni-analyst, omni-worker, omni-core"
+  echo "[DRY-RUN] Would restart: omni-fullstack"
   exit 0
 fi
 
@@ -52,10 +52,8 @@ data:
 EOF
 
 echo "[rotate_audit_key] Secret updated. Triggering rolling restart..."
-$KUBE rollout restart deployment/omni-analyst -n "$NS"
-$KUBE rollout restart deployment/omni-core -n "$NS"
-$KUBE rollout status deployment/omni-analyst -n "$NS" --timeout=180s
-$KUBE rollout status deployment/omni-core -n "$NS" --timeout=180s
+$KUBE rollout restart deployment/omni-fullstack -n "$NS"
+$KUBE rollout status deployment/omni-fullstack -n "$NS" --timeout=180s
 
 echo "[rotate_audit_key] Verifying CRAT integrity with new key..."
 # Give pods 10s to pick up new key

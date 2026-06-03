@@ -13,11 +13,13 @@ class DiagnosticEvidenceDict(TypedDict, total=False):
     trace_id: str
     symptom_group: str
     layer: str
+    lane: str          # diagnostic lane: SYS_RESOURCE / SYS_HARD_FAIL / APP_LOG / APP_HTTP / SIEM_SECURITY
     probe: str
     result: str
     extracted_fact: str
     raw: str
     ts: str
+    namespace: str
     # Từ AnomalyEvent lúc alert vào prober — để analyst không suy diễn từ probe một mình
     alert_rule: str
     alert_hint: str
@@ -51,6 +53,8 @@ def coerce_evidence_dict(obj: Any) -> DiagnosticEvidenceDict:
         "trace_id",
         "symptom_group",
         "layer",
+        "lane",        # Bug fix: lane was missing — caused empty lane badge in Telegram
+        "namespace",
         "probe",
         "result",
         "raw",

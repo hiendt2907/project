@@ -434,3 +434,19 @@ async def test_run_agentic_mutate_plan_accepts_tool_args_for_mutate():
     assert out is not None
     assert out.get("tool_name") == "k8s_patch_secret"
     assert out.get("args", {}).get("key") == "DB_PASSWORD"
+
+
+def test_os_command_item_empty_evidence_refs_raises():
+    """Line 47: empty evidence_refs raises ValueError in OSCommandItem validator."""
+    from workers.schemas.agentic_planner import OSCommandItem
+    import pytest
+    with pytest.raises(Exception):
+        OSCommandItem(
+            purpose="test step",
+            dry_run_command="df -h",
+            command="df -h",
+            target="/",
+            expected_output="usage",
+            rollback_command="no rollback",
+            evidence_refs=["   "],  # blank strings → normalizes to [] → raises
+        )

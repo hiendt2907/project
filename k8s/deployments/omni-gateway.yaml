@@ -11,7 +11,7 @@ metadata:
     omni.io/managed: "true"
     omni.io/criticality: "P1"
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: omni-gateway

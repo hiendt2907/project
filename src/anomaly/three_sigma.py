@@ -1,16 +1,31 @@
-"""Rolling Z-score gate with Redis — every write uses pipeline + EXPIRE (TTL)."""
+"""Rolling Z-score gate with Redis — every write uses pipeline + EXPIRE (TTL).
+
+S3.2 additions:
+  - Per-workload threshold/window from Redis key omni:sigma:config:{ns}:{dep}
+  - Maintenance window suppression via omni:maint:{ns}:{dep}
+  - observe_adaptive() method for workload-specific anomaly detection
+"""
 
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import statistics
+from typing import Any
 
 import redis.asyncio as redis
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_KEY_PREFIX = "3sigma:metric:"
 DEFAULT_WINDOW = 100
 DEFAULT_TTL_SEC = 3600
 MIN_STDDEV = 1e-9
+DEFAULT_THRESHOLD = 3.0
+
+_SIGMA_CONFIG_KEY_FMT = "omni:sigma:config:{namespace}:{deployment}"
+_MAINT_KEY_FMT = "omni:maint:{namespace}:{deployment}"
 
 
 def _sanitize_metric_id(metric_id: str) -> str:
@@ -43,31 +58,98 @@ class ThreeSigmaGate:
         return f"{self._prefix}{_sanitize_metric_id(metric_id)}"
 
     async def observe(self, metric_id: str, value: float) -> tuple[bool, float | None]:
+        """Record value and return (is_anomaly, z_score or None if not enough data / std=0).
+
+        Anomaly when |z| > DEFAULT_THRESHOLD and sample window has >= 3 points and std > MIN_STDDEV.
         """
-        Record value and return (is_anomaly, z_score or None if not enough data / std=0).
-        Anomaly when |z| > 3 and sample window has >= 3 points and std > MIN_STDDEV.
-        """
+        return await self._observe_impl(metric_id, value, threshold=DEFAULT_THRESHOLD, window=self._window)
+
+    async def _observe_impl(
+        self,
+        metric_id: str,
+        value: float,
+        threshold: float,
+        window: int,
+    ) -> tuple[bool, float | None]:
         key = self._key(metric_id)
         pipe = self._r.pipeline()
         pipe.lpush(key, str(value))
-        pipe.ltrim(key, 0, self._window - 1)
+        pipe.ltrim(key, 0, window - 1)
         pipe.expire(key, self._ttl)
         await pipe.execute()
 
         raw = await self._r.lrange(key, 0, -1)
         samples = [float(x) for x in raw]
         if len(samples) < 3:
+            logger.debug("3sigma: insufficient_data metric=%s samples=%d window=%d", metric_id, len(samples), window)
             return False, None
 
         mean = statistics.fmean(samples)
-        # sample std for window (use pstdev for population of window — same list)
         std = statistics.pstdev(samples)
         if std < MIN_STDDEV:
             return False, None
 
         z = (samples[0] - mean) / std  # newest is LINDEX 0
-        is_anomaly = abs(z) > 3.0
+        is_anomaly = abs(z) > threshold
         return is_anomaly, z
+
+    async def observe_adaptive(
+        self,
+        metric_id: str,
+        value: float,
+        *,
+        namespace: str = "",
+        deployment: str = "",
+    ) -> tuple[bool, float | None]:
+        """S3.2: observe with per-workload config + maintenance window suppression."""
+        # Maintenance window check — suppress anomaly detection during planned maintenance.
+        if namespace and deployment:
+            try:
+                maint_key = _MAINT_KEY_FMT.format(namespace=namespace, deployment=deployment)
+                is_maint = await self._r.exists(maint_key)
+                if is_maint:
+                    return False, None
+            except Exception as exc:
+                logger.warning("observe_adaptive: maint_check failed ns=%s dep=%s err=%r — fail closed (treating as maint active)", namespace, deployment, exc)
+                return False, None  # fail closed: Redis error during maint check = suppress anomaly
+
+        # Load per-workload sigma config.
+        threshold = DEFAULT_THRESHOLD
+        window = self._window
+        if namespace and deployment:
+            try:
+                cfg_key = _SIGMA_CONFIG_KEY_FMT.format(namespace=namespace, deployment=deployment)
+                cfg = await self._r.hgetall(cfg_key)
+                if cfg:
+                    raw_thr = cfg.get(b"threshold") or cfg.get("threshold")
+                    raw_win = cfg.get(b"window") or cfg.get("window")
+                    if raw_thr:
+                        threshold = float(raw_thr)
+                    if raw_win:
+                        window = max(3, int(raw_win))
+            except Exception as exc:
+                logger.warning("observe_adaptive: config load failed ns=%s dep=%s err=%r", namespace, deployment, exc)
+
+        return await self._observe_impl(metric_id, value, threshold=threshold, window=window)
+
+    async def get_z_score(self, metric_id: str) -> float | None:
+        """Read-only: compute z-score from current rolling window without writing.
+
+        Used as fallback when Prometheus recording rules are absent.
+        Returns None if window has < 3 samples or std ≈ 0.
+        """
+        key = self._key(metric_id)
+        raw = await self._r.lrange(key, 0, self._window - 1)
+        if not raw:
+            return None
+        samples = [float(x) for x in raw]
+        if len(samples) < 3:
+            return None
+        mean = statistics.fmean(samples)
+        std = statistics.pstdev(samples)
+        if std < MIN_STDDEV:
+            return None
+        return (samples[0] - mean) / std
 
     async def ttl_for(self, metric_id: str) -> int:
         """TTL seconds remaining (-2 missing, -1 no expire)."""

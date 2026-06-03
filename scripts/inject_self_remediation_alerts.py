@@ -20,7 +20,7 @@ Usage:
     python scripts/inject_self_remediation_alerts.py --only oom
 
 Burst / backlog: firing several alerts in a row enqueues multiple ``omni-diagnostic-evidence``
-messages; omni-analyst consumes **serially** (commit after full plan path), so Kafka consumer
+messages; omni-fullstack consumes **serially** (commit after full plan path), so Kafka consumer
 lag grows between traces. For debugging, inject **one** alert at a time or add sleep between
 POSTs; grep logs / Loki using the **trace_id** printed from the gateway JSON response.
 
@@ -91,8 +91,8 @@ ALERT_RBAC = _payload([
         alertname="OmniRbacClusterAdminViolation",
         namespace="multi-agent",
         labels={
-            "deployment": "omni-executor",
-            "service_account": "omni-worker",
+            "deployment": "omni-fullstack",
+            "service_account": "omni-fullstack",
             "binding": "omni-worker-cluster-admin",
             "drift_type": "cluster_admin_granted",
             "omni.io/symptom-group": "security_hardening",
@@ -100,10 +100,10 @@ ALERT_RBAC = _payload([
             "omni_verify_required": "true",
         },
         annotations={
-            "summary": "omni-executor SA holds cluster-admin — Zero-Trust P0 violation",
+            "summary": "omni-fullstack SA holds cluster-admin — Zero-Trust P0 violation",
             "description": (
                 "ClusterRoleBinding omni-worker-cluster-admin grants cluster-admin to "
-                "omni-worker SA shared with omni-executor. "
+                "the omni-fullstack worker SA. "
                 "Expected action: k8s_apply_rbac_least_privilege to create scoped Role "
                 "in multi-agent and remove the cluster-admin binding."
             ),
@@ -243,12 +243,11 @@ def main() -> None:
     for key, (name, payload) in targets.items():
         _post(name, payload)
 
-    print("\nDone. Monitor omni-analyst (plan) and omni-executor (actual mutate) for EXECUTE_MUTATE.")
-    print("  kubectl logs -n multi-agent -l app=omni-analyst -f | grep -E 'probe_deterministic_mutate|EXECUTE_MUTATE|rbac|configmap'")
-    print("  kubectl logs -n multi-agent -l app=omni-executor -f | grep EXECUTE_MUTATE")
+    print("\nDone. Monitor omni-fullstack (plan + actual mutate) for EXECUTE_MUTATE.")
+    print("  kubectl logs -n multi-agent -l app=omni-fullstack -f | grep -E 'probe_deterministic_mutate|EXECUTE_MUTATE|rbac|configmap'")
     print(
         "  Executor skips mutations unless OMNI_AUTO_EXECUTE_ENABLED=true "
-        "or OMNI_ENV_MODE=dev (see omni-executor deployment / ConfigMap)."
+        "or OMNI_ENV_MODE=dev (see omni-fullstack deployment / ConfigMap)."
     )
 
 

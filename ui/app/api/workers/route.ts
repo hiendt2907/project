@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +24,7 @@ export interface WorkersResponse {
   healthy_count: number;
   degraded_count: number;
   unhealthy_count: number;
-  source: "gateway" | "mock";
+  source: "gateway";
   generated_at: string;
 }
 
@@ -45,64 +45,28 @@ function deriveStatus(w: { ready: number; replicas: number; last_heartbeat_age_s
   return "healthy";
 }
 
-function buildMock(): WorkersResponse {
-  const raw = [
-    { role: "prober", replicas: 2, ready: 2, last_heartbeat_age_seconds: 3, last_message_type: "kafka_alert", error_count_24h: 0 },
-    { role: "analyst", replicas: 3, ready: 3, last_heartbeat_age_seconds: 2, last_message_type: "advisory_dispatched", error_count_24h: 2 },
-    { role: "core", replicas: 1, ready: 1, last_heartbeat_age_seconds: 8, last_message_type: "baseline_snapshot", error_count_24h: 0 },
-    { role: "executor", replicas: 2, ready: 2, last_heartbeat_age_seconds: 1, last_message_type: "execute_mutate", error_count_24h: 1 },
-    { role: "gateway", replicas: 2, ready: 2, last_heartbeat_age_seconds: 2, last_message_type: "http_request", error_count_24h: 0 },
-    { role: "siem-bridge", replicas: 1, ready: 1, last_heartbeat_age_seconds: 4, last_message_type: "siem_alert", error_count_24h: 0 },
-    { role: "evidence-adapter", replicas: 1, ready: 1, last_heartbeat_age_seconds: 96, last_message_type: "evidence_batch", error_count_24h: 3 },
-  ];
-
-  const workers: WorkerDetail[] = raw.map((w) => ({
-    ...w,
-    status: deriveStatus(w),
-    description: ROLE_DESCRIPTIONS[w.role] ?? "Worker process",
-  }));
-
-  const healthy_count = workers.filter((w) => w.status === "healthy").length;
-  const degraded_count = workers.filter((w) => w.status === "degraded").length;
-  const unhealthy_count = workers.filter((w) => w.status === "unhealthy").length;
-
-  let overall: WorkerStatus = "healthy";
-  if (unhealthy_count > 0) overall = "unhealthy";
-  else if (degraded_count > 0) overall = "degraded";
-
-  return {
-    workers,
-    overall,
-    healthy_count,
-    degraded_count,
-    unhealthy_count,
-    source: "mock",
-    generated_at: new Date().toISOString(),
-  };
+function gatewayError(detail: string) {
+  return NextResponse.json({ source: "error", error: detail }, { status: 502 });
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const tenantId = request.nextUrl.searchParams.get("tenant_id");
   if (!GATEWAY_URL) {
-    return NextResponse.json(buildMock());
+    return gatewayError("OMNI_GATEWAY_URL not configured");
   }
 
+  const tenantParam = tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : "";
   try {
-    const res = await fetch(`${GATEWAY_URL}/agents`, {
+    const res = await fetch(`${GATEWAY_URL}/agents${tenantParam}`, {
       headers: GATEWAY_API_KEY ? { Authorization: `Bearer ${GATEWAY_API_KEY}` } : {},
       cache: "no-store",
     });
 
-    if (!res.ok) {
-      return NextResponse.json(buildMock());
-    }
+    if (!res.ok) return gatewayError(`gateway /agents ${res.status}`);
 
     const data = await res.json();
     const agentList: { role: string; replicas: number; ready: number; last_heartbeat_age_sec: number }[] =
       data.agents ?? data.workers ?? [];
-
-    if (!agentList.length) {
-      return NextResponse.json(buildMock());
-    }
 
     const workers: WorkerDetail[] = agentList.map((a) => {
       const ageSeconds = a.last_heartbeat_age_sec ?? 0;
@@ -137,6 +101,6 @@ export async function GET() {
       generated_at: new Date().toISOString(),
     } satisfies WorkersResponse);
   } catch {
-    return NextResponse.json(buildMock());
+    return gatewayError("gateway /agents unreachable");
   }
 }

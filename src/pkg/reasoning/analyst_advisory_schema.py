@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -29,9 +29,36 @@ _LAYER_PATTERNS: list[tuple[str, list[str]]] = [
     ("kubernetes", ["kubectl ", "helm ", "k8s.", "kube-"]),
     ("network", ["ss -", "ip route", "ip link", "mtr ", "dig ", "tcpdump", "nmap ", "curl ", "nslookup"]),
     ("os_baremetal", ["df ", "iostat", "dmesg", "journalctl", "lsblk", "top ", "top\n", "vmstat", "free ", "lscpu", "uptime", "du ", "sar "]),
+    ("database", ["mysql ", "proxysql", "mysqlcheck", "SHOW STATUS", "SHOW REPLICA", "SHOW SLAVE", "SELECT @@", "SELECT variable_name"]),
+    ("storage", ["df -h", "df -T", "stat --file", "stat -f ", "mount -t", "nfsstat", "showmount"]),
+    ("services", ["systemctl ", "journalctl -u", "systemctl show", "socat", "haproxy", "show stat", "show info"]),
 ]
 
-_LAYER_TYPE = Literal["os_baremetal", "network", "kubernetes", "prometheus"]
+_LAYER_TYPE = Literal["os_baremetal", "network", "kubernetes", "prometheus", "database", "storage", "services"]
+
+VALID_LAYERS: frozenset[str] = frozenset(get_args(_LAYER_TYPE))
+
+
+def normalize_layer(raw: str) -> str:
+    """Map any string the LLM emits to a valid _LAYER_TYPE value."""
+    if raw in VALID_LAYERS:
+        return raw
+    s = raw.lower()
+    if any(x in s for x in ("os", "bare", "metal", "vm", "infra", "host", "layer 1", "layer_1", "l1 ")):
+        return "os_baremetal"
+    if any(x in s for x in ("network", "dns", "net ", "layer 2", "layer_2", "l2 ")):
+        return "network"
+    if any(x in s for x in ("kube", "k8s", "workload", "container", "application", "layer 3", "layer_3", "l3 ")):
+        return "kubernetes"
+    if any(x in s for x in ("prom", "metric", "monitor", "layer 4", "layer_4", "l4 ")):
+        return "prometheus"
+    if any(x in s for x in ("database", "db ", "mysql", "postgres", "proxysql", "mongo", "replication", "sql ")):
+        return "database"
+    if any(x in s for x in ("storage", "disk", "nfs", "mount", "filesystem", "inode", "raid")):
+        return "storage"
+    if any(x in s for x in ("service", "systemd", "daemon", "haproxy", "unit ")):
+        return "services"
+    return "kubernetes"
 
 
 def _infer_layer(command: str) -> _LAYER_TYPE:
@@ -151,7 +178,7 @@ class ImpactForecast(BaseModel):
     prediction: str = Field(
         description="What will happen (e.g., 'CPU utilization will exceed 95%', 'Data loss begins')",
     )
-    confidence: Literal["high", "medium", "low"]
+    confidence: Literal["high", "medium", "low"] = "medium"
 
     @field_validator("severity", mode="before")
     @classmethod
@@ -227,6 +254,14 @@ class AnalystAdvisory(BaseModel):
         default="",
         description="Why this is being escalated (security, unknown-cause, out-of-scope, etc.)",
     )
+    escalation_tier: Literal["L1_AUTO", "L2_SUGGEST", "L3_HITL"] = Field(
+        default="L2_SUGGEST",
+        description=(
+            "L1_AUTO: high confidence, known SOP, no approval needed — execute when auto_execute=True. "
+            "L2_SUGGEST: suggest to human for review. "
+            "L3_HITL: low confidence or novel/escalated — human must decide."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -288,6 +323,26 @@ class AnalystAdvisory(BaseModel):
         object.__setattr__(self, "escalation_reason", esc)
         object.__setattr__(self, "affected_workload", aff)
         return self
+
+
+# Derived from AnalystAdvisory field Literal types — single source of truth.
+_verdict_args = get_args(AnalystAdvisory.model_fields["verdict"].annotation)
+_confidence_args = get_args(AnalystAdvisory.model_fields["confidence"].annotation)
+
+VALID_VERDICTS: frozenset[str] = frozenset(_verdict_args)
+VALID_CONFIDENCE_LEVELS: frozenset[str] = frozenset(_confidence_args)
+
+# Safe repair defaults: least-alarming valid values used when LLM emits invalid literals.
+DEFAULT_VERDICT: str = "INVESTIGATE"
+DEFAULT_CONFIDENCE: str = "medium"
+
+# Derived from sub-model field Literal types.
+DEFAULT_LAYER: str = VerificationStep.model_fields["layer"].default
+DEFAULT_FORECAST_METHOD: str = get_args(ForecastTimeline.model_fields["method"].annotation)[2]  # "heuristic"
+
+# Repair fallbacks for missing required string fields — no Literal in schema, define here.
+DEFAULT_COMMAND_FALLBACK: str = "echo 'no command provided'"
+DEFAULT_ACTION_FALLBACK: str = "manual review required"
 
 
 class AnalystAdvisoryAggregated(BaseModel):

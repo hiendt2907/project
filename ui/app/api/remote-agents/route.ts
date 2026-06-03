@@ -40,82 +40,23 @@ export interface RemoteAgentsResponse {
   count: number;
   online: number;
   agents: RemoteAgent[];
-  source: "gateway" | "mock" | "error";
+  source: "gateway" | "error";
 }
 
-function buildMock(): RemoteAgentsResponse {
-  const now = Math.floor(Date.now() / 1000);
-  return {
-    generated_at: new Date().toISOString(),
-    count: 3,
-    online: 3,
-    source: "mock",
-    agents: [
-      {
-        agent_id: "loyalty-uat",
-        hostname: "zabbix-uat",
-        version: "1.0.0",
-        capabilities: ["metrics", "logs", "database", "services", "storage"],
-        platform: "linux",
-        k8s_namespace: "",
-        registered_at: now - 3600,
-        last_seen: now - 5,
-        age_seconds: 5,
-        online: true,
-        status: "online",
-        metrics: { cpu_percent: 45.2, mem_percent: 72.3, mem_used_mb: 7834, disk_percent: 65.0, load_avg_1m: 1.8 },
-        eps: 0.1,
-        type: "remote",
-      },
-      {
-        agent_id: "uat-proxysql",
-        hostname: "uat-proxysql",
-        version: "1.0.0",
-        capabilities: ["metrics", "logs", "database", "services", "storage"],
-        platform: "linux",
-        k8s_namespace: "",
-        registered_at: now - 1800,
-        last_seen: now - 12,
-        age_seconds: 12,
-        online: true,
-        status: "online",
-        metrics: { cpu_percent: 28.0, mem_percent: 58.4, mem_used_mb: 4800, disk_percent: 42.0, load_avg_1m: 0.9 },
-        eps: 0.1,
-        type: "remote",
-      },
-      {
-        agent_id: "uat-proxysql2",
-        hostname: "uat-proxysql2",
-        version: "1.0.0",
-        capabilities: ["metrics", "logs", "database", "services", "storage"],
-        platform: "linux",
-        k8s_namespace: "",
-        registered_at: now - 1200,
-        last_seen: now - 8,
-        age_seconds: 8,
-        online: true,
-        status: "online",
-        metrics: { cpu_percent: 12.5, mem_percent: 41.0, mem_used_mb: 3276, disk_percent: 91.0, load_avg_1m: 0.4 },
-        eps: 0.1,
-        type: "remote",
-      },
-    ],
-  };
+function gatewayError(detail: string) {
+  return NextResponse.json({ source: "error", error: detail, agents: [], count: 0, online: 0 }, { status: 502 });
 }
 
 export async function GET() {
   if (!GATEWAY_URL) {
-    return NextResponse.json(buildMock());
+    return gatewayError("OMNI_GATEWAY_URL not configured");
   }
   try {
-    const res = await fetch(`${GATEWAY_URL}/agents/remote`, {
-      headers: authHeaders(),
-      cache: "no-store",
-    });
-    if (!res.ok) return NextResponse.json({ source: "error" } as Partial<RemoteAgentsResponse>, { status: 502 });
+    const res = await fetch(`${GATEWAY_URL}/agents/remote`, { headers: authHeaders(), cache: "no-store" });
+    if (!res.ok) return gatewayError(`gateway /agents/remote ${res.status}`);
     const data = await res.json();
     return NextResponse.json({ ...data, source: "gateway" } as RemoteAgentsResponse);
   } catch {
-    return NextResponse.json({ source: "error" } as Partial<RemoteAgentsResponse>, { status: 502 });
+    return gatewayError("gateway /agents/remote unreachable");
   }
 }

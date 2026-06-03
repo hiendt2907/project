@@ -59,12 +59,14 @@ data:
   OMNI_AUTONOMOUS_FIX_COOLDOWN_SEC: "600"
   OMNI_AUTONOMOUS_SAFE_TOOLS: "k8s_rollout_restart,redis_health,redis_expert_check,sandbox_cleanup"
   OMNI_AUTONOMOUS_ALLOWED_NAMESPACES: "multi-agent"
-  # Phase 5 — Strict Advisory Mode: fail-closed at infra level.
-  # OMNI_AUTO_EXECUTE_ENABLED=false prevents ALL autonomous mutations.
-  # All SIEM incidents emit SUGGEST_REMEDIATION + Telegram only (no EXECUTE_MUTATE, no HITL pipeline).
-  # To re-enable execution, this ConfigMap must be edited AND redeployed — LLM cannot override this.
+  # ── Shadow Mode (read-only, no execute) ──────────────────────────────────────
+  # All analysis/advisory runs normally; zero mutations are dispatched.
+  # To exit shadow mode: set OMNI_SHADOW_OS_MODE=false + OMNI_AUTO_EXECUTE_ENABLED=true + redeploy.
+  OMNI_SHADOW_OS_MODE: "true"
   OMNI_AUTO_EXECUTE_ENABLED: "false"
   OMNI_SIEM_SUGGEST_ONLY: "true"
+  OMNI_MULTI_HYPOTHESIS_SHADOW_ONLY: "true"
+  OMNI_SHADOW_INFLUENCE_SUGGEST_ONLY: "true"
   # Phase 8 — HITL Routing ENABLED. UI decision endpoint live. CRAT fail-closed enforced.
   OMNI_HITL_ROUTING_ENABLED: "true"
   # Advisory Mode: autonomous rollout disabled — all actions are suggestions only.
@@ -76,7 +78,7 @@ data:
   OMNI_ENV_MODE: "prod"
   # OrbStack chaos-victim inject: password sourced from Secret omni-chaos-lab (see omni-chaos-secret.yaml).
   OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX_ENABLED: "true"
-  # omni-worker no longer bound to cluster-admin — least-privilege RBAC enforced (see omni-worker-rbac.yaml).
+  # Worker SA never bound to cluster-admin — least-privilege RBAC enforced (see omni-fullstack-rbac.yaml).
   OMNI_CLUSTER_FULL_ACCESS: "false"
   # Planner-led autonomy (skip deterministic mutate shortcuts; pair with OMNI_LEGACY_DETERMINISTIC_FALLBACK=false)
   OMNI_LLM_FIRST_AUTONOMY_ENABLED: "true"
@@ -84,6 +86,8 @@ data:
   # Ollama on macOS host (Apple Silicon GPU) — OrbStack DNS routes K8s pods → host.
   OMNI_VLLM_BASE_URL: "http://host.orb.internal:11434/v1"
   OMNI_VLLM_EMBED_URL: "http://host.orb.internal:11434/v1"
+  OMNI_VLLM_STREAM_FOR_SLI: "true"
+  OMNI_LLM_SLI_METRICS_ENABLED: "true"
   VLLM_BASE_URL: "http://host.orb.internal:11434/v1"
   VLLM_EMBED_URL: "http://host.orb.internal:11434/v1"
   VLLM_MODEL: "qwen2.5-coder:7b"
@@ -91,13 +95,7 @@ data:
   OMNI_TELEGRAM_ENABLED: "true"
   # E2E harness: Bot API getUpdates must not compete with in-cluster long-poll.
   OMNI_TELEGRAM_POLLING_ENABLED: "false"
-  # Model profile (go-prod baseline on current Ollama inventory)
-  # - chat_model: fast/robust interactive + tool JSON
-  # - reasoning_engine: diagnosis/planning quality
-  # - heavy_lifter: long-context synthesis/compression
-  # - helper: JSON repair / lightweight transforms
-  # - diag_evidence_llm_model: planner in evidence_consumer (pin to avoid fallback drift)
-  # - autonomous_decider_model: autonomous decider loop
+  # Model profile — qwen2.5-coder:7b for all roles
   OMNI_CHAT_MODEL: "qwen2.5-coder:7b"
   OMNI_MODEL_REASONING_ENGINE: "qwen2.5-coder:7b"
   OMNI_MODEL_HEAVY_LIFTER: "qwen2.5-coder:7b"

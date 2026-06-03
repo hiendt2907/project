@@ -15,7 +15,7 @@ The executor Deployment (`k8s/deployments/omni-executor.yaml`) ran under `servic
 
 ### Codebase API scan
 
-Source files scanned: `src/workers/k8s_cluster_tools.py`, `scripts/mvp_api.py`.
+Source files scanned: `src/workers/k8s_cluster_tools.py`.
 
 | Tool / call | K8s API | Verbs required |
 |-------------|---------|----------------|
@@ -25,8 +25,8 @@ Source files scanned: `src/workers/k8s_cluster_tools.py`, `scripts/mvp_api.py`.
 | `k8s_check_endpoints` | `endpoints` | `get`, `list` |
 | `k8s_patch_resource` | `apps/deployments` | `patch` |
 | `k8s_patch_configmap` | `configmaps` | `get`, `patch` |
-| `kubectl rollout restart` (mvp_api) | `apps/deployments` | `patch` |
-| `kubectl patch statefulset` (mvp_api) | `apps/statefulsets` | `patch` |
+| `k8s_rollout_restart` | `apps/deployments` | `patch` |
+| `k8s_patch_resource` (statefulset) | `apps/statefulsets` | `patch` |
 
 ### Manifests produced
 
@@ -62,7 +62,7 @@ kubectl auth can-i patch deployments -n production \
 
 ### Runtime guardrail (SEC_AUDIT_CRITICAL)
 
-`_sec_audit_sa_scope()` in `scripts/mvp_api.py` — called by `_kubectl_apply()` before every mutation:
+Runtime SA scope check — called before every executor mutation:
 
 1. Checks target namespace is in `{multi-agent, lab-test}`.
 2. Runs `kubectl auth can-i '*' '*' --all-namespaces` to detect cluster-admin.

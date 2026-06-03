@@ -56,7 +56,6 @@ Tài liệu tóm tắt / slide / whitepaper (có thể mô tả “một worker�
 | File |
 |------|
 | [omni_v3_architecture_whitepaper.md](omni_v3_architecture_whitepaper.md) |
-| [omni_v3_executive_report.md](omni_v3_executive_report.md) |
 
 ---
 
@@ -86,56 +85,8 @@ Tài liệu tóm tắt / slide / whitepaper (có thể mô tả “một worker�
 
 | File | Vai trò |
 |------|---------|
-| `scripts/mvp_api.py` | Stateful loop (`for iteration in range(1, MAX+1)`); `phase5_verify()` kind-aware SDK health check; GAP-05 OLLAMA auto-detection; 5s backoff. |
 | `src/pkg/autonomy/llm_contract.py` | `RemediationContext` + `ObservationRecord` / `ActionRecord` / `OutcomeRecord`; `to_prompt_block()` serialises history into LLM system prompt. |
 | `src/workers/k8s_cluster_tools.py` | `get_resource_owner(pod, ns)` — recursive OwnerReference traversal (Truth Layer): Pod→RS→Deployment/StatefulSet. |
-
-### Tests & Coverage
-
-```bash
-# Golden test suite with coverage
-pytest --cov=src --cov=scripts tests/ --cov-report=term-missing
-
-# Fast run
-pytest tests/test_omni_stateful_loop.py -q
-```
-
-| File | Tests | Coverage (target modules) |
-|------|-------|--------------------------|
-| `tests/test_omni_stateful_loop.py` | 70 | `mvp_api.py` 58%, `llm_contract.py` 98%, `k8s_cluster_tools.py` 40% |
-| `tests/conftest.py` | — | Adds `src/` + `scripts/` to sys.path |
-| `.coveragerc` | — | Coverage config (`source = src, scripts`) |
-
-### Scenarios Covered
-
-| Scenario | Lane | Key assertion |
-|----------|------|--------------|
-| 2-iteration ConfigMap recovery | STATE | `converged=True` iter 2; history in LLM prompt verified |
-| Single-iteration OOMKilled convergence | STATE | `iterations=1`, `converged=True`, `executed=True` |
-| Exec skipped outside lab mode | STATE | `resolution_state='exec_skipped'`, `executed=False` |
-| Security gate (`INV_NAMESPACE_ISOLATION`) | STATE | Loop terminates iter 1; execute never called |
-| Max retries (3 failed verifies) | STATE | `iterations==3`, `converged==False`, `resolution_state='exhausted'` |
-| 3-sigma gate blocked | RESOURCE | `resolution_state='sigma_gate'`; LLM never called |
-| Gate skipped (Redis unavailable) | RESOURCE | LLM called; plan returned |
-| Anomaly detected → execute → converge | RESOURCE | `is_anomaly=True`; `converged=True` |
-| Fail-closed Loki (no `LOKI_BASE_URL`) | APP_LOG | LLM never called; `loki_unavailable=True` |
-| Loki surge ok → LLM → converge | APP_LOG | `log_surge_ok=True`; `converged=True` |
-| Loki surge ok=False → LLM → noop | APP_LOG | `log_surge_ok=False`; `resolution_state='incomplete'` |
-| Phase 1 parse — OOMKilled → STATE | — | `laned.lane is Lane.STATE` |
-| Phase 1 parse — HighCPUUsage → RESOURCE | — | `laned.lane is Lane.RESOURCE` |
-| Phase 1 parse — HttpErrorRate5xx → APP_LOG | — | `laned.lane is Lane.APP_LOG` |
-| Phase 1 parse — app_log downgrade (non-api_web) | — | `lane_source='api_web_guard'` |
-| `HighLevelRemediationPlan` validators (all 5 actions) | — | Raises `ValidationError` on bad input |
-| `map_high_level_plan_to_mutate` all branches + defaults | — | Correct `tool_name` + `args` per action |
-| `parse_high_level_plan_json` fence-strip + prose-embed + invalid | — | None on unparseable; plan on valid |
-
-### UAT Report
-
-[../reports/chaos/uat-stateful-loop-2026-04-10.md](../reports/chaos/uat-stateful-loop-2026-04-10.md) — Full state-transition log with OwnerRef-based verification (v3, final).
-
-**Key invariants:**
-- `RemediationContext.to_prompt_block()` injects history into LLM system prompt on iterations > 1.
-- `get_resource_owner` follows `metadata.ownerReferences` only — no pod-name heuristics.
 - `phase5_verify` is kind-aware (Deployment / StatefulSet); no fault-type branching.
 - `_shadow_writeback` called only on `converged=True`.
 - `MAX_LOOP_ITERATIONS=3` (`OMNI_MAX_LOOP_ITERATIONS`); backoff 5s (`OMNI_VERIFY_BACKOFF_SECONDS`).
@@ -148,11 +99,6 @@ Báo cáo / flow cũ theo phase hoặc monolith — **đối chiếu canonical**
 
 | File |
 |------|
-| [../reports/e2e-telegram-flow.md](../reports/e2e-telegram-flow.md) |
-| [../reports/phase1-infrastructure.md](../reports/phase1-infrastructure.md) |
-| [../reports/phase2-core.md](../reports/phase2-core.md) |
-| [../reports/phase3-tools-visuals.md](../reports/phase3-tools-visuals.md) |
-| [../reports/phase4-omni-worker.md](../reports/phase4-omni-worker.md) |
 | [../reports/chaos-rag-selflearn/registry-template.md](../reports/chaos-rag-selflearn/registry-template.md) |
 
 ---

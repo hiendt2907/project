@@ -17,6 +17,7 @@ from workers.env_mode import is_dev_mode
 from workers.autonomous_execute import publish_action_feedback, run_execute_mutate_tool
 from workers.handler_context import WorkerHandlerContext
 from workers.log_preview import json_obj_preview, log_preview
+from workers.metrics_exporter import executor_execute_skipped_inc
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.autonomy_contract import (
     TRANSITION_COMMAND_FEEDBACK_INGESTED,
@@ -100,6 +101,7 @@ async def kafka_actions_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
         bootstrap_servers=ws.kafka_bootstrap_servers,
         group_id=ws.consumer_group_executor,
         enable_auto_commit=False,
+        auto_offset_reset="earliest",
         client_id=ws.consumer_name_executor,
     )
     await consumer.start()
@@ -183,8 +185,9 @@ async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: di
     correlation_id = str(data.get("correlation_id") or trace).strip()
     ws = ctx.settings
     dev_mode = is_dev_mode(ws)
-    auto = bool(getattr(ws, "omni_auto_execute_enabled", False) or dev_mode)
+    auto = bool(getattr(ws, "omni_auto_execute_enabled", False))
     if bool(getattr(ws, "omni_shadow_os_mode", False)):
+        executor_execute_skipped_inc("shadow_os")
         await publish_action_feedback(
             ctx,
             trace_id=trace,
@@ -215,6 +218,7 @@ async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: di
         return
 
     if not auto:
+        executor_execute_skipped_inc("auto_execute_disabled")
         await publish_action_feedback(
             ctx,
             trace_id=trace,
@@ -230,7 +234,8 @@ async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: di
         logger.info("[%s] EXECUTE_MUTATE skipped (auto_execute disabled)", trace)
         return
 
-    if not dev_mode and await _is_rate_limited(ctx, tool_name, args):
+    if await _is_rate_limited(ctx, tool_name, args):
+        executor_execute_skipped_inc("rate_limited")
         await publish_action_feedback(
             ctx,
             trace_id=trace,

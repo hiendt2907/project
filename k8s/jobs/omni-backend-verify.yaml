@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: omni-backend-verify
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/name: omni-backend-verify
+spec:
+  ttlSecondsAfterFinished: 60
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: omni-backend-verify
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verify
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PYTHONPATH
+              value: /app/src
+            - name: OMNI_WORKER_READY_URL
+              value: "http://omni-analyst.multi-agent.svc.cluster.local:8090/readyz"
+            - name: OMNI_VERIFY_GATEWAY_WEBHOOK_URL
+              value: "http://omni-gateway.multi-agent.svc.cluster.local/webhook/prometheus"
+            - name: OMNI_VERIFY_GATEWAY_METRICS_URL
+              value: "http://omni-gateway.multi-agent.svc.cluster.local/metrics"
+            - name: OMNI_KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:9092"
+          envFrom:
+            - secretRef:
+                name: omni-gateway-secret
+                optional: true
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              python /app/scripts/wait_omni_consumer_ready.py
+              python /app/scripts/omni_backend_verify.py

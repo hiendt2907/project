@@ -141,11 +141,20 @@ def copy_advisory_for_telegram_if_mismatch(
 
 
 _LAYER_BADGE = {
-    "os_baremetal": "[L1 - OS]",
-    "network":      "[L2 - Network]",
-    "kubernetes":   "[L3 - K8s]",
-    "prometheus":   "[L4 - Prometheus]",
+    "os_baremetal": "L1",
+    "network":      "L2",
+    "kubernetes":   "L3",
+    "prometheus":   "L4",
 }
+
+_LAYER_NAME = {
+    "os_baremetal": "OS",
+    "network":      "Network",
+    "kubernetes":   "K8s",
+    "prometheus":   "Prometheus",
+}
+
+_PLACEHOLDER_RE = re.compile(r'<[^>]+>')
 
 _SEVERITY_LABEL = {
     "healthy":      "HEALTHY",
@@ -154,28 +163,214 @@ _SEVERITY_LABEL = {
     "catastrophic": "CATASTROPHIC",
 }
 
+_VERDICT_EMOJI = {
+    "CRITICAL":    "🚨",
+    "URGENT":      "⚠️",
+    "INVESTIGATE": "🔍",
+    "NORMAL":      "✅",
+}
 
-def _render_verdict_header(advisory: AnalystAdvisory) -> str:
+_TIMEFRAME_ORDER = {"1h": 0, "3h": 1, "6h": 2, "12h": 3, "24h": 4}
+
+_Z_SCORE_RE = re.compile(r'z[_\s]?(?:cpu|mem|score)?[=\s]?\+?([0-9]+(?:\.[0-9]+)?)', re.IGNORECASE)
+
+
+def _fix_z_score_root_cause(root_cause: str) -> str:
+    """Fix false 'exceeds threshold' claims when z-score is actually below 3.0."""
+    m = _Z_SCORE_RE.search(root_cause)
+    if not m:
+        return root_cause
+    z = float(m.group(1))
+    if z >= 3.0:
+        return root_cause
+    if "exceed" not in root_cause.lower() and "above" not in root_cause.lower():
+        return root_cause
+    # Take first sentence only to avoid trailing fragment leakage (e.g. ". This indicates…")
+    first_sentence = re.split(r'\.\s+[A-Z]', root_cause)[0]
+    fixed = re.sub(
+        r'(?:which\s+)?exceeds?\s+(?:the\s+)?(?:normal\s+)?threshold[^;,\n]*',
+        'below 3σ — normal',
+        first_sentence,
+        flags=re.IGNORECASE,
+    )
+    fixed = re.sub(
+        r'(?:which\s+)?(?:is\s+)?above\s+(?:the\s+)?(?:normal\s+)?threshold[^;,\n]*',
+        'below 3σ — normal',
+        fixed,
+        flags=re.IGNORECASE,
+    )
+    return fixed
+
+
+def _short_trace(trace_id: str) -> str:
+    """Return last 8 chars of trace_id prefixed with #."""
+    return f"#{trace_id[-8:]}" if trace_id else "#?"
+
+
+_LANE_BADGE: dict[str, str] = {
+    "resource": "RESOURCE",
+    "state":    "STATE_FAIL",
+    "app_log":  "APP_LOG",
+    "siem":     "SIEM",
+}
+
+
+def _strip_placeholders(cmd: str) -> str:
+    """Remove <placeholder> tokens and clean trailing punctuation."""
+    cleaned = _PLACEHOLDER_RE.sub('', cmd).strip()
+    return re.sub(r'[\-\s;,]+$', '', cleaned).strip()
+
+
+def _truncate_cmd(cmd: str, max_len: int = 100) -> str:
+    """Truncate at word boundary, stripping trailing punctuation."""
+    if len(cmd) <= max_len:
+        return cmd
+    truncated = cmd[:max_len]
+    last_space = truncated.rfind(' ')
+    if last_space > max_len // 2:
+        truncated = truncated[:last_space]
+    return re.sub(r'[\-\s;,]+$', '', truncated).strip()
+
+
+def _is_heuristic_fallback(forecast: ForecastTimeline) -> bool:
+    """True when forecast is the boilerplate heuristic fallback with no real data."""
+    if forecast.method != "heuristic":
+        return False
+    basis = (forecast.basis or "").lower()
+    return "insufficient evidence" in basis
+
+
+def _render_header(advisory: AnalystAdvisory, lane_label: str | None = None) -> str:
+    emoji = _VERDICT_EMOJI.get(advisory.verdict or "", "🔔")
+    badge = _LANE_BADGE.get((lane_label or "").lower().strip(), "")
+    tier = getattr(advisory, "escalation_tier", "") or ""
+    lane_part = f"[{badge}]" if badge else ""
+    tier_part = f"[{tier}]" if tier and tier != "L2_SUGGEST" else ""
+    badge_prefix = " ".join(filter(None, [lane_part, tier_part]))
+    badge_prefix = f"{badge_prefix} " if badge_prefix else ""
+    root_cause = _fix_z_score_root_cause(advisory.root_cause or "")
+    title = root_cause[:70].rstrip()
+    if len(root_cause) > 70:
+        title += "..."
+    return f"{emoji} *{badge_prefix}{_e(advisory.verdict)} Alert: {_e(title)}*"
+
+
+def _render_what_happened(advisory: AnalystAdvisory) -> str:
+    root_cause = _fix_z_score_root_cause(advisory.root_cause or "")
+    confidence = advisory.confidence or "medium"
     lines = [
-        f"*VERDICT:* {_e(advisory.verdict)}",
-        f"*ROOT CAUSE:* {_e(advisory.root_cause)}",
-        f"*CONFIDENCE:* {_e(advisory.confidence)}",
+        "*What happened?*",
+        f"• {_e(root_cause)}",
     ]
-    if advisory.affected_workload and advisory.affected_workload != "unknown":
-        lines.append(f"*WORKLOAD:* `{_e(advisory.affected_workload)}`")
+    if confidence != "medium":
+        lines.append(f"• Confidence: {_e(confidence)}")
     return "\n".join(lines)
+
+
+def _render_who(advisory: AnalystAdvisory) -> str:
+    workload = advisory.affected_workload or ""
+    if not workload or workload.strip().lower() == "unknown":
+        workload = "cluster (unknown workload)"
+    return f"*Who?*\n• {_e(workload)}"
+
+
+def _render_when(advisory: AnalystAdvisory) -> str:
+    ts = advisory.timestamp
+    if ts:
+        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S UTC") if hasattr(ts, "strftime") else str(ts)
+    else:
+        ts_str = "detection time unknown"
+    return f"*When?*\n• {_e(ts_str)}"
+
+
+def _render_why(steps: list[VerificationStep]) -> str:
+    if not steps:
+        return ""
+    shown = sorted(steps, key=lambda x: x.order)[:3]
+    lines = ["*Why? (Verification steps)*"]
+    for step in shown:
+        badge = _LAYER_BADGE.get(step.layer, step.layer.upper())
+        layer_name = _LAYER_NAME.get(step.layer, step.layer)
+        rationale = (step.rationale or "").strip()
+        cmd_raw = (step.command or "").strip().split("\n")[0]
+        cmd_clean = _strip_placeholders(cmd_raw)
+        cmd_clean = _truncate_cmd(cmd_clean)
+        line = f"• [{badge} — {layer_name}]"
+        if cmd_clean:
+            line += f" `{cmd_clean}`"
+        if rationale:
+            line += f"\n  → {_e(rationale)}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _render_how_to_fix(steps: list[ProposedRemediationStep]) -> str:
+    if not steps:
+        return ""
+    lines = ["*How to fix?*"]
+    for step in sorted(steps, key=lambda x: x.order):
+        approval = " [APPROVAL REQUIRED]" if step.approval_required else ""
+        lines.append(f"• Step {step.order}:{approval} {_e(step.action)}")
+        if step.rollback_plan:
+            lines.append(f"  ↩ Rollback: `{step.rollback_plan}`")
+    return "\n".join(lines)
+
+
+def _render_impact_if_not_fixed(forecast: ForecastTimeline) -> str:
+    if _is_heuristic_fallback(forecast) or not forecast.forecasts:
+        return "*What happens if not fixed?*\n• Insufficient data for exact projection"
+    sorted_fc = sorted(forecast.forecasts, key=lambda x: _TIMEFRAME_ORDER.get(x.timeframe, 99))
+    first = sorted_fc[0]
+    label = _SEVERITY_LABEL.get(first.severity, first.severity.upper())
+    prediction = (first.prediction or "").strip() or f"Status escalates to {label}"
+    return f"*What happens if not fixed?*\n• +{first.timeframe}: {_e(prediction)}"
+
+
+def _render_forecast_projection(forecast: ForecastTimeline) -> str:
+    if _is_heuristic_fallback(forecast) or not forecast.forecasts:
+        return ""
+    sorted_fc = sorted(forecast.forecasts, key=lambda x: _TIMEFRAME_ORDER.get(x.timeframe, 99))
+    lines = ["*Forecast impact (EWMA Projection):*"]
+    shown = {fc.timeframe: fc for fc in sorted_fc}
+    for tf in ("1h", "3h", "6h", "12h", "24h"):
+        fc = shown.get(tf)
+        if fc:
+            label = _SEVERITY_LABEL.get(fc.severity, fc.severity.upper())
+            pred = (fc.prediction or "")[:80].strip()
+            lines.append(f"• {tf}:  {label} — {_e(pred)}" if pred else f"• {tf}:  {label}")
+        else:
+            lines.append(f"• {tf}:  —")
+    return "\n".join(lines)
+
+
+def _render_escalation(reason: str) -> str:
+    if not reason:
+        return ""
+    return f"*ESCALATION REQUIRED:*\n{_e(reason)}"
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat helpers — not used in main render path but referenced by tests
+# ---------------------------------------------------------------------------
+
+def _render_verdict_header(advisory: AnalystAdvisory, lane_label: str | None = None) -> str:
+    return _render_header(advisory, lane_label=lane_label)
 
 
 def _render_verification_steps(steps: list[VerificationStep]) -> str:
     if not steps:
         return ""
+    shown = sorted(steps, key=lambda x: x.order)[:3]
     lines = ["*VERIFICATION STEPS (read-only):*"]
-    for step in sorted(steps, key=lambda x: x.order):
-        badge = _LAYER_BADGE.get(step.layer, f"[{step.layer}]")
-        lines.append(f"\n{badge} *Step {step.order}:* {_e(step.rationale)}")
-        lines.append(f"```\n{step.command}\n```")
-        if step.expected_output:
-            lines.append(f"Expected: `{step.expected_output[:120]}`")
+    for step in shown:
+        badge = _LAYER_BADGE.get(step.layer, step.layer.upper())
+        layer_name = _LAYER_NAME.get(step.layer, step.layer)
+        cmd_raw = (step.command or "").strip().split("\n")[0]
+        cmd_clean = _strip_placeholders(cmd_raw)
+        cmd_clean = _truncate_cmd(cmd_clean)
+        if not cmd_clean:
+            continue
+        lines.append(f"\n[{badge} — {layer_name}]\n```\n{cmd_clean}\n```")
     return "\n".join(lines)
 
 
@@ -197,46 +392,45 @@ def _render_remediation_steps(steps: list[ProposedRemediationStep]) -> str:
 
 
 def _render_forecast(forecast: ForecastTimeline) -> str:
-    lines = [f"*IMPACT FORECAST ({_e(forecast.method)}):*"]
-    if forecast.basis:
-        lines.append(f"Basis: {_e(forecast.basis)}")
-    if forecast.note:
-        lines.append(f"Note: {_e(forecast.note)}")
-    lines.append("")
-    for f in sorted(forecast.forecasts, key=lambda x: int(x.timeframe[:-1])):
-        label = _SEVERITY_LABEL.get(f.severity, f.severity.upper())
-        lines.append(
-            f"*{_e(f.timeframe)}* {label} [{_e(f.confidence)}]: {_e(f.prediction)}"
-        )
-    return "\n".join(lines)
-
-
-def _render_escalation(reason: str) -> str:
-    if not reason:
+    if _is_heuristic_fallback(forecast):
         return ""
-    return f"\n*ESCALATION REQUIRED:*\n{_e(reason)}"
+    sorted_fc = sorted(forecast.forecasts, key=lambda x: _TIMEFRAME_ORDER.get(x.timeframe, 99))
+    first = sorted_fc[0] if sorted_fc else None
+    if not first:
+        return ""
+    label = _SEVERITY_LABEL.get(first.severity, first.severity.upper())
+    return f"*FORECAST:* {_e(first.timeframe)} → {label} ({_e(forecast.method)})"
 
 
 async def render_advisory_to_telegram(
     ctx: WorkerHandlerContext,
     advisory: AnalystAdvisory,
     chat_id: int,
+    *,
+    lane_label: str | None = None,
 ) -> None:
-    """Render AnalystAdvisory to Telegram as plain-text Markdown."""
+    """Render AnalystAdvisory to Telegram as plain-text Markdown.
+
+    lane_label: one of 'resource', 'state', 'app_log', 'siem' — adds lane badge to header.
+    """
     if not ctx.telegram:
         logger.warning("event=render_advisory_telegram_disabled")
         return
 
     parts = [
-        _render_verdict_header(advisory),
-        _render_verification_steps(advisory.verification_steps),
-        _render_remediation_steps(advisory.proposed_remediation),
-        _render_forecast(advisory.forecast),
-        _render_escalation(advisory.escalation_reason),
+        _render_header(advisory, lane_label=lane_label),
+        _render_what_happened(advisory),
+        _render_who(advisory),
+        _render_when(advisory),
+        _render_why(advisory.verification_steps),
+        _render_how_to_fix(advisory.proposed_remediation),
+        _render_impact_if_not_fixed(advisory.forecast),
+        _render_forecast_projection(advisory.forecast),
+        _render_escalation(advisory.escalation_reason or ""),
     ]
     message = "\n\n".join([p for p in parts if p])
     # Footer for Loki cross-check and E2E harness (Telegram Bot API getUpdates assert).
-    message = f"{message}\n\n*TRACE:* `{_e(advisory.trace_id)}`"
+    message = f"{message}\n\n*TRACE:* `{_short_trace(advisory.trace_id)}`"
 
     if len(message) <= 4000:
         try:

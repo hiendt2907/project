@@ -47,6 +47,8 @@ COLLECTION_VENDOR_KNOWLEDGE = "vendor_knowledge"
 COLLECTION_SRE_KNOWLEDGE = "SRE_KNOWLEDGE"
 # Official / unified expert knowledge
 COLLECTION_K8S_EXPERT = "k8s_expert"
+COLLECTION_DIAGNOSTIC_HISTORY = "diagnostic_history"
+COLLECTION_OS_HARD_FAIL_DIAGNOSTIC = "os_hard_fail_diagnostic"
 
 _ALL_KNOWN_COLLECTIONS = (
     COLLECTION_SOP,
@@ -58,6 +60,8 @@ _ALL_KNOWN_COLLECTIONS = (
     COLLECTION_VENDOR_KNOWLEDGE,
     COLLECTION_SRE_KNOWLEDGE,
     COLLECTION_K8S_EXPERT,
+    COLLECTION_DIAGNOSTIC_HISTORY,
+    COLLECTION_OS_HARD_FAIL_DIAGNOSTIC,
 )
 
 # RedisSearch special characters that must be escaped in query strings
@@ -220,7 +224,10 @@ def _docs_to_points(
         if score_threshold is not None and score < score_threshold:
             continue
         try:
-            payload = json.loads(getattr(doc, "payload", "{}") or "{}")
+            # Field stored as "omni_payload" to avoid clash with Document(payload=) param.
+            # Fallback to legacy "payload" field for entries written before the rename.
+            raw = getattr(doc, "omni_payload", None) or getattr(doc, "payload", None) or "{}"
+            payload = json.loads(raw)
         except Exception:
             payload = {}
         doc_id = doc.id.split(":")[-1]
@@ -338,7 +345,8 @@ class RedisVectorStore:
                 key,
                 mapping={
                     "embedding": vec_bytes,
-                    "payload": json.dumps(ppayload),
+                    # "omni_payload" avoids clash with Document(payload=) constructor param
+                    "omni_payload": json.dumps(ppayload),
                     "text_content": text_content,
                     "source": str(ppayload.get("source", "")),
                     "doc_type": str(ppayload.get("type", "")),
@@ -377,7 +385,7 @@ class RedisVectorStore:
         q = (
             Query(f"*=>[KNN {lim} @embedding $vec AS __score]")
             .sort_by("__score", asc=True)
-            .return_fields("payload", "__score")
+            .return_fields("omni_payload", "payload", "__score")
             .paging(0, lim)
             .dialect(2)
         )
@@ -400,7 +408,8 @@ class RedisVectorStore:
             payload: dict[str, Any] = {}
             if with_payload:
                 try:
-                    payload = json.loads(getattr(doc, "payload", "{}") or "{}")
+                    raw = getattr(doc, "omni_payload", None) or getattr(doc, "payload", None) or "{}"
+                    payload = json.loads(raw)
                 except Exception:
                     payload = {}
             # Apply optional payload_filters (post-filter, same semantics as pgvector)
@@ -437,7 +446,7 @@ class RedisVectorStore:
         lim = max(1, min(48, int(limit)))
         q = (
             Query(f"@text_content:({safe})")
-            .return_fields("payload")
+            .return_fields("omni_payload", "payload")
             .with_scores()
             .paging(0, lim)
             .dialect(2)
@@ -454,7 +463,8 @@ class RedisVectorStore:
         pts: list[PointStruct] = []
         for doc in results.docs:
             try:
-                payload = json.loads(getattr(doc, "payload", "{}") or "{}")
+                raw = getattr(doc, "omni_payload", None) or getattr(doc, "payload", None) or "{}"
+                payload = json.loads(raw)
             except Exception:
                 payload = {}
             pts.append(
@@ -574,7 +584,7 @@ class RedisVectorStore:
                         f"(@text_content:({safe_text}))=>[KNN {lim} @embedding $vec AS __score]"
                     )
                     .sort_by("__score", asc=True)
-                    .return_fields("payload", "__score")
+                    .return_fields("omni_payload", "__score")
                     .paging(0, lim)
                     .dialect(2)
                 )
@@ -656,7 +666,7 @@ class RedisVectorStore:
                 break
             for key in keys:
                 try:
-                    raw = await self._r.hget(key, "payload")
+                    raw = await self._r.hget(key, "omni_payload")
                     if not raw:
                         continue
                     payload = json.loads(raw)

@@ -7,13 +7,13 @@ import logging
 from typing import Any
 
 from pkg.autonomous_actions import build_action_feedback_body, infer_exit_code_from_tool_output
-from pkg.reasoning.reason_codes import (
-    ERR_GOV_ENV_PROD_STRICT,
-    ERR_GOV_NS_OUT_OF_BOUNDS,
-    ERR_GOV_UNAUTHORIZED_MUTATION,
+from pkg.executor.mutate_governance import (
+    MUTATING_POLICY_GUARD_TOOLS as _MUTATING_POLICY_GUARD_TOOLS,
+    governance_check_executor_mutate,
 )
-from workers.env_mode import is_dev_mode, namespace_allowed
+from pkg.reasoning.reason_codes import ERR_GOV_UNAUTHORIZED_MUTATION
 from workers.k8s_tools import deployment_evidence_snapshot, execute_rollout_restart_from_pending
+from workers.rollback_executor import capture_pre_mutate_snapshot, snapshot_required
 from workers.tools import TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -81,19 +81,6 @@ K8S_SDK_READONLY_TOOL_NAMES: frozenset[str] = frozenset(
 # Introspection / filter: tên được phép + alias.
 MUTATE_TOOL_ALLOWLIST: frozenset[str] = K8S_SDK_MUTATING_TOOL_NAMES | frozenset(MUTATE_TOOL_REGISTRY_NAME.keys())
 READONLY_TOOL_ALLOWLIST: frozenset[str] = K8S_SDK_READONLY_TOOL_NAMES
-_MUTATING_POLICY_GUARD_TOOLS: frozenset[str] = frozenset(
-    {
-        "k8s_rollout_restart",
-        "k8s_scale_deployment",
-        "k8s_patch_resource",
-        "k8s_patch_configmap",
-        "k8s_patch_secret",
-        "k8s_create_or_patch_configmap",
-        "k8s_apply_rbac_least_privilege",
-        "k8s_delete_pod",
-        "kubectl_cluster",
-    }
-)
 
 
 def _normalize_mutate_args_for_registry(reg_name: str, raw_args: dict[str, Any] | None) -> dict[str, Any]:
@@ -143,8 +130,31 @@ async def run_execute_mutate_tool(
             "must route through kubectl_cluster with nsenter host wrapper."
         )
         return msg, 1
-    unrestricted = bool(getattr(ws, "omni_unrestricted_tool_execution", True))
+    gov_ok, gov_msg = governance_check_executor_mutate(
+        settings=ws,
+        resolved_tool_name=reg_name,
+        args=args,
+    )
+    if not gov_ok:
+        return gov_msg, infer_exit_code_from_tool_output(gov_msg)
+
+    # S1.2: Capture pre-mutate snapshot for rollback if tool modifies state.
+    if bool(getattr(ws, "omni_auto_rollback_enabled", True)) and snapshot_required(reg_name):
+        ttl = int(getattr(ws, "omni_rollback_snapshot_ttl_sec", 3600) or 3600)
+        # Store target name on ctx so rollback_executor can reconstruct it.
+        _target_name = str((args or {}).get("name") or (args or {}).get("deployment") or "")
+        ctx.rollback_target_name = _target_name  # type: ignore[attr-defined]
+        await capture_pre_mutate_snapshot(ctx, reg_name, args or {}, trace_id, ttl_sec=ttl)
+
+    unrestricted = bool(getattr(ws, "omni_unrestricted_tool_execution", False))
     if unrestricted:
+        # Even in unrestricted mode, restrict to the approved mutate allowlist.
+        if reg_name not in MUTATE_TOOL_ALLOWLIST:
+            msg = (
+                f"[DATA] error\n[DIAGNOSIS] reason_code={ERR_GOV_UNAUTHORIZED_MUTATION} "
+                f"tool={name!r} resolved={reg_name!r} not in mutate allowlist (unrestricted mode still bounded)."
+            )
+            return msg, 1
         fn_any = TOOL_REGISTRY.get(reg_name) or TOOL_REGISTRY.get(name)
         if fn_any is None:
             return f"[DATA] error\n[DIAGNOSIS] Unknown tool {name!r} resolved={reg_name!r}", 1
@@ -176,19 +186,6 @@ async def run_execute_mutate_tool(
             f"(from {name!r}) — deployment bug."
         )
         return msg, 1
-    if ws is not None and not is_dev_mode(ws) and reg_name in _MUTATING_POLICY_GUARD_TOOLS:
-        ns = str((args or {}).get("namespace") or "").strip()
-        if not ns:
-            return (
-                "[DATA] error\n[DIAGNOSIS] "
-                f"reason_code={ERR_GOV_ENV_PROD_STRICT} "
-                "prod_mode_policy_denied: mutating tool requires args.namespace."
-            ), 1
-        if not namespace_allowed(ws, ns):
-            return (
-                f"[DATA] error\n[DIAGNOSIS] reason_code={ERR_GOV_NS_OUT_OF_BOUNDS} "
-                f"prod_mode_policy_denied: namespace {ns!r} not allowed."
-            ), 1
     if name == "k8s_rollout_restart":
         ns = str((args or {}).get("namespace") or "").strip()
         dep = str((args or {}).get("deployment") or (args or {}).get("name") or "").strip()

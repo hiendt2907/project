@@ -6,7 +6,7 @@ Assert advisory via Telegram Bot HTTP API — P0 E2E evidence.
    (often false for supergroups — Bot API omits the bot's own outgoing messages).
 
 2) Fallback (default on): read structured log ``event=telegram_outbound_ok`` from
-   omni-analyst, then call deleteMessage — proves the message_id existed (lab-only;
+   omni-fullstack, then call deleteMessage — proves the message_id existed (lab-only;
    removes the advisory message from chat).
 
 Reads TELEGRAM_BOT_TOKEN from env (same as worker).
@@ -77,7 +77,7 @@ def _kubectl_analyst_logs(trace: str) -> str | None:
             file=sys.stderr,
         )
         sys.exit(2)
-    dep = os.environ.get("E2E_ANALYST_DEPLOY", "omni-analyst")
+    dep = os.environ.get("E2E_ANALYST_DEPLOY", "omni-fullstack")
     kube = os.path.join(_repo_root(), "scripts/with_working_kube.sh")
     try:
         return subprocess.check_output(
@@ -118,7 +118,7 @@ def _verify_via_delete_message(
                 {
                     "event": "e2e_telegram_delete_verify_no_log",
                     "trace_id": trace,
-                    "hint": "expected event=telegram_outbound_ok message_id= in omni-analyst logs",
+                    "hint": "expected event=telegram_outbound_ok message_id= in omni-fullstack logs",
                 },
                 default=str,
             ),

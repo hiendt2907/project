@@ -26,7 +26,7 @@ from urllib.parse import urldefrag, urljoin, urlparse
 import httpx
 import redis.asyncio as aioredis
 
-from llm.vllm_client import VLLMClient
+from llm.factory import build_llm_client
 from rag.redis_vector_store import RedisVectorStore, PostgresRAGSettings
 from rag.pgvector_store import (
     COLLECTION_K8S_EXPERT,
@@ -286,7 +286,7 @@ async def run_k8s_official_ingest(*, dry_run: bool = False, max_pages_override: 
     r = aioredis.from_url(redis_url, decode_responses=False)
     store = RedisVectorStore(r)
     await store.ensure_ready()
-    llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url)
+    llm = build_llm_client(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url, timeout_s=120.0)
     try:
         batch = 16
         n = 0

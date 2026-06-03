@@ -23,6 +23,19 @@ from workers.k8s_tools import (
     tool_resolve_pod_identity,
 )
 from workers.observability_audit import tool_audit_observability_stack
+from workers.database_tools import (
+    tool_mysql_health,
+    tool_proxysql_stats,
+    tool_database_replication_lag,
+)
+from workers.services_tools import (
+    tool_haproxy_stats,
+    tool_systemd_service_health,
+)
+from workers.storage_tools import (
+    tool_disk_health,
+    tool_nfs_health,
+)
 from workers.gated_execute import tool_gated_allowlisted_execute
 from workers.lab_shell import tool_execute_shell_command
 from workers.sandbox_tools import tool_execute_in_sandbox, tool_sandbox_cleanup
@@ -158,6 +171,19 @@ register_tool("execute_in_sandbox", tool_execute_in_sandbox)
 register_tool("gated_allowlisted_execute", tool_gated_allowlisted_execute)
 register_tool("sandbox_cleanup", tool_sandbox_cleanup)
 register_tool("execute_shell_command", tool_execute_shell_command)
+
+# ── Domain tools: database ──────────────────────────────────────────────────
+register_tool("mysql_health", tool_mysql_health)
+register_tool("proxysql_stats", tool_proxysql_stats)
+register_tool("database_replication_lag", tool_database_replication_lag)
+
+# ── Domain tools: services ──────────────────────────────────────────────────
+register_tool("haproxy_stats", tool_haproxy_stats)
+register_tool("systemd_service_health", tool_systemd_service_health)
+
+# ── Domain tools: storage ───────────────────────────────────────────────────
+register_tool("disk_health", tool_disk_health)
+register_tool("nfs_health", tool_nfs_health)
 
 
 def _bind_registry_tools(names: tuple[str, ...]) -> None:

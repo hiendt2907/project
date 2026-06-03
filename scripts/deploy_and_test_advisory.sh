@@ -215,7 +215,7 @@ _tail_advisory_logs() {
 
   # omni-analyst: watch for SUGGEST_REMEDIATION, kill_switch_blocked, advisory events
   kubectl logs -f -n "${NS_OMNI}" \
-    -l app=omni-analyst \
+    -l app=omni-fullstack \
     --tail=0 \
     --prefix 2>/dev/null &
   LOG_PIDS+=($!)

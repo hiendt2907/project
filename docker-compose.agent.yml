@@ -1,0 +1,23 @@
+services:
+  omni-agent:
+    image: ghcr.io/omni/omni-agent:latest
+    # Build locally if no registry:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.agent
+    restart: unless-stopped
+    user: "10001:10001"
+    env_file: .env.agent
+    volumes:
+      - /var/log:/var/log:ro
+      - ${HOME}/.kube:/home/omni-agent/.kube:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

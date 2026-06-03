@@ -67,12 +67,12 @@ fi
 # ── 3. Redis reachable ────────────────────────────────────────────────────────
 hdr "Redis"
 REDIS_URL="${OMNI_REDIS_URL:-redis://redis:6379/0}"
-if $KUBE exec -n "$NS" deploy/omni-core -- \
+if $KUBE exec -n "$NS" deploy/omni-fullstack -- \
      python3 -c "import redis.asyncio as r, asyncio; asyncio.run(r.from_url('$REDIS_URL').ping())" &>/dev/null 2>&1; then
   ok "Redis reachable"
 else
   # Fallback: kubectl exec into a running pod with redis-cli
-  if $KUBE exec -n "$NS" deploy/omni-core -- redis-cli -u "$REDIS_URL" ping 2>/dev/null | grep -q PONG; then
+  if $KUBE exec -n "$NS" deploy/omni-fullstack -- redis-cli -u "$REDIS_URL" ping 2>/dev/null | grep -q PONG; then
     ok "Redis reachable (redis-cli)"
   else
     fail "Redis NOT reachable at $REDIS_URL"
@@ -104,7 +104,7 @@ fi
 
 # ── 5. ServiceAccount and RBAC ────────────────────────────────────────────────
 hdr "RBAC ($NS)"
-for sa in "omni-worker" "omni-executor"; do
+for sa in "omni-fullstack"; do
   if $KUBE get serviceaccount "$sa" -n "$NS" &>/dev/null; then
     ok "ServiceAccount exists: $sa"
   else
@@ -112,11 +112,11 @@ for sa in "omni-worker" "omni-executor"; do
   fi
 done
 
-for rb in "omni-worker-binding" "omni-executor-binding"; do
+for rb in "omni-fullstack-prober-read" "omni-fullstack-worker-pod-reader"; do
   if $KUBE get rolebinding "$rb" -n "$NS" &>/dev/null; then
     ok "RoleBinding exists: $rb"
   else
-    fail "RoleBinding MISSING: $rb — run: make deploy-worker"
+    fail "RoleBinding MISSING: $rb — run: make deploy-fullstack"
   fi
 done
 

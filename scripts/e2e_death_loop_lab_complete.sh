@@ -5,7 +5,7 @@
 #   NS=<ns> bash scripts/e2e_death_loop_lab_complete.sh
 #   NS=<ns> bash scripts/e2e_death_loop_lab_complete.sh '<existing_trace_id>'
 #
-# Requires: kubectl, cluster with omni-gateway + omni-analyst + kafka; Python with aiokafka
+# Requires: kubectl, cluster with omni-gateway + omni-fullstack + kafka; Python with aiokafka
 #   (default: repo .venv — override with PYTHON=/path/to/python).
 set -euo pipefail
 
@@ -53,7 +53,7 @@ if [[ "${FB_ING:-0}" =~ ^[0-9]+$ ]] && [[ "${FB_ING}" -ge 1 ]]; then
 elif [[ "${FB_RX:-0}" =~ ^[0-9]+$ ]] && [[ "${FB_RX}" -ge 1 ]]; then
   echo "PASS: action_feedback_received in logs count=${FB_RX}"
 else
-  echo "FAIL: no COMMAND_FEEDBACK_INGESTED / action_feedback_received for trace=${TRACE} (scale omni-analyst, Kafka group, or E2E_FEEDBACK_WAIT_SEC)." >&2
+  echo "FAIL: no COMMAND_FEEDBACK_INGESTED / action_feedback_received for trace=${TRACE} (check omni-fullstack, Kafka group, or E2E_FEEDBACK_WAIT_SEC)." >&2
   exit 1
 fi
 

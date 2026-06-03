@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# Worker default num_ctx=4096 (see CLAUDE.md). Reserve headroom for system + tool JSON + CoT.
+# Worker default num_ctx — configurable via OMNI_LLM_NUM_CTX (S2.1). Legacy fallback=4096.
 _DEFAULT_NUM_CTX = 4096
 _RESERVED_FOR_SYSTEM_AND_COMPLETION = 2200
 

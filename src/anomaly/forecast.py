@@ -12,6 +12,8 @@ MetricKind = Literal["usage", "available"]
 
 
 MIN_R_SQUARED_DEFAULT = 0.3  # overridden by OMNI_FORECAST_MIN_R_SQUARED in settings
+EWMA_ALPHA_DEFAULT = 0.3  # overridden by OMNI_FORECAST_EWMA_ALPHA
+EWMA_BETA_DEFAULT = 0.1   # overridden by OMNI_FORECAST_EWMA_BETA
 
 
 def linear_forecast_horizon(
@@ -43,6 +45,42 @@ def linear_forecast_horizon(
     return pred_y, meta
 
 
+def ewma_forecast_horizon(
+    values: list[float] | np.ndarray,
+    *,
+    horizon_steps: int,
+    alpha: float = EWMA_ALPHA_DEFAULT,
+    beta: float = EWMA_BETA_DEFAULT,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Holt's double EWMA (level + trend) — robust against K8s micro-bursts.
+
+    α (level): higher = more reactive to recent spikes.
+    β (trend): lower = smoother trend line, less affected by short bursts.
+    Forecast h steps ahead: F(h) = level + h * trend.
+    """
+    y = np.asarray(values, dtype=float)
+    if y.size < 2:
+        raise ValueError("cần ít nhất 2 điểm")
+
+    level = float(y[0])
+    trend = float(y[1] - y[0])
+
+    for v in y[1:]:
+        prev_level = level
+        level = alpha * float(v) + (1.0 - alpha) * (level + trend)
+        trend = beta * (level - prev_level) + (1.0 - beta) * trend
+
+    pred_y = np.array([level + (h + 1) * trend for h in range(horizon_steps)], dtype=float)
+    return pred_y, {
+        "method": "holt_ewma",
+        "alpha": alpha,
+        "beta": beta,
+        "final_level": round(level, 6),
+        "final_trend": round(trend, 6),
+        "low_confidence": False,
+    }
+
+
 def oom_risk_from_series(
     values: list[float] | np.ndarray,
     *,
@@ -51,10 +89,15 @@ def oom_risk_from_series(
     horizon_hours: float,
     kind: MetricKind = "usage",
     usage_warn_ratio: float = 0.92,
+    alpha: float = EWMA_ALPHA_DEFAULT,
+    beta: float = EWMA_BETA_DEFAULT,
+    min_r_squared: float = MIN_R_SQUARED_DEFAULT,
 ) -> dict[str, Any]:
-    """
-    Dự báo xu hướng từ chuỗi (byte). `usage`: RAM đã dùng tăng → nguy cơ khi dự báo > usage_warn_ratio * total.
-    `available`: RAM còn lại giảm → nguy cơ khi dự báo < (1-usage_warn_ratio)*total.
+    """Dự báo xu hướng từ chuỗi (byte) dùng Holt's EWMA.
+
+    Robust hơn linear trên K8s micro-bursts. `usage`: nguy cơ khi dự báo > usage_warn_ratio * total.
+    `available`: nguy cơ khi dự báo < (1-usage_warn_ratio)*total.
+    r² gate (linear) runs as signal-quality pre-filter to detect noisy/unpredictable series.
     """
     y = np.asarray(values, dtype=float)
     if y.size < 3 or total_ram_bytes <= 0:
@@ -64,19 +107,22 @@ def oom_risk_from_series(
             "points": int(y.size),
         }
     horizon_steps = max(1, int(horizon_hours * 3600.0 / max(step_seconds, 1.0)))
-    pred_y, meta = linear_forecast_horizon(y, horizon_steps=horizon_steps)
-    last_pred = float(pred_y[-1])
 
-    if meta.get("low_confidence"):
+    # Signal quality gate: noisy/unpredictable series have low r² — skip forecast to avoid false alarms.
+    _, quality_meta = linear_forecast_horizon(y, horizon_steps=1, min_r_squared=min_r_squared)
+    if quality_meta.get("low_confidence"):
         return {
             "ok": True,
             "metric_kind": kind,
             "horizon_hours": float(horizon_hours),
             "oom_or_pressure_risk": False,
             "low_confidence": True,
-            "headline": f"Forecast skipped: r_squared={meta['r_squared']:.3f} below threshold.",
-            "regression": meta,
+            "headline": f"Forecast skipped: r_squared={quality_meta['r_squared']:.3f} below threshold.",
+            "ewma_meta": {"method": "holt_ewma", "low_confidence": True},
         }
+
+    pred_y, meta = ewma_forecast_horizon(y, horizon_steps=horizon_steps, alpha=alpha, beta=beta)
+    last_pred = float(pred_y[-1])
 
     if kind == "usage":
         threshold = usage_warn_ratio * total_ram_bytes
@@ -104,7 +150,7 @@ def oom_risk_from_series(
         "oom_or_pressure_risk": bool(risk),
         "low_confidence": False,
         "headline": headline,
-        "regression": meta,
+        "ewma_meta": meta,
     }
 
 

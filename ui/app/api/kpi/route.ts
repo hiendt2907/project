@@ -1,74 +1,30 @@
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 
-// KPI summary route — proxies to Omni Gateway /kpi/summary or returns mock.
-// Set OMNI_GATEWAY_URL=http://omni-gateway:8000 for production.
+// KPI summary route — proxies to Omni Gateway /kpi/summary.
+// NO mock fallback: returns an honest 502 error when the gateway is unreachable.
+
+export const dynamic = "force-dynamic";
 
 const GATEWAY_URL = process.env.OMNI_GATEWAY_URL;
 const GATEWAY_API_KEY = process.env.OMNI_GATEWAY_API_KEY ?? "";
 
-type KpiSummary = {
-  generated_at: string;
-  window: string;
-  source: "gateway" | "mock";
-  advisory: {
-    accepted: number;
-    rejected: number;
-    total: number;
-    acceptance_rate: number | null;
-  };
-  execution: {
-    total_executed: number;
-    false_positive: number;
-    false_positive_rate: number | null;
-  };
-  trend: {
-    lane: string;
-    detected: number;
-    resolved: number;
-  }[];
-};
-
-function mockKpi(): KpiSummary {
-  return {
-    generated_at: new Date().toISOString(),
-    window: "24h",
-    source: "mock",
-    advisory: {
-      accepted: 142,
-      rejected: 23,
-      total: 165,
-      acceptance_rate: 0.8606,
-    },
-    execution: {
-      total_executed: 142,
-      false_positive: 8,
-      false_positive_rate: 0.0563,
-    },
-    trend: [
-      { lane: "SYS_RESOURCE", detected: 48, resolved: 45 },
-      { lane: "SYS_HARD_FAIL", detected: 31, resolved: 28 },
-      { lane: "APP_HTTP", detected: 62, resolved: 59 },
-      { lane: "SIEM_SECURITY", detected: 24, resolved: 20 },
-    ],
-  };
+function gatewayError(detail: string) {
+  return NextResponse.json({ source: "error", error: detail }, { status: 502 });
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const tenantId = request.nextUrl.searchParams.get("tenant_id");
   if (!GATEWAY_URL) {
-    return NextResponse.json(mockKpi());
+    return gatewayError("OMNI_GATEWAY_URL not configured");
   }
+  const authHeader: HeadersInit = GATEWAY_API_KEY ? { Authorization: `Bearer ${GATEWAY_API_KEY}` } : {};
+  const tenantParam = tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : "";
   try {
     const [summaryRes, trendRes] = await Promise.all([
-      fetch(`${GATEWAY_URL}/kpi/summary`, {
-        headers: GATEWAY_API_KEY ? { "X-Api-Key": GATEWAY_API_KEY } : {},
-        next: { revalidate: 30 },
-      }),
-      fetch(`${GATEWAY_URL}/kpi/trend?window=24h`, {
-        headers: GATEWAY_API_KEY ? { "X-Api-Key": GATEWAY_API_KEY } : {},
-        next: { revalidate: 30 },
-      }),
+      fetch(`${GATEWAY_URL}/kpi/summary?${tenantParam}`, { headers: authHeader, next: { revalidate: 30 } }),
+      fetch(`${GATEWAY_URL}/kpi/trend?window=24h${tenantParam}`, { headers: authHeader, next: { revalidate: 30 } }),
     ]);
-    if (!summaryRes.ok) throw new Error(`gateway /kpi/summary ${summaryRes.status}`);
+    if (!summaryRes.ok) return gatewayError(`gateway /kpi/summary ${summaryRes.status}`);
     const summary = await summaryRes.json();
     const trendData = trendRes.ok ? await trendRes.json() : { lanes: {} };
     const trend = Object.entries(trendData.lanes ?? {}).map(([lane, v]: [string, unknown]) => ({
@@ -78,6 +34,6 @@ export async function GET() {
     }));
     return NextResponse.json({ ...summary, source: "gateway", trend });
   } catch {
-    return NextResponse.json(mockKpi());
+    return gatewayError("gateway /kpi unreachable");
   }
 }

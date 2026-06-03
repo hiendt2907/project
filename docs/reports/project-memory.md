@@ -63,6 +63,8 @@ Implemented behavior to lock in:
 
 ## FailurePatterns
 
+- **`omni-worker-configmap.yaml` YAML drift:** Merge/paste errors can leave a quoted URL line without a key under `data:` (seen around `OMNI_VLLM_EMBED_URL`) → `kubectl apply` fails (`did not find expected key`) before rollout. Fix: single-line `KEY: "value"`; validate with `./scripts/with_working_kube.sh apply -f k8s/deployments/omni-worker-configmap.yaml --dry-run=client`.
+
 - **E2E gateway script (`scripts/gateway_alert_loki_verify.sh`)** depends on **`kubectl exec`** into `E2E_EXEC_DEPLOY` (default `omni-prober`). **`NS` is required** (no default in script; lab: `NS=multi-agent` via Makefile or `export NS`). Some cluster runtimes return `container not found` during exec even when pods are Ready — treat as **infra_blocker** (see `docs/vendor/knownbase.md`). **`scripts/e2e_incident_matrix.sh`** must propagate the gateway script exit code (capture `|| rc=$?` before `_restore_nginx`) or the matrix run incorrectly reports **passed** when strict assert failed.
 - **Diagnostic policy path:** `nginx_waiting_fault` lab may emit **`SUGGEST_REMEDIATION`** with **`DIAGNOSTIC_INVARIANT_GATE`** / `INV_NO_RESTART_ON_BROKEN_SPEC` instead of **`EXECUTE_MUTATE`** when evidence shows broken ConfigMap/Secret class failure — expected after invariant rollout; optional grep: `E2E_ASSERT_DIAGNOSTIC_POLICY=1` in `gateway_alert_loki_verify.sh`. With current code (post 2026-04-10 fixes), the intended path for FailedMount+missing CM is: LLM planner describes ConfigMap → proposes `k8s_create_or_patch_configmap` with `lane_hint=state` → proof gate fast-tracks → EXECUTE_MUTATE; fallback (LLM unavailable) also selects `k8s_create_or_patch_configmap` and forces `blind_lane_eff=state`.
 - **Broken-spec fallback lane override (2026-04-11):** When `plan=None` (LLM unavailable) and `evidence_suggests_broken_spec + CM name found`, `_emit_agentic_mutate_if_any` sets `fallback_lane_override="state"` and merges it into `blind_lane_eff` before calling `_proof_of_fault_gate`. Without this, `proof_lane=resource` from the matrix causes `ERR_REA_SIGMA_GATE_BLOCKED` (no metric spike for a missing ConfigMap). Fix in `src/workers/evidence_consumer.py`; test `test_fallback_lane_is_state_for_broken_spec_cm`.
@@ -113,3 +115,40 @@ Implemented behavior to lock in:
 - **Coverage (scoped `--cov` on touched paths):** `vllm_client` ~94%; trace_orchestrator submodules ~80–91%. Full-repo 90% not claimed for this diff alone.
 - **Docker:** `make docker-worker`, `make docker-gateway` — OK.
 - **Cluster E2E:** not run this session.
+
+### Backend verify harness + LLM/Gateway SLI (2026-05-12)
+
+- **Exporter:** `omni_llm_ttft_seconds`, `omni_llm_client_completion_seconds`, `omni_llm_completion_tokens_total` — [`src/workers/metrics_exporter.py`](../../src/workers/metrics_exporter.py) `observe_llm_client_sli`.
+- **VLLMClient:** streamed completions when `OMNI_VLLM_STREAM_FOR_SLI=true` (default **false** in library for unit-test mocks; worker ConfigMap sets **true**); `OMNI_LLM_SLI_METRICS_ENABLED` — [`src/llm/vllm_client.py`](../../src/llm/vllm_client.py).
+- **Gateway:** `omni_gateway_circuit_open` gauge on Redis CB read — [`src/gateway/api.py`](../../src/gateway/api.py).
+- **Redis stream XLEN:** `OMNI_METRICS_REDIS_STREAM_KEYS` comma list → `observability_metrics_loop` — [`src/workers/settings.py`](../../src/workers/settings.py), [`src/workers/omni_worker.py`](../../src/workers/omni_worker.py); lab example `stream:actionable_incidents`.
+- **Scripts:** [`scripts/wait_omni_consumer_ready.py`](../../scripts/wait_omni_consumer_ready.py), [`scripts/omni_backend_verify.py`](../../scripts/omni_backend_verify.py) — POST Gateway webhook (HMAC when secret set), optional `/metrics` CB scrape, trace-scoped DLQ poll (not global DLQ count).
+- **NetPol (lab):** [`k8s/network-policies/omni-gateway-netpol-ingress-multi-agent.yaml`](../../k8s/network-policies/omni-gateway-netpol-ingress-multi-agent.yaml) — replaces broken `ingress: - from: []` rule (blocked all in-cluster sources).
+- **Analyst Service:** [`k8s/services/omni-analyst-service.yaml`](../../k8s/services/omni-analyst-service.yaml) — ClusterIP `:8090/:9090` for `omni-analyst.*` DNS (required for `/readyz` wait).
+- **Job:** [`k8s/jobs/omni-backend-verify.yaml`](../../k8s/jobs/omni-backend-verify.yaml) — `ttlSecondsAfterFinished: 60`, optional `omni-gateway-secret` envFrom.
+- **Makefile:** `wait-omni-consumer-ready`, `backend-verify-local`, `backend-verify-job-infra`, `backend-verify-job-apply`, `backend-verify-job-run`.
+
+**VERIFY SUMMARY (session slice)**
+
+| Gate | Result |
+|------|--------|
+| Omni pytest unit (`tests/` excl. integration + `tests/real_services`) | PASS |
+| `make hitl-gate` | PASS |
+| Cluster smoke (`kubectl get pods -n multi-agent`) | Analyst/Gateway Running |
+| `k8s/network-policies/omni-gateway-netpol-ingress-multi-agent.yaml` | Applied — ingress peers: same-ns `podSelector: {}` + Traefik |
+| `k8s/services/omni-analyst-service.yaml` | Applied — DNS `omni-analyst.multi-agent.svc.cluster.local:8090` |
+| Gateway URLs | Service **`ClusterIP` port 80 → targetPort 8000** (scripts/job must use **:80** or omit port; `:8000` fails) |
+| `make docker-worker` + Job `omni-backend-verify` | **PASS** — webhook 200, trace DLQ clean |
+| `make docker-gateway` + rollout omni-gateway | `/metrics` exposes **`omni_gateway_circuit_open 0.0`** |
+| `make autonomy-gate` | Not run (heavy; prior sprint note: secret-gate noise) |
+
+## Build / deploy / debug (2026-05-12) — worker ConfigMap + cluster rollout
+
+- **Deploy blocker:** `k8s/deployments/omni-worker-configmap.yaml` YAML không hợp lệ — `OMNI_VLLM_EMBED_URL` thiếu value trên cùng dòng, URL rơi xuống dòng orphan → `kubectl apply` lỗi `yaml: line 88: did not find expected key`.
+- **Fix:** Gộp `OMNI_VLLM_EMBED_URL: "http://host.orb.internal:11434/v1"` một dòng; xóa dòng quoted lạc.
+- **Build:** `make docker-worker` → image `multi-agent-system:latest` OK (OrbStack/docker local).
+- **Deploy:** `make deploy-worker` OK sau fix — rollouts `omni-prober`, `omni-analyst`, `omni-core`, `omni-executor` trong timeout 180s.
+- **Logs (debug):** Executor `worker_role=executor`, consumer `omni-actions`, audit-only `SUGGEST_REMEDIATION`; WARNING heartbeat/rebalance Kafka trong lúc rollout là bình thường. Analyst khởi động evidence + action-feedback + KPI collector (có LeaveGroup khi pod terminate trong rollout).
+- **Test:** `make auto-execute-gate` PASS (10 tests).
+- **Tài liệu:** Preflight ConfigMap — [../runbooks/e2e_cluster_after_deploy.md](../runbooks/e2e_cluster_after_deploy.md); policy auto-execute — [../runbooks/auto-execute-policy-matrix.md](../runbooks/auto-execute-policy-matrix.md).
+

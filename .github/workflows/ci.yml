@@ -53,6 +53,12 @@ jobs:
       - name: Omni unit tests + coverage gate (>=90%)
         run: pytest tests/ --ignore=tests/integration --ignore=tests/real_services -q --tb=short --cov=src --cov-config=.coveragerc.gate --cov-report=term --cov-fail-under=90
 
+      - name: Advisory schema gate (no LLM required)
+        run: pytest tests/benchmarks/test_advisory_schema.py -q --tb=short
+
+      - name: Integration tests (mock-safe, no real services)
+        run: pytest tests/integration/ -q --tb=short -m "not requires_services"
+
       - name: Script syntax check (SIEM scripts)
         # Validate scripts are syntactically correct without executing them.
         # Gateway / matrix helpers require NS at runtime (no default in-script); lab contract: NS=multi-agent.

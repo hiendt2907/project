@@ -21,6 +21,7 @@ from pkg.trace_orchestrator.state import (
     TraceOrchestratorPhase,
     TraceOrchestratorState,
     load_trace_orchestrator_state,
+    mark_trace_orchestrator_resolved_verified,
     redis_key_trace_orchestrator,
     save_trace_orchestrator_state,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "TraceOrchestratorState",
     "enqueue_rag_candidate",
     "load_trace_orchestrator_state",
+    "mark_trace_orchestrator_resolved_verified",
     "merge_ranked_candidate_rows",
     "on_verified_resolve_hook",
     "pop_next_untried_candidate",

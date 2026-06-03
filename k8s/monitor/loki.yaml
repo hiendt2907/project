@@ -55,7 +55,7 @@ data:
       filesystem:
         directory: /loki/chunks
     limits_config:
-      retention_period: 168h
+      retention_period: 336h
       allow_structured_metadata: false
 ---
 apiVersion: apps/v1

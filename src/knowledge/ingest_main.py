@@ -13,7 +13,7 @@ import redis.asyncio as aioredis
 
 from knowledge.config import load_knowledge_sources
 from knowledge.pipeline import run_pipeline_for_entry
-from llm.vllm_client import VLLMClient
+from llm.factory import build_llm_client
 from rag.redis_vector_store import RedisVectorStore, PostgresRAGSettings
 from rag.pgvector_store import COLLECTION_VENDOR_KNOWLEDGE
 from training.sop_ingest import _embed_batch  # noqa: PLC2701 — shared embed helper
@@ -26,13 +26,14 @@ async def _run(sources_path: str, *, dry_run: bool, limit_sources: int | None) -
     logging.basicConfig(level=logging.INFO)
     cfg = load_knowledge_sources(sources_path)
     ws = WorkerSettings()
-    llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url, timeout_s=120.0)
+    llm = build_llm_client(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url, timeout_s=120.0)
 
     async def embed_fn(texts: list[str]) -> list[list[float]]:
         return await _embed_batch(
-            ollama,
+            llm,
             model=ws.embed_model,
             texts=texts,
+            keep_alive=None,
         )
 
     entries = cfg.sources

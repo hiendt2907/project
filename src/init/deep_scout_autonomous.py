@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from llm.vllm_client import VLLMClient
+from llm.factory import build_llm_client
 from kubernetes_asyncio import client, config
 from rag.pgvector_store import (
     COLLECTION_INFRA_TOPOLOGY, 
@@ -301,7 +301,7 @@ async def run_deep_scout_autonomous(ctx: Any, *, periodic: bool = False) -> Auto
     ws: WorkerSettings = ctx.settings
     vector_store = ctx.vector_store
 
-    local_llm = VLLMClient(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url)
+    local_llm = build_llm_client(base_url=ws.vllm_base_url, embed_url=ws.vllm_embed_url, timeout_s=float(ws.llm_chat_timeout_sec))
     try:
         llm = local_llm
         return await _run_deep_scout_autonomous_body(

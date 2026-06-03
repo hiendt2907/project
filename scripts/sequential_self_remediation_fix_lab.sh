@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KUBE="${ROOT}/scripts/with_working_kube.sh"
 NS="${NS:-multi-agent}"
-EXEC_DEPLOY="${E2E_EXEC_DEPLOY:-omni-prober}"
+EXEC_DEPLOY="${E2E_EXEC_DEPLOY:-omni-fullstack}"
 WAIT_MAX="${WAIT_MAX_SEC:-600}"
 POLL_SEC="${POLL_SEC:-5}"
 # Must match preflight ConfigMap OMNI_OOM_PATCH_MEMORY
@@ -22,9 +22,9 @@ on_timeout_dump() {
   log "Debug dump for ${step} trace=${trace:-?}"
   if [[ -n "${trace}" ]]; then
     log "Executor (trace):"
-    "$KUBE" logs -n "$NS" deploy/omni-executor --since=45m --tail=12000 2>/dev/null | grep -F "$trace" | tail -40 || true
+    "$KUBE" logs -n "$NS" deploy/omni-fullstack --since=45m --tail=12000 2>/dev/null | grep -F "$trace" | tail -40 || true
     log "Analyst (trace):"
-    "$KUBE" logs -n "$NS" deploy/omni-analyst --since=45m --tail=12000 2>/dev/null | grep -F "$trace" | tail -40 || true
+    "$KUBE" logs -n "$NS" deploy/omni-fullstack --since=45m --tail=12000 2>/dev/null | grep -F "$trace" | tail -40 || true
   fi
 }
 
@@ -102,16 +102,16 @@ EOF
 }
 
 log "=== 0) Lab preflight: drift + flags ==="
-# Re-apply cluster-admin binding (lab drift for RBAC probe)
-"$KUBE" apply -f "${ROOT}/k8s/deployments/omni-worker-rbac.yaml" >/dev/null
-log "Applied omni-worker-rbac.yaml (cluster-admin binding for lab)"
+# Re-apply consolidated worker RBAC (lab setup for RBAC probe)
+"$KUBE" apply -f "${ROOT}/k8s/deployments/omni-fullstack-rbac.yaml" >/dev/null
+log "Applied omni-fullstack-rbac.yaml (consolidated worker RBAC)"
 
 # ConfigMap drift: god mode in prod + OOM deterministic flags (probe reads live ConfigMap via API)
 "$KUBE" patch configmap omni-worker-config -n "$NS" --type merge -p "{\"data\":{\"OMNI_GOD_MODE\":\"true\",\"OMNI_ENV_MODE\":\"prod\",\"OMNI_OOM_DETERMINISTIC_REMEDIATE_ENABLED\":\"true\",\"OMNI_OOM_PATCH_CONTAINER\":\"load\",\"OMNI_OOM_PATCH_MEMORY\":\"${OOM_TARGET_MEM}\"}}" >/dev/null
 log "Patched omni-worker-config: GOD_MODE=true, OOM deterministic on, container=load, target=${OOM_TARGET_MEM}"
 
 # Analyst + executor reload env for OOM flags
-for d in omni-analyst omni-executor; do
+for d in omni-fullstack; do
   if "$KUBE" get deploy "$d" -n "$NS" &>/dev/null; then
     "$KUBE" rollout restart "deployment/$d" -n "$NS" >/dev/null
     "$KUBE" rollout status "deployment/$d" -n "$NS" --timeout=180s
@@ -178,4 +178,4 @@ fi
 
 log "=== DONE: all three paths verified on cluster state ==="
 log "Traces: rbac=$T1 configmap=$T2 oom=$T3"
-log "Optional: re-apply k8s/deployments/omni-worker-rbac.yaml if you need cluster-admin back for ops."
+log "Optional: re-apply k8s/deployments/omni-fullstack-rbac.yaml to restore worker RBAC."

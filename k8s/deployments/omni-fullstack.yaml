@@ -1,0 +1,143 @@
+# Omni Fullstack — OMNI_WORKER_ROLE=full runs all loops in a single pod.
+# Replaces: omni-analyst + omni-prober + omni-core + omni-executor (lab).
+# omni-gateway stays separate (own image + scale profile).
+#
+# Prerequisites:
+#   make docker-worker            # bake source into image first
+#   kubectl apply -f k8s/deployments/omni-fullstack-rbac.yaml
+#
+# Migration:
+#   make deploy-fullstack         # this manifest + RBAC
+#   make scale-down-split         # scale split roles to 0 after fullstack is Running
+#
+# Rollback:
+#   make rollback-fullstack
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-fullstack
+  namespace: multi-agent
+  labels:
+    app: omni-fullstack
+    app.kubernetes.io/name: omni-fullstack
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/criticality: "P1"
+    omni.io/env: lab
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: omni-fullstack
+  template:
+    metadata:
+      labels:
+        app: omni-fullstack
+        app.kubernetes.io/name: omni-fullstack
+        app.kubernetes.io/part-of: omni-platform
+        omni.io/managed: "true"
+        omni.io/criticality: "P1"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      hostPID: true
+      serviceAccountName: omni-fullstack
+      automountServiceAccountToken: true
+      securityContext:
+        runAsUser: 0
+        fsGroup: 10001
+      containers:
+        - name: omni-fullstack
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            - name: health
+              containerPort: 8090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: omni-worker-config
+          env:
+            - name: OMNI_WORKER_ROLE
+              value: "full"
+            - name: OMNI_EXECUTOR_FORCE_NSENTER
+              value: "true"
+            - name: OMNI_AUDIT_PRIVATE_KEY_PATH
+              value: /etc/omni/audit/private_key.pem
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: bot-token
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+            - name: OMNI_TELEGRAM_ADMIN_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+            - name: OMNI_CHAOS_PG_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: omni-chaos-lab
+                  key: pg-app-password
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            allowPrivilegeEscalation: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_PTRACE
+            seccompProfile:
+              type: Unconfined
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 1024Mi
+            limits:
+              cpu: "4"
+              memory: 6Gi
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8090
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            failureThreshold: 5
+          volumeMounts:
+            - name: audit-keys
+              mountPath: /etc/omni/audit
+              readOnly: true
+      volumes:
+        - name: audit-keys
+          secret:
+            secretName: omni-audit-keys
+            defaultMode: 0400

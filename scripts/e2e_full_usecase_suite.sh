@@ -19,8 +19,8 @@ _hdr()  { echo ""; echo "══════════════════�
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-_analyst_logs() { "${KUBE}" kubectl logs -n "$NS" deploy/omni-analyst --since=60m --tail=50000 2>/dev/null || true; }
-_prober_logs()  { "${KUBE}" kubectl logs -n "$NS" deploy/omni-prober  --since=60m --tail=50000 2>/dev/null || true; }
+_analyst_logs() { "${KUBE}" kubectl logs -n "$NS" deploy/omni-fullstack --since=60m --tail=50000 2>/dev/null || true; }
+_prober_logs()  { "${KUBE}" kubectl logs -n "$NS" deploy/omni-fullstack  --since=60m --tail=50000 2>/dev/null || true; }
 
 _wait_trace() {
   # Usage: _wait_trace <trace_id> <timeout_sec>
@@ -81,7 +81,7 @@ _post_alert() {
 }
 
 _get_crat_chain_len() {
-  "${KUBE}" kubectl exec -n "$NS" deploy/omni-core -- python3 -c "
+  "${KUBE}" kubectl exec -n "$NS" deploy/omni-fullstack -- python3 -c "
 import redis, os
 r = redis.Redis.from_url(os.environ.get('OMNI_REDIS_URL','redis://redis:6379/0'))
 print(r.llen('audit_chain:blocks'))
@@ -95,7 +95,7 @@ CHAIN_BEFORE=$(_get_crat_chain_len)
 echo "  CRAT chain before: $CHAIN_BEFORE blocks"
 
 ALL_RUNNING=1
-for dep in omni-gateway omni-prober omni-analyst omni-executor omni-core kafka redis; do
+for dep in omni-gateway omni-fullstack kafka redis; do
   READY=$("${KUBE}" kubectl get deploy "$dep" -n "$NS" -o jsonpath='{.status.readyReplicas}' 2>/dev/null \
     || "${KUBE}" kubectl get statefulset "$dep" -n "$NS" -o jsonpath='{.status.readyReplicas}' 2>/dev/null \
     || echo "?")
@@ -299,7 +299,7 @@ set -e
 # ── TC11: CRAT integrity ──────────────────────────────────────────────────────
 _hdr "TC11 — CRAT chain integrity (full verify)"
 set +e
-CRAT_OUT=$("${KUBE}" kubectl exec -n "$NS" deploy/omni-core -- \
+CRAT_OUT=$("${KUBE}" kubectl exec -n "$NS" deploy/omni-fullstack -- \
   python3 /app/scripts/crat_integrity_check.py 2>&1)
 echo "$CRAT_OUT"
 CHAIN_AFTER=$(_get_crat_chain_len)
@@ -319,7 +319,7 @@ set -e
 _hdr "TC13 — Error log audit (last 30m)"
 set +e
 # Exclude: connectivity errors (transient on startup), ESCALATE_TO_HUMAN (expected for CRITICAL SIEM advisory path)
-"${KUBE}" kubectl logs -n "$NS" deploy/omni-analyst --since=30m 2>/dev/null | \
+"${KUBE}" kubectl logs -n "$NS" deploy/omni-fullstack --since=30m 2>/dev/null | \
   python3 -c "
 import sys,json
 EXPECTED_ERRORS = {'Unable connect', 'ESCALATE_TO_HUMAN', 'kafka_bootstrap_retry', 'Unclosed AIOKafka'}

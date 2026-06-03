@@ -14,7 +14,7 @@
 #   MARKER_DIR      Optional; default reports/death-loop-runs/${RUN_ID}
 #   OMNI_DEATH_SKIP_BUILD, OMNI_DEATH_SKIP_PYTEST, OMNI_DEATH_LOKI_STRICT,
 #   OMNI_DEATH_SLEEP_SEC, OMNI_DEATH_PROACTIVE, OMNI_DEATH_PROACTIVE_RESTART,
-#   OMNI_DEATH_MATRIX, SCENARIOS, MVP_API_URL — same as omni_dev_death_loop.sh
+#   OMNI_DEATH_MATRIX, SCENARIOS, OMNI_GATEWAY_URL — same as omni_dev_death_loop.sh
 #
 set -euo pipefail
 
@@ -115,13 +115,7 @@ case "${PHASE}" in
       exit 0
     fi
     if [[ -z "${SCENARIOS:-}" ]]; then
-      _matrix_base="wave_a1_rbac_manifest,wave_a1_rbac_permissions"
-      MVP_PROBE_URL="${MVP_API_URL:-http://localhost:8000}"
-      if curl -sf --max-time 3 "${MVP_PROBE_URL}/healthz" >/dev/null 2>&1; then
-        export SCENARIOS="${_matrix_base},phase_b_api_resource,phase_b_api_state"
-      else
-        export SCENARIOS="${_matrix_base}"
-      fi
+      export SCENARIOS="wave_a1_rbac_manifest,wave_a1_rbac_permissions,phase_b_pytest,phase_b_unit_full,nginx_waiting_fault"
     fi
     bash "${ROOT}/scripts/e2e_incident_matrix.sh"
     touch_ok incident_matrix

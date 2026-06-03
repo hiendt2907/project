@@ -5,10 +5,11 @@
 # Hosts mapped in /etc/hosts → OrbStack LB IP (run: make hosts-update)
 #
 # Domain map:
-#   omni.ai-agent.local       → multi-agent/omni-ui:80
+#   portal.ai-agent.local     → multi-agent/omni-ui:80 (Omni admin / config)
+#   omni.ai-agent.local       → multi-agent/omni-ui:80 (Omni ops / HITL / monitor)
 #   gateway.ai-agent.local    → multi-agent/omni-gateway:80   (SSE streaming)
-#   siem.ai-agent.local       → smart-siem/siem-ui:80
-#   siem.ai-agent.local/api   → smart-siem/siem-ui-api:8080
+#   soc.ai-agent.local        → smart-siem/siem-ui:80
+#   soc.ai-agent.local/api    → smart-siem/siem-ui-api:8080
 #   finguard.ai-agent.local   → finguard-customer/finguard-ui-frontend:80
 #   finguard.ai-agent.local/api → finguard-customer/finguard-ui-api:8080
 # ─────────────────────────────────────────────────────────────────────────────
@@ -26,6 +27,16 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
+    - host: portal.ai-agent.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: omni-ui
+                port:
+                  number: 80
     - host: omni.ai-agent.local
       http:
         paths:
@@ -76,7 +87,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-    - host: siem.ai-agent.local
+    - host: soc.ai-agent.local
       http:
         paths:
           - path: /api/v1

@@ -771,6 +771,15 @@ async def run_agentic_mutate_plan(
     react_on = bool(getattr(ws, "omni_diagnostic_react_enabled", False))
     ro_max = max(0, int(getattr(ws, "omni_diagnostic_react_readonly_max", 3) or 3))
     r_redis = getattr(ctx, "redis", None)
+
+    # S3.3: assign A/B variant and persist for outcome tracking.
+    try:
+        from pkg.prompt_optimizer.ab_test import assign_variant
+        _ab_variant = assign_variant(trace)
+        if r_redis is not None:
+            await r_redis.setex(f"omni:prompt:ab:trace:{trace}", 3600, _ab_variant)
+    except Exception:
+        _ab_variant = "A"
     mem_out_cap = int(getattr(ws, "omni_trace_memory_tool_output_max_chars", 4000) or 4000)
     ro_cap = _planner_readonly_output_cap(ws)
     fact_block = build_fact_table_prompt(batch, sanitized_text)

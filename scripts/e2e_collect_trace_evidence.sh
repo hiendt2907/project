@@ -19,10 +19,8 @@ _collect() {
   "${KUBE}" logs -n "$NS" "deploy/${dep}" --since=45m --tail=80000 2>/dev/null | grep -F "$TRACE" || true
 }
 
-RAW="$(_collect omni-analyst)
-$(_collect omni-executor)
-$(_collect omni-prober)
-$(_collect omni-core)
+# Split-role pods consolidated into omni-fullstack (2026-06-03) — single log source.
+RAW="$(_collect omni-fullstack)
 "
 
 _count_sub() {

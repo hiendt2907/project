@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
@@ -28,201 +28,100 @@ export interface IncidentsResponse {
   incidents: Incident[];
   total: number;
   hitl_pending_count: number;
-  source: "gateway" | "mock";
+  source: "gateway";
   generated_at: string;
 }
 
-function rand(min: number, max: number) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+// Map CRAT event_type to diagnostic lane
+const EVENT_TYPE_LANE: Record<string, IncidentLane> = {
+  ADVISORY_DECISION: "SYS_HARD_FAIL",
+  ADVISORY_DISPATCHED: "SYS_HARD_FAIL",
+  MUTATION_TRAPPED: "SYS_RESOURCE",
+  HITL_DECISION: "SIEM_SECURITY",
+  ROLLBACK_EXECUTED: "APP_HTTP",
+  SOP_PROMOTED: "SYS_HARD_FAIL",
+};
+
+function verdictToSeverity(verdict: string): IncidentSeverity {
+  const v = verdict.toUpperCase();
+  if (v === "CRITICAL" || v === "INVESTIGATE") return "critical";
+  if (v === "URGENT") return "high";
+  if (v === "SUGGEST_REMEDIATION") return "medium";
+  return "low";
 }
 
-function mockIncidents(): IncidentsResponse {
-  const now = Date.now();
-  const incidents: Incident[] = [
-    {
-      id: "inc-001",
-      timestamp: new Date(now - 420_000).toISOString(),
-      lane: "SIEM_SECURITY",
-      severity: "critical",
-      verdict: "CRITICAL",
-      status: "HITL_PENDING",
-      playbook_id: "pb-002",
-      hitl_incident_id: "fg-inc-a4b201",
-      trace_id: "fg-a4b201ef-8823",
-      summary: "Privileged container breakout detected in namespace multi-agent",
-      events: [
-        { timestamp: new Date(now - 420_000).toISOString(), message: "SIEM alert ingested from FinGuard" },
-        { timestamp: new Date(now - 418_000).toISOString(), message: "LLM analysis: k8s_threat / kill_chain=execution" },
-        { timestamp: new Date(now - 416_000).toISOString(), message: "Playbook pb-002 matched — HITL gate triggered" },
-        { timestamp: new Date(now - 414_000).toISOString(), message: "HITL request dispatched to FinGuard API" },
-      ],
-      crat_hash: "sha256:9f3d2a8b4e1c7f6a2d9b3e8c4f1a7d6b2e9c3f8a",
-    },
-    {
-      id: "inc-002",
-      timestamp: new Date(now - 1_200_000).toISOString(),
-      lane: "SYS_RESOURCE",
-      severity: "high",
-      verdict: "URGENT",
-      status: "RESOLVED",
-      playbook_id: "pb-003",
-      trace_id: "omni-res-8843bc",
-      summary: "CPU z-score 3.8σ on deployment nginx-frontend in multi-agent",
-      events: [
-        { timestamp: new Date(now - 1_200_000).toISOString(), message: "3-SIGMA RESOURCE BASELINE breach detected" },
-        { timestamp: new Date(now - 1_198_000).toISOString(), message: "Advisory dispatched: URGENT — scale horizontally" },
-        { timestamp: new Date(now - 1_190_000).toISOString(), message: "Playbook pb-003 auto-executed: scale replicas 2→4" },
-        { timestamp: new Date(now - 1_180_000).toISOString(), message: "Verification: CPU normalised, z-score 1.1σ" },
-      ],
-      crat_hash: "sha256:3e8c4f1a7d6b2e9c3f8a9f3d2a8b4e1c7f6a2d9b",
-    },
-    {
-      id: "inc-003",
-      timestamp: new Date(now - 2_400_000).toISOString(),
-      lane: "APP_HTTP",
-      severity: "high",
-      verdict: "CRITICAL",
-      status: "ACTIVE",
-      playbook_id: null,
-      trace_id: "omni-http-cc2210",
-      summary: "5xx surge — error rate 14.2% on api-gateway service",
-      events: [
-        { timestamp: new Date(now - 2_400_000).toISOString(), message: "Log surge σ-bypass triggered: dominant_error=5xx" },
-        { timestamp: new Date(now - 2_395_000).toISOString(), message: "LLM analysis: database connection pool exhausted" },
-        { timestamp: new Date(now - 2_390_000).toISOString(), message: "No playbook match — advisory suggest only" },
-      ],
-      crat_hash: "sha256:4f1a7d6b2e9c3f8a9f3d2a8b4e1c7f6a2d9b3e8c",
-    },
-    {
-      id: "inc-004",
-      timestamp: new Date(now - 3_600_000).toISOString(),
-      lane: "SYS_HARD_FAIL",
-      severity: "critical",
-      verdict: "CRITICAL",
-      status: "RESOLVED",
-      playbook_id: "pb-001",
-      trace_id: "omni-hf-aa9910",
-      summary: "CrashLoopBackOff — omni-worker pod restarted 8 times",
-      events: [
-        { timestamp: new Date(now - 3_600_000).toISOString(), message: "Pod omni-worker-5f8d9 entered CrashLoopBackOff" },
-        { timestamp: new Date(now - 3_598_000).toISOString(), message: "INV_NO_RESTART_ON_BROKEN_SPEC checked — spec OK" },
-        { timestamp: new Date(now - 3_590_000).toISOString(), message: "Playbook pb-001: collect_pod_logs + rollout_restart" },
-        { timestamp: new Date(now - 3_560_000).toISOString(), message: "Pod healthy — restart loop resolved" },
-      ],
-      crat_hash: "sha256:7f6a2d9b3e8c4f1a7d6b2e9c3f8a9f3d2a8b4e1c",
-    },
-    {
-      id: "inc-005",
-      timestamp: new Date(now - 5_400_000).toISOString(),
-      lane: "SIEM_SECURITY",
-      severity: "critical",
-      verdict: "CRITICAL",
-      status: "HITL_PENDING",
-      playbook_id: "pb-004",
-      hitl_incident_id: "fg-inc-c81d44",
-      trace_id: "fg-c81d44a2-5531",
-      summary: "Data exfiltration pattern — unusual egress from tenant-acme namespace",
-      events: [
-        { timestamp: new Date(now - 5_400_000).toISOString(), message: "FinGuard: data_exfil incident raised" },
-        { timestamp: new Date(now - 5_395_000).toISOString(), message: "Kill-chain stage: exfiltration confirmed" },
-        { timestamp: new Date(now - 5_388_000).toISOString(), message: "HITL gate: approval required before network isolation" },
-      ],
-      crat_hash: "sha256:2a8b4e1c7f6a2d9b3e8c4f1a7d6b2e9c3f8a9f3d",
-    },
-    {
-      id: "inc-006",
-      timestamp: new Date(now - 7_200_000).toISOString(),
-      lane: "APP_HTTP",
-      severity: "medium",
-      verdict: "INVESTIGATE",
-      status: "RESOLVED",
-      playbook_id: null,
-      trace_id: "omni-http-dd1109",
-      summary: "Auth failure surge — 401/403 rate 8.1% on auth-service",
-      events: [
-        { timestamp: new Date(now - 7_200_000).toISOString(), message: "dominant_error=auth_failure, σ-bypass triggered" },
-        { timestamp: new Date(now - 7_195_000).toISOString(), message: "Advisory: credential rotation or brute-force attempt" },
-        { timestamp: new Date(now - 7_160_000).toISOString(), message: "Auth rate normalised — false positive likely" },
-      ],
-      crat_hash: "sha256:1c7f6a2d9b3e8c4f1a7d6b2e9c3f8a9f3d2a8b4e",
-    },
-    {
-      id: "inc-007",
-      timestamp: new Date(now - 10_800_000).toISOString(),
-      lane: "SYS_RESOURCE",
-      severity: "medium",
-      verdict: "INVESTIGATE",
-      status: "RESOLVED",
-      playbook_id: "pb-004",
-      trace_id: "omni-res-7722ef",
-      summary: "Memory z-score 2.9σ on redis-stack — approaching threshold",
-      events: [
-        { timestamp: new Date(now - 10_800_000).toISOString(), message: "Memory z-score 2.9σ — within warning band" },
-        { timestamp: new Date(now - 10_795_000).toISOString(), message: "Advisory: monitor OOM risk, consider eviction policy" },
-        { timestamp: new Date(now - 10_700_000).toISOString(), message: "Memory stabilised after GC cycle" },
-      ],
-      crat_hash: "sha256:6b2e9c3f8a9f3d2a8b4e1c7f6a2d9b3e8c4f1a7d",
-    },
-    {
-      id: "inc-008",
-      timestamp: new Date(now - 14_400_000).toISOString(),
-      lane: "SIEM_SECURITY",
-      severity: "high",
-      verdict: "URGENT",
-      status: "FAILED",
-      playbook_id: "pb-002",
-      trace_id: "fg-ee9c0371-0020",
-      summary: "Lateral movement detected — cross-namespace pod-to-pod traffic",
-      events: [
-        { timestamp: new Date(now - 14_400_000).toISOString(), message: "lateral_movement incident from FinGuard" },
-        { timestamp: new Date(now - 14_395_000).toISOString(), message: "Kill-chain: lateral_movement stage confirmed" },
-        { timestamp: new Date(now - 14_390_000).toISOString(), message: "Playbook execution failed — NetworkPolicy API error" },
-      ],
-      crat_hash: "sha256:d9b3e8c4f1a7d6b2e9c3f8a9f3d2a8b4e1c7f6a2",
-    },
-  ];
+function eventTypeToStatus(eventType: string): IncidentStatus {
+  if (eventType === "ADVISORY_DECISION") return "ACTIVE";
+  if (eventType === "HITL_DECISION") return "HITL_PENDING";
+  if (eventType === "ADVISORY_DISPATCHED") return "RESOLVED";
+  if (eventType === "MUTATION_TRAPPED") return "FAILED";
+  return "RESOLVED";
+}
 
-  const hitl_pending_count = incidents.filter((i) => i.status === "HITL_PENDING").length;
+interface CratBlock {
+  seq: number;
+  event_type: string;
+  trace_id: string;
+  timestamp_utc: string;
+  verdict: string;
+  root_cause: string;
+  affected_workload: string;
+  block_hash: string;
+}
 
-  return {
-    incidents,
-    total: incidents.length,
-    hitl_pending_count,
-    source: "mock",
-    generated_at: new Date().toISOString(),
-  };
+function blocksToIncidents(blocks: CratBlock[]): Incident[] {
+  return blocks.map((b) => ({
+    id: b.trace_id || `seq-${b.seq}`,
+    timestamp: b.timestamp_utc,
+    lane: EVENT_TYPE_LANE[b.event_type] ?? "SYS_HARD_FAIL",
+    severity: verdictToSeverity(b.verdict ?? ""),
+    verdict: b.verdict ?? "UNKNOWN",
+    status: eventTypeToStatus(b.event_type),
+    playbook_id: null,
+    trace_id: b.trace_id,
+    summary: [b.root_cause, b.affected_workload].filter(Boolean).join(" — ") || b.event_type,
+    events: [{ timestamp: b.timestamp_utc, message: b.event_type }],
+    crat_hash: b.block_hash ?? "",
+  }));
 }
 
 function authHeaders(): HeadersInit {
   return GATEWAY_API_KEY ? { Authorization: `Bearer ${GATEWAY_API_KEY}` } : {};
 }
 
-export async function GET() {
+function gatewayError(detail: string) {
+  return NextResponse.json({ source: "error", error: detail }, { status: 502 });
+}
+
+export async function GET(request: NextRequest) {
+  const tenantId = request.nextUrl.searchParams.get("tenant_id");
+  const tenantParam = tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : "";
+
   if (!GATEWAY_URL) {
-    return NextResponse.json(mockIncidents());
+    return gatewayError("OMNI_GATEWAY_URL not configured");
   }
 
   try {
-    const [siemRes, agentsRes] = await Promise.all([
-      fetch(`${GATEWAY_URL}/siem/overview?limit=50`, {
-        headers: authHeaders(),
-        cache: "no-store",
-      }),
-      fetch(`${GATEWAY_URL}/agents`, {
-        headers: authHeaders(),
-        cache: "no-store",
-      }),
-    ]);
+    const res = await fetch(`${GATEWAY_URL}/siem/overview?limit=50${tenantParam}`, {
+      headers: authHeaders(),
+      cache: "no-store",
+    });
 
-    if (!siemRes.ok && !agentsRes.ok) {
-      return NextResponse.json(mockIncidents());
-    }
+    if (!res.ok) return gatewayError(`gateway /siem/overview ${res.status}`);
 
-    // If we get data from gateway, return mock with source=gateway indicator
-    // Real aggregation would parse CRAT blocks here
-    const mock = mockIncidents();
-    return NextResponse.json({ ...mock, source: "gateway" });
+    const data = await res.json();
+    const blocks: CratBlock[] = (data.recent_blocks ?? []) as CratBlock[];
+    const incidents = blocksToIncidents(blocks);
+    const hitl_pending_count = incidents.filter((i) => i.status === "HITL_PENDING").length;
+
+    return NextResponse.json({
+      incidents,
+      total: incidents.length,
+      hitl_pending_count,
+      source: "gateway",
+      generated_at: new Date().toISOString(),
+    } satisfies IncidentsResponse);
   } catch {
-    return NextResponse.json(mockIncidents());
+    return gatewayError("gateway /siem/overview unreachable");
   }
 }

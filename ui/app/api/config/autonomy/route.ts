@@ -28,81 +28,25 @@ export interface AutonomyPolicyResponse {
   history: PolicyChange[];
   last_modified: string;
   modified_by: string;
-  source: "gateway" | "mock";
+  source: "gateway" | "error";
 }
 
-const DEFAULT_RULES: PolicyRule[] = [
-  { lane: "SYS_RESOURCE", severity: "critical", level: "HITL" },
-  { lane: "SYS_RESOURCE", severity: "high", level: "SUGGEST_ONLY" },
-  { lane: "SYS_RESOURCE", severity: "medium", level: "FULL_AUTO" },
-  { lane: "SYS_RESOURCE", severity: "low", level: "FULL_AUTO" },
-  { lane: "SYS_HARD_FAIL", severity: "critical", level: "HITL" },
-  { lane: "SYS_HARD_FAIL", severity: "high", level: "SUGGEST_ONLY" },
-  { lane: "SYS_HARD_FAIL", severity: "medium", level: "FULL_AUTO" },
-  { lane: "SYS_HARD_FAIL", severity: "low", level: "FULL_AUTO" },
-  { lane: "APP_HTTP", severity: "critical", level: "HITL" },
-  { lane: "APP_HTTP", severity: "high", level: "SUGGEST_ONLY" },
-  { lane: "APP_HTTP", severity: "medium", level: "SUGGEST_ONLY" },
-  { lane: "APP_HTTP", severity: "low", level: "ALERT_ONLY" },
-  { lane: "SIEM_SECURITY", severity: "critical", level: "HITL" },
-  { lane: "SIEM_SECURITY", severity: "high", level: "HITL" },
-  { lane: "SIEM_SECURITY", severity: "medium", level: "SUGGEST_ONLY" },
-  { lane: "SIEM_SECURITY", severity: "low", level: "ALERT_ONLY" },
-];
-
-const MOCK_HISTORY: PolicyChange[] = [
-  {
-    id: "chg-001",
-    timestamp: new Date(Date.now() - 86_400_000).toISOString(),
-    operator: "admin@sre",
-    lane: "SIEM_SECURITY",
-    severity: "critical",
-    old_level: "SUGGEST_ONLY",
-    new_level: "HITL",
-  },
-  {
-    id: "chg-002",
-    timestamp: new Date(Date.now() - 172_800_000).toISOString(),
-    operator: "noc@sre",
-    lane: "SYS_RESOURCE",
-    severity: "medium",
-    old_level: "HITL",
-    new_level: "FULL_AUTO",
-  },
-  {
-    id: "chg-003",
-    timestamp: new Date(Date.now() - 259_200_000).toISOString(),
-    operator: "admin@sre",
-    lane: "APP_HTTP",
-    severity: "high",
-    old_level: "FULL_AUTO",
-    new_level: "SUGGEST_ONLY",
-  },
-];
-
-function buildMock(): AutonomyPolicyResponse {
-  return {
-    rules: DEFAULT_RULES,
-    history: MOCK_HISTORY,
-    last_modified: new Date(Date.now() - 86_400_000).toISOString(),
-    modified_by: "admin@sre",
-    source: "mock",
-  };
+function gatewayError(detail: string) {
+  return NextResponse.json({ source: "error", error: detail, rules: [], history: [] }, { status: 502 });
 }
 
 export async function GET() {
   if (!GATEWAY_URL) {
-    return NextResponse.json(buildMock());
+    return gatewayError("OMNI_GATEWAY_URL not configured");
   }
-
   try {
     const headers: HeadersInit = GATEWAY_API_KEY ? { Authorization: `Bearer ${GATEWAY_API_KEY}` } : {};
     const res = await fetch(`${GATEWAY_URL}/autonomy/policy`, { headers, cache: "no-store" });
-    if (!res.ok) return NextResponse.json(buildMock());
+    if (!res.ok) return gatewayError(`gateway /autonomy/policy ${res.status}`);
     const data = await res.json();
-    return NextResponse.json({ ...buildMock(), ...data, source: "gateway" });
+    return NextResponse.json({ rules: [], history: [], ...data, source: "gateway" });
   } catch {
-    return NextResponse.json(buildMock());
+    return gatewayError("gateway /autonomy/policy unreachable");
   }
 }
 
@@ -115,8 +59,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (!GATEWAY_URL) {
-    // Mock success
-    return NextResponse.json({ success: true, rule: { lane, severity, level } });
+    return NextResponse.json({ error: "OMNI_GATEWAY_URL not configured" }, { status: 502 });
   }
 
   try {

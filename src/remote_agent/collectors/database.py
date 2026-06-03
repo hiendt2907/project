@@ -86,8 +86,25 @@ async def collect_mysql_health(
     out_repl, _, _ = await _run(cmd_repl, env=mysql_env)
 
     if rc_status != 0:
-        logger.warning("[collector.database] mysql unreachable host=%s err=%s", mysql_host, err_status[:200])
-        return None
+        err_brief = err_status[:300].strip()
+        logger.warning("[collector.database] mysql unreachable host=%s err=%s", mysql_host, err_brief)
+        return build_envelope(
+            probe="mysql_health",
+            lane="SYS_HARD_FAIL",
+            result="FAILED",
+            extracted_fact={
+                "result": "FAILED",
+                "db_engine": "mysql",
+                "db_host": mysql_host,
+                "db_port": mysql_port,
+                "error": err_brief,
+                "return_code": rc_status,
+            },
+            alert_rule="MySQLDown",
+            alert_hint=f"[{hostname}] mysql FAILED {mysql_host}:{mysql_port}: {err_brief}",
+            symptom_group="database_health",
+            namespace=hostname,
+        )
 
     # Parse key=value pairs from status output
     fact: dict[str, Any] = {"db_engine": "mysql", "db_host": mysql_host, "db_port": mysql_port}
@@ -127,6 +144,7 @@ async def collect_mysql_health(
         anomalies.append(f"slow_queries={slow}>100")
 
     result = "FAILED" if anomalies else "PASSED"
+    fact["result"] = result
     hint = f"[{hostname}] MySQL {mysql_host}:{mysql_port} — " + (", ".join(anomalies) if anomalies else f"threads={threads} repl_lag={repl_lag}s OK")
 
     return build_envelope(
@@ -169,8 +187,25 @@ async def collect_proxysql_stats(
     out, err, rc = await _run(cmd, env=proxysql_env)
 
     if rc != 0:
-        logger.warning("[collector.database] proxysql unreachable host=%s err=%s", proxysql_host, err[:200])
-        return None
+        err_brief = err[:300].strip()
+        logger.warning("[collector.database] proxysql unreachable host=%s err=%s", proxysql_host, err_brief)
+        return build_envelope(
+            probe="proxysql_stats",
+            lane="SYS_HARD_FAIL",
+            result="FAILED",
+            extracted_fact={
+                "result": "FAILED",
+                "db_engine": "proxysql",
+                "db_host": proxysql_host,
+                "db_port": _PROXYSQL_ADMIN_PORT,
+                "error": err_brief,
+                "return_code": rc,
+            },
+            alert_rule="ProxySQLDown",
+            alert_hint=f"[{hostname}] proxysql FAILED {proxysql_host}:{_PROXYSQL_ADMIN_PORT}: {err_brief}",
+            symptom_group="database_health",
+            namespace=hostname,
+        )
 
     fact: dict[str, Any] = {"db_engine": "proxysql", "db_host": proxysql_host, "db_port": _PROXYSQL_ADMIN_PORT}
     for line in out.splitlines():
@@ -192,6 +227,7 @@ async def collect_proxysql_stats(
         anomalies.append(f"active_transactions={active_tx}>500")
 
     result = "FAILED" if anomalies else "PASSED"
+    fact["result"] = result
     hint = f"[{hostname}] ProxySQL {proxysql_host} — " + (", ".join(anomalies) if anomalies else f"clients={clients} active_tx={active_tx} OK")
 
     return build_envelope(

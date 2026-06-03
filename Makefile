@@ -1,7 +1,28 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-worker-legacy legacy-deploy-worker deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry
+.PHONY: agent-bundle agent-bundle-offline agent-keygen tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
 
 NS ?= multi-agent
+
+# ── Remote Agent packaging & setup ───────────────────────────────────────────
+agent-bundle:
+	bash scripts/omni-agent-bundle.sh
+
+agent-bundle-offline:
+	bash scripts/omni-agent-bundle.sh --offline
+
+agent-keygen:
+	bash scripts/omni-agent-keygen.sh
+
+tunnel-setup:
+	@test -n "$(DOMAIN)" || (echo "Usage: make tunnel-setup DOMAIN=omni-gateway.yourdomain.com"; exit 1)
+	bash scripts/omni-tunnel-setup.sh --domain $(DOMAIN)
+
+tunnel-teardown:
+	bash scripts/omni-tunnel-teardown.sh
+
+ssh-tunnel:
+	@test -n "$(HOST)" || (echo "Usage: make ssh-tunnel HOST=user@192.168.1.100"; exit 1)
+	bash scripts/omni-ssh-tunnel.sh --host $(HOST) --persist
 
 # ── Traefik ingress management ────────────────────────────────────────────────
 traefik-install:
@@ -23,7 +44,7 @@ nginx-uninstall:
 hosts-update:
 	@TRAEFIK_IP=$$(kubectl get svc -n traefik traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}'); \
 	echo "Traefik IP: $$TRAEFIK_IP"; \
-	sudo sed -i '' "s|.*ai-agent\.local.*|$$TRAEFIK_IP omni.ai-agent.local finguard.ai-agent.local gateway.ai-agent.local siem.ai-agent.local|" /etc/hosts && \
+	sudo sed -i '' "s|.*ai-agent\.local.*|$$TRAEFIK_IP portal.ai-agent.local omni.ai-agent.local finguard.ai-agent.local gateway.ai-agent.local soc.ai-agent.local|" /etc/hosts && \
 	grep ai-agent /etc/hosts
 
 test-evidence:
@@ -47,6 +68,30 @@ docker-worker:
 docker-gateway:
 	docker build -t omni-gateway:latest -f Dockerfile.gateway .
 
+# Poll analyst/worker /readyz (OMNI_WORKER_READY_URL; default localhost:8090).
+wait-omni-consumer-ready:
+	PYTHONPATH=src .venv/bin/python scripts/wait_omni_consumer_ready.py
+
+# Gateway HTTP webhook + trace-scoped DLQ poll + optional gateway /metrics CB scrape (lab env vars).
+backend-verify-local:
+	PYTHONPATH=src .venv/bin/python scripts/omni_backend_verify.py
+
+# Gateway NetPol (lab) + analyst ClusterIP Service — prerequisites for in-cluster verify Job.
+backend-verify-job-infra:
+	./scripts/with_working_kube.sh apply -f k8s/network-policies/omni-gateway-netpol-ingress-multi-agent.yaml
+	./scripts/with_working_kube.sh apply -f k8s/services/omni-analyst-service.yaml
+
+# Apply verify Job manifest (idempotent; use backend-verify-job-run for a fresh run).
+backend-verify-job-apply: backend-verify-job-infra
+	./scripts/with_working_kube.sh apply -f k8s/jobs/omni-backend-verify.yaml
+
+# Fresh Job run: infra → delete old Job → apply → wait/logs.
+backend-verify-job-run: backend-verify-job-infra
+	./scripts/with_working_kube.sh delete job omni-backend-verify -n multi-agent --ignore-not-found
+	./scripts/with_working_kube.sh apply -f k8s/jobs/omni-backend-verify.yaml
+	./scripts/with_working_kube.sh wait --for=condition=complete job/omni-backend-verify -n multi-agent --timeout=180s || true
+	./scripts/with_working_kube.sh logs job/omni-backend-verify -n multi-agent --tail=200
+
 # Builds finguard-hitl-api binary from smart-siem monorepo.
 # Build context is smart-siem/ so go.work + vendor are on PATH.
 # Tag: finguard-hitl-api:lab  (override with IMAGE_TAG=prod make docker-hitl-api)
@@ -63,21 +108,15 @@ print-image-digests:
 	@docker inspect finguard-hitl-api:lab       --format='finguard-hitl-api:lab        {{.Id}}' 2>/dev/null || echo "finguard-hitl-api:lab        NOT BUILT (run: make docker-hitl-api)"
 	@docker inspect finguard-hitl-api:prod      --format='finguard-hitl-api:prod       {{.Id}}' 2>/dev/null || echo "finguard-hitl-api:prod       NOT BUILT (run: IMAGE_TAG=prod make docker-hitl-api)"
 
-# Master Plan V3: omni-prober (alerts+diagnostic) + omni-analyst (evidence) + omni-core (periodic/proactive).
-deploy-worker:
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-worker-configmap.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-worker-rbac.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/prober-rbac.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/analyst-rbac.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-prober.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-analyst.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-core.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-executor.yaml
-	./scripts/with_working_kube.sh rollout restart deployment/omni-prober deployment/omni-analyst deployment/omni-core deployment/omni-executor -n multi-agent
-	./scripts/with_working_kube.sh rollout status deployment/omni-prober -n multi-agent --timeout=180s
-	./scripts/with_working_kube.sh rollout status deployment/omni-analyst -n multi-agent --timeout=180s
-	./scripts/with_working_kube.sh rollout status deployment/omni-core -n multi-agent --timeout=180s
-	./scripts/with_working_kube.sh rollout status deployment/omni-executor -n multi-agent --timeout=180s
+# Split-role pods (prober/analyst/core/executor) consolidated into omni-fullstack
+# (2026-06-03). deploy-worker now aliases deploy-fullstack — single pod role=full.
+deploy-worker: deploy-fullstack
+
+deploy-netpol:
+	./scripts/with_working_kube.sh apply -f k8s/network-policies/default-deny-ingress.yaml
+	./scripts/with_working_kube.sh apply -f k8s/network-policies/omni-gateway-netpol-ingress-multi-agent.yaml
+	./scripts/with_working_kube.sh apply -f k8s/network-policies/omni-workers-netpol.yaml
+	@echo "NetworkPolicy applied. Verify with: kubectl get netpol -n multi-agent"
 
 # Ollama trên Mac — chỉ Service ExternalName → host.docker.internal:11434 (không Deployment trong cluster).
 deploy-ollama:
@@ -89,13 +128,10 @@ deploy-gateway:
 	./scripts/with_working_kube.sh rollout restart deployment/omni-gateway -n multi-agent
 	./scripts/with_working_kube.sh rollout status deployment/omni-gateway -n multi-agent --timeout=180s
 
-rollback: ## Rollback all Omni worker+gateway to previous revision
-	./scripts/with_working_kube.sh rollout undo deployment/omni-prober -n $(NS)
-	./scripts/with_working_kube.sh rollout undo deployment/omni-analyst -n $(NS)
-	./scripts/with_working_kube.sh rollout undo deployment/omni-core -n $(NS)
-	./scripts/with_working_kube.sh rollout undo deployment/omni-executor -n $(NS)
+rollback: ## Rollback Omni worker+gateway to previous revision
+	./scripts/with_working_kube.sh rollout undo deployment/omni-fullstack -n $(NS)
 	./scripts/with_working_kube.sh rollout undo deployment/omni-gateway -n $(NS)
-	./scripts/with_working_kube.sh rollout status deployment/omni-analyst -n $(NS) --timeout=120s
+	./scripts/with_working_kube.sh rollout status deployment/omni-fullstack -n $(NS) --timeout=120s
 
 rollback-verify: ## Smoke test after rollback — CRAT pipeline only
 	python3 scripts/verify_e2e_crat_pipeline.py --smoke-only
@@ -106,23 +142,22 @@ pre-deploy-validate: ## Validate all prerequisites before deploy
 # Gom Ollama + Gateway (build gateway: `make docker-gateway`; worker không bắt buộc cho gateway).
 deploy-services: deploy-ollama deploy-gateway
 
-# Single-process legacy: OMNI_WORKER_ROLE=full (monolith). Scale omni-prober/analyst/core to 0 if using this.
-deploy-worker-legacy:
-	@echo "[legacy] deploy-worker-legacy is deprecated; use legacy-deploy-worker."
-	@$(MAKE) legacy-deploy-worker
 
-legacy-deploy-worker:
+## Fullstack: single pod OMNI_WORKER_ROLE=full (analyst+prober+core+executor).
+## Run `make docker-worker` first to bake source into image.
+deploy-fullstack: docker-worker ## Build image + deploy omni-fullstack (single pod)
+	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-fullstack-rbac.yaml
 	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-worker-configmap.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-worker-rbac.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-worker.yaml
-	./scripts/with_working_kube.sh rollout restart deployment/omni-worker -n multi-agent
-	./scripts/with_working_kube.sh rollout status deployment/omni-worker -n multi-agent --timeout=180s
+	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-fullstack.yaml
+	./scripts/with_working_kube.sh rollout restart deployment/omni-fullstack -n multi-agent
+	./scripts/with_working_kube.sh rollout status deployment/omni-fullstack -n multi-agent --timeout=180s
 
 deploy-kafka:
 	./scripts/with_working_kube.sh apply -f k8s/kafka/kafka-single.yaml
 
+# RBAC for the worker SA now lives in omni-fullstack-rbac.yaml (consolidated).
 deploy-prober-rbac:
-	./scripts/with_working_kube.sh apply -f k8s/deployments/prober-rbac.yaml
+	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-fullstack-rbac.yaml
 
 ensure-kafka-topics:
 	bash scripts/kafka_ensure_omni_topics.sh
@@ -134,7 +169,7 @@ e2e-proactive:
 	NS=multi-agent bash scripts/proactive_e2e.sh
 
 e2e-incident-matrix:
-	NS=multi-agent bash scripts/e2e_incident_matrix.sh
+	NS=multi-agent RBAC_NEGATIVE_NAMESPACE=kube-system bash scripts/e2e_incident_matrix.sh
 
 # Death loop: build -> deploy -> optional pytest_unit -> product_e2e (gateway Loki strict, proactive e2e, incident matrix). Pytest is secondary; override NS via env.
 NS ?= multi-agent
@@ -149,6 +184,9 @@ env-mode-gate:
 
 mutate-only-gate:
 	.venv/bin/python scripts/validate_mutate_only_gate.py
+
+auto-execute-gate:
+	PYTHONPATH=src .venv/bin/python -m pytest tests/test_auto_execute_gate.py tests/test_emit_execute_mutate_crat.py -q --tb=short
 
 classifier-regression-gate:
 	.venv/bin/python scripts/validate_classifier_regression_gate.py
@@ -170,9 +208,11 @@ secret-history-audit:
 
 # Phase 5 gate: fail when autonomy verification regresses.
 benchmark-advisory:
-	@echo "==> Advisory quality benchmark (informational — non-blocking)"
-	.venv/bin/python -m pytest tests/benchmarks/test_advisory_quality.py -q -m "not benchmark or benchmark" --tb=short 2>&1 || true
-	@echo "==> Run with live LLM: OMNI_OLLAMA_BASE_URL=http://... make benchmark-advisory"
+	@echo "==> Advisory schema gate (always blocking — no LLM needed)"
+	.venv/bin/python -m pytest tests/benchmarks/test_advisory_schema.py -q --tb=short
+	@echo "==> Advisory live LLM benchmark (informational — requires OMNI_OLLAMA_BASE_URL)"
+	.venv/bin/python -m pytest tests/benchmarks/test_advisory_quality.py::test_benchmark_pass_rate -q --tb=short 2>&1 || true
+	@echo "==> Tip: OMNI_OLLAMA_BASE_URL=http://localhost:11434 make benchmark-advisory"
 
 coverage:  ## Run test coverage report
 	.venv/bin/python -m pytest tests/ --ignore=tests/integration --ignore=tests/real_services --cov=src --cov-report=term-missing --cov-report=html:htmlcov -q
@@ -201,6 +241,36 @@ chaos-drill:  ## Run chaos drill on all lanes
 chaos-drill-dry:  ## Dry run chaos drill (no actual injection)
 	.venv/bin/python scripts/chaos_lane_drill.py --lane all --dry-run
 
+chaos-drill-rollback:  ## S1.2: inject bad ConfigMap → verify auto-rollback + CRAT event
+	NS=$(NS) .venv/bin/python scripts/chaos_drill_rollback.py --namespace $(NS)
+
+chaos-drill-rollback-dry:  ## S1.2: dry-run rollback drill (no actual injection)
+	NS=$(NS) .venv/bin/python scripts/chaos_drill_rollback.py --namespace $(NS) --dry-run
+
+chaos-drill-redis:  ## Inject Redis kill, verify CRAT fail-closed + recovery (lab only)
+	NS=$(NS) OMNI_ENV_MODE=lab bash scripts/chaos/chaos_redis.sh
+
+chaos-drill-kafka:  ## Block Kafka, verify graceful degradation + consumer lag recovery (lab only)
+	NS=$(NS) OMNI_ENV_MODE=lab bash scripts/chaos/chaos_kafka.sh
+
+chaos-drill-llm:  ## Kill LLM URL, verify degraded advisory mode + recovery (lab only)
+	NS=$(NS) OMNI_ENV_MODE=lab bash scripts/chaos/chaos_llm.sh
+
+chaos-drill-evidence-flood:  ## Flood 1000 fake evidences, verify sigma gate + lag recovery (lab only)
+	OMNI_ENV_MODE=lab OMNI_AUTO_EXECUTE_ENABLED=false .venv/bin/python scripts/chaos/chaos_evidence_flood.py --count 1000
+
+chaos-drill-pod-kill:  ## Kill omni-analyst pod, verify K8s restart + Kafka replay (lab only)
+	NS=$(NS) OMNI_ENV_MODE=lab bash scripts/chaos/chaos_pod_kill.sh
+
+chaos-drill-all:  ## Run all chaos drills sequentially — lab only, auto-restore after each
+	@echo "==> Running all chaos drills (lab only)"
+	$(MAKE) chaos-drill-redis
+	$(MAKE) chaos-drill-kafka
+	$(MAKE) chaos-drill-llm
+	$(MAKE) chaos-drill-evidence-flood
+	$(MAKE) chaos-drill-pod-kill
+	@echo "==> All chaos drills complete"
+
 asyncio-lint:
 	@echo "==> Checking for time.sleep() in async functions"
 	.venv/bin/python scripts/check_asyncio_sleep.py src/
@@ -210,11 +280,13 @@ autonomy-gate:
 	$(MAKE) secret-gate
 	.venv/bin/python scripts/validate_env_mode_gate.py
 	.venv/bin/python scripts/validate_mutate_only_gate.py
+	$(MAKE) auto-execute-gate
 	.venv/bin/python scripts/validate_classifier_regression_gate.py
 	.venv/bin/python scripts/validate_phase_docs_gate.py
 	.venv/bin/python scripts/validate_nonimpact_guards_gate.py
 	.venv/bin/python scripts/validate_learning_loop_gate.py
-	.venv/bin/python -m pytest tests/test_autonomous_experience_gate.py tests/test_agentic_planner_early_exit.py tests/test_feedback_full_agentic_planner.py tests/test_deterministic_mutate_from_evidence.py tests/test_omni_stateful_loop.py tests/test_shadow_os_contract.py tests/integration/test_e2e_autonomous_loop.py -q
+	.venv/bin/python -m pytest tests/test_autonomous_experience_gate.py tests/test_agentic_planner_early_exit.py tests/test_feedback_full_agentic_planner.py tests/test_deterministic_mutate_from_evidence.py tests/test_shadow_os_contract.py -q
+	.venv/bin/python -m pytest tests/e2e/ -q
 	$(MAKE) hitl-gate
 	.venv/bin/python scripts/full_system_audit.py --duration-sec 90 --interval-sec 10 --strict --min-action-experience 0 --sigma-min-hits 0
 

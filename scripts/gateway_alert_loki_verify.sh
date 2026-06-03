@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # POST alert Alertmanager (pod+namespace) vào gateway → trace_id → logs pod + Loki.
 #
-# Master Plan V3 (split): exec mặc định deploy/omni-prober (consumer omni-alerts — đúng luồng Alert).
-# Không dùng omni-worker khi replicas=0; tùy chọn debug: E2E_EXEC_DEPLOY=omni-core (cùng image worker).
-# Gom log: omni-prober / omni-analyst / omni-core / omni-executor (+ omni-worker nếu scale > 0).
+# Master Plan V3 (split): exec mặc định deploy/omni-fullstack (consumer omni-alerts).
+# Single pod omni-fullstack chạy mọi role (OMNI_WORKER_ROLE=full).
+# Gom log: omni-fullstack.
 #
 # Usage: NS=<ns> scripts/gateway_alert_loki_verify.sh [path/to/alert.json]
 # Default payload: nginx-test HighCPU ~90% — not redis probe lab.
@@ -11,8 +11,8 @@
 #   NS=                       **required** — Kubernetes namespace for omni workloads / alert labels
 #   LOKI_URL=http://loki.monitor.svc.cluster.local:3100
 #   SLEEP_SEC=25
-#   E2E_EXEC_DEPLOY=omni-prober          # Pod chạy python3 để POST tới gateway
-#   E2E_TRACE_LOG_DEPLOYS="omni-prober …" # override danh sách grep log theo trace
+#   E2E_EXEC_DEPLOY=omni-fullstack       # Pod chạy python3 để POST tới gateway
+#   E2E_TRACE_LOG_DEPLOYS="omni-fullstack" # override danh sách grep log theo trace
 #   E2E_NGINX_POD_AUTO=1                 # (default) với alertmanager_nginx_cpu_high.json: patch labels.pod = pod app=nginx-test hiện tại
 #   E2E_REDIS_POD_AUTO=1                 # (default) với alertmanager_business_sane.json: patch labels.pod = live app=redis-exporter
 #   STRICT_ASSERT=1                     # trace in >=N worker deploy logs + action marker (N=STRICT_ASSERT_MIN_DEPLOY_HITS, default 3)
@@ -44,17 +44,11 @@ fi
 GW_INTERNAL="${GW_INTERNAL:-http://omni-gateway.${NS}.svc.cluster.local}"
 
 # Pod có Python + image worker — tránh omni-gateway (slim) nếu thiếu python.
-EXEC_DEPLOY="${E2E_EXEC_DEPLOY:-omni-prober}"
+EXEC_DEPLOY="${E2E_EXEC_DEPLOY:-omni-fullstack}"
 
 _default_trace_deploys() {
-  local base="omni-prober omni-analyst omni-core omni-executor"
-  local r
-  r="$("${KUBE}" get deploy omni-worker -n "$NS" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)"
-  if [[ "${r:-0}" != "0" ]]; then
-    echo "omni-worker $base"
-  else
-    echo "$base"
-  fi
+  # Split-role pods consolidated into omni-fullstack (2026-06-03).
+  echo "omni-fullstack"
 }
 
 TRACE_LOG_DEPLOYS="${E2E_TRACE_LOG_DEPLOYS:-$(_default_trace_deploys)}"
@@ -162,7 +156,7 @@ with open(dst, 'w') as f:
 fi
 
 if ! "${KUBE}" get deploy "$EXEC_DEPLOY" -n "$NS" &>/dev/null; then
-  echo "FAIL: no deployment/$EXEC_DEPLOY in $NS (set E2E_EXEC_DEPLOY to a running worker pod, e.g. omni-prober)." >&2
+  echo "FAIL: no deployment/$EXEC_DEPLOY in $NS (set E2E_EXEC_DEPLOY to a running worker pod, e.g. omni-fullstack)." >&2
   exit 1
 fi
 r_exec="$("${KUBE}" get deploy "$EXEC_DEPLOY" -n "$NS" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)"
@@ -234,7 +228,7 @@ ${chunk}
 
 _print_wr_tail() {
   if [[ -z "$WR_LINES" ]]; then
-    echo "(no lines in omni-prober/analyst/core/executor[/worker] — tăng SLEEP_SEC hoặc kiểm tra consumer Kafka)"
+    echo "(no lines in omni-fullstack — tăng SLEEP_SEC hoặc kiểm tra consumer Kafka)"
   else
     echo "$WR_LINES" | tail -n 120
     echo ""
@@ -297,7 +291,7 @@ fi
 
 echo ""
 echo "=== 4) Loki query_range (Promtail: namespace + pod_name) ==="
-LOKI_POD_RE='omni-prober.*|omni-analyst.*|omni-core.*|omni-executor.*|omni-gateway.*|omni-worker.*'
+LOKI_POD_RE='omni-fullstack.*|omni-gateway.*'
 E2E_LOKI_LIMIT="${E2E_LOKI_LIMIT:-500}"
 echo "LogQL (Grafana Explore): {namespace=\"${NS}\", pod_name=~\"${LOKI_POD_RE}\"} |= \"$TRACE\""
 echo "limit=${E2E_LOKI_LIMIT}"
@@ -315,8 +309,7 @@ loki = os.environ["LOKI_URL"]
 lim = os.environ.get("E2E_LOKI_LIMIT", "500")
 loki_ns = os.environ.get("E2E_LOKI_NS", "")
 LOKI_POD_RE = (
-    "omni-prober.*|omni-analyst.*|omni-core.*|omni-executor.*|"
-    "omni-gateway.*|omni-worker.*"
+    "omni-fullstack.*|omni-gateway.*"
 )
 q = '{namespace="' + loki_ns + '", pod_name=~"' + LOKI_POD_RE + '"} |= "' + trace + '"'
 now = int(time.time())
@@ -413,13 +406,13 @@ print("• Diễn giải luồng (data path):")
 has = " ".join(lines_only).lower()
 steps = []
 if "start_request" in has or "alert_kafka_in" in has:
-    steps.append("Kafka omni-alerts → omni-prober stream_consumer nhận envelope Prometheus/Alertmanager.")
+    steps.append("Kafka omni-alerts → omni-fullstack stream_consumer nhận envelope Prometheus/Alertmanager.")
 if "diagnostic_dispatcher" in has:
     steps.append("Prober lập kế hoạch probe (SDK + Prom) và publish evidence lên omni-diagnostic-evidence.")
 if "evidence_consumer" in has or "diag_batch" in has:
-    steps.append("omni-analyst evidence_consumer: so alert vs SDK (STATE_MACHINE_CONTRAST) nếu đủ evidence, else RAG / LLM.")
+    steps.append("omni-fullstack evidence_consumer: so alert vs SDK (STATE_MACHINE_CONTRAST) nếu đủ evidence, else RAG / LLM.")
 if "omni_actions_in" in has or "kafka_actions_consumer" in has:
-    steps.append("omni-executor consume omni-actions (audit / suggest) cùng trace_id.")
+    steps.append("omni-fullstack consume omni-actions (audit / suggest) cùng trace_id.")
 if "end_request" in has:
     steps.append("Prober end_request — vòng alert đóng trong consumer.")
 if not steps:
@@ -431,8 +424,8 @@ PYLOKI
 echo ""
 echo "=== 6) Checklist nghiệp vụ ==="
 echo "• Default alert: pod nginx-test (E2E_NGINX_POD_AUTO patch từ app=nginx-test); alert labels.namespace = ${NS}."
-echo "• MPV3 split: trace xuất hiện trước hết ở omni-prober (omni-alerts); analyst = evidence loop."
-echo "• omni-executor: expect event=omni_actions_in action=SUGGEST_REMEDIATION (English diagnosis) — not legacy ping."
+echo "• omni-fullstack: trace xuất hiện ở omni-alerts → evidence loop cùng pod."
+echo "• omni-fullstack: expect event=omni_actions_in action=SUGGEST_REMEDIATION (English diagnosis) — not legacy ping."
 echo "• Dùng trace trong Grafana Explore Loki:  $TRACE"
 
 if [[ "${E2E_ASSERT_TELEGRAM_BOT_API:-}" == "1" ]]; then

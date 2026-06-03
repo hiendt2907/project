@@ -9,17 +9,36 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from gateway.tenant_context import get_tenant_ctx, resolve_scope
+
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/siem", tags=["siem"])
 
-_CRAT_BLOCKS_KEY = "audit_chain:blocks"
-_CRAT_HEAD_KEY = "audit_chain:head_hash"
-_CRAT_SEQ_KEY = "audit_chain:seq"
-
 _VERDICT_COUNTS_WINDOW = 86400  # 24h default
 
-_EVENT_TYPE_ORDER = ["ADVISORY_DECISION", "ADVISORY_DISPATCHED", "MUTATION_TRAPPED", "HITL_DECISION"]
+_TENANT_ID_PATTERN = r"^[a-zA-Z0-9_-]+$"
+
+_EVENT_TYPE_ORDER = [
+    "ADVISORY_DECISION",
+    "ADVISORY_DISPATCHED",
+    "MUTATION_ENQUEUED",
+    "MUTATION_ENQUEUE_FAILED",
+    "MUTATION_TRAPPED",
+    "HITL_DECISION",
+]
+
+
+def _crat_blocks_key(tid: str) -> str:
+    return "audit_chain:blocks" if tid == "default" else f"audit_chain:{tid}:blocks"
+
+
+def _crat_head_key(tid: str) -> str:
+    return "audit_chain:head_hash" if tid == "default" else f"audit_chain:{tid}:head_hash"
+
+
+def _crat_seq_key(tid: str) -> str:
+    return "audit_chain:seq" if tid == "default" else f"audit_chain:{tid}:seq"
 
 
 def _get_redis(request: Request) -> Any:
@@ -33,25 +52,32 @@ def _get_redis(request: Request) -> Any:
 async def siem_overview(
     request: Request,
     limit: int = Query(default=20, ge=1, le=100),
+    tenant_id: str | None = Query(default=None, max_length=64, pattern=_TENANT_ID_PATTERN),
 ) -> JSONResponse:
     """
     Return SIEM pipeline overview:
-    - Recent CRAT audit blocks (latest N)
+    - Recent CRAT audit blocks (latest N, scoped to tenant)
     - Verdict distribution (last 24h)
     - Chain integrity metadata
     """
     redis = _get_redis(request)
+    ctx = get_tenant_ctx(request)
+    scope = resolve_scope(ctx, tenant_id)
+    effective_tid = scope if scope is not None else "default"
+
+    blocks_key = _crat_blocks_key(effective_tid)
+    head_key = _crat_head_key(effective_tid)
+    seq_key = _crat_seq_key(effective_tid)
 
     try:
-        total_seq = await redis.get(_CRAT_SEQ_KEY)
-        head_hash = await redis.get(_CRAT_HEAD_KEY)
+        total_seq = await redis.get(seq_key)
+        head_hash = await redis.get(head_key)
         total_blocks = int(total_seq or 0)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Redis error: {e}") from e
 
-    # Fetch latest N blocks from the list (LRANGE from tail)
     try:
-        raw_blocks = await redis.lrange(_CRAT_BLOCKS_KEY, -limit, -1)
+        raw_blocks = await redis.lrange(blocks_key, -limit, -1)
     except Exception as e:
         log.warning("event=crat_read_error err=%s", e)
         raw_blocks = []
@@ -67,7 +93,6 @@ async def siem_overview(
         except Exception:
             continue
 
-        # Count verdicts for recent blocks
         ts_str = b.get("timestamp_utc") or b.get("payload", {}).get("timestamp", "")
         try:
             import datetime

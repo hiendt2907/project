@@ -36,7 +36,9 @@ from workers.diagnostic_dispatcher import probe_ids_for_alertname
 from workers.handler_context import WorkerHandlerContext
 from workers.memory.initial_symptom import InitialSymptom
 from workers.memory.trace_memory import append_post_mutate_verify_record
+from pkg.trace_orchestrator.state import mark_trace_orchestrator_resolved_verified
 from workers.archivist import write_incident_postmortem
+from workers.rollback_executor import apply_rollback_from_snapshot
 from workers.metrics_exporter import inc_experience_saved, inc_learning_upsert
 from workers.telegram_escalation import emit_telegram_escalation
 from workers.request_trace import pop_trace_id, push_trace_id
@@ -61,6 +63,77 @@ logger = logging.getLogger(__name__)
 
 _STATE_KEY = "omni:autonomous:state:{trace}"
 _HOT_KEY = "omni:autonomous:hot:{trace}"
+_NEGATIVE_RECALL_THRESHOLD = 2  # Number of failures before adding to permanent negative set
+
+
+async def _track_negative_recall(ctx: Any, trace: str) -> None:
+    """S2.4: Downvote recall that contributed to a terminal failure."""
+    redis = getattr(ctx, "redis", None)
+    if redis is None:
+        return
+    try:
+        raw = await redis.get(f"omni:recall:trace_point_id:{trace}")
+        if not raw:
+            return
+        point_id = raw.decode() if isinstance(raw, bytes) else str(raw)
+        if not point_id:
+            return
+        count = int(await redis.incr(f"omni:recall:negative:{point_id}"))
+        await redis.expire(f"omni:recall:negative:{point_id}", 86400 * 30)
+        logger.info(
+            "event=recall_negative_tracked trace=%s point_id=%s count=%d",
+            trace, point_id, count,
+        )
+        if count >= _NEGATIVE_RECALL_THRESHOLD:
+            await redis.sadd("omni:recall:negative_set", point_id)
+            logger.warning(
+                "event=recall_added_to_negative_set trace=%s point_id=%s count=%d",
+                trace, point_id, count,
+            )
+    except Exception as e:
+        logger.debug("event=track_negative_recall_fail trace=%s err=%s", trace, e)
+
+
+async def _attempt_auto_rollback(ctx: Any, trace: str, reason_code: str) -> bool:
+    """S1.2: Try auto-rollback if enabled and snapshot exists. Writes ROLLBACK_EXECUTED to CRAT.
+
+    Returns True when safe to continue (no rollback attempted, or rollback+CRAT both succeeded).
+    Returns False when rollback succeeded but CRAT write failed — caller must NOT fire Telegram.
+    """
+    from services.audit_ledger.chain_writer import write_audit_block
+    from services.audit_ledger.crat_event_types import CRAT_EVENT_ROLLBACK_EXECUTED
+    from services.audit_ledger.signer import AuditLedgerError
+
+    ws = getattr(ctx, "settings", None)
+    if not bool(getattr(ws, "omni_auto_rollback_enabled", True)):
+        return True
+    try:
+        ok, msg = await apply_rollback_from_snapshot(ctx, trace)
+        if not ok:
+            logger.info("[%s] event=auto_rollback_skip reason=%s msg=%s", trace, reason_code, msg)
+            return True
+        logger.info("[%s] event=auto_rollback_success reason=%s msg=%s", trace, reason_code, msg)
+        kafka = getattr(ctx, "kafka", None)
+        audit_topic = getattr(ws, "kafka_topic_audit_chain", "omni-audit-chain")
+        try:
+            await write_audit_block(
+                event_type=CRAT_EVENT_ROLLBACK_EXECUTED,
+                trace_id=trace,
+                payload={"trace_id": trace, "reason_code": reason_code, "rollback_msg": msg},
+                redis=ctx.redis,
+                kafka=kafka,
+                kafka_topic=audit_topic,
+            )
+        except AuditLedgerError as crat_err:
+            logger.critical(
+                "[%s] event=rollback_crat_failed reason=%s err=%s FAIL_CLOSED no_telegram",
+                trace, reason_code, crat_err,
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.warning("[%s] event=auto_rollback_exception reason=%s err=%s", trace, reason_code, e)
+        return True
 
 
 async def _load_state(redis: Any, trace: str) -> dict[str, Any]:
@@ -201,16 +274,17 @@ async def _upsert_action_experience_on_success(
         logger.debug("[%s] diagnostic feedback upsert skip: %s", trace, e)
 
 
-def _archive_postmortem(
+async def _archive_postmortem(
     trace: str,
     tool_name: str,
     mutate_args: dict[str, Any],
     ctx_obj: dict[str, Any] | None,
 ) -> None:
-    """Fire-and-forget: write REDACTED post-mortem to disk. Never raises."""
+    """Write REDACTED post-mortem to disk in a thread pool. Never raises."""
     co = ctx_obj if isinstance(ctx_obj, dict) else {}
     try:
-        write_incident_postmortem(
+        await asyncio.to_thread(
+            write_incident_postmortem,
             trace,
             tool_name=tool_name,
             arg_keys=sorted(str(k) for k in (mutate_args or {}).keys()),
@@ -288,16 +362,42 @@ async def _finalize_feedback_success_verified(
             detail=sm_detail[:1200],
         )
         return False
-    _archive_postmortem(trace, str(body.get("tool_name") or ""), mutate_args, ctx_obj)
+    await _archive_postmortem(trace, str(body.get("tool_name") or ""), mutate_args, ctx_obj)
+    _tool_name = str(body.get("tool_name") or "")
     await _upsert_action_experience_on_success(
         ctx,
         trace=trace,
-        tool_name=str(body.get("tool_name") or ""),
+        tool_name=_tool_name,
         mutate_args=mutate_args,
         stdout=stdout,
         sdk_verify_summary=sdk_verify_summary,
         ctx_obj=ctx_obj,
     )
+
+    # Load ctx text once — reused by both SOP promotion and temporal pattern blocks below.
+    _ctx_text = await _load_autonomous_ctx_text(ctx.redis, trace) or ""
+    _co = ctx_obj if isinstance(ctx_obj, dict) else {}
+
+    # S2.2: evaluate this pattern for SOP promotion (best-effort — never blocks success path).
+    try:
+        from services.learning_promoter.promoter import evaluate_for_promotion
+        from execution.memory_normalize import extract_workload_fingerprint
+        _pattern_key = extract_workload_fingerprint(_ctx_text or stdout) or ""
+        if _pattern_key:
+            await evaluate_for_promotion(
+                ctx,
+                pattern_key=_pattern_key,
+                trace_id=trace,
+                tool_name=_tool_name,
+                match_text=_ctx_text[:2000],
+                args_playbook=strip_ephemeral_from_args(mutate_args),
+            )
+    except Exception as _promo_err:
+        if isinstance(_promo_err, ImportError):
+            logger.warning("event=sop_promo_import_error trace=%s err=%s", trace, _promo_err)
+        else:
+            logger.debug("event=sop_promo_skip trace=%s err=%s", trace, _promo_err)
+
     await _write_success_hot_cache(ctx, trace, stdout)
     await ctx.redis.delete(_STATE_KEY.format(trace=trace))
     await emit_transition(
@@ -307,6 +407,32 @@ async def _finalize_feedback_success_verified(
         component="autonomous_feedback_loop",
         detail="action_feedback_success_state_machine_verified",
     )
+    await mark_trace_orchestrator_resolved_verified(ctx.redis, trace)
+
+    # S3.3: record A/B success outcome (best-effort).
+    try:
+        from pkg.prompt_optimizer.ab_test import record_outcome, evaluate_winner
+        _raw_variant = await ctx.redis.get(f"omni:prompt:ab:trace:{trace}")
+        _variant = (_raw_variant.decode() if isinstance(_raw_variant, bytes) else str(_raw_variant or "")).strip()
+        if _variant in ("A", "B"):
+            await record_outcome(ctx.redis, _variant, json_ok=True, steps=0, success=True)
+            await evaluate_winner(ctx.redis)
+    except Exception as _ab_err:
+        logger.debug("event=ab_record_skip trace=%s err=%s", trace, _ab_err)
+
+    # S3.4: record incident timestamp for temporal pattern analysis (best-effort).
+    try:
+        from pkg.temporal.pattern_matcher import record_incident_timestamp, maybe_schedule_prediction
+        from execution.memory_normalize import extract_workload_fingerprint as _ewf
+        ws = getattr(ctx, "settings", None)
+        _p_key = _co.get("workload_fingerprint") or (_ewf(_ctx_text) if _ctx_text else "")
+        if _p_key:
+            await record_incident_timestamp(ctx.redis, pattern_key=_p_key)
+            _kafka_topic = getattr(ws, "kafka_topic_proactive_incidents", "omni-proactive-incidents")
+            await maybe_schedule_prediction(ctx.redis, pattern_key=_p_key, kafka_topic=_kafka_topic)
+    except Exception as _tp_err:
+        logger.debug("event=temporal_record_skip trace=%s err=%s", trace, _tp_err)
+
     return True
 
 
@@ -342,7 +468,7 @@ async def _finalize_feedback_success_legacy(
             detail=sm_detail[:1200],
         )
         return False
-    _archive_postmortem(trace, str(body.get("tool_name") or ""), mutate_args, ctx_obj)
+    await _archive_postmortem(trace, str(body.get("tool_name") or ""), mutate_args, ctx_obj)
     if not bool(getattr(ctx.settings, "omni_experience_requires_sdk_verify", True)):
         await _upsert_action_experience_on_success(
             ctx,
@@ -404,6 +530,28 @@ async def _llm_post_verify_state_react(
         return False
     rc = plan.get("reasoning_chain") if isinstance(plan.get("reasoning_chain"), dict) else None
     st_cur = await _load_state(ctx.redis, trace)
+    emitted_pv = await emit_execute_mutate(
+        ctx,
+        trace=trace,
+        tool_name=tn,
+        args=dict(args),
+        attempt_count=next_attempt,
+        reasoning_chain=rc if isinstance(rc, dict) else None,
+    )
+    if not emitted_pv:
+        logger.warning(
+            "[%s] event=post_verify_react_emit_mutate_failed attempt=%s tool=%s",
+            trace,
+            next_attempt,
+            tn,
+        )
+        await emit_telegram_escalation(
+            ctx,
+            trace,
+            f"post_verify_react MUTATE_ENQUEUE_FAILED tool={tn} attempt={next_attempt}",
+            reason="MUTATE_ENQUEUE_FAILED",
+        )
+        return False
     await ctx.redis.setex(
         _STATE_KEY.format(trace=trace),
         7200,
@@ -416,14 +564,6 @@ async def _llm_post_verify_state_react(
             },
             ensure_ascii=False,
         ),
-    )
-    await emit_execute_mutate(
-        ctx,
-        trace=trace,
-        tool_name=tn,
-        args=dict(args),
-        attempt_count=next_attempt,
-        reasoning_chain=rc if isinstance(rc, dict) else None,
     )
     logger.info("[%s] event=post_verify_react_emit_mutate attempt=%s tool=%s", trace, next_attempt, tn)
     return True
@@ -463,6 +603,19 @@ async def _llm_replan_after_feedback(
         msg = (resp or {}).get("message") or {}
         content = str(msg.get("content") or "")
         parsed = _parse_tool_json(content)
+
+        # S1.4: store raw LLM output for CRAT compliance audit (best-effort, non-fatal).
+        if content:
+            _llm_hash = hashlib.sha256(content.encode()).hexdigest()
+            _llm_ref = f"omni:crat:llm_reason:{trace}:replan"
+            try:
+                await ctx.redis.setex(_llm_ref, 86400, content)
+            except Exception as _he:
+                logger.debug("event=llm_reason_store_fail trace=%s err=%s", trace, _he)
+            logger.info(
+                "event=llm_replan_hash trace=%s hash=%s ref=%s", trace, _llm_hash, _llm_ref
+            )
+
         log_llm_trace(
             ws,
             trace=trace,
@@ -670,7 +823,7 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
                             "lane": "state",
                             "thought_process": [f"post_chaos_secret_patch_rollout:{ns_rr}/{de_rr}"],
                         }
-                        await emit_execute_mutate(
+                        emitted_cs = await emit_execute_mutate(
                             ctx,
                             trace=trace,
                             tool_name="k8s_rollout_restart",
@@ -685,6 +838,14 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
                             attempt_count=next_a,
                             reasoning_chain=rc_r,
                         )
+                        if not emitted_cs:
+                            await emit_telegram_escalation(
+                                ctx,
+                                trace,
+                                f"chaos_lab_post_secret_rollout MUTATE_ENQUEUE_FAILED ns={ns_rr}",
+                                reason="MUTATE_ENQUEUE_FAILED",
+                            )
+                            return
                         await emit_transition(
                             ctx,
                             trace_id=trace,
@@ -916,7 +1077,7 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
                     return
                 rc_p = plan_out.get("reasoning_chain") if isinstance(plan_out.get("reasoning_chain"), dict) else None
                 args_p = plan_out.get("args") if isinstance(plan_out.get("args"), dict) else {}
-                await emit_execute_mutate(
+                emitted_psv = await emit_execute_mutate(
                     ctx,
                     trace=trace,
                     tool_name=tn_plan,
@@ -924,6 +1085,14 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
                     attempt_count=next_attempt,
                     reasoning_chain=rc_p,
                 )
+                if not emitted_psv:
+                    await emit_telegram_escalation(
+                        ctx,
+                        trace,
+                        f"post_mutate_state_verify_planner MUTATE_ENQUEUE_FAILED tool={tn_plan}",
+                        reason="MUTATE_ENQUEUE_FAILED",
+                    )
+                    return
                 await emit_transition(
                     ctx,
                     trace_id=trace,
@@ -1094,12 +1263,15 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
                 reason_tag="SDK_VERIFY_EXHAUSTED",
             ):
                 return
-            await emit_telegram_escalation(
-                ctx,
-                trace,
-                f"SDK_VERIFY_EXHAUSTED verify={verify_summary[:2000]}",
-                reason="SDK_VERIFY_EXHAUSTED",
-            )
+            _rollback_ok = await _attempt_auto_rollback(ctx, trace, "SDK_VERIFY_EXHAUSTED")
+            await _track_negative_recall(ctx, trace)  # S2.4
+            if _rollback_ok:
+                await emit_telegram_escalation(
+                    ctx,
+                    trace,
+                    f"SDK_VERIFY_EXHAUSTED verify={verify_summary[:2000]}",
+                    reason="SDK_VERIFY_EXHAUSTED",
+                )
             await ctx.redis.delete(_STATE_KEY.format(trace=trace))
             await emit_terminal_tombstone(
                 ctx,
@@ -1123,12 +1295,15 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
                 reason_tag="MAX_MUTATE_ATTEMPTS_POST_VERIFY",
             ):
                 return
-            await emit_telegram_escalation(
-                ctx,
-                trace,
-                f"MAX_MUTATE_ATTEMPTS_POST_VERIFY last_attempt={last_att} verify={verify_summary[:1500]}",
-                reason="MAX_MUTATE_ATTEMPTS",
-            )
+            _rollback_ok = await _attempt_auto_rollback(ctx, trace, "MAX_MUTATE_ATTEMPTS")
+            await _track_negative_recall(ctx, trace)  # S2.4
+            if _rollback_ok:
+                await emit_telegram_escalation(
+                    ctx,
+                    trace,
+                    f"MAX_MUTATE_ATTEMPTS_POST_VERIFY last_attempt={last_att} verify={verify_summary[:1500]}",
+                    reason="MAX_MUTATE_ATTEMPTS",
+                )
             await ctx.redis.delete(_STATE_KEY.format(trace=trace))
             await emit_terminal_tombstone(
                 ctx,
@@ -1297,7 +1472,7 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
             return
 
         rc_fb = plan.get("reasoning_chain") if isinstance(plan.get("reasoning_chain"), dict) else None
-        await emit_execute_mutate(
+        emitted_sdk = await emit_execute_mutate(
             ctx,
             trace=trace,
             tool_name=str(plan["tool_name"]),
@@ -1305,6 +1480,21 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
             attempt_count=next_attempt,
             reasoning_chain=rc_fb,
         )
+        if not emitted_sdk:
+            await emit_telegram_escalation(
+                ctx,
+                trace,
+                f"sdk_verify_failed_remediate MUTATE_ENQUEUE_FAILED tool={plan.get('tool_name')}",
+                reason="MUTATE_ENQUEUE_FAILED",
+            )
+            await emit_terminal_tombstone(
+                ctx,
+                trace_id=trace,
+                reason_code="MUTATE_ENQUEUE_FAILED",
+                component="autonomous_feedback_loop",
+                detail="sdk_verify_failed_remediate_kafka_or_audit",
+            )
+            return
         await emit_transition(
             ctx,
             trace_id=trace,
@@ -1510,27 +1700,35 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
         )
         return
 
-    await ctx.redis.setex(
-        _STATE_KEY.format(trace=trace),
-        7200,
-        json.dumps(
-            {
-                "last_attempt_count": last_attempt,
-                "feedback_failures": feedback_failures,
-                "sdk_verify_round": int(st.get("sdk_verify_round") or 0),
-                "state_verify_attempt": int(st.get("state_verify_attempt") or 0),
-            },
-            ensure_ascii=False,
-        ),
-    )
     rc_fb = plan.get("reasoning_chain") if isinstance(plan.get("reasoning_chain"), dict) else None
-    await emit_execute_mutate(
+    emitted_rp = await emit_execute_mutate(
         ctx,
         trace=trace,
         tool_name=plan["tool_name"],
         args=plan["args"],
         attempt_count=next_attempt,
         reasoning_chain=rc_fb,
+    )
+    if not emitted_rp:
+        await emit_telegram_escalation(
+            ctx,
+            trace,
+            f"replan_emit MUTATE_ENQUEUE_FAILED tool={plan.get('tool_name')}",
+            reason="MUTATE_ENQUEUE_FAILED",
+        )
+        return
+    await ctx.redis.setex(
+        _STATE_KEY.format(trace=trace),
+        7200,
+        json.dumps(
+            {
+                "last_attempt_count": next_attempt,
+                "feedback_failures": feedback_failures,
+                "sdk_verify_round": int(st.get("sdk_verify_round") or 0),
+                "state_verify_attempt": int(st.get("state_verify_attempt") or 0),
+            },
+            ensure_ascii=False,
+        ),
     )
     await emit_transition(
         ctx,
@@ -1548,6 +1746,7 @@ async def kafka_action_feedback_loop(ctx: WorkerHandlerContext, stop: object) ->
         bootstrap_servers=ws.kafka_bootstrap_servers,
         group_id=ws.consumer_group_analyst_feedback,
         enable_auto_commit=False,
+        auto_offset_reset="earliest",
         client_id=f"{ws.consumer_name_analyst}-feedback",
     )
     await consumer.start()

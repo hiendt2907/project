@@ -5,8 +5,8 @@
 #   1) gateway_alert_loki_verify.sh — STRICT_ASSERT default ON (product truth)
 #   2) optional proactive_e2e.sh slice (default ON) — NS required by that script
 #   3) optional e2e_incident_matrix.sh subset (default ON) — cluster-heavy wave_a1 scenarios;
-#      if MVP_API healthz is reachable, also runs phase_b_api_resource,phase_b_api_state.
-#      Scenario nginx_waiting_fault is intentionally NOT default (needs MVP + long waits); add via SCENARIOS=...
+#      runs wave_a1+phase_b scenarios by default.
+#      Scenario nginx_waiting_fault runs if cluster is reachable.
 #
 # pytest_unit is a fast, secondary gate — not sold as product validation. Skip with OMNI_DEATH_SKIP_PYTEST=1.
 #
@@ -24,7 +24,7 @@
 #   OMNI_DEATH_PROACTIVE_RESTART=1  Run proactive_e2e without --skip-restart (re-apply + rollout + metrics wait).
 #   OMNI_DEATH_MATRIX=0|1         Run matrix subset (default 1). Set 0 to skip.
 #   SCENARIOS                     If set, passed to e2e_incident_matrix.sh as-is. If unset and MATRIX=1, see header.
-#   MVP_API_URL                  For matrix reachability probe (default http://localhost:8000).
+#   OMNI_GATEWAY_URL             Gateway URL for matrix reachability probe (default http://localhost:8000).
 #
 # Exit codes (first failure wins):
 #   2   Missing NS, or --help only (exit 0 for --help)
@@ -139,16 +139,11 @@ else
 fi
 
 if [[ "${OMNI_DEATH_MATRIX:-1}" == "1" ]]; then
+  # kube-system is always present and the SA has no bindings there — use it for RBAC negative check.
+  export RBAC_NEGATIVE_NAMESPACE="${RBAC_NEGATIVE_NAMESPACE:-kube-system}"
   if [[ -z "${SCENARIOS:-}" ]]; then
-    _matrix_base="wave_a1_rbac_manifest,wave_a1_rbac_permissions"
-    MVP_PROBE_URL="${MVP_API_URL:-http://localhost:8000}"
-    if curl -sf --max-time 3 "${MVP_PROBE_URL}/healthz" >/dev/null 2>&1; then
-      export SCENARIOS="${_matrix_base},phase_b_api_resource,phase_b_api_state"
-      echo "[product_e2e] MVP_API reachable at ${MVP_PROBE_URL} — matrix includes phase_b_api_resource,phase_b_api_state"
-    else
-      export SCENARIOS="${_matrix_base}"
-      echo "[product_e2e] SKIP: MVP_API not reachable at ${MVP_PROBE_URL}/healthz — matrix uses wave_a1 only (no API scenarios). Export MVP_API_URL or start MVP to widen."
-    fi
+    export SCENARIOS="wave_a1_rbac_manifest,wave_a1_rbac_permissions,phase_b_pytest,phase_b_unit_full,nginx_waiting_fault"
+    echo "[product_e2e] matrix: ${SCENARIOS}"
   fi
   run_phase "product_e2e_incident_matrix" 31 "matrix subset failed; try: NS=${NS} SCENARIOS=${SCENARIOS:-} bash scripts/e2e_incident_matrix.sh" \
     bash "${ROOT}/scripts/e2e_incident_matrix.sh"

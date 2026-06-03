@@ -11,6 +11,7 @@ from typing import Any
 
 from workers.baseline_snapshot import REDIS_KEY_SNAPSHOT
 from workers.env_mode import is_dev_mode
+from workers.llm_context_budget import build_llm_options
 from workers.observation_sanitize import sanitize_for_llm
 from workers.react_logging import log_react_json
 from workers.tool_observation import prepare_observation_for_llm, prepare_tool_return_for_llm
@@ -293,7 +294,7 @@ async def _tick_legacy(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                options={"temperature": 0.1, "num_ctx": 4096},
+                options=build_llm_options(ctx, temperature=0.1),
             ),
             timeout=llm_timeout,
         )
@@ -341,7 +342,9 @@ async def _tick_legacy(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None
     ctx.inbound_trace_id = f"autonomous-decider-exec-{fp}"
     ctx.inbound_reasoning = _reason_one_line  # V6.3: Audit rationale
     try:
-        out = await fn(ctx, dict(call.args))
+        out = await _dispatch_tool_call(
+            ctx, trace=f"autonomous-decider-exec-{fp}", tool_name=call.tool, args=dict(call.args)
+        )
         logger.info("[AUTONOMOUS_FIX] tool=%s fp=%s out_len=%s", call.tool, fp, len(out or ""))
     except Exception as e:
         logger.exception("[AUTONOMOUS_FIX] tool=%s fp=%s err=%s", call.tool, fp, e)
@@ -376,6 +379,25 @@ async def _run_tool(ctx: Any, tool: str, args: dict[str, Any]) -> str:
         raw = await fn(ctx, args)
         return prepare_tool_return_for_llm(ctx, raw or "")
     return f"[ERROR] unknown tool: {tool}"
+
+
+async def _dispatch_tool_call(
+    ctx: Any,
+    *,
+    trace: str,
+    tool_name: str,
+    args: dict[str, Any],
+) -> str:
+    """Route tool call: mutating tools → emit_execute_mutate (CRAT+Kafka), others → _run_tool."""
+    if tool_name in _MUTATING_TOOLS:
+        from workers.evidence_mutate_emit import emit_execute_mutate
+        enqueued = await emit_execute_mutate(ctx, trace=trace, tool_name=tool_name, args=args)
+        return (
+            f"[ENQUEUED] {tool_name} dispatched to executor (async)"
+            if enqueued
+            else "[ENQUEUE_FAILED] CRAT block failed — mutation not dispatched"
+        )
+    return await _run_tool(ctx, tool_name, args)
 
 
 async def _tick_react(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None:
@@ -458,7 +480,9 @@ async def _tick_react(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None:
         ctx.inbound_trace_id = f"autonomous-decider-exec-{fp}"
         ctx.inbound_reasoning = reasoning or "ReAct autonomous turn"
         try:
-            out = await _run_tool(ctx, tname, targs)
+            out = await _dispatch_tool_call(
+                ctx, trace=f"autonomous-decider-exec-{fp}", tool_name=tname, args=targs
+            )
             log_react_json(
                 "v3_tool_execute",
                 fp=fp,
@@ -490,7 +514,7 @@ async def _tick_react(ctx: Any, ws: Any, model: str, cooldown_sec: int) -> None:
             resp = await ctx.llm.chat_structured(
                 model=model,
                 messages=messages,
-                options={"temperature": 0.1, "num_ctx": 4096},
+                options=build_llm_options(ctx, temperature=0.1),
             )
         finally:
             await ctx.semaphore.release(token)

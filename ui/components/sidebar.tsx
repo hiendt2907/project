@@ -21,31 +21,61 @@ import {
   Settings,
   Rocket,
   CircleHelp,
+  ExternalLink,
+  MonitorCheck,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
+import { useOmniUiRealm } from "@/components/providers";
+import { OMNI_HOST, PORTAL_HOST } from "@/lib/omni-ui-realm";
 
 type NavItem =
   | { href: string; label: string; icon: typeof LayoutDashboard; badge?: boolean }
-  | { section: string };
+  | { section: string }
+  | { external: string; label: string; icon: typeof ExternalLink };
 
-const nav: NavItem[] = [
+const navOps: NavItem[] = [
+  { href: "/operator", label: "Operator Console", icon: LayoutDashboard },
+  { href: "/incidents", label: "Incidents", icon: Bell, badge: true },
+  { href: "/siem", label: "SIEM", icon: Shield },
+  { href: "/playbooks", label: "Playbooks", icon: BookOpen },
+  { href: "/kpi", label: "KPI Dashboard", icon: BarChart3 },
+  { href: "/ledger", label: "Error Ledger", icon: AlertTriangle },
+  { section: "Admin" },
+  { external: `//${PORTAL_HOST}/admin`, label: "Admin Console", icon: ExternalLink },
+];
+
+const navPortal: NavItem[] = [
+  { href: "/admin", label: "Admin Console", icon: LayoutDashboard },
+  { href: "/workers", label: "Workers", icon: Server },
+  { href: "/kpi", label: "KPI Dashboard", icon: BarChart3 },
+  { href: "/ledger", label: "Error Ledger", icon: AlertTriangle },
+  { href: "/remote-agents", label: "Remote Agents", icon: MonitorCheck },
+  { href: "/deploy", label: "Deploy", icon: Rocket },
+  { section: "Config" },
+  { href: "/onboarding", label: "Setup", icon: CircleHelp },
+  { section: "Console" },
+  { external: `//${OMNI_HOST}/operator`, label: "Operator Console", icon: ExternalLink },
+];
+
+const navFull: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/playbooks", label: "Playbooks", icon: BookOpen },
   { href: "/ledger", label: "Error Ledger", icon: AlertTriangle },
   { href: "/kpi", label: "KPI Dashboard", icon: BarChart3 },
   { href: "/incidents", label: "Incidents", icon: Bell, badge: true },
   { href: "/workers", label: "Workers", icon: Server },
+  { href: "/remote-agents", label: "Remote Agents", icon: MonitorCheck },
   { href: "/siem", label: "SIEM", icon: Shield },
   { href: "/deploy", label: "Deploy", icon: Rocket },
   { section: "Config" },
-  { href: "/config/autonomy", label: "Autonomy", icon: Settings },
   { href: "/onboarding", label: "Setup", icon: CircleHelp },
 ];
 
-function useHitlCount(): number {
+function useHitlCount(enabled: boolean): number {
   const [count, setCount] = useState(0);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
 
     async function check() {
@@ -61,8 +91,11 @@ function useHitlCount(): number {
 
     check();
     const id = setInterval(check, 15_000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, []);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [enabled]);
 
   return count;
 }
@@ -78,7 +111,10 @@ function useSystemStatus(): SystemStatus {
     async function check() {
       try {
         const res = await fetch("/api/agents", { cache: "no-store" });
-        if (!res.ok) { if (!cancelled) setStatus("offline"); return; }
+        if (!res.ok) {
+          if (!cancelled) setStatus("offline");
+          return;
+        }
         const data = await res.json();
         if (cancelled) return;
         const overall: string = data.overall ?? "unknown";
@@ -93,24 +129,57 @@ function useSystemStatus(): SystemStatus {
 
     check();
     const id = setInterval(check, 30_000);
-    return () => { cancelled = true; clearInterval(id); };
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
   return status;
 }
 
-const statusConfig: Record<SystemStatus, { label: string; sub: string; icon: typeof Wifi; color: string }> = {
-  online:   { label: "System Online",   sub: "all workers healthy",  icon: Wifi,        color: "text-emerald-400" },
-  degraded: { label: "Degraded",        sub: "some checks failing",  icon: AlertCircle, color: "text-amber-400"   },
-  offline:  { label: "System Offline",  sub: "workers unreachable",  icon: WifiOff,     color: "text-red-400"     },
-  loading:  { label: "Checking…",       sub: "multi-agent ns",       icon: Activity,    color: "text-zinc-500"    },
+const statusConfig: Record<
+  SystemStatus,
+  { label: string; sub: string; icon: typeof Wifi; color: string }
+> = {
+  online: {
+    label: "System Online",
+    sub: "all workers healthy",
+    icon: Wifi,
+    color: "text-emerald-400",
+  },
+  degraded: {
+    label: "Degraded",
+    sub: "some checks failing",
+    icon: AlertCircle,
+    color: "text-amber-400",
+  },
+  offline: {
+    label: "System Offline",
+    sub: "workers unreachable",
+    icon: WifiOff,
+    color: "text-red-400",
+  },
+  loading: {
+    label: "Checking…",
+    sub: "multi-agent ns",
+    icon: Activity,
+    color: "text-zinc-500",
+  },
 };
 
 export function Sidebar() {
   const pathname = usePathname();
+  const realm = useOmniUiRealm();
+  const nav =
+    realm === "portal" ? navPortal : realm === "ops" ? navOps : navFull;
+  const hitlCount = useHitlCount(realm === "ops" || realm === "local");
   const systemStatus = useSystemStatus();
   const cfg = statusConfig[systemStatus];
-  const hitlCount = useHitlCount();
+  const subtitle =
+    realm === "portal" ? "Admin Console"
+    : realm === "ops" ? "Operator Console"
+    : "Control Plane";
 
   return (
     <aside className="flex h-screen w-60 flex-col border-r border-zinc-800 bg-zinc-950">
@@ -120,7 +189,7 @@ export function Sidebar() {
         </div>
         <div>
           <p className="text-sm font-semibold tracking-tight text-zinc-100">Omni SRE</p>
-          <p className="text-[10px] text-zinc-500 uppercase tracking-widest">Control Plane</p>
+          <p className="text-[10px] text-zinc-500 uppercase tracking-widest">{subtitle}</p>
         </div>
       </div>
 
@@ -135,6 +204,19 @@ export function Sidebar() {
               </div>
             );
           }
+          if ("external" in item) {
+            const { external, label, icon: Icon } = item;
+            return (
+              <a
+                key={external}
+                href={external}
+                className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-zinc-400 transition-colors hover:bg-zinc-800/60 hover:text-cyan-400"
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className="flex-1">{label}</span>
+              </a>
+            );
+          }
           const { href, label, icon: Icon, badge } = item;
           const showBadge = badge && hitlCount > 0;
           return (
@@ -145,7 +227,7 @@ export function Sidebar() {
                 "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
                 pathname === href
                   ? "bg-cyan-500/10 text-cyan-400 ring-1 ring-inset ring-cyan-500/20"
-                  : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-100"
+                  : "text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-100",
               )}
             >
               <Icon className="h-4 w-4 shrink-0" />
@@ -160,7 +242,7 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="border-t border-zinc-800 px-3 py-4 space-y-1">
+      <div className="space-y-1 border-t border-zinc-800 px-3 py-4">
         <div className="flex items-center gap-3 rounded-md px-3 py-2">
           <cfg.icon className={`h-4 w-4 shrink-0 ${cfg.color}`} />
           <div>
@@ -170,7 +252,7 @@ export function Sidebar() {
         </div>
         <button
           onClick={() => signOut({ callbackUrl: "/login" })}
-          className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-zinc-500 hover:bg-zinc-800/60 hover:text-red-400 transition-colors"
+          className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-zinc-500 transition-colors hover:bg-zinc-800/60 hover:text-red-400"
         >
           <LogOut className="h-4 w-4" />
           Sign out

@@ -1,0 +1,23 @@
+# ClusterIP for worker health + metrics. Service name kept as `omni-analyst` for DNS
+# compatibility (wait scripts / backend-verify Job target omni-analyst.multi-agent.svc),
+# but selector repointed to omni-fullstack after split-role consolidation (2026-06-03).
+apiVersion: v1
+kind: Service
+metadata:
+  name: omni-analyst
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/name: omni-analyst
+spec:
+  type: ClusterIP
+  selector:
+    app: omni-fullstack
+  ports:
+    - name: health
+      port: 8090
+      targetPort: 8090
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP

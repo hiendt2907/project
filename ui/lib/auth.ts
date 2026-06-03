@@ -2,7 +2,15 @@ import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { getRedis } from "./redis";
 
-export const authOptions: NextAuthOptions = {
+const nextAuthUrl = process.env.NEXTAUTH_URL ?? "";
+const useSecureCookies = nextAuthUrl.startsWith("https://");
+
+/**
+ * NextAuth v4 typings omit `trustHost`; runtime honours it for multi-host / proxy setups.
+ */
+export const authOptions: NextAuthOptions & { trustHost?: boolean } = {
+  trustHost: true,
+  useSecureCookies,
   secret: process.env.NEXTAUTH_SECRET,
   providers: [
     CredentialsProvider({
@@ -60,5 +68,19 @@ export const authOptions: NextAuthOptions = {
   },
   session: {
     strategy: "jwt",
+  },
+  cookies: {
+    sessionToken: {
+      name: useSecureCookies
+        ? "__Secure-next-auth.session-token"
+        : "next-auth.session-token",
+      options: {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        secure: useSecureCookies,
+        domain: process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined,
+      },
+    },
   },
 };

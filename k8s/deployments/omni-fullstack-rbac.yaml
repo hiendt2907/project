@@ -1,0 +1,302 @@
+# Fullstack SA — aggregates RBAC from analyst, prober, executor, and worker roles.
+# Used exclusively by omni-fullstack deployment (OMNI_WORKER_ROLE=full).
+# Lab only: includes executor-mutate-lab ClusterRoleBinding for cross-namespace mutations.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omni-fullstack
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/component: omni-fullstack
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/env: lab
+---
+# Prober read access in multi-agent namespace (pods, logs, events, configmaps, netpol)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omni-fullstack-prober-read
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/component: omni-fullstack
+    omni.io/managed: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: omni-prober-read
+subjects:
+  - kind: ServiceAccount
+    name: omni-fullstack
+    namespace: multi-agent
+---
+# Worker pod reader in multi-agent namespace (pods, pods/log, events)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omni-fullstack-worker-pod-reader
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/component: omni-fullstack
+    omni.io/managed: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: omni-worker-pod-reader
+subjects:
+  - kind: ServiceAccount
+    name: omni-fullstack
+    namespace: multi-agent
+---
+# Cross-namespace architecture visibility (pods, nodes, deployments, services — read-only)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: omni-fullstack-temporal-prober
+  labels:
+    app.kubernetes.io/component: omni-fullstack
+    omni.io/managed: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-temporal-prober-role
+subjects:
+  - kind: ServiceAccount
+    name: omni-fullstack
+    namespace: multi-agent
+---
+# Executor mutation rights — lab only (deployments patch, configmaps create/patch, secrets patch)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: omni-fullstack-executor-mutate-lab
+  labels:
+    app.kubernetes.io/component: omni-fullstack
+    omni.io/managed: "true"
+    omni.io/env: lab
+  annotations:
+    omni.io/note: "Lab only. Delete before promoting to prod."
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-executor-mutate-lab
+subjects:
+  - kind: ServiceAccount
+    name: omni-fullstack
+    namespace: multi-agent
+---
+# Node metrics read (metrics.k8s.io/nodes, cluster-scoped)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: omni-fullstack-metrics-nodes-reader
+  labels:
+    app.kubernetes.io/component: omni-fullstack
+    omni.io/managed: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-worker-metrics-nodes-reader
+subjects:
+  - kind: ServiceAccount
+    name: omni-fullstack
+    namespace: multi-agent
+---
+# Security drift probe (get clusterrolebinding omni-worker-cluster-admin)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: omni-fullstack-security-read
+  labels:
+    app.kubernetes.io/component: omni-fullstack
+    omni.io/managed: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: omni-prober-security-read
+subjects:
+  - kind: ServiceAccount
+    name: omni-fullstack
+    namespace: multi-agent
+---
+# ============================================================================
+# Role / ClusterRole DEFINITIONS (2026-06-03 consolidation)
+# Inlined from the now-deleted split-role RBAC files (prober-rbac.yaml,
+# omni-worker-rbac.yaml, executor-rbac-lab.yaml). omni-fullstack is the sole
+# worker SA; the bindings above reference these definitions.
+# ============================================================================
+---
+# (was prober-rbac.yaml) read-only Pods/logs/events/configmaps in multi-agent
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: omni-prober-read
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list"]
+---
+# (was prober-rbac.yaml) security drift probe — get one named clusterrolebinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-prober-security-read
+  labels:
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    resourceNames: ["omni-worker-cluster-admin"]
+    verbs: ["get"]
+---
+# (was omni-worker-rbac.yaml) worker pod reader in multi-agent
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: omni-worker-pod-reader
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+# (was omni-worker-rbac.yaml) cross-namespace architecture visibility — read-only, NO secrets
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-temporal-prober-role
+  labels:
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - pods/status
+      - nodes
+      - nodes/status
+      - namespaces
+      - services
+      - endpoints
+      - persistentvolumes
+      - persistentvolumeclaims
+      - events
+      - resourcequotas
+      - limitranges
+      - configmaps
+      - serviceaccounts
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "volumeattachments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+---
+# (was omni-worker-rbac.yaml) cluster-scoped node metrics reader
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-worker-metrics-nodes-reader
+  labels:
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+rules:
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+# (was executor-rbac-lab.yaml) LAB executor mutation rights — cluster-wide workload
+# mutation for cross-namespace remediation labs. RBAC resources are READ-ONLY
+# (2026-06-03 audit S1: write verbs removed to prevent self-escalation to cluster-admin).
+# Delete this ClusterRole + the omni-fullstack-executor-mutate-lab binding before prod.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-executor-mutate-lab
+  labels:
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/env: lab
+  annotations:
+    omni.io/note: "Lab-only. Do not bind in prod."
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "replicasets", "daemonsets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods", "events", "services", "endpoints", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges"]
+    verbs: ["get", "list", "watch"]

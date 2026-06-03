@@ -57,37 +57,20 @@ if [[ "${SKIP_BUILD}" -eq 0 ]]; then
 fi
 
 if [[ "${SKIP_RESTART}" -eq 0 ]]; then
-  echo "[proactive_e2e] kubectl apply + rollout (legacy omni-worker and/or Master Plan V3 split) ..."
+  echo "[proactive_e2e] kubectl apply + rollout (omni-fullstack consolidated) ..."
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-worker-configmap.yaml"
-  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-worker-rbac.yaml"
-  "${KUBE}" apply -f "${ROOT}/k8s/deployments/prober-rbac.yaml"
-  "${KUBE}" apply -f "${ROOT}/k8s/deployments/analyst-rbac.yaml"
-  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-worker.yaml"
-  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-prober.yaml"
-  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-analyst.yaml"
-  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-core.yaml"
-  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-executor.yaml"
+  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-fullstack-rbac.yaml"
+  "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-fullstack.yaml"
   "${KUBE}" apply -f "${ROOT}/k8s/deployments/omni-gateway.yaml"
-  "${KUBE}" rollout restart deployment/omni-worker deployment/omni-prober deployment/omni-analyst deployment/omni-core deployment/omni-executor deployment/omni-gateway -n "${NS}"
+  "${KUBE}" rollout restart deployment/omni-fullstack deployment/omni-gateway -n "${NS}"
   if [[ "${STRICT_ROLLOUT}" == "1" ]]; then
-    "${KUBE}" rollout status deployment/omni-prober -n "${NS}" --timeout=180s
-    "${KUBE}" rollout status deployment/omni-analyst -n "${NS}" --timeout=180s
-    "${KUBE}" rollout status deployment/omni-core -n "${NS}" --timeout=180s
-    "${KUBE}" rollout status deployment/omni-executor -n "${NS}" --timeout=180s
-    "${KUBE}" rollout status deployment/omni-gateway -n "${NS}" --timeout=180s
-    "${KUBE}" rollout status deployment/omni-worker -n "${NS}" --timeout=60s || true
+    "${KUBE}" rollout status deployment/omni-fullstack -n "${NS}" --timeout=300s
+    "${KUBE}" rollout status deployment/omni-gateway -n "${NS}" --timeout=300s
   else
-    "${KUBE}" rollout status deployment/omni-prober -n "${NS}" --timeout=180s || true
-    "${KUBE}" rollout status deployment/omni-analyst -n "${NS}" --timeout=180s || true
-    "${KUBE}" rollout status deployment/omni-core -n "${NS}" --timeout=180s || true
-    "${KUBE}" rollout status deployment/omni-executor -n "${NS}" --timeout=180s || true
-    "${KUBE}" rollout status deployment/omni-gateway -n "${NS}" --timeout=180s || true
-    "${KUBE}" rollout status deployment/omni-worker -n "${NS}" --timeout=60s || true
+    "${KUBE}" rollout status deployment/omni-fullstack -n "${NS}" --timeout=300s || true
+    "${KUBE}" rollout status deployment/omni-gateway -n "${NS}" --timeout=300s || true
   fi
-  METRICS_DEPLOY="omni-prober"
-  if replicas="$("${KUBE}" get deploy omni-worker -n "${NS}" -o jsonpath='{.spec.replicas}' 2>/dev/null)" && [[ "${replicas:-0}" != "0" ]]; then
-    METRICS_DEPLOY="omni-worker"
-  fi
+  METRICS_DEPLOY="omni-fullstack"
   echo "[proactive_e2e] waiting for metrics on deploy/${METRICS_DEPLOY} (:9090) ..."
   for _ in $(seq 1 30); do
     if code="$("${KUBE}" exec -n "${NS}" "deploy/${METRICS_DEPLOY}" -- sh -lc \
@@ -112,5 +95,6 @@ else
     --duration-sec "${DURATION_SEC}" \
     --interval-sec "${INTERVAL_SEC}" \
     --strict \
-    --min-action-experience 0
+    --min-action-experience 0 \
+    --sigma-min-hits "${SIGMA_MIN_HITS:-0}"
 fi

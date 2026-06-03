@@ -85,10 +85,26 @@ async def save_trace_orchestrator_state(
     state: TraceOrchestratorState,
     *,
     ttl_sec: int = _DEFAULT_TTL_SEC,
-) -> None:
+) -> bool:
     key = redis_key_trace_orchestrator(state.trace_id)
     payload = json.dumps(state.to_dict(), ensure_ascii=False)
     try:
         await redis.setex(key, max(60, int(ttl_sec)), payload)
+        return True
     except Exception as e:
         logger.warning("trace_orchestrator save failed trace=%s err=%s", state.trace_id, e)
+        return False
+
+
+async def mark_trace_orchestrator_resolved_verified(redis: Any, trace_id: str) -> bool:
+    """Persist RESOLVED phase after SDK + state-machine verify terminal success."""
+    tid = str(trace_id or "").strip()
+    if not tid:
+        return False
+    st = await load_trace_orchestrator_state(redis, tid)
+    if st is None:
+        return True
+    st.phase = TraceOrchestratorPhase.RESOLVED
+    st.last_verify_ok = True
+    st.last_error = ""
+    return await save_trace_orchestrator_state(redis, st)

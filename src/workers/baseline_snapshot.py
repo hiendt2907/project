@@ -6,14 +6,26 @@ import asyncio
 import json
 import logging
 import math
+import re
 import time
+from collections import OrderedDict, defaultdict
 from typing import Any
 
 from kubernetes_asyncio import client
 
+from anomaly.three_sigma import ThreeSigmaGate
 from workers.sdk_service_tools import _prometheus_get_json
 
 logger = logging.getLogger(__name__)
+
+_SIGMA_GATE: ThreeSigmaGate | None = None
+
+
+def _get_sigma_gate(redis: Any) -> ThreeSigmaGate:
+    global _SIGMA_GATE
+    if _SIGMA_GATE is None or _SIGMA_GATE._r is not redis:
+        _SIGMA_GATE = ThreeSigmaGate(redis)
+    return _SIGMA_GATE
 
 REDIS_KEY_SNAPSHOT = "omni:baseline:snapshot"
 REDIS_KEY_TS = "omni:baseline:ts"
@@ -312,7 +324,7 @@ async def _kube_warning_events(ws: Any) -> list[dict[str, Any]]:
                 kind = str(getattr(inv, "kind", "") or "") if inv else ""
                 name = str(getattr(inv, "name", "") or "") if inv else ""
                 o = f"{kind}/{name}"[:80] if kind or name else "?"
-                out.append({"ns": ns, "r": reason, "m": msg, "o": o})
+                out.append({"ns": ns, "r": reason, "m": msg, "o": o, "ts": int(_ts(ev))})
             return out
         finally:
             await v1.api_client.close()
@@ -410,6 +422,22 @@ async def build_health_manifest_dict(ctx: Any, ws: Any, old_raw: Any) -> dict[st
         _query_float(ctx, zq_cpu),
         _query_float(ctx, zq_mem),
     )
+    # Fallback: when Prometheus recording rules absent, derive z from ThreeSigmaGate rolling window.
+    # The gate is fed with cluster_cpu/cluster_mem raw values each tick in baseline_sync_loop.
+    _ctx_redis = getattr(ctx, "redis", None)
+    if _ctx_redis is not None and (z_cpu_f is None or z_mem_f is None):
+        try:
+            _gate = _get_sigma_gate(_ctx_redis)
+            if z_cpu_f is None:
+                z_cpu_f = await _gate.get_z_score("cluster_cpu")
+                if z_cpu_f is not None:
+                    logger.debug("baseline z_cpu fallback from ThreeSigmaGate: %.3f", z_cpu_f)
+            if z_mem_f is None:
+                z_mem_f = await _gate.get_z_score("cluster_mem")
+                if z_mem_f is not None:
+                    logger.debug("baseline z_mem fallback from ThreeSigmaGate: %.3f", z_mem_f)
+        except Exception as _zfe:
+            logger.debug("baseline z_score gate fallback: %s", _zfe)
     z_cpu = _round_num(z_cpu_f)
     z_mem = _round_num(z_mem_f)
 
@@ -509,53 +537,107 @@ async def build_health_manifest_dict(ctx: Any, ws: Any, old_raw: Any) -> dict[st
     return manifest
 
 
-def _manifest_json_under_budget(manifest: dict[str, Any], max_chars: int) -> str:
-    """Rút gọn evt / bỏ q / bớt dsk keys cho đến khi len(JSON) <= max_chars."""
-    m = json.loads(json.dumps(manifest, ensure_ascii=False))
+def _smart_trim_manifest(
+    manifest: dict[str, Any],
+    max_chars: int,
+    *,
+    window_min: int = 10,
+    keywords: str = "OOMKilled|Evicted|Failed|Timeout",
+) -> str:
+    """Smart trim with sliding window, keyword-protected events, and deduplication.
+
+    1. Filter events older than window_min minutes (ts=0 → keep always).
+    2. Deduplicate: same (reason, object) → [Count: X] prefix.
+    3. Trim budget: drop non-critical events first, then optional fields, then truncate critical msg to keyword context.
+    """
+    m: dict[str, Any] = json.loads(json.dumps(manifest, ensure_ascii=False))
+    kw_re = re.compile(keywords, re.IGNORECASE) if keywords else None
+    now_t = int(m.get("t") or time.time())
+    cutoff = now_t - window_min * 60
+
+    # Step 1: sliding window — drop stale events (ts=0 means unknown → keep)
+    evts: list[dict[str, Any]] = m.get("evt") or []
+    if evts:
+        fresh = [e for e in evts if int(e.get("ts") or 0) == 0 or int(e.get("ts", 0)) >= cutoff]
+        m["evt"] = fresh if fresh else evts  # always keep at least original if all stale
+
+    # Step 2: deduplicate by (reason, object)
+    evts = m.get("evt") or []
+    if evts:
+        counts: dict[tuple[str, str], int] = defaultdict(int)
+        first: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
+        for e in evts:
+            key = (str(e.get("r") or ""), str(e.get("o") or ""))
+            counts[key] += 1
+            if key not in first:
+                first[key] = dict(e)
+        deduped: list[dict[str, Any]] = []
+        for key, ev in first.items():
+            c = counts[key]
+            if c > 1:
+                ev = dict(ev)
+                ev["m"] = f"[Count:{c}] {ev.get('m', '')}"
+            deduped.append(ev)
+        m["evt"] = deduped
+
+    def _is_critical(e: dict[str, Any]) -> bool:
+        if kw_re is None:
+            return False
+        return bool(kw_re.search(str(e.get("m") or "") + str(e.get("r") or "")))
 
     def dumps() -> str:
         return json.dumps(m, ensure_ascii=False, separators=(",", ":"))
 
-    def trim() -> None:
-        nonlocal m
-        s = dumps()
-        if len(s) <= max_chars:
-            return
-        ev = m.get("evt")
-        if isinstance(ev, list) and len(ev) > 3:
-            m["evt"] = ev[:3]
-            for e in m["evt"]:
-                if isinstance(e, dict) and "m" in e:
-                    e["m"] = str(e["m"])[:60]
-            return
-        if isinstance(ev, list) and len(ev) > 1:
-            m["evt"] = ev[:1]
-            return
-        if "q" in m:
-            del m["q"]
-            return
-        if "w" in m:
-            del m["w"]
-            return
-        if "golden" in m:
-            del m["golden"]
-            return
+    def _trim_one() -> bool:
+        evts = m.get("evt") or []
+        non_crit = [e for e in evts if not _is_critical(e)]
+        crit = [e for e in evts if _is_critical(e)]
+        # Drop non-critical events from the tail first
+        if non_crit:
+            m["evt"] = crit + non_crit[:-1]
+            return True
+        # Shorten critical messages to keyword + ~50 char context (±3 lines approximation)
+        if crit:
+            last = dict(crit[-1])
+            msg = str(last.get("m") or "")
+            if len(msg) > 60:
+                match = kw_re.search(msg) if kw_re else None
+                if match:
+                    start = max(0, match.start() - 15)
+                    end = min(len(msg), match.end() + 50)
+                    last["m"] = msg[start:end]
+                else:
+                    last["m"] = msg[:60]
+                m["evt"] = crit[:-1] + [last]
+                return True
+        # Drop optional enrichment fields in order of expendability
+        for field in ("q", "w", "golden", "chs", "chs_thr", "wide_incident"):
+            if field in m:
+                del m[field]
+                return True
         dsk = m.get("dsk")
         if isinstance(dsk, dict):
             for k in ("wi", "ri", "wt", "rt"):
                 if k in dsk:
                     del dsk[k]
-                    return
+                    return True
+        return False
 
-    for _ in range(24):
-        s = dumps()
-        if len(s) <= max_chars:
-            return s
-        trim()
+    for _ in range(32):
+        if len(dumps()) <= max_chars:
+            break
+        if not _trim_one():
+            break
+
     s = dumps()
     if len(s) > max_chars:
         return s[: max_chars - 1] + "…"
     return s
+
+
+def _manifest_json_under_budget(manifest: dict[str, Any], max_chars: int) -> str:
+    """Backward-compat shim → delegates to _smart_trim_manifest."""
+    return _smart_trim_manifest(manifest, max_chars)
 
 
 async def baseline_sync_loop(ctx: Any, stop: asyncio.Event) -> None:
@@ -567,19 +649,24 @@ async def baseline_sync_loop(ctx: Any, stop: asyncio.Event) -> None:
     interval = float(ws.baseline_snapshot_interval_sec)
     ttl = int(ws.baseline_snapshot_redis_ttl_sec)
     max_chars = int(getattr(ws, "baseline_manifest_max_chars", 1400) or 1400)
+    trim_window_min = int(getattr(ws, "baseline_smart_trim_window_min", 10) or 10)
+    trim_keywords = str(getattr(ws, "baseline_smart_trim_keywords", "OOMKilled|Evicted|Failed|Timeout") or "OOMKilled|Evicted|Failed|Timeout")
 
     logger.info(
-        "baseline_sync_loop start interval_sec=%s ttl=%s manifest_max=%s",
+        "baseline_sync_loop start interval_sec=%s ttl=%s manifest_max=%s trim_window_min=%s",
         interval,
         ttl,
         max_chars,
+        trim_window_min,
     )
 
     while not stop.is_set():
         try:
             old_raw = await ctx.redis.get(REDIS_KEY_SNAPSHOT)
             manifest = await build_health_manifest_dict(ctx, ws, old_raw)
-            payload = _manifest_json_under_budget(manifest, max_chars)
+            payload = _smart_trim_manifest(
+                manifest, max_chars, window_min=trim_window_min, keywords=trim_keywords
+            )
             try:
                 from workers.metrics_exporter import set_baseline_snapshot_gauges
 
@@ -600,6 +687,20 @@ async def baseline_sync_loop(ctx: Any, stop: asyncio.Event) -> None:
                 )
             except Exception as e:
                 logger.debug("baseline snapshot gauges: %s", e)
+            # S3.2: feed cluster-level CPU/mem into ThreeSigmaGate rolling window (Redis-backed).
+            # Provides fallback z-scores when Prometheus recording rules are absent.
+            _zc_raw = manifest.get("cpu")
+            _zm_raw = manifest.get("mem")
+            if _zc_raw is not None or _zm_raw is not None:
+                try:
+                    gate = _get_sigma_gate(ctx.redis)
+                    if _zc_raw is not None:
+                        await gate.observe_adaptive("cluster_cpu", float(_zc_raw))
+                    if _zm_raw is not None:
+                        await gate.observe_adaptive("cluster_mem", float(_zm_raw))
+                except Exception as _sg_err:
+                    logger.debug("baseline sigma_gate.observe_adaptive: %s", _sg_err)
+
             ts = int(time.time())
             await ctx.redis.setex(REDIS_KEY_SNAPSHOT, ttl, payload)
             await ctx.redis.setex(REDIS_KEY_TS, ttl, str(ts))

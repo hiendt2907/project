@@ -63,7 +63,7 @@ TRACE="$(grep -E '^trace_id=' "${LOGF}" 2>/dev/null | tail -1 | cut -d= -f2 || t
 if [[ -n "${TRACE}" ]] && [[ "${E2E_ASSERT_FULL_ADVISORY_LLM:-1}" == "1" ]]; then
   echo ""
   echo "=== E2E_ASSERT_FULL_ADVISORY_LLM: expect LLM advisory path for ${TRACE} ==="
-  AL="$("${KUBE}" logs -n "$NS" deploy/omni-analyst --since=40m --tail=25000 2>/dev/null || true)"
+  AL="$("${KUBE}" logs -n "$NS" deploy/omni-fullstack --since=40m --tail=25000 2>/dev/null || true)"
   if echo "${AL}" | grep -F "${TRACE}" | grep -Eq 'source=advisory_render|advisory_telegram_sent|advisory_analyst_ok|event=advisory_analyst|phase=advisory_analyst|audit_block_written|ADVISORY_DECISION'; then
     echo "PASS: full LLM advisory / CRAT markers for trace"
   else

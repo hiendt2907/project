@@ -595,6 +595,62 @@ async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) ->
             await consumer.stop()
 
 
+async def kafka_siem_chains_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+    """Analyst path: consume ``omni-siem-chains`` correlation chains from brain-go.
+
+    Each chain → semantic cohesion → recall/heuristic classify → CRAT
+    CHAIN_CORRELATED (fail-closed) → advisory to omni-actions.
+    """
+    from aiokafka import AIOKafkaConsumer
+    from aiokafka.errors import KafkaConnectionError, UnknownTopicOrPartitionError
+
+    from services.analyst.chain_consumer import ChainConsumer, parse_chain_message
+
+    ws = ctx.settings
+    await ctx.scout_ready.wait()
+    _TRANSIENT_ERRORS = (KafkaConnectionError, UnknownTopicOrPartitionError, ConnectionError)
+    _connect_backoff = 1
+    consumer_obj = ChainConsumer(ctx)
+
+    while not stop.is_set():
+        consumer = AIOKafkaConsumer(
+            ws.kafka_topic_siem_chains,
+            bootstrap_servers=ws.kafka_bootstrap_servers,
+            group_id=ws.consumer_group_chain,
+            enable_auto_commit=False,
+            auto_offset_reset="earliest",
+        )
+        try:
+            await consumer.start()
+            _connect_backoff = 1
+        except _TRANSIENT_ERRORS as e:
+            logger.warning("kafka_siem_chains_loop connect_failed err=%s backoff_s=%d", e, _connect_backoff)
+            await asyncio.sleep(_connect_backoff)
+            _connect_backoff = min(_connect_backoff * 2, 30)
+            continue
+        try:
+            async for msg in consumer:
+                if stop.is_set():
+                    break
+                try:
+                    chain = parse_chain_message(msg.value)
+                    if chain is not None:
+                        await consumer_obj.handle_chain(chain)
+                    await consumer.commit()
+                    _hc_record_msg()
+                except Exception as e:
+                    await ctx.ledger.record_exception(
+                        e, phase="4", component="kafka_siem_chains_loop", swallow_errors=True
+                    )
+                    logger.exception("kafka_siem_chains_loop message error: %s", e)
+                    # Ack to avoid poison reprocessing — chains are advisory-only.
+                    await consumer.commit()
+        except _TRANSIENT_ERRORS as e:
+            logger.warning("kafka_siem_chains_loop connection_lost err=%s reconnecting", e)
+        finally:
+            await consumer.stop()
+
+
 async def telegram_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
     if ctx.telegram is None:
         return
@@ -738,6 +794,10 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
             _run_kpi_collector(ctx, stop), name="kpi_collector",
         ))
         tasks.append(asyncio.create_task(dlq_archiver_loop(ctx, stop), name="dlq_archiver"))
+        if ctx.settings.siem_chain_consumer_enabled:
+            tasks.append(asyncio.create_task(
+                kafka_siem_chains_loop(ctx, stop), name="kafka_siem_chains_loop",
+            ))
     if role in ("full", "core"):
         tasks.extend(
             [

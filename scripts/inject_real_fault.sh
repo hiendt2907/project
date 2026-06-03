@@ -155,19 +155,19 @@ SUGGEST_ONLY_SEEN=0
 TRACE_TARGET=""
 for j in $(seq 1 90); do
     ELOG="$(
-        kubectl logs -n "${NAMESPACE}" -l app=omni-executor --since-time="${VERIFY_LOGS_SINCE}" --tail=12000 2>/dev/null || true
+        kubectl logs -n "${NAMESPACE}" -l app=omni-fullstack --since-time="${VERIFY_LOGS_SINCE}" --tail=12000 2>/dev/null || true
     )"
     if echo "${ELOG}" | grep -q 'event=omni_actions_audit_only action=SUGGEST_REMEDIATION (no execute)'; then
         SUGGEST_ONLY_SEEN=1
     fi
     if echo "${ELOG}" | grep -qE '\[.*\] EXECUTE_MUTATE skipped \(auto_execute disabled\)'; then
         echo "  ✗ Omni verification FAILED: EXECUTE_MUTATE skipped (auto_execute disabled)"
-        kubectl logs -n "${NAMESPACE}" -l app=omni-executor --since-time="${VERIFY_LOGS_SINCE}" --tail=80 2>/dev/null || true
+        kubectl logs -n "${NAMESPACE}" -l app=omni-fullstack --since-time="${VERIFY_LOGS_SINCE}" --tail=80 2>/dev/null || true
         exit 1
     fi
 
     ALOG="$(
-        kubectl logs -n "${NAMESPACE}" -l app=omni-analyst --since-time="${VERIFY_LOGS_SINCE}" --tail=25000 2>/dev/null || true
+        kubectl logs -n "${NAMESPACE}" -l app=omni-fullstack --since-time="${VERIFY_LOGS_SINCE}" --tail=25000 2>/dev/null || true
     )"
     if [[ -z "${TRACE_TARGET}" ]]; then
         TRACE_TARGET="$(
@@ -195,7 +195,7 @@ PY
     fi
     if [[ -n "${TRACE_TARGET}" ]] && echo "${ALOG}" | grep -F "[${TRACE_TARGET}]" | grep -F 'transition=REQUIRES_HUMAN' | grep -qF 'component='; then
         echo "  ✗ Omni verification FAILED: chaos trace ${TRACE_TARGET} reached REQUIRES_HUMAN"
-        kubectl logs -n "${NAMESPACE}" -l app=omni-analyst --since-time="${VERIFY_LOGS_SINCE}" --tail=120 2>/dev/null || true
+        kubectl logs -n "${NAMESPACE}" -l app=omni-fullstack --since-time="${VERIFY_LOGS_SINCE}" --tail=120 2>/dev/null || true
         exit 1
     fi
     info "[verify ${j}/90] waiting for analyst autonomy_transition STATE_MACHINE_VERIFIED (autonomous_feedback_loop)…"
@@ -206,11 +206,11 @@ echo ""
 if [[ "${OMNI_PASS}" -ne 1 ]]; then
     if [[ "${SUGGEST_ONLY_SEEN}" -eq 1 ]]; then
         echo "  ✗ Omni verification FAILED: only SUGGEST_REMEDIATION observed (no STATE_MACHINE_VERIFIED)."
-        kubectl logs -n "${NAMESPACE}" -l app=omni-executor --since-time="${VERIFY_LOGS_SINCE}" --tail=80 2>/dev/null || true
+        kubectl logs -n "${NAMESPACE}" -l app=omni-fullstack --since-time="${VERIFY_LOGS_SINCE}" --tail=80 2>/dev/null || true
     fi
     echo "  ✗ Omni verification FAILED: no transition=STATE_MACHINE_VERIFIED for component=autonomous_feedback_loop within timeout"
     echo "    (executor exit_code=0 alone is not sufficient — need closed-loop verify in analyst logs)"
-    kubectl logs -n "${NAMESPACE}" -l app=omni-analyst --since-time="${VERIFY_LOGS_SINCE}" --tail=120 2>/dev/null || true
+    kubectl logs -n "${NAMESPACE}" -l app=omni-fullstack --since-time="${VERIFY_LOGS_SINCE}" --tail=120 2>/dev/null || true
     exit 1
 fi
 
@@ -235,15 +235,15 @@ echo "  ✓ Deployment rollout is healthy and Available=True"
 
 # Analyst / gateway may still show REQUIRES_HUMAN — optional strict check on analyst logs
 ALOG="$(
-    kubectl logs -n "${NAMESPACE}" -l app=omni-analyst --since-time="${VERIFY_LOGS_SINCE}" --tail=8000 2>/dev/null || true
+    kubectl logs -n "${NAMESPACE}" -l app=omni-fullstack --since-time="${VERIFY_LOGS_SINCE}" --tail=8000 2>/dev/null || true
 )"
 # Do not match autonomy_transition=REQUIRES_HUMAN — it can appear on mixed paths; require explicit human-escalation copy.
 if echo "${ALOG}" | grep -qiE 'escalate_to_human|\[ESCALATED\]'; then
     echo "  ✗ Analyst escalation detected — treating as failure for chaos gate"
-    kubectl logs -n "${NAMESPACE}" -l app=omni-analyst --since-time="${VERIFY_LOGS_SINCE}" --tail=60 2>/dev/null || true
+    kubectl logs -n "${NAMESPACE}" -l app=omni-fullstack --since-time="${VERIFY_LOGS_SINCE}" --tail=60 2>/dev/null || true
     exit 1
 fi
 
 section "NEXT: manual follow-up (optional)"
-echo "  kubectl logs -n multi-agent -l app=omni-analyst -f --tail=80 2>&1"
+echo "  kubectl logs -n multi-agent -l app=omni-fullstack -f --tail=80 2>&1"
 echo "  Restore: bash scripts/inject_real_fault.sh --restore"

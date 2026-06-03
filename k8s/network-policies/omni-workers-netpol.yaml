@@ -1,0 +1,399 @@
+# NetworkPolicy for Omni worker pods (omni-analyst, omni-prober, omni-executor,
+# omni-core, omni-hitl-dispatcher, omni-siem-bridge, omni-evidence-adapter).
+#
+# Design: each pod type gets its own policy. Having a NetworkPolicy implicitly
+# denies all traffic not explicitly allowed (Ingress + Egress policyTypes declared).
+#
+# Ingress allowed:
+#   - Prometheus (monitor ns) → metrics :9090
+#   - Any pod in namespace → health server :8090 (K8s probes route via kubelet node IP
+#     which bypasses NetworkPolicy in OrbStack CNI, but allow explicitly for other CNIs)
+#
+# Egress allowed per role:
+#   - All:       Redis :6379, Kafka :9092, DNS :53
+#   - analyst:   + Ollama :11434 (host.orb.internal)
+#   - prober:    + Prometheus :9090
+#   - executor:  + K8s API :443 (kube-apiserver)
+#   - core:      + Prometheus :9090
+#   - hitl:      + FinGuard HITL API :8081 (finguard-customer namespace)
+#
+#   kubectl apply -f k8s/network-policies/omni-workers-netpol.yaml
+#
+---
+# ── omni-analyst ──────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-analyst-netpol
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-analyst
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+      ports:
+        - protocol: TCP
+          port: 9090
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8090
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    # Ollama runs on host.orb.internal — external to cluster
+    - ports:
+        - protocol: TCP
+          port: 11434
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# ── omni-prober ───────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-prober-netpol
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-prober
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+      ports:
+        - protocol: TCP
+          port: 9090
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8090
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    # Prometheus scrape target (in monitor namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+      ports:
+        - protocol: TCP
+          port: 9090
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# ── omni-executor ─────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-executor-netpol
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-executor
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+      ports:
+        - protocol: TCP
+          port: 9090
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8090
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    # K8s API server — patch/apply mutations
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# ── omni-core ─────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-core-netpol
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-core
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+      ports:
+        - protocol: TCP
+          port: 9090
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8090
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+      ports:
+        - protocol: TCP
+          port: 9090
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# ── omni-hitl-dispatcher ──────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-hitl-dispatcher-netpol
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-hitl-dispatcher
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+      ports:
+        - protocol: TCP
+          port: 9090
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8090
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    # FinGuard HITL API in finguard-customer namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: finguard-customer
+      ports:
+        - protocol: TCP
+          port: 8081
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# ── omni-siem-bridge ──────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-siem-bridge-netpol
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-siem-bridge
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+      ports:
+        - protocol: TCP
+          port: 9090
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8090
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    # FinGuard Redis is in finguard-customer namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: finguard-customer
+      ports:
+        - protocol: TCP
+          port: 6379
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# ── omni-evidence-adapter ─────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-evidence-adapter-netpol
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-evidence-adapter
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitor
+      ports:
+        - protocol: TCP
+          port: 9090
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8090
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    # FinGuard Redis for SIEM raw events
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: finguard-customer
+      ports:
+        - protocol: TCP
+          port: 6379
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

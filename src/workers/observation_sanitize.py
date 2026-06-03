@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from pkg.reasoning.sanitize import sanitize_evidence_field
+
 _REDACT = "[REDACTED]"
 
 # password=secret, api_key: xxx, Bearer jwt...
@@ -20,10 +22,10 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
 
 
 def sanitize_for_llm(text: str) -> str:
-    """Deterministic mask — không dựa LLM."""
+    """Deterministic mask — secret redaction + prompt injection strip."""
     if not text:
         return text
     s = text
     for pat, repl in _PATTERNS:
         s = pat.sub(repl, s)
-    return s
+    return sanitize_evidence_field(s)

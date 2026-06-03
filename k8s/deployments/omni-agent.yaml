@@ -1,0 +1,129 @@
+---
+# Omni Remote Agent — DaemonSet (deploy trên K8s cluster của khách hàng)
+# Namespace: omni-agent (create trước: kubectl create ns omni-agent)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: omni-agent
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: omni-agent
+  namespace: omni-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: omni-agent-readonly
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "events", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: omni-agent-readonly
+subjects:
+  - kind: ServiceAccount
+    name: omni-agent
+    namespace: omni-agent
+roleRef:
+  kind: ClusterRole
+  name: omni-agent-readonly
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: omni-agent-secret
+  namespace: omni-agent
+type: Opaque
+stringData:
+  api-key: "REPLACE_WITH_OMNI_API_KEY"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: omni-agent
+  namespace: omni-agent
+  labels:
+    app: omni-agent
+spec:
+  selector:
+    matchLabels:
+      app: omni-agent
+  template:
+    metadata:
+      labels:
+        app: omni-agent
+    spec:
+      serviceAccountName: omni-agent
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        fsGroup: 10001
+      containers:
+        - name: omni-agent
+          image: ghcr.io/omni/omni-agent:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "remote_agent.agent"]
+          env:
+            - name: OMNI_AGENT_GATEWAY_URL
+              value: "http://omni-gateway.multi-agent.svc.cluster.local:8080"
+            - name: OMNI_AGENT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: omni-agent-secret
+                  key: api-key
+            - name: OMNI_AGENT_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OMNI_AGENT_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OMNI_AGENT_K8S_ENABLED
+              value: "true"
+            - name: OMNI_AGENT_LOG_PATHS
+              value: "/var/log/pods/**/*.log,/var/log/containers/*.log"
+            - name: OMNI_AGENT_COLLECT_INTERVAL
+              value: "60"
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          livenessProbe:
+            exec:
+              command: ["python3", "-c", "import remote_agent"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+            type: Directory
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule

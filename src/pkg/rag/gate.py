@@ -7,10 +7,18 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from rag.pgvector_store import COLLECTION_K8S_EXPERT
-from workers.llm_context_budget import effective_reply_max_words
+COLLECTION_K8S_EXPERT = "k8s_expert"  # mirrors rag.redis_vector_store — avoids src/rag/ dep in gateway image
 
 from pkg.rag.embed_utils import truncate_for_embedding
+
+
+def effective_reply_max_words(ws: Any) -> int:
+    """Local copy — pkg layer must not import from workers.*."""
+    sm = int(getattr(ws, "omni_summary_max_words", 100) or 100)
+    c = getattr(ws, "omni_concise_reply_max_words", None)
+    if c is None:
+        return sm
+    return min(max(10, int(c)), sm)
 
 logger = logging.getLogger(__name__)
 

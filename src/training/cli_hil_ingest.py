@@ -13,7 +13,7 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-from llm.vllm_client import VLLMClient
+from llm.factory import build_llm_client
 from rag.redis_vector_store import RedisVectorStore, PostgresRAGSettings
 from rag.pgvector_store import (
     COLLECTION_CLI_HIL_CONTEXT,
@@ -120,7 +120,7 @@ async def run_cli_hil_ingest(
         )
         return total_to_process
 
-    llm = VLLMClient(base_url=settings.vllm_base_url, embed_url=settings.vllm_embed_url, timeout_s=120.0)
+    llm = build_llm_client(base_url=settings.vllm_base_url, embed_url=settings.vllm_embed_url, timeout_s=120.0)
     redis_url = os.environ.get("OMNI_REDIS_URL", "redis://redis:6379/0")
     r = aioredis.from_url(redis_url, decode_responses=False)
     vector_store = RedisVectorStore(r)

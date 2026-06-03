@@ -390,7 +390,8 @@ def chaos_credential_lab_autofix_plan_from_batch(
         return None
     if not _evidence_suggests_credential_failure(batch):
         return None
-    pwd = str(getattr(ws, "chaos_pg_app_password", "") or "").strip()
+    _raw_pwd = getattr(ws, "chaos_pg_app_password", None)
+    pwd = (_raw_pwd.get_secret_value() if hasattr(_raw_pwd, "get_secret_value") else str(_raw_pwd or "")).strip()
     if not pwd:
         pwd = os.environ.get("OMNI_CHAOS_PG_APP_PASSWORD", "").strip()
     if not pwd:

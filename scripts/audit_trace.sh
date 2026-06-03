@@ -38,17 +38,17 @@ echo "=== audit_trace: TRACE_ID=${TRACE_ID} timeout=${TIMEOUT_SEC}s ==="
 echo ""
 
 _grep_analyst() {
-    kubectl logs -n "$NS" -l "app=omni-analyst" \
+    kubectl logs -n "$NS" -l "app=omni-fullstack" \
         --since="600s" --tail=3000 2>/dev/null | grep -F "$TRACE_ID" || true
 }
 
 _grep_executor() {
-    kubectl logs -n "$NS" -l "app=omni-executor" \
+    kubectl logs -n "$NS" -l "app=omni-fullstack" \
         --since="600s" --tail=3000 2>/dev/null | grep -F "$TRACE_ID" || true
 }
 
 _grep_prober() {
-    kubectl logs -n "$NS" -l "app=omni-prober" \
+    kubectl logs -n "$NS" -l "app=omni-fullstack" \
         --since="600s" --tail=3000 2>/dev/null | grep -F "$TRACE_ID" || true
 }
 

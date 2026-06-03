@@ -3,7 +3,7 @@
 Verifies:
   - VLLMClient constructs the correct OpenAI /v1/chat/completions payload.
   - VLLMClient constructs the correct OpenAI /v1/embeddings payload.
-  - phase3_output (mvp_api) routes through vLLM and parses the response.
+  - VLLMClient handles both streaming and non-streaming response shapes.
   - Response dict shape matches what handlers.py expects (same as old Ollama shape).
 """
 
@@ -211,97 +211,6 @@ class TestVLLMClientEmbed:
 
         assert len(result["embeddings"]) == 2
         assert result["embeddings"] == vecs
-
-
-# ---------------------------------------------------------------------------
-# mvp_api.phase3_output — vLLM integration
-# ---------------------------------------------------------------------------
-
-class TestPhase3Output:
-    """phase3_output must call /v1/chat/completions and parse HighLevelRemediationPlan."""
-
-    _VALID_PLAN = json.dumps(
-        {
-            "action": "rollout_restart",
-            "target_ref": "deployment/nginx",
-            "namespace": "production",
-            "reasoning": "ConfigMap missing",
-        }
-    )
-
-    @pytest.mark.asyncio
-    async def test_phase3_calls_vllm_endpoint(self) -> None:
-        """phase3_output must POST to VLLM_BASE_URL/v1/chat/completions."""
-        import httpx
-
-        response_json = {
-            "choices": [{"message": {"content": self._VALID_PLAN}}]
-        }
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = response_json
-        mock_resp.raise_for_status = MagicMock()
-
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client.post = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value = mock_client
-
-            # Import after patching so module-level constants are stable.
-            import importlib
-            import scripts.mvp_api as api_module
-
-            plan = await api_module.phase3_output("You are SRE.", "Fix nginx.")
-
-        posted_url = mock_client.post.call_args.args[0]
-        assert "/v1/chat/completions" in posted_url, (
-            f"Expected vLLM endpoint, got: {posted_url}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_phase3_parses_plan_correctly(self) -> None:
-        """phase3_output must parse the LLM JSON into HighLevelRemediationPlan."""
-        response_json = {
-            "choices": [{"message": {"content": self._VALID_PLAN}}]
-        }
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = response_json
-        mock_resp.raise_for_status = MagicMock()
-
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client.post = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value = mock_client
-
-            import scripts.mvp_api as api_module
-
-            plan = await api_module.phase3_output("sys", "user")
-
-        assert plan.action == "rollout_restart"
-        assert plan.namespace == "production"
-
-    @pytest.mark.asyncio
-    async def test_phase3_raises_502_on_connect_error(self) -> None:
-        """phase3_output must raise HTTPException(502) when vLLM is unreachable."""
-        import httpx
-        from fastapi import HTTPException
-
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
-            mock_client_cls.return_value = mock_client
-
-            import scripts.mvp_api as api_module
-
-            with pytest.raises(HTTPException) as exc_info:
-                await api_module.phase3_output("sys", "user")
-
-        assert exc_info.value.status_code == 502
 
 
 # ---------------------------------------------------------------------------

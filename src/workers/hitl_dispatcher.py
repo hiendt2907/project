@@ -28,6 +28,15 @@ Environment:
   HITL_MAX_CONCURRENT                   32      (max parallel pending approvals)
   HITL_API_REGISTER_MAX_RETRIES         5
   HITL_API_REGISTER_BACKOFF_BASE_SEC    1.0
+  OMNI_HITL_FALLBACK_CHANNEL            none    (slack | none)
+  OMNI_HITL_FALLBACK_WEBHOOK_URL               (Slack incoming webhook URL)
+  OMNI_HITL_ESCALATION_TIMEOUT_SEC      900    (seconds before fallback emit)
+  OMNI_HITL_DEAD_LETTER_TTL_SEC         86400  (dead-letter Redis key TTL)
+
+Escalation timeline (S1.3):
+  T=0:                       Register HITL → Telegram notification (existing)
+  T=ESCALATION_TIMEOUT_SEC:  Emit to fallback channel (Slack webhook)
+  T=APPROVAL_TIMEOUT_SEC:    Auto-reject with HITL_TIMEOUT + store dead-letter in Redis
 """
 
 from __future__ import annotations
@@ -47,6 +56,8 @@ import httpx
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.structs import TopicPartition
 from redis.asyncio import Redis
+
+from workers.hitl_fallback import emit_slack_fallback, store_dead_letter
 
 log = logging.getLogger("hitl_dispatcher")
 logging.basicConfig(
@@ -70,6 +81,18 @@ _MAX_CONCURRENT: Final[int] = max(1, int(os.environ.get("HITL_MAX_CONCURRENT", "
 _REGISTER_MAX_RETRIES: Final[int] = max(1, int(os.environ.get("HITL_API_REGISTER_MAX_RETRIES", "5")))
 _REGISTER_BACKOFF_BASE: Final[float] = float(os.environ.get("HITL_API_REGISTER_BACKOFF_BASE_SEC", "1.0"))
 _CONSUMER_GROUP: Final[str] = os.environ.get("HITL_DISPATCHER_GROUP", "omni-hitl-dispatcher")
+
+# S1.3 — Fallback channel + dead-letter (bounds mirror WorkerSettings Pydantic validators)
+_ESCALATION_TIMEOUT_SEC: Final[int] = min(
+    _APPROVAL_TIMEOUT_SEC - 1,  # must be strictly less than approval window
+    max(60, int(os.environ.get("OMNI_HITL_ESCALATION_TIMEOUT_SEC", "900"))),
+)
+_FALLBACK_CHANNEL: Final[str] = os.environ.get("OMNI_HITL_FALLBACK_CHANNEL", "none").lower().strip()
+_FALLBACK_WEBHOOK_URL: Final[str] = os.environ.get("OMNI_HITL_FALLBACK_WEBHOOK_URL", "")
+_DEAD_LETTER_TTL_SEC: Final[int] = min(
+    604800,  # 7 days max (WorkerSettings le=604800)
+    max(3600, int(os.environ.get("OMNI_HITL_DEAD_LETTER_TTL_SEC", "86400"))),
+)
 
 # Redis key for internal audit state (same-namespace Omni Redis — no cross-namespace writes).
 _STATE_KEY_FMT: Final[str] = "omni:hitl:state:{trace}"
@@ -310,17 +333,41 @@ async def _poll_api_for_decision(
     client: httpx.AsyncClient,
     action: _PendingAction,
 ) -> _Decision:
-    """
-    Poll GET /v1/hitl/decisions/{incident_id} until approved|rejected|timeout.
+    """Poll GET /v1/hitl/decisions/{incident_id} until approved|rejected|timeout.
+
+    S1.3 escalation: emits Slack fallback at T=_ESCALATION_TIMEOUT_SEC if still pending.
     Uses adaptive backoff: healthy polling at _POLL_INTERVAL_BASE_SEC; backs off on failures.
     Returns _Decision.TIMEOUT if the approval window expires.
     """
-    deadline = time.monotonic() + _APPROVAL_TIMEOUT_SEC
+    start = time.monotonic()
+    deadline = start + _APPROVAL_TIMEOUT_SEC
+    escalation_deadline = start + _ESCALATION_TIMEOUT_SEC
+    escalated = False
+
     url = f"{_HITL_API_BASE}/v1/hitl/decisions/{action.siem_incident_id}"
     headers = {"Authorization": f"Bearer {_HITL_API_TOKEN}"}
     consecutive_errors = 0
 
     while time.monotonic() < deadline:
+        # S1.3: emit fallback when escalation threshold crossed for the first time.
+        if not escalated and time.monotonic() >= escalation_deadline:
+            escalated = True
+            elapsed = int(time.monotonic() - start)
+            log.warning(
+                '"hitl_escalation_threshold" trace="%s" elapsed_sec=%d channel="%s"',
+                action.trace_id, elapsed, _FALLBACK_CHANNEL,
+            )
+            if _FALLBACK_CHANNEL == "slack" and _FALLBACK_WEBHOOK_URL:
+                await emit_slack_fallback(
+                    client=client,
+                    webhook_url=_FALLBACK_WEBHOOK_URL,
+                    trace_id=action.trace_id,
+                    tool_name=action.tool_name,
+                    incident_id=action.siem_incident_id,
+                    explain=action.explain,
+                    elapsed_sec=elapsed,
+                )
+
         try:
             resp = await client.get(url, headers=headers, timeout=8.0)
 
@@ -484,6 +531,16 @@ async def _process(
         await _emit(producer, _TOPIC_FEEDBACK, feedback)
         await _set_audit_state(
             redis, action.trace_id, "EXPIRED", action.tool_name, ttl=3600,
+        )
+        # S1.3: store dead-letter so admin can replay
+        await store_dead_letter(
+            redis=redis,
+            trace_id=action.trace_id,
+            incident_id=action.siem_incident_id,
+            tool_name=action.tool_name,
+            raw_body=action.raw_body,
+            reason=f"HITL_TIMEOUT after {_APPROVAL_TIMEOUT_SEC}s",
+            ttl=_DEAD_LETTER_TTL_SEC,
         )
 
 

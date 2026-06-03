@@ -1,0 +1,56 @@
+# Patch overlay: omni-gateway default manifest uses `ingress: - from: []` which blocks ALL in-cluster
+# sources (empty peer list). Apply after omni-gateway.yaml so Gateway accepts same-namespace pods +
+# Traefik ingress (lab).
+#
+#   kubectl apply -f k8s/network-policies/omni-gateway-netpol-ingress-multi-agent.yaml
+#
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-gateway-netpol
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Same-namespace workloads (analyst, verify Job, probes, …)
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8000
+    # Traefik ingress controller (adjust labels if your chart differs)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

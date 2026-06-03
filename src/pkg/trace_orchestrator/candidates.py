@@ -70,7 +70,7 @@ async def record_verify_failure_for_candidate(
     state.last_verify_ok = False
     if detail:
         state.last_error = detail[:2000]
-    await save_trace_orchestrator_state(redis, state, ttl_sec=ttl_sec)
+    return await save_trace_orchestrator_state(redis, state, ttl_sec=ttl_sec)
 
 
 async def record_verify_success_for_candidate(
@@ -85,4 +85,4 @@ async def record_verify_success_for_candidate(
     state.last_verify_ok = True
     state.last_error = ""
     state.phase = TraceOrchestratorPhase.RESOLVED
-    await save_trace_orchestrator_state(redis, state, ttl_sec=ttl_sec)
+    return await save_trace_orchestrator_state(redis, state, ttl_sec=ttl_sec)

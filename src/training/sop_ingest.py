@@ -16,7 +16,7 @@ from rag.pgvector_store import (
 )
 import redis.asyncio as aioredis
 from rag.sop_ledger import SOP_COLLECTION, sop_payload_for_fast_path
-from llm.vllm_client import VLLMClient
+from llm.factory import build_llm_client
 from training.sop_expand import expand_entries, load_seed_path
 from workers.settings import WorkerSettings
 
@@ -83,7 +83,7 @@ async def run_ingest(
     if limit is not None:
         entries = entries[: max(0, limit)]
 
-    llm = VLLMClient(base_url=settings.vllm_base_url, embed_url=settings.vllm_embed_url, timeout_s=120.0)
+    llm = build_llm_client(base_url=settings.vllm_base_url, embed_url=settings.vllm_embed_url, timeout_s=120.0)
     redis_url = os.environ.get("OMNI_REDIS_URL", "redis://redis:6379/0")
     r = aioredis.from_url(redis_url, decode_responses=False)
     vector_store = RedisVectorStore(r)
@@ -120,7 +120,7 @@ async def run_ingest(
                     llm,
                     model=settings.embed_model,
                     texts=texts,
-                    
+                    keep_alive=None,
                 )
 
             for e, vec in zip(chunk, vecs, strict=True):

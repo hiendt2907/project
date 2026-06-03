@@ -12,3 +12,14 @@ tests/
 # Gitleaks scan artifacts
 leak_report.json
 leak_report_history.json
+
+# audit cleanup 2026-06-03
+chaos_drill_results_*.json
+dist/
+.DS_Store
+.coverage
+
+# go-prod cleanup 2026-06-03: transient agent/tool output + build artifacts
+.claude/worktrees/
+.reports/
+omni-remote-agent/agent

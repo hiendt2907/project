@@ -347,7 +347,7 @@ async def _parse_fallback_tool_call(ctx: WorkerHandlerContext, user_prompt: str)
                 },
                 {"role": "user", "content": user_prompt[:7000]},
             ],
-            options={"temperature": 0.0, "num_ctx": 4096},
+            options={"temperature": 0.0, "num_ctx": getattr(getattr(ctx, "settings", None), "proactive_llm_num_ctx", 4096)},
         )
         content = ((resp.get("message") or {}).get("content") or "").strip()
         try:
@@ -1126,7 +1126,27 @@ async def proactive_evaluate_loop(ctx: WorkerHandlerContext, stop: asyncio.Event
                 await ctx.ledger.record_exception(e, phase="4", component="proactive_evaluate", swallow_errors=True)
             except Exception:
                 pass
+        # S2.3: check elevated watch flag (set by forecast loop on threshold breach).
+        # If any workload is under elevated watch, halve the sleep interval.
+        eval_interval = float(ws.proactive_eval_interval_sec)
         try:
-            await asyncio.wait_for(stop.wait(), timeout=ws.proactive_eval_interval_sec)
+            if bool(getattr(ws, "forecast_proactive_integration_enabled", True)):
+                elevated_keys = []
+                _cursor = 0
+                while True:
+                    _cursor, _batch = await ctx.redis.scan(_cursor, match="omni:proactive:elevated:*", count=100)
+                    elevated_keys.extend(_batch)
+                    if _cursor == 0:
+                        break
+                if elevated_keys:
+                    eval_interval = max(10.0, eval_interval / 2)
+                    logger.debug(
+                        "proactive elevated_watch active keys=%d interval_sec=%.1f",
+                        len(elevated_keys), eval_interval,
+                    )
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=eval_interval)
         except asyncio.TimeoutError:
             pass
