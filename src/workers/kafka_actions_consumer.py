@@ -18,6 +18,7 @@ from workers.autonomous_execute import publish_action_feedback, run_execute_muta
 from workers.handler_context import WorkerHandlerContext
 from workers.log_preview import json_obj_preview, log_preview
 from workers.metrics_exporter import executor_execute_skipped_inc
+from workers.pipeline_stages import mark_stage
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.autonomy_contract import (
     TRANSITION_COMMAND_FEEDBACK_INGESTED,
@@ -143,6 +144,7 @@ async def kafka_actions_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
                         continue
                     if action == "execute_write_pending":
                         out = await execute_write_pending_from_redis(ctx, data)
+                        await mark_stage(ctx.redis, trace, "EXECUTOR", "ok", detail="execute_write_pending")
                         logger.info(
                             "[%s] omni-actions execute_write_pending ok out_len=%s result_preview=%s",
                             trace,
@@ -151,7 +153,9 @@ async def kafka_actions_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
                         )
                     elif action in ("execute_mutate", "action_execute_mutate"):
                         await _handle_execute_mutate(ctx, trace, data)
+                        await mark_stage(ctx.redis, trace, "EXECUTOR", "ok", detail="execute_mutate")
                     elif action == "suggest_remediation":
+                        await mark_stage(ctx.redis, trace, "EXECUTOR", "skip", detail="suggest-only (no execute)")
                         logger.info(
                             "[%s] event=omni_actions_audit_only action=SUGGEST_REMEDIATION (no execute)",
                             trace,

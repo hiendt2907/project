@@ -25,6 +25,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from gateway.trace_context import install_gateway_trace_logging, pop_gateway_trace_id, push_gateway_trace_id
+# pkg.observability is dependency-light (stdlib + redis arg) and packaged into the gateway
+# image — NOT in the gateway import ban (workers/reasoning/executor). Lets the gateway mark
+# the INGEST pipeline stage with the same trace_id the downstream worker uses.
+from pkg.observability.pipeline_stages import mark_stage
 
 logger = logging.getLogger(__name__)
 
@@ -479,6 +483,9 @@ async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONRespo
         await _kafka.send_and_wait(KAFKA_TOPIC_ALERTS, value=env)
         logger.info("[GATEWAY][%s] kafka_enqueued topic=%s", trace_id, KAFKA_TOPIC_ALERTS)
         gw_requests.labels(status="200_ok").inc()
+        # Pipeline stage: INGEST — alert accepted + enqueued. Best-effort, same trace_id as
+        # downstream so the dashboard shows the trace from the very first hop.
+        await mark_stage(_redis, trace_id, "INGEST", "ok", detail=f"enqueued topic={KAFKA_TOPIC_ALERTS}")
         return _json_with_trace({"status": "queued", "trace_id": trace_id}, trace_id=trace_id, status_code=200)
 
     except Exception as e:

@@ -41,6 +41,7 @@ from workers.archivist import write_incident_postmortem
 from workers.rollback_executor import apply_rollback_from_snapshot
 from workers.metrics_exporter import inc_experience_saved, inc_learning_upsert
 from workers.telegram_escalation import emit_telegram_escalation
+from workers.pipeline_stages import mark_stage
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.autonomy_contract import (
     TRANSITION_COMMAND_FEEDBACK_INGESTED,
@@ -762,6 +763,11 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
     trace = str(body.get("trace_id") or fields.get("trace_id") or "").strip()
     if not trace:
         return
+    await mark_stage(
+        ctx.redis, trace, "FEEDBACK",
+        "ok" if int(body.get("exit_code", 0)) == 0 else "fail",
+        detail=f"status={body.get('status') or ''}",
+    )
     exit_code = int(body.get("exit_code", 0))
     stdout = str(body.get("stdout") or "")
     stderr = str(body.get("stderr") or "")

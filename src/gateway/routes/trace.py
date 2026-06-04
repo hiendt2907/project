@@ -10,12 +10,17 @@ ran and roughly what it returned, without exfiltrating VM file/DB content.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+
+# Shared module under src/pkg/ — packaged into the gateway image (see Dockerfile.gateway).
+# Gateway must NOT import `workers`; pkg.observability is the dependency-light shared home.
+from pkg.observability.pipeline_stages import PIPELINE_STAGES, mark_stage  # noqa: F401
 
 log = logging.getLogger(__name__)
 
@@ -117,3 +122,225 @@ async def trace_session(trace_id: str, request: Request) -> JSONResponse:
             "confidence": final.get("confidence", 0.0),
         },
     })
+
+
+_STAGES_KEY_PREFIX = "omni:trace:stages:"
+_EVENTS_STREAM = "omni:trace:events"
+_SSE_BLOCK_MS = 2000
+
+
+@router.get("/stream")
+async def trace_stream(request: Request) -> StreamingResponse:
+    """SSE stream of pipeline stage events from the global omni:trace:events stream.
+
+    Yields ``data: <json>\\n\\n`` per event. Starts from $ (new events only).
+    Ends gracefully on Redis error or client disconnect.
+    """
+    redis = _get_redis(request)
+
+    async def _generate() -> AsyncGenerator[str, None]:
+        # Flush a comment + retry hint immediately so the proxy (Traefik) forwards
+        # response headers and starts streaming instead of waiting for the first
+        # real event. Without this, an idle stream sends no bytes and gets buffered.
+        yield ": connected\nretry: 3000\n\n"
+        last_id = "$"
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                results = await redis.xread(
+                    {_EVENTS_STREAM: last_id}, block=_SSE_BLOCK_MS, count=50
+                )
+            except Exception as exc:
+                log.warning("[trace/stream] redis error, ending stream: %s", exc)
+                break
+            if results:
+                for _stream, messages in results:
+                    for msg_id, fields in messages:
+                        last_id = msg_id
+                        try:
+                            payload = json.dumps(
+                                {
+                                    "trace_id": fields.get("trace_id", ""),
+                                    "stage": fields.get("stage", ""),
+                                    "status": fields.get("status", ""),
+                                    "lane": fields.get("lane", ""),
+                                    "ts": fields.get("ts", ""),
+                                },
+                                ensure_ascii=False,
+                            )
+                            yield f"data: {payload}\n\n"
+                        except Exception:
+                            pass
+            else:
+                # Idle heartbeat keeps bytes flowing so proxies don't buffer/idle-timeout.
+                yield ": ping\n\n"
+            await asyncio.sleep(0)
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+_RECENT_SCAN = 500
+_RECENT_LIMIT = 30
+
+
+@router.get("/recent")
+async def trace_recent(request: Request) -> JSONResponse:
+    """Return the most recently active traces, derived from omni:trace:events.
+
+    Reads the tail of the global event stream, de-duplicates by trace_id (newest
+    first), and enriches each with lane + current stage/verdict from its stage hash.
+    Replaces the UI mock list with real live data.
+    """
+    redis = _get_redis(request)
+    try:
+        # XREVRANGE newest→oldest; cap the scan window.
+        entries = await redis.xrevrange(_EVENTS_STREAM, count=_RECENT_SCAN)
+    except Exception as exc:
+        log.warning("[trace/recent] redis error: %s", exc)
+        return JSONResponse({"traces": [], "source": "error"})
+
+    seen: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for _msg_id, fields in entries or []:
+        tid = fields.get("trace_id") or ""
+        if not tid or tid in seen:
+            continue
+        seen[tid] = {
+            "trace_id": tid,
+            "lane": fields.get("lane", "") or "",
+            "current_stage": fields.get("stage", "") or "",
+            "verdict": "",
+            "started_at": 0.0,
+            "updated_at": float(fields.get("ts") or 0),
+        }
+        order.append(tid)
+        if len(order) >= _RECENT_LIMIT:
+            break
+
+    # Enrich with meta + verdict from each stage hash (best-effort, bounded).
+    traces = []
+    for tid in order:
+        rec = seen[tid]
+        try:
+            raw_all: dict[str, str] = await redis.hgetall(f"{_STAGES_KEY_PREFIX}{tid}")
+        except Exception:
+            raw_all = {}
+        if raw_all.get("__meta__"):
+            try:
+                meta = json.loads(raw_all["__meta__"])
+                rec["lane"] = meta.get("lane", "") or rec["lane"]
+                rec["started_at"] = float(meta.get("started_at") or 0)
+                rec["updated_at"] = float(meta.get("updated_at") or rec["updated_at"])
+            except Exception:
+                pass
+        for st in ("SCHEMA", "DISPATCH"):
+            if raw_all.get(st):
+                try:
+                    d = str(json.loads(raw_all[st]).get("detail") or "")
+                    rec["verdict"] = d[len("verdict="):] if d.startswith("verdict=") else d
+                    break
+                except Exception:
+                    pass
+        traces.append(rec)
+
+    return JSONResponse({"traces": traces, "source": "gateway"})
+
+
+@router.get("/{trace_id}/pipeline")
+async def trace_pipeline(trace_id: str, request: Request) -> JSONResponse:
+    """Return the pipeline stage progress for a trace.
+
+    Stages not yet written are returned with status=pending, ts=0, elapsed_ms=0.
+    Returns 404 if the trace hash does not exist in Redis.
+    """
+    if not trace_id or len(trace_id) > 128:
+        raise HTTPException(status_code=400, detail="invalid trace_id")
+
+    redis = _get_redis(request)
+    key = f"{_STAGES_KEY_PREFIX}{trace_id}"
+
+    try:
+        raw_all: dict[str, str] = await redis.hgetall(key)
+    except Exception as exc:
+        log.error("[trace/pipeline] redis error trace=%s err=%s", trace_id, exc)
+        raise HTTPException(status_code=503, detail="redis error") from exc
+
+    if not raw_all:
+        return JSONResponse(
+            {
+                "found": False,
+                "trace_id": trace_id,
+                "lane": "",
+                "started_at": 0,
+                "updated_at": 0,
+                "verdict": "",
+                "stages": _build_pending_stages(0),
+            },
+            status_code=404,
+        )
+
+    meta: dict[str, Any] = {}
+    if "__meta__" in raw_all:
+        try:
+            meta = json.loads(raw_all["__meta__"])
+        except Exception:
+            meta = {}
+
+    started_at: float = float(meta.get("started_at") or 0)
+
+    # Parse each stage entry
+    stage_data: dict[str, dict[str, Any]] = {}
+    verdict = ""
+    for stage in PIPELINE_STAGES:
+        raw = raw_all.get(stage)
+        if raw is None:
+            continue
+        try:
+            entry: dict[str, Any] = json.loads(raw)
+        except Exception:
+            entry = {}
+        stage_data[stage] = entry
+        # Advisory verdict lives in SCHEMA detail as "verdict=<X>"; fall back to DISPATCH action.
+        if not verdict and stage in ("SCHEMA", "DISPATCH") and entry.get("detail"):
+            d = str(entry["detail"])
+            verdict = d[len("verdict="):] if d.startswith("verdict=") else d
+
+    stages_out = []
+    for stage in PIPELINE_STAGES:
+        if stage not in stage_data:
+            stages_out.append(
+                {"stage": stage, "status": "pending", "ts": 0, "detail": "", "elapsed_ms": 0}
+            )
+        else:
+            entry = stage_data[stage]
+            ts_val: float = float(entry.get("ts") or 0)
+            elapsed_ms = int((ts_val - started_at) * 1000) if ts_val > 0 and started_at > 0 else 0
+            stages_out.append(
+                {
+                    "stage": stage,
+                    "status": entry.get("status", "pending"),
+                    "ts": ts_val,
+                    "detail": entry.get("detail", ""),
+                    "elapsed_ms": max(0, elapsed_ms),
+                }
+            )
+
+    return JSONResponse(
+        {
+            "found": True,
+            "trace_id": trace_id,
+            "lane": meta.get("lane", ""),
+            "started_at": started_at,
+            "updated_at": float(meta.get("updated_at") or 0),
+            "verdict": verdict,
+            "stages": stages_out,
+        }
+    )
+
+
+def _build_pending_stages(started_at: float) -> list[dict[str, Any]]:
+    return [
+        {"stage": s, "status": "pending", "ts": 0, "detail": "", "elapsed_ms": 0}
+        for s in PIPELINE_STAGES
+    ]

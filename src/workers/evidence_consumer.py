@@ -95,6 +95,7 @@ from workers.telegram_escalation import (
 )
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.remote_agent_pipeline import handle_remote_agent_evidence
+from workers.pipeline_stages import mark_stage
 from workers.telegram_outbound import send_telegram_out_for_inbound
 from workers.telegram_advisory_emitter import (
     _e,
@@ -1041,6 +1042,7 @@ async def _emit_suggest_remediation(
             tid,
             source,
         )
+        await mark_stage(ctx.redis, tid, "DISPATCH", "ok", detail="SUGGEST_REMEDIATION", lane=lane or "")
     except Exception as e:
         logger.warning("action_emit skip: %s", e)
 
@@ -1183,6 +1185,12 @@ async def _emit_agentic_mutate_if_any(
         recall_result = await recall_playbook_advisory(
             ctx, query_text=sanitized_text, trace=trace
         )
+        # Pipeline stage: RAG — mark as skip if strong hit (LLM would be bypassed), else ok.
+        if recall_result and recall_result.top_score is not None and recall_result.top_score >= 0.75:
+            await mark_stage(ctx.redis, trace, "RAG", "skip", detail=f"recall={recall_result.top_score:.3f}")
+        else:
+            _rag_score = recall_result.top_score if recall_result else 0.0
+            await mark_stage(ctx.redis, trace, "RAG", "ok", detail=f"recall={_rag_score:.3f}" if _rag_score else "no_hit")
         # S2.4: persist point_id so feedback loop can downvote on failure.
         if recall_result and recall_result.top_point_id:
             try:
@@ -1906,6 +1914,8 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
     tok = push_trace_id(trace)
     try:
         ctx.inbound_trace_id = trace
+        # Pipeline stage: evidence received — fire-and-forget, best-effort.
+        await mark_stage(ctx.redis, trace, "EVIDENCE", "ok", lane="")
         # MTTD early registration: persist detection timestamp before analysis begins.
         # kpi_metrics.py reads this key to compute accurate MTTD (vs. receiving it from feedback).
         import time as _mttd_time
@@ -2205,14 +2215,28 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                         pass
 
                 # Run advisory analyst (returns AnalystAdvisory schema)
+                import time as _llm_time
+                _llm_t0 = _llm_time.monotonic()
+                # Pipeline stage: RAG — advisory-mode analyst goes straight to LLM (no playbook
+                # recall on this path), so mark RAG as skipped rather than leaving it pending.
+                await mark_stage(
+                    ctx.redis, trace, "RAG", "skip",
+                    detail="advisory-mode: no playbook recall", lane=_adv_lane or "",
+                )
+                await mark_stage(ctx.redis, trace, "LLM", "ok", detail="advisory_analyst/start", lane=_adv_lane or "")
                 advisory = await run_advisory_analyst(
                     ctx,
                     payload={"chat_id": chat_id},
                     trace=trace,
                     evidence_text=sanitized_text,
                 )
+                _llm_elapsed_ms = int((_llm_time.monotonic() - _llm_t0) * 1000)
+                await mark_stage(ctx.redis, trace, "LLM", "ok", detail=f"advisory_analyst elapsed_ms={_llm_elapsed_ms}", lane=_adv_lane or "")
 
                 if advisory:
+                    # Pipeline stage: advisory schema parsed/validated.
+                    _adv_verdict = getattr(advisory, "verdict", "") or ""
+                    await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"verdict={_adv_verdict}", lane=_adv_lane or "")
                     from workers.advisory_mode_kill_switch import AdvisoryModeKillSwitch
                     # Validate advisory output for forbidden mutation keywords (kill-switch layer 2)
                     _valid, _reason = AdvisoryModeKillSwitch.validate_advisor_output(
@@ -2239,6 +2263,9 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     logger.info(
                         "event=advisory_gate_confirmed trace=%s gate=%s", trace, _gate_reason
                     )
+                    # Pipeline stage: killswitch validated.
+                    _ks_status = "ok" if _valid else "fail"
+                    await mark_stage(ctx.redis, trace, "KILLSWITCH", _ks_status, detail=_gate_reason or "", lane=_adv_lane or "")
                     # CRAT Fail-Closed Gate: audit write MUST succeed before any Telegram emit.
                     try:
                         await write_audit_block(
@@ -2255,7 +2282,9 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                             trace,
                             _audit_err,
                         )
+                        await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed", lane=_adv_lane or "")
                         return "[ADVISORY MODE FAIL_CLOSED] audit_chain_write_failed — dispatch aborted"
+                    await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane=_adv_lane or "")
                     # Emit advisory to Telegram — prefer request chat_id, fall back to admin chat_id
                     effective_cid = chat_id or getattr(ctx.settings, "telegram_admin_chat_id", None)
                     if effective_cid is not None:

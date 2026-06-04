@@ -73,6 +73,67 @@ spec:
                 port:
                   number: 80
 
+# ── multi-agent: SSE-only routes (NO buffering middleware) ───────────────────
+# The body-limit-10m middleware is a Traefik `buffering` middleware which buffers
+# the RESPONSE and breaks Server-Sent Events. These dedicated, more-specific paths
+# route the long-lived SSE streams WITHOUT body-limit so Traefik streams them.
+# Longer path ⇒ higher Traefik router priority, so they win over the `/` rules above.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omni-gateway-sse
+  namespace: multi-agent
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: multi-agent-sse-buffering-off@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: gateway.ai-agent.local
+      http:
+        paths:
+          - path: /trace/stream
+            pathType: Prefix
+            backend:
+              service:
+                name: omni-gateway
+                port:
+                  number: 80
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omni-ui-sse
+  namespace: multi-agent
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: multi-agent-sse-buffering-off@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: portal.ai-agent.local
+      http:
+        paths:
+          - path: /api/trace/stream
+            pathType: Prefix
+            backend:
+              service:
+                name: omni-ui
+                port:
+                  number: 80
+    - host: omni.ai-agent.local
+      http:
+        paths:
+          - path: /api/trace/stream
+            pathType: Prefix
+            backend:
+              service:
+                name: omni-ui
+                port:
+                  number: 80
+
 # ── smart-siem: FinGuard SOC UI + BFF ────────────────────────────────────────
 ---
 apiVersion: networking.k8s.io/v1

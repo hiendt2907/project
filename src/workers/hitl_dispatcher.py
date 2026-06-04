@@ -58,6 +58,7 @@ from aiokafka.structs import TopicPartition
 from redis.asyncio import Redis
 
 from workers.hitl_fallback import emit_slack_fallback, store_dead_letter
+from workers.pipeline_stages import mark_stage
 
 log = logging.getLogger("hitl_dispatcher")
 logging.basicConfig(
@@ -482,6 +483,7 @@ async def _process(
         redis, action.trace_id, "AWAITING_HITL", action.tool_name,
         ttl=_APPROVAL_TIMEOUT_SEC + 300,
     )
+    await mark_stage(redis, action.trace_id, "HITL", "pending", detail="awaiting operator")
 
     # Register with FinGuard HITL API — operators must see this.
     registered = await _register_pending(client, action)
@@ -500,6 +502,7 @@ async def _process(
         await _set_audit_state(
             redis, action.trace_id, "REGISTER_FAILED_AUTO_REJECTED", action.tool_name, ttl=3600,
         )
+        await mark_stage(redis, action.trace_id, "HITL", "fail", detail="register_failed_auto_reject")
         return
 
     # Poll for operator decision (HTTP only — no cross-namespace Redis polling).
@@ -511,9 +514,11 @@ async def _process(
         await _set_audit_state(
             redis, action.trace_id, "APPROVED_FORWARDED", action.tool_name, ttl=3600,
         )
+        await mark_stage(redis, action.trace_id, "HITL", "ok", detail="approved")
 
     elif decision is _Decision.REJECTED:
         log.info('"hitl_rejected" trace="%s" tool="%s"', action.trace_id, action.tool_name)
+        await mark_stage(redis, action.trace_id, "HITL", "fail", detail="rejected")
         feedback = _build_rejection_feedback(
             action, "HITL_REJECTED: operator declined this action",
         )
@@ -524,6 +529,7 @@ async def _process(
 
     else:  # TIMEOUT
         log.warning('"hitl_timeout" trace="%s" tool="%s"', action.trace_id, action.tool_name)
+        await mark_stage(redis, action.trace_id, "HITL", "fail", detail="timeout")
         feedback = _build_rejection_feedback(
             action,
             f"HITL_TIMEOUT: no decision within {_APPROVAL_TIMEOUT_SEC}s approval window",
