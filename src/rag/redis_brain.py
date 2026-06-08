@@ -36,6 +36,7 @@ from rag.redis_vector_store import (
     COLLECTION_ACTION_EXPERIENCE,
     COLLECTION_SOP,
     COLLECTION_SRE_KNOWLEDGE,
+    COLLECTION_VENDOR_KNOWLEDGE,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,11 +51,13 @@ PER_TURN_LIMIT = 4            # hits pulled per collection per turn
 MAX_CONTEXT_SNIPPETS = 12     # cap accumulated context size
 
 # Collections the second brain consults, in priority order. action_experience
-# (verified past remediations) first, then SOP playbooks, then SRE knowledge.
+# (verified past remediations) first, then SOP playbooks, then SRE knowledge, then
+# vendor_knowledge (curated basic→advanced vendor docs surfaced/editable in the KB tab).
 DEFAULT_COLLECTIONS: tuple[str, ...] = (
     COLLECTION_ACTION_EXPERIENCE,
     COLLECTION_SOP,
     COLLECTION_SRE_KNOWLEDGE,
+    COLLECTION_VENDOR_KNOWLEDGE,
 )
 
 

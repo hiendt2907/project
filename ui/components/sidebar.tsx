@@ -29,6 +29,7 @@ import {
   UserCheck,
   FlaskConical,
   Workflow,
+  Brain,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { useOmniUiRealm } from "@/components/providers";
@@ -64,6 +65,7 @@ const navPortal: NavItem[] = [
   { section: "Diagnostics" },
   { href: "/pipeline", label: "Pipeline", icon: Workflow },
   { href: "/simulator", label: "Simulator", icon: FlaskConical },
+  { href: "/admin/kb", label: "RAG Knowledge", icon: Brain },
   { section: "Help" },
   { href: "/admin/guide", label: "User Guide", icon: BookOpen },
   { href: "/onboarding", label: "Setup", icon: CircleHelp },
