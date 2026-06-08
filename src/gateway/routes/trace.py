@@ -247,6 +247,32 @@ async def trace_recent(request: Request) -> JSONResponse:
     return JSONResponse({"traces": traces, "source": "gateway"})
 
 
+_LOGS_KEY_PREFIX = "omni:trace:logs:"
+
+
+@router.get("/{trace_id}/logs")
+async def trace_logs(trace_id: str, request: Request) -> JSONResponse:
+    """Return the raw per-phase log stream for a trace (newest last).
+
+    Each entry: ``{ts, phase, level, line}``. Empty list when nothing logged.
+    """
+    if not trace_id or len(trace_id) > 128:
+        raise HTTPException(status_code=400, detail="invalid trace_id")
+    redis = _get_redis(request)
+    try:
+        raw_list = await redis.lrange(f"{_LOGS_KEY_PREFIX}{trace_id}", 0, -1)
+    except Exception as exc:
+        log.warning("[trace/logs] redis error trace=%s err=%s", trace_id, exc)
+        return JSONResponse({"trace_id": trace_id, "logs": [], "source": "error"})
+    logs = []
+    for raw in raw_list or []:
+        try:
+            logs.append(json.loads(raw))
+        except (ValueError, TypeError):
+            continue
+    return JSONResponse({"trace_id": trace_id, "logs": logs, "source": "gateway"})
+
+
 _BRAIN_KEY_PREFIX = "omni:brain:session:"
 
 

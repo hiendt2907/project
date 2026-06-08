@@ -191,6 +191,17 @@ async def run_redis_brain(
 
         result.turns.append(BrainTurn(turn=turn_no, query=query[:600], top_score=turn_top, hits=turn_hits))
 
+        # Per-phase log line for the UI log stream (RAG phase = second brain).
+        try:
+            from pkg.observability.pipeline_stages import append_trace_log
+            _top = turn_hits[0].summary[:80] if turn_hits else "no new knowledge"
+            await append_trace_log(
+                redis, trace, "RAG",
+                f"2nd-brain turn {turn_no}: {len(turn_hits)} new hits, top={turn_top:.3f} — {_top}",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
         # Stop conditions: confident enough, or this turn learned nothing new.
         if best_score >= confidence_threshold or not turn_hits:
             break

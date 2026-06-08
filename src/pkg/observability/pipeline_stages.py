@@ -33,8 +33,39 @@ PIPELINE_STAGES: list[str] = [
 _VALID_STATUSES = frozenset({"ok", "fail", "skip", "pending"})
 _KEY_PREFIX = "omni:trace:stages:"
 _EVENTS_STREAM = "omni:trace:events"
+_LOGS_KEY_PREFIX = "omni:trace:logs:"
 _TTL_SEC = 3600
 _STREAM_MAXLEN = 2000
+_LOGS_MAXLEN = 400
+
+
+async def append_trace_log(
+    redis: Any,
+    trace_id: str,
+    phase: str,
+    line: str,
+    *,
+    level: str = "info",
+) -> None:
+    """Append one raw log line for a trace/phase to omni:trace:logs:{trace}.
+
+    Stored as a capped Redis LIST of JSON ``{ts, phase, level, line}`` (newest last
+    via RPUSH + left-trim). Best-effort: swallows Redis errors. Lets the UI render a
+    per-phase log stream alongside the pipeline flow.
+    """
+    if not trace_id or len(trace_id) > 128 or not line:
+        return
+    key = f"{_LOGS_KEY_PREFIX}{trace_id}"
+    entry = json.dumps(
+        {"ts": time.time(), "phase": str(phase or "")[:32], "level": str(level or "info")[:12], "line": str(line)[:600]},
+        ensure_ascii=False,
+    )
+    try:
+        await redis.rpush(key, entry)
+        await redis.ltrim(key, -_LOGS_MAXLEN, -1)
+        await redis.expire(key, _TTL_SEC)
+    except Exception as exc:  # noqa: BLE001 — logs are best-effort
+        log.debug("pipeline_stages: append_trace_log redis error trace=%s err=%s", trace_id, exc)
 
 
 async def mark_stage(
@@ -108,6 +139,11 @@ async def mark_stage(
             maxlen=_STREAM_MAXLEN,
             approximate=True,
         )
+        # Every stage transition is also a per-phase log line (free per-phase log
+        # stream at all mark_stage call sites). Level maps status → info/warn.
+        _level = "error" if status == "fail" else ("warn" if status == "skip" else "info")
+        _logline = f"stage {stage} → {status}" + (f": {detail}" if detail else "")
+        await append_trace_log(redis, trace_id, stage, _logline, level=_level)
     except Exception as exc:
         log.warning(
             "pipeline_stages: redis error stage=%s trace=%s status=%s err=%s",

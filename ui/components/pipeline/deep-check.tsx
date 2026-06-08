@@ -7,10 +7,38 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ListChecks, Wrench, TrendingUp, GitBranch, FileSearch, ChevronRight, Terminal, BrainCircuit } from "lucide-react";
+import { ListChecks, Wrench, TrendingUp, GitBranch, FileSearch, ChevronRight, Terminal, BrainCircuit, ScrollText } from "lucide-react";
 import type { TraceSession } from "@/app/api/trace/[id]/session/route";
 import type { TraceAdvisory } from "@/app/api/trace/[id]/advisory/route";
 import type { TraceBrain } from "@/app/api/trace/[id]/brain/route";
+import type { TraceLogs, TraceLogEntry } from "@/app/api/trace/[id]/logs/route";
+
+const PHASE_LOG_COLOR: Record<string, string> = {
+  error: "text-rose-400",
+  warn: "text-amber-400",
+  info: "text-zinc-400",
+};
+
+function LogsSection({ logs }: { logs: TraceLogEntry[] }) {
+  if (logs.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1.5 border border-zinc-800 rounded-lg bg-zinc-950 p-2.5">
+      <div className="flex items-center gap-1.5">
+        <ScrollText size={11} className="text-zinc-500" />
+        <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">Raw logs per phase ({logs.length})</span>
+      </div>
+      <div className="flex flex-col gap-0.5 max-h-56 overflow-y-auto font-mono">
+        {logs.map((l, i) => (
+          <div key={i} className="flex items-start gap-2 text-[8px] leading-relaxed">
+            <span className="text-zinc-700 tabular-nums shrink-0">{new Date(l.ts * 1000).toLocaleTimeString()}</span>
+            <span className="text-cyan-500/70 uppercase shrink-0 w-16">{l.phase}</span>
+            <span className={`${PHASE_LOG_COLOR[l.level] ?? "text-zinc-400"} break-all`}>{l.line}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function BrainSection({ brain }: { brain: TraceBrain }) {
   if (!brain.found || !brain.turns?.length) return null;
@@ -44,6 +72,7 @@ export function DeepCheckPanel({ traceId, liveSeq }: { traceId: string; liveSeq:
   const [session, setSession] = useState<TraceSession | null>(null);
   const [advisory, setAdvisory] = useState<TraceAdvisory | null>(null);
   const [brain, setBrain] = useState<TraceBrain | null>(null);
+  const [logs, setLogs] = useState<TraceLogEntry[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -51,11 +80,13 @@ export function DeepCheckPanel({ traceId, liveSeq }: { traceId: string; liveSeq:
       fetch(`/api/trace/${encodeURIComponent(traceId)}/session`, { cache: "no-store" }).then((r) => r.json()).catch(() => null),
       fetch(`/api/trace/${encodeURIComponent(traceId)}/advisory`, { cache: "no-store" }).then((r) => r.json()).catch(() => null),
       fetch(`/api/trace/${encodeURIComponent(traceId)}/brain`, { cache: "no-store" }).then((r) => r.json()).catch(() => null),
-    ]).then(([s, a, b]) => {
+      fetch(`/api/trace/${encodeURIComponent(traceId)}/logs`, { cache: "no-store" }).then((r) => r.json()).catch(() => null),
+    ]).then(([s, a, b, l]) => {
       if (!alive) return;
       setSession(s);
       setAdvisory(a);
       setBrain(b);
+      setLogs((l as TraceLogs)?.logs ?? []);
     });
     return () => { alive = false; };
   }, [traceId, liveSeq]);
@@ -63,7 +94,7 @@ export function DeepCheckPanel({ traceId, liveSeq }: { traceId: string; liveSeq:
   const hasSession = session?.found && session.turns.length > 0;
   const adv = advisory?.found ? advisory.advisory : undefined;
   const hasBrain = brain?.found && (brain.turns?.length ?? 0) > 0;
-  if (!hasSession && !adv && !hasBrain) {
+  if (!hasSession && !adv && !hasBrain && logs.length === 0) {
     return (
       <div className="px-4 py-3 border-t border-zinc-800 text-[9px] text-zinc-600">
         Deep diagnosis report appears here once the analyst finishes (multi-turn loop for
@@ -161,6 +192,8 @@ export function DeepCheckPanel({ traceId, liveSeq }: { traceId: string; liveSeq:
           )}
         </div>
       )}
+
+      <LogsSection logs={logs} />
     </div>
   );
 }
