@@ -18,7 +18,14 @@ def build_envelope(
     namespace: str = "",
     trace_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build a DiagnosticEvidence envelope ready to POST to /webhook/agent/evidence."""
+    """Build a DiagnosticEvidence envelope ready to POST to /webhook/agent/evidence.
+
+    Lane authority: the remote agent is a *sensor*. The ``lane`` it stamps is a
+    NON-AUTHORITATIVE hint (mirrored as ``lane_hint``). Omni re-derives the
+    authoritative proof lane on ingest via ``resolve_proof_lane()`` +
+    ``os_state_validator``. ``lane``/``stream_tags`` are kept for Kafka topic
+    routing and the gateway envelope schema, not for lane decisions.
+    """
     return {
         "trace_id": trace_id or f"ra-{uuid.uuid4().hex[:12]}",
         "probe": probe,
@@ -29,6 +36,8 @@ def build_envelope(
         "raw": raw[:4000],
         "symptom_group": symptom_group or lane.lower(),
         "lane": lane,
+        "lane_hint": lane,
+        "lane_authoritative": False,
         "stream_tags": [lane],
         "namespace": namespace,
         "ts": str(int(time.time())),

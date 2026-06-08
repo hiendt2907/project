@@ -885,12 +885,18 @@ export default function RemoteAgentsPage() {
                   ))}
                 </div>
               ) : data.agents.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-24 text-center">
+                <div className="flex flex-col items-center justify-center py-24 text-center max-w-lg mx-auto">
                   <Activity className="h-10 w-10 text-zinc-700 mb-3" />
                   <p className="text-sm font-medium text-zinc-400">No remote agents registered</p>
+                  <p className="mt-2 text-xs text-zinc-500 leading-relaxed">
+                    Installed agents only appear here once they reach the gateway. If you have
+                    agents deployed but see none, the connection (reverse SSH tunnel / VPN to the
+                    host network, or the agent service) is likely down — registrations expire after
+                    ~120s of silence. Restore connectivity and they re-register automatically.
+                  </p>
                   <button onClick={() => setActiveTab("install")}
                     className="mt-3 text-xs text-cyan-400 hover:text-cyan-300 underline-offset-2 underline">
-                    Install first agent →
+                    Install / re-install an agent →
                   </button>
                 </div>
               ) : (

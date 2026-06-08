@@ -56,7 +56,15 @@ class OmniEmitter:
         self._agent_id = agent_id
         self._hostname = hostname
 
-    async def register(self, capabilities: list[str], version: str = "1.0.0", k8s_namespace: str = "") -> bool:
+    async def register(
+        self, capabilities: list[str], version: str = "1.0.0", k8s_namespace: str = "", tenant_id: str = "default"
+    ) -> dict[str, float] | None:
+        """Register/heartbeat with the gateway.
+
+        Returns the anomaly-threshold bundle pushed by Omni (resolved from
+        omni_admin runtime flags), or None on failure. Tuning thresholds
+        server-side avoids redeploying the agent on customer hosts.
+        """
         payload = {
             "agent_id": self._agent_id,
             "hostname": self._hostname,
@@ -64,13 +72,16 @@ class OmniEmitter:
             "capabilities": capabilities,
             "platform": "linux",
             "k8s_namespace": k8s_namespace,
+            "tenant_id": tenant_id,
         }
         async with _make_client(self._headers, self._base) as client:
             result = await _with_retry(client, "/webhook/agent/register", payload)
             if result:
                 logger.info("[emitter] registered agent_id=%s ttl=%s", self._agent_id, result.get("ttl"))
-                return True
-            return False
+                config = result.get("config") or {}
+                thresholds = config.get("thresholds") if isinstance(config, dict) else None
+                return thresholds if isinstance(thresholds, dict) else None
+            return None
 
     async def emit(self, evidence_list: list[dict]) -> int:
         """POST evidence batch. Returns number of items enqueued by gateway."""

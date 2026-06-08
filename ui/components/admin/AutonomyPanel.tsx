@@ -44,14 +44,28 @@ export function AutonomyPanel({ autonomy, error, onSaved }: AutonomyPanelProps) 
   if (error && !autonomy) {
     return (
       <div>
-        <SectionLabel text="C · Autonomy Policy" />
+        <SectionLabel
+        text="C · Autonomy Policy (legacy per-lane)"
+        note={
+          <span className="text-amber-500/70" title="Lưu Redis, không phải Postgres omni_admin">
+            ⚠ Redis-only · Tier ở trên mới là source-of-truth
+          </span>
+        }
+      />
         <Unavailable detail="policy unavailable (gateway /autonomy/policy)" />
       </div>
     );
   }
   return (
     <div>
-      <SectionLabel text="C · Autonomy Policy" />
+      <SectionLabel
+        text="C · Autonomy Policy (legacy per-lane)"
+        note={
+          <span className="text-amber-500/70" title="Lưu Redis, không phải Postgres omni_admin">
+            ⚠ Redis-only · Tier ở trên mới là source-of-truth
+          </span>
+        }
+      />
       <table className="w-full text-[10px] border-collapse">
         <thead>
           <tr>

@@ -26,6 +26,7 @@ from workers.remote_diagnostic_archiver import write_lessons
 from workers.remote_triage import triage_cluster
 from workers.telegram_advisory_emitter import render_advisory_to_telegram
 from workers.remote_diagnosis_emitter import emit_diagnosis_to_telegram
+from workers.pipeline_stages import mark_stage
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,27 @@ async def handle_remote_agent_evidence(
         "evidence_source": str(ev_doc.get("evidence_source") or ""),
     }
 
+    # ── Lane 1 (resource) baseline for remote hosts ───────────────────────
+    # Prometheus cannot scrape customer servers, so the in-cluster 3σ engine is
+    # blind to them. Feed agent-reported cpu/mem/disk into a per-host rolling
+    # baseline and stamp z-scores onto the evidence so the resource lane gets a
+    # real "normal for THIS host" signal instead of a static threshold.
+    if probe == "remote_system_metrics":
+        try:
+            from anomaly.remote_host_baseline import update_remote_host_baseline
+
+            host = str(ev_doc.get("namespace") or "") or agent_id
+            tenant_id = str(ev_doc.get("tenant_id") or "default")
+            zscores = await update_remote_host_baseline(
+                ctx.redis, tenant_id=tenant_id, host=host, fact=extracted
+            )
+            if zscores:
+                # Enrich a copy, never mutate the caller's extracted_fact in place.
+                extracted = {**extracted, **zscores}
+                ev_doc = {**ev_doc, "extracted_fact": extracted}
+        except Exception as exc:  # noqa: BLE001 — baseline is best-effort
+            logger.warning("[RAP] remote_host_baseline failed trace=%s err=%r", trace, exc)
+
     # ── Stage 2: Cluster ──────────────────────────────────────────────────
     result = str(ev_doc.get("result") or "PASSED")
     fp = fingerprint_evidence({"probe": probe, "result": result, "alert_hint": alert_hint, "raw": raw})
@@ -85,11 +107,16 @@ async def handle_remote_agent_evidence(
         cluster = await upsert_cluster(ctx.redis, agent_id, fp, ev_doc, domain)
     except Exception as exc:
         logger.warning("[RAP] cluster_upsert_failed trace=%s err=%s", trace, exc)
+        await mark_stage(ctx.redis, trace, "EVIDENCE", "fail", detail=f"cluster_upsert_failed: {exc}", lane=lane)
         return ""
 
     logger.info(
         "[RAP] cluster fp=%s domain=%s count=%d is_new=%s is_storm=%s",
         fp, domain, cluster.count, cluster.is_new, cluster.is_storm,
+    )
+    await mark_stage(
+        ctx.redis, trace, "EVIDENCE", "ok",
+        detail=f"remote agent={agent_id} domain={domain} probe={probe}", lane=lane,
     )
 
     # ── Stage 3: Triage ───────────────────────────────────────────────────
@@ -99,6 +126,12 @@ async def handle_remote_agent_evidence(
         "[RAP] triage fp=%s route=%s urgency=%s",
         fp, triage.route, triage.urgency,
     )
+    # RAG stage reflects the playbook recall done inside triage.
+    _recall_score = getattr(getattr(triage, "recall", None), "top_score", None)
+    if _recall_score:
+        await mark_stage(ctx.redis, trace, "RAG", "ok", detail=f"recall={_recall_score:.3f} route={triage.route}", lane=lane)
+    else:
+        await mark_stage(ctx.redis, trace, "RAG", "skip", detail=f"no_hit route={triage.route}", lane=lane)
 
     # ── Stage 4: Research — multi-turn diagnosis loop for urgent clusters ──
     # INVARIANT INV_NO_SINGLE_TURN: diagnosis loop runs minimum 2 turns.
@@ -125,6 +158,7 @@ async def handle_remote_agent_evidence(
         num_ctx = int(getattr(getattr(ctx, "settings", None), "llm_num_ctx", 8192) or 8192)
 
         if llm is not None and chat_id is not None:
+            await mark_stage(ctx.redis, trace, "LLM", "ok", detail="multi-turn diagnosis loop launched", lane=lane)
             _track_bg_task(asyncio.create_task(
                 _run_diagnosis_and_notify(
                     ctx=ctx,
@@ -141,9 +175,25 @@ async def handle_remote_agent_evidence(
             diag_task_launched = True
             logger.info("[RAP] diagnosis_loop launched as background task trace=%s", trace)
         else:
+            await mark_stage(ctx.redis, trace, "LLM", "ok", detail="single-turn advisory", lane=lane)
             advisory = await analyze_cluster(ctx, cluster, recall=triage.recall)
     elif triage.route in _RESEARCH_ROUTES:
+        await mark_stage(ctx.redis, trace, "LLM", "ok", detail="single-turn advisory", lane=lane)
         advisory = await analyze_cluster(ctx, cluster, recall=triage.recall)
+    else:
+        await mark_stage(ctx.redis, trace, "LLM", "skip", detail=f"route={triage.route} urgency={triage.urgency} — no advisory", lane=lane)
+
+    if advisory is not None:
+        _v = getattr(advisory, "verdict", "") or ""
+        await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"verdict={_v}", lane=lane)
+        # Persist the advisory per trace so the UI can surface verification_steps,
+        # impact_chain, remediation and forecast (deep-check report).
+        try:
+            await _persist_trace_advisory(ctx.redis, trace, advisory, lane)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.debug("[RAP] persist_advisory failed trace=%s err=%r", trace, exc)
+    elif not diag_task_launched:
+        await mark_stage(ctx.redis, trace, "SCHEMA", "skip", detail="no advisory produced", lane=lane)
 
     # ── Stage 5: Learn — write to RAG ────────────────────────────────────
     await write_lessons(ctx, cluster, triage, advisory)
@@ -159,8 +209,12 @@ async def handle_remote_agent_evidence(
                 if not hasattr(advisory, "trace_id") or not advisory.trace_id:
                     advisory = dataclasses.replace(advisory, trace_id=trace)
                 await render_advisory_to_telegram(ctx, advisory, int(chat_id))
+                await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail="SUGGEST_REMEDIATION (Telegram)", lane=lane)
         except Exception as exc:
             logger.warning("[RAP] telegram_notify_failed trace=%s err=%s", trace, exc)
+            await mark_stage(ctx.redis, trace, "DISPATCH", "fail", detail=f"telegram_notify_failed: {exc}", lane=lane)
+    elif advisory is not None:
+        await mark_stage(ctx.redis, trace, "DISPATCH", "skip", detail=f"urgency={triage.urgency} — below notify tier", lane=lane)
 
     verdict = advisory.verdict if advisory else ("diagnosis_loop_launched" if diag_task_launched else "no_advisory")
     logger.info(
@@ -168,6 +222,41 @@ async def handle_remote_agent_evidence(
         trace, fp, triage.route, triage.urgency, verdict,
     )
     return f"remote_agent:{triage.route}:{verdict}"
+
+
+_TRACE_ADVISORY_KEY = "omni:trace:advisory:"
+_TRACE_ADVISORY_TTL = 3600
+
+
+def _advisory_to_dict(advisory: Any) -> dict[str, Any]:
+    """Best-effort serialize an advisory (pydantic model or dataclass) to a dict."""
+    if hasattr(advisory, "model_dump"):
+        try:
+            return advisory.model_dump(mode="json")
+        except Exception:
+            pass
+    import dataclasses as _dc
+    if _dc.is_dataclass(advisory):
+        try:
+            return _dc.asdict(advisory)
+        except Exception:
+            pass
+    # Fallback: pull known fields off the object.
+    out: dict[str, Any] = {}
+    for f in ("verdict", "root_cause", "confidence", "affected_workload",
+              "verification_steps", "proposed_remediation", "forecast", "impact_chain"):
+        v = getattr(advisory, f, None)
+        if v is not None:
+            out[f] = v if isinstance(v, (str, int, float, list, dict)) else str(v)
+    return out
+
+
+async def _persist_trace_advisory(redis: Any, trace: str, advisory: Any, lane: str) -> None:
+    """Store the advisory JSON at omni:trace:advisory:{trace} for the UI deep-check panel."""
+    if redis is None or not trace:
+        return
+    doc = {"trace_id": trace, "lane": lane, "advisory": _advisory_to_dict(advisory)}
+    await redis.setex(f"{_TRACE_ADVISORY_KEY}{trace}", _TRACE_ADVISORY_TTL, json.dumps(doc, ensure_ascii=False, default=str))
 
 
 async def _run_diagnosis_and_notify(
@@ -195,9 +284,17 @@ async def _run_diagnosis_and_notify(
             model=model,
             num_ctx=num_ctx,
         )
+        _lane = str(ev_doc.get("lane") or "")
+        _turns = getattr(session, "total_turns", None)
+        if _turns is None and isinstance(session, dict):
+            _turns = session.get("total_turns")
+        await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"diagnosis session stored turns={_turns}", lane=_lane)
         await emit_diagnosis_to_telegram(ctx, session, chat_id)
+        await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail="diagnosis emitted (Telegram)", lane=_lane)
     except RuntimeError as exc:
         # INV_DIAG_STORED violated — do NOT emit Telegram
         logger.error("[RAP] diagnosis_aborted INV_DIAG_STORED trace=%s err=%s", trace, exc)
+        await mark_stage(ctx.redis, trace, "SCHEMA", "fail", detail=f"diagnosis aborted: {exc}", lane=str(ev_doc.get("lane") or ""))
     except Exception as exc:
         logger.error("[RAP] diagnosis_loop_error trace=%s err=%s", trace, exc)
+        await mark_stage(ctx.redis, trace, "LLM", "fail", detail=f"diagnosis_loop_error: {exc}", lane=str(ev_doc.get("lane") or ""))

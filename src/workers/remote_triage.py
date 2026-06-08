@@ -13,6 +13,7 @@ Routes:
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -70,6 +71,14 @@ def _assess_urgency(cluster: LogCluster) -> str:
     """
     rep = cluster.representative
     extracted = rep.get("extracted_fact")
+    # extracted_fact may arrive as a JSON string (serialized through the evidence
+    # envelope) — parse it so severity Priority-1 (result==FAILED) is not silently
+    # skipped, which would under-rate urgency for real remote agents too.
+    if isinstance(extracted, str):
+        try:
+            extracted = json.loads(extracted)
+        except (ValueError, TypeError):
+            extracted = {}
     fact: dict[str, Any] = extracted if isinstance(extracted, dict) else {}
 
     domain_severity = assess_domain_severity(

@@ -44,7 +44,13 @@ export async function GET() {
     const res = await fetch(`${GATEWAY_URL}/autonomy/policy`, { headers, cache: "no-store" });
     if (!res.ok) return gatewayError(`gateway /autonomy/policy ${res.status}`);
     const data = await res.json();
-    return NextResponse.json({ rules: [], history: [], ...data, source: "gateway" });
+    // Gateway returns { policy: PolicyRule[] }; the panel reads `rules`/`history`.
+    const rules: PolicyRule[] = Array.isArray(data.rules)
+      ? data.rules
+      : Array.isArray(data.policy)
+        ? data.policy
+        : [];
+    return NextResponse.json({ history: [], ...data, rules, source: "gateway" });
   } catch {
     return gatewayError("gateway /autonomy/policy unreachable");
   }
@@ -52,7 +58,12 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
-  const { lane, severity, level } = body as { lane?: string; severity?: string; level?: AutonomyLevel };
+  const { lane, severity, level, action_type } = body as {
+    lane?: string;
+    severity?: string;
+    level?: AutonomyLevel;
+    action_type?: string;
+  };
 
   if (!lane || !severity || !level) {
     return NextResponse.json({ error: "lane, severity, level required" }, { status: 400 });
@@ -70,7 +81,8 @@ export async function POST(req: NextRequest) {
     const res = await fetch(`${GATEWAY_URL}/autonomy/policy/rule`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ lane, severity, level }),
+      // action_type is required by the gateway PolicyRule schema; "*" = applies to all actions.
+      body: JSON.stringify({ lane, severity, level, action_type: action_type ?? "*" }),
     });
     const data = await res.json().catch(() => ({}));
     return NextResponse.json(data, { status: res.status });

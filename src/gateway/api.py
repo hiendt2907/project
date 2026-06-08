@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -307,7 +308,30 @@ async def lifespan(app: FastAPI):
     app.state.kafka = _kafka
     app.state.kafka_topic_evidence = KAFKA_TOPIC_EVIDENCE
     app.state.kafka_topic_alerts = KAFKA_TOPIC_ALERTS
+    # Admin config store (Postgres omni_admin) — source-of-truth cho tier/runtime/risk.
+    # Gateway KHÔNG import workers (bất biến) — đọc DSN trực tiếp từ env.
+    app.state.admin_repo = None
+    app.state.admin_pool = None
+    _admin_dsn = (os.environ.get("OMNI_ADMIN_PG_DSN") or "").strip()
+    if _admin_dsn:
+        try:
+            from types import SimpleNamespace
+
+            from services.admin_config import AdminConfigRepo, create_admin_pool, run_migrations
+
+            _admin_pool = await create_admin_pool(
+                SimpleNamespace(admin_pg_dsn=_admin_dsn, admin_pg_pool_min=1, admin_pg_pool_max=8)
+            )
+            if _admin_pool is not None:
+                await run_migrations(_admin_pool)
+                app.state.admin_pool = _admin_pool
+                app.state.admin_repo = AdminConfigRepo(_admin_pool, redis=_redis)
+                logger.info("omni-gateway: admin config store ready (omni_admin)")
+        except Exception as _admin_exc:  # noqa: BLE001 — store optional, không chặn gateway
+            logger.error("omni-gateway: admin store init fail: %s", _admin_exc)
     yield
+    if getattr(app.state, "admin_pool", None) is not None:
+        await app.state.admin_pool.close()
     if _token_refill_task:
         _token_refill_task.cancel()
     if _kafka:
@@ -330,6 +354,7 @@ from gateway.routes.agent_webhook import router as _agent_webhook_router  # noqa
 from gateway.routes.agent_push import router as _agent_push_router  # noqa: E402
 from gateway.routes.agent_commands import router as _agent_commands_router  # noqa: E402
 from gateway.routes.trace import router as _trace_router  # noqa: E402
+from gateway.routes.simulate import router as _simulate_router  # noqa: E402
 
 app.include_router(_kpi_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_playbooks_router, dependencies=[_Depends(_require_api_key)])
@@ -340,6 +365,7 @@ app.include_router(_compliance_router, dependencies=[_Depends(_require_api_key)]
 app.include_router(_agent_webhook_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_agent_commands_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_trace_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_simulate_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_agent_push_router)  # agent_push has its own auth — no gateway API key guard
 
 

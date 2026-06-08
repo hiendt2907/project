@@ -26,6 +26,9 @@ class AdvisoryModeKillSwitch:
         context: str = "unknown",
         auto_execute_enabled: bool = False,
         siem_suggest_only: bool = True,
+        *,
+        tier: str | None = None,
+        risk_override: str | None = None,
     ) -> tuple[bool, str]:
         """
         Pre-execution validation. Returns (allow_execute, reason).
@@ -36,10 +39,32 @@ class AdvisoryModeKillSwitch:
             context: Where the execution was requested (advisory_analyst, planner, etc.)
             auto_execute_enabled: OMNI_AUTO_EXECUTE_ENABLED from settings (default: False, fail-closed)
             siem_suggest_only: OMNI_SIEM_SUGGEST_ONLY from settings (default: True)
+            tier: Autonomy tier (shadow|assist|auto). Khi set → áp ma trận tier×risk
+                (MASTER_PLAN §3). None → giữ NGUYÊN hành vi legacy (tương thích ngược).
+            risk_override: risk_class override đã resolve (DB→cache), nếu có.
 
         Returns:
-            (allow_execute=False, reason_message) — blocks unless explicitly enabled via env config
+            (allow_execute, reason). reason mang prefix TIER_GATE:<DECISION> khi dùng tier.
         """
+        # ── Tier matrix path (MASTER_PLAN §3) ──────────────────────────────
+        if tier is not None:
+            from workers.tier_gate import ALLOW, HITL, gate_decision_for_tool
+
+            decision, risk = gate_decision_for_tool(
+                tool_name, tier=tier, override=risk_override
+            )
+            reason = f"TIER_GATE:{decision} tool={tool_name} tier={tier} risk={risk}"
+            if decision == ALLOW:
+                logger.info("event=tier_gate_allow tool=%s tier=%s risk=%s", tool_name, tier, risk)
+                return True, reason
+            logger.warning(
+                "event=tier_gate_block tool=%s tier=%s risk=%s decision=%s",
+                tool_name, tier, risk, decision,
+            )
+            # SUGGEST hoặc HITL → không tự chạy
+            return False, reason
+
+        # ── Legacy path (tier=None) — giữ nguyên hành vi cũ ────────────────
         if not auto_execute_enabled:
             reason = (
                 f"ADVISORY_MODE_KILL_SWITCH: Mutation '{tool_name}' blocked. "

@@ -56,6 +56,7 @@ class AgentSettings:
         self.proxysql_admin_pass = os.getenv("OMNI_AGENT_PROXYSQL_ADMIN_PASS", "")
         self.services_enabled = os.getenv("OMNI_AGENT_SERVICES_ENABLED", "false").lower() not in ("false", "0", "no")
         self.storage_enabled = os.getenv("OMNI_AGENT_STORAGE_ENABLED", "false").lower() not in ("false", "0", "no")
+        self.tenant_id = os.getenv("OMNI_AGENT_TENANT_ID", "default")
 
     def validate(self) -> None:
         if not self.gateway_url:

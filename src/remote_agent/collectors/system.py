@@ -8,17 +8,28 @@ from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
 
+# Safe defaults — overridden at runtime by thresholds pushed from Omni via the
+# /webhook/agent/register response (see agent.py). Tuning these no longer
+# requires redeploying the agent on customer hosts.
 _CPU_WARN = 80.0
 _MEM_WARN = 85.0
 _DISK_WARN = 90.0
 
 
-async def collect_system_metrics(hostname: str) -> dict[str, Any] | None:
+async def collect_system_metrics(
+    hostname: str,
+    thresholds: dict[str, float] | None = None,
+) -> dict[str, Any] | None:
     try:
         import psutil
     except ImportError:
         logger.warning("[collector.system] psutil not installed — skipping system metrics")
         return None
+
+    t = thresholds or {}
+    cpu_warn = float(t.get("cpu_warn", _CPU_WARN))
+    mem_warn = float(t.get("mem_warn", _MEM_WARN))
+    disk_warn = float(t.get("disk_warn", _DISK_WARN))
 
     try:
         cpu = psutil.cpu_percent(interval=1)
@@ -39,16 +50,16 @@ async def collect_system_metrics(hostname: str) -> dict[str, Any] | None:
             "load_avg_15m": round(load[2], 2),
         }
 
-        anomaly = cpu > _CPU_WARN or mem.percent > _MEM_WARN or disk.percent > _DISK_WARN
+        anomaly = cpu > cpu_warn or mem.percent > mem_warn or disk.percent > disk_warn
         result = "FAILED" if anomaly else "PASSED"
 
         parts = []
-        if cpu > _CPU_WARN:
-            parts.append(f"CPU {cpu:.1f}%>{_CPU_WARN}%")
-        if mem.percent > _MEM_WARN:
-            parts.append(f"MEM {mem.percent:.1f}%>{_MEM_WARN}%")
-        if disk.percent > _DISK_WARN:
-            parts.append(f"DISK {disk.percent:.1f}%>{_DISK_WARN}%")
+        if cpu > cpu_warn:
+            parts.append(f"CPU {cpu:.1f}%>{cpu_warn}%")
+        if mem.percent > mem_warn:
+            parts.append(f"MEM {mem.percent:.1f}%>{mem_warn}%")
+        if disk.percent > disk_warn:
+            parts.append(f"DISK {disk.percent:.1f}%>{disk_warn}%")
         hint = f"[{hostname}] " + (", ".join(parts) if parts else f"CPU={cpu:.1f}% MEM={mem.percent:.1f}% DISK={disk.percent:.1f}%")
 
         return build_envelope(

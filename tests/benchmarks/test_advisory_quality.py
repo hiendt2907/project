@@ -31,6 +31,45 @@ def test_golden_case_schema(case: dict) -> None:
     assert isinstance(expected.get("should_not_contain", []), list)
     assert isinstance(expected.get("min_verification_steps", 1), int)
     assert isinstance(expected.get("remediation_approval_required", False), bool)
+    assert isinstance(expected.get("expect_impact_chain", False), bool)
+
+
+def test_multi_tier_golden_cases_expect_impact_chain() -> None:
+    """Multi-tier golden cases must declare expect_impact_chain so the live benchmark
+    exercises cross-tier causal reasoning. Guards against regressions in the dataset."""
+    cases = {c["id"]: c for c in _load_cases()}
+    for cid in ("case_021", "case_022", "case_023"):
+        assert cid in cases, f"missing multi-tier golden case {cid}"
+        assert cases[cid]["expected"].get("expect_impact_chain") is True
+
+
+def test_fake_advisory_impact_chain_validates_against_schema() -> None:
+    """The fake advisories for multi-tier cases must round-trip through the real
+    AnalystAdvisory schema with a populated impact_chain (backward-compatible field)."""
+    from pkg.reasoning.analyst_advisory_schema import AnalystAdvisory
+    from workers.advisory_analyst_handler import _repair_advisory_dict
+
+    # case_021 fingerprint
+    fake = _make_advisory_for("postgres could not fsync wal errors")
+    fake["trace_id"] = "test-021"
+    repaired = _repair_advisory_dict(fake)
+    advisory = AnalystAdvisory(**repaired)
+    assert len(advisory.impact_chain) == 2
+    assert advisory.impact_chain[0].evidence_lane == "state"
+    assert advisory.impact_chain[1].evidence_lane == "app_log"
+    # Every edge anchored to a canonical lane.
+    assert all(link.evidence_lane in {"state", "resource", "app_log", "siem"} for link in advisory.impact_chain)
+
+
+def test_advisory_backward_compatible_without_impact_chain() -> None:
+    """Advisories that omit impact_chain (legacy/single-tier) still validate; field defaults to []."""
+    from pkg.reasoning.analyst_advisory_schema import AnalystAdvisory
+    from workers.advisory_analyst_handler import _repair_advisory_dict
+
+    fake = _make_advisory_for("used_memory=7.8gb")  # case_002, no impact_chain
+    fake["trace_id"] = "test-002"
+    advisory = AnalystAdvisory(**_repair_advisory_dict(fake))
+    assert advisory.impact_chain == []
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +119,36 @@ _CASE_ADVISORIES: dict[str, dict] = {
     "429 rate started": {"verdict": "NORMAL", "root_cause": "Rate limiting triggered (429 responses) and self-resolved naturally", "approval_required": False},
     # case_020: Distributed auth failure, URGENT
     "auth failure surge detected": {"verdict": "URGENT", "root_cause": "Distributed auth failure surge: 401/403 error spike from multiple sources", "approval_required": True},
+    # case_021: multi-tier disk -> DB WAL -> API 500, CRITICAL
+    "could not fsync wal": {
+        "verdict": "CRITICAL",
+        "root_cause": "Host /var/lib disk at 98% blocks Postgres WAL fsync, API write paths return HTTP 500",
+        "approval_required": True,
+        "impact_chain": [
+            {"cause": "node disk /var/lib 98% full", "mechanism": "Postgres cannot fsync WAL", "effect": "DB write commits block", "evidence_lane": "state", "confidence": "high"},
+            {"cause": "DB write commits blocked", "mechanism": "api-gateway handlers time out on commit", "effect": "API returns HTTP 500", "evidence_lane": "app_log", "confidence": "high"},
+        ],
+    },
+    # case_022: multi-tier CPU saturation -> latency -> 504, URGENT
+    "z_cpu=4.6 sustained": {
+        "verdict": "URGENT",
+        "root_cause": "Node CPU saturation starves checkout threads, request latency exceeds gateway timeout causing HTTP 504",
+        "approval_required": False,
+        "impact_chain": [
+            {"cause": "node CPU saturated z_cpu=4.6", "mechanism": "checkout worker threads starved of CPU", "effect": "request latency rises to 9s", "evidence_lane": "resource", "confidence": "high"},
+            {"cause": "latency exceeds gateway timeout", "mechanism": "load balancer aborts slow upstream", "effect": "client receives HTTP 504 timeout", "evidence_lane": "app_log", "confidence": "high"},
+        ],
+    },
+    # case_023: multi-tier mem-leak -> OOMKilled -> 503, CRITICAL
+    "+120mb/h over 6h": {
+        "verdict": "CRITICAL",
+        "root_cause": "Reporting service memory leak drives OOMKilled CrashLoopBackOff, endpoint returns 503 during restarts",
+        "approval_required": False,
+        "impact_chain": [
+            {"cause": "reporting heap leak z_mem=5.1", "mechanism": "RSS crosses the 1Gi kubelet limit", "effect": "pod OOMKilled (exit 137)", "evidence_lane": "resource", "confidence": "high"},
+            {"cause": "pod OOMKilled repeatedly", "mechanism": "CrashLoopBackOff removes the ready replica", "effect": "endpoint returns HTTP 503", "evidence_lane": "app_log", "confidence": "high"},
+        ],
+    },
 }
 
 
@@ -87,7 +156,7 @@ def _make_advisory_for(evidence_lower: str) -> dict:
     """Return a tailored advisory that scores >= 70/100 against the matching golden case."""
     for fingerprint, tmpl in _CASE_ADVISORIES.items():
         if fingerprint in evidence_lower:
-            return {
+            advisory = {
                 "verdict": tmpl["verdict"],
                 "affected_workload": "multi-agent/target-workload",
                 "root_cause": tmpl["root_cause"],
@@ -105,6 +174,9 @@ def _make_advisory_for(evidence_lower: str) -> dict:
                 ],
                 "forecast": None,
             }
+            if tmpl.get("impact_chain"):
+                advisory["impact_chain"] = tmpl["impact_chain"]
+            return advisory
     # Should not reach here if all 20 golden cases have fingerprints above.
     return {
         "verdict": "INVESTIGATE",

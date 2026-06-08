@@ -39,3 +39,6 @@ class WorkerHandlerContext:
     inbound_proactive: bool = False
     k8s_mutated: bool = False
     fallback_inline_commands: list[str] | None = None
+    # Admin config store (Postgres omni_admin) — None khi OMNI_ADMIN_PG_DSN chưa set.
+    admin_pool: Any = None
+    admin_repo: Any = None

@@ -151,6 +151,38 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_AUTO_EXECUTE_ENABLED"),
         description="Lab: EXECUTE_MUTATE runs after Pre-apply without Telegram/Redis confirm.",
     )
+    # Graduated autonomy tier (MASTER_PLAN §3). Default fail-closed shadow. Rỗng =
+    # dẫn xuất từ omni_auto_execute_enabled. Runtime source-of-truth = Postgres(cache).
+    omni_autonomy_tier: str = Field(
+        default="",
+        validation_alias=AliasChoices("OMNI_AUTONOMY_TIER"),
+        description="shadow|assist|auto. Rỗng → derive từ omni_auto_execute_enabled.",
+    )
+    # Readiness gating (CHỈ hiển thị — không tự nhảy tier, MASTER_PLAN §5).
+    omni_tier_min_days_shadow: int = Field(
+        default=90,
+        validation_alias=AliasChoices("OMNI_TIER_MIN_DAYS_SHADOW"),
+    )
+    omni_tier_min_days_assist: int = Field(
+        default=270,
+        validation_alias=AliasChoices("OMNI_TIER_MIN_DAYS_ASSIST"),
+    )
+    omni_tier_min_advisories: int = Field(
+        default=50,
+        validation_alias=AliasChoices("OMNI_TIER_MIN_ADVISORIES"),
+    )
+    omni_tier_shadow_assist_wilson: float = Field(
+        default=0.80,
+        validation_alias=AliasChoices("OMNI_TIER_SHADOW_ASSIST_WILSON"),
+    )
+    omni_tier_assist_auto_wilson: float = Field(
+        default=0.85,
+        validation_alias=AliasChoices("OMNI_TIER_ASSIST_AUTO_WILSON"),
+    )
+    omni_tier_max_false_positive_rate: float = Field(
+        default=0.10,
+        validation_alias=AliasChoices("OMNI_TIER_MAX_FALSE_POSITIVE_RATE"),
+    )
     omni_shadow_os_mode: bool = Field(
         default=False,
         validation_alias=AliasChoices("OMNI_SHADOW_OS_MODE"),
@@ -1046,6 +1078,25 @@ class WorkerSettings(BaseSettings):
         default="",
         description="DEPRECATED — Omni RAG migrated to Redis Stack. Do not set.",
     )
+
+    # PostgreSQL — Admin config source-of-truth (omni_admin schema, MASTER_PLAN §6.5).
+    # Shared cluster với FinGuard. Rỗng = Admin config store disabled (lab fallback env).
+    admin_pg_dsn: str = Field(
+        default="",
+        validation_alias=AliasChoices("OMNI_ADMIN_PG_DSN"),
+        description="asyncpg DSN cho schema omni_admin (config-of-record). Rỗng = disabled.",
+    )
+    admin_pg_pool_min: int = Field(default=1, ge=1, le=16)
+    admin_pg_pool_max: int = Field(default=8, ge=1, le=64)
+    # CRAT outbox drainer (Transactional Outbox — MASTER_PLAN §7). Chạy ở role analyst/full.
+    crat_outbox_drainer_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_CRAT_OUTBOX_DRAINER_ENABLED"),
+        description="Bật loop drain crat_outbox → write_audit_block (at-least-once).",
+    )
+    crat_outbox_poll_interval_sec: float = Field(default=5.0, ge=0.5, le=120.0)
+    crat_outbox_batch_size: int = Field(default=32, ge=1, le=256)
+    crat_outbox_max_attempts: int = Field(default=10, ge=1, le=100)
 
     # Deep Scout autonomous (1.5B synthesis + Redis/Postgres)
     autonomous_scout_max_pods: int = Field(default=40, ge=5, le=500)

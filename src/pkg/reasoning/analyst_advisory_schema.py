@@ -23,6 +23,28 @@ _ESCALATION_MAX_WORDS = 48
 _REMEDIATION_ACTION_MAX_WORDS = 72
 _REMEDIATION_ROLLBACK_MAX_WORDS = 48
 _PRECONDITION_MAX_WORDS = 28
+_IMPACT_LINK_FIELD_MAX_WORDS = 30
+_MAX_IMPACT_CHAIN_LINKS = 6
+
+# Canonical evidence lanes — single source of truth for impact-chain edge anchoring.
+# state = OS/K8s state machine, resource = 3σ time-series, app_log = HTTP/log surge, siem = security.
+_EVIDENCE_LANE_TYPE = Literal["state", "resource", "app_log", "siem"]
+VALID_EVIDENCE_LANES: frozenset[str] = frozenset(get_args(_EVIDENCE_LANE_TYPE))
+
+
+def normalize_evidence_lane(raw: str) -> str:
+    """Map any lane string the LLM emits to a canonical evidence lane."""
+    if raw in VALID_EVIDENCE_LANES:
+        return raw
+    s = (raw or "").lower()
+    if any(x in s for x in ("siem", "security", "threat", "attack", "kill", "mitre")):
+        return "siem"
+    if any(x in s for x in ("resource", "cpu", "mem", "sigma", "3-sigma", "z_", "metric", "prometheus")):
+        return "resource"
+    if any(x in s for x in ("app", "http", "5xx", "4xx", "429", "499", "log", "surge", "status")):
+        return "app_log"
+    # state covers os/baremetal/k8s/disk/systemd/db/storage probe results
+    return "state"
 
 _LAYER_PATTERNS: list[tuple[str, list[str]]] = [
     ("prometheus", ["rate(", "predict_linear(", "irate(", "increase(", "avg_over_time("]),
@@ -225,6 +247,42 @@ class ForecastTimeline(BaseModel):
         return self
 
 
+class ImpactChainLink(BaseModel):
+    """One cause→effect edge in a cross-tier causal blast-radius chain.
+
+    Each edge MUST anchor to a real evidence lane (no fabricated tiers).
+    Chain reads bottom-up: storage → DB → API → LB → client.
+    """
+
+    cause: str = Field(description="The triggering condition (e.g., 'disk /var 98% full')")
+    mechanism: str = Field(description="HOW the cause propagates (e.g., 'Postgres cannot fsync WAL')")
+    effect: str = Field(description="The observed downstream symptom (e.g., 'API returns HTTP 500')")
+    evidence_lane: _EVIDENCE_LANE_TYPE = Field(
+        default="state",
+        description="Which evidence lane proves THIS edge: state | resource | app_log | siem",
+    )
+    confidence: Literal["high", "medium", "low"] = "medium"
+
+    @field_validator("evidence_lane", mode="before")
+    @classmethod
+    def coerce_lane(cls, v: object) -> object:
+        if isinstance(v, str) and v not in VALID_EVIDENCE_LANES:
+            return normalize_evidence_lane(v)
+        return v
+
+    @model_validator(mode="after")
+    def clamp_link_text(self) -> "ImpactChainLink":
+        cause, c1 = _truncate_words(self.cause, _IMPACT_LINK_FIELD_MAX_WORDS)
+        mech, c2 = _truncate_words(self.mechanism, _IMPACT_LINK_FIELD_MAX_WORDS)
+        effect, c3 = _truncate_words(self.effect, _IMPACT_LINK_FIELD_MAX_WORDS)
+        if c1 or c2 or c3:
+            logger.warning("event=advisory_field_clamped component=impact_chain_link")
+        object.__setattr__(self, "cause", cause)
+        object.__setattr__(self, "mechanism", mech)
+        object.__setattr__(self, "effect", effect)
+        return self
+
+
 class AnalystAdvisory(BaseModel):
     """The complete structured output of the Advisory-Mode Analyst."""
 
@@ -249,6 +307,13 @@ class AnalystAdvisory(BaseModel):
     )
     forecast: ForecastTimeline = Field(
         description="Predicted system state degradation if unaddressed"
+    )
+    impact_chain: list[ImpactChainLink] = Field(
+        default_factory=list,
+        description=(
+            "Cross-tier causal chain: ROOT CAUSE → propagation mechanism → observed symptom. "
+            "Ordered bottom-up (storage→DB→API→LB→client). Optional; populate for multi-tier incidents."
+        ),
     )
     escalation_reason: str = Field(
         default="",
@@ -304,6 +369,14 @@ class AnalystAdvisory(BaseModel):
                 _MAX_REMEDIATION_STEPS,
             )
             out["proposed_remediation"] = pr[:_MAX_REMEDIATION_STEPS]
+        ic = out.get("impact_chain")
+        if isinstance(ic, list) and len(ic) > _MAX_IMPACT_CHAIN_LINKS:
+            logger.warning(
+                "event=advisory_step_list_truncated kind=impact_chain before=%s after=%s",
+                len(ic),
+                _MAX_IMPACT_CHAIN_LINKS,
+            )
+            out["impact_chain"] = ic[:_MAX_IMPACT_CHAIN_LINKS]
         return out
 
     @model_validator(mode="after")

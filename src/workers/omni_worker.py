@@ -79,6 +79,12 @@ def _redis_str(v: Any) -> str:
     return str(v)
 
 
+async def _handle_hitl_callback(ctx: WorkerHandlerContext, u: dict[str, Any]) -> bool:
+    """Inline keyboard hitl:{decision}:{id} — duyệt/từ chối mutate (MASTER_PLAN §4)."""
+    from workers.hitl_telegram import handle_hitl_callback
+    return await handle_hitl_callback(ctx, u)
+
+
 async def _handle_telegram_fallback_callback(ctx: WorkerHandlerContext, u: dict[str, Any]) -> bool:
     """Inline keyboard ofs:hash:idx — gửi lệnh vào stream như tin nhắn mới."""
     cb = u.get("callback_query")
@@ -665,6 +671,8 @@ async def telegram_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
             continue
         for u in data.get("result") or []:
             offset = int(u["update_id"]) + 1
+            if await _handle_hitl_callback(ctx, u):
+                continue
             if await _handle_telegram_fallback_callback(ctx, u):
                 continue
             s = summarize_message_update(u)
@@ -794,6 +802,15 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
             _run_kpi_collector(ctx, stop), name="kpi_collector",
         ))
         tasks.append(asyncio.create_task(dlq_archiver_loop(ctx, stop), name="dlq_archiver"))
+        # Autonomy tier (MASTER_PLAN §5/§7): CRAT outbox drainer + readiness publish.
+        from workers.tier_loops import (
+            crat_outbox_drainer_loop,
+            hitl_ui_decisions_loop,
+            tier_readiness_loop,
+        )
+        tasks.append(asyncio.create_task(crat_outbox_drainer_loop(ctx, stop), name="crat_outbox_drainer"))
+        tasks.append(asyncio.create_task(tier_readiness_loop(ctx, stop), name="tier_readiness"))
+        tasks.append(asyncio.create_task(hitl_ui_decisions_loop(ctx, stop), name="hitl_ui_decisions"))
         if ctx.settings.siem_chain_consumer_enabled:
             tasks.append(asyncio.create_task(
                 kafka_siem_chains_loop(ctx, stop), name="kafka_siem_chains_loop",
@@ -848,6 +865,19 @@ async def run_worker() -> None:
     stop = asyncio.Event()
     ctx = await build_context()
     logger.info("omni_worker starting worker_role=%s", ctx.settings.worker_role)
+    # Admin config store (Postgres omni_admin) — analyst/full chạy CRAT outbox drainer
+    # + tier readiness. Offline khi DSN rỗng (fail-safe, không chặn worker).
+    if ctx.settings.worker_role in ("full", "analyst") and (ctx.settings.admin_pg_dsn or "").strip():
+        try:
+            from services.admin_config import AdminConfigRepo, create_admin_pool, run_migrations
+
+            ctx.admin_pool = await create_admin_pool(ctx.settings)
+            if ctx.admin_pool is not None:
+                await run_migrations(ctx.admin_pool)
+                ctx.admin_repo = AdminConfigRepo(ctx.admin_pool, redis=ctx.redis)
+                logger.info("omni_worker: admin config store ready (omni_admin)")
+        except Exception as _admin_exc:
+            logger.error("omni_worker: admin store init fail: %s", _admin_exc)
     setup_otel_tracing(
         service_name=ctx.settings.otel_service_name,
         otlp_endpoint=ctx.settings.otel_exporter_otlp_endpoint,

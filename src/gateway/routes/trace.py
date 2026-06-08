@@ -247,6 +247,53 @@ async def trace_recent(request: Request) -> JSONResponse:
     return JSONResponse({"traces": traces, "source": "gateway"})
 
 
+_BRAIN_KEY_PREFIX = "omni:brain:session:"
+
+
+@router.get("/{trace_id}/brain")
+async def trace_brain(trace_id: str, request: Request) -> JSONResponse:
+    """Return the Redis second-brain multi-turn RAG session for a trace.
+
+    Shows the iterative vector-store reasoning (turns, queries, hits, confidence)
+    that fed the LLM. ``found: false`` (404) when the brain stored nothing.
+    """
+    if not trace_id or len(trace_id) > 128:
+        raise HTTPException(status_code=400, detail="invalid trace_id")
+    redis = _get_redis(request)
+    raw = await redis.get(f"{_BRAIN_KEY_PREFIX}{trace_id}")
+    if raw is None:
+        return JSONResponse({"found": False, "trace_id": trace_id, "source": "gateway"}, status_code=404)
+    try:
+        doc = json.loads(raw)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=500, detail="corrupt brain session") from None
+    return JSONResponse({"found": True, "source": "gateway", **doc})
+
+
+_ADVISORY_KEY_PREFIX = "omni:trace:advisory:"
+
+
+@router.get("/{trace_id}/advisory")
+async def trace_advisory(trace_id: str, request: Request) -> JSONResponse:
+    """Return the stored AnalystAdvisory for a trace (deep-check report).
+
+    Populated by the remote-agent pipeline on single-pass advisories. Returns
+    ``found: false`` (200) when no advisory was stored — e.g. the trace ran the
+    multi-turn diagnosis loop instead (use /session), or was suppressed.
+    """
+    if not trace_id or len(trace_id) > 128:
+        raise HTTPException(status_code=400, detail="invalid trace_id")
+    redis = _get_redis(request)
+    raw = await redis.get(f"{_ADVISORY_KEY_PREFIX}{trace_id}")
+    if raw is None:
+        return JSONResponse({"found": False, "trace_id": trace_id, "source": "gateway"}, status_code=404)
+    try:
+        doc = json.loads(raw)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=500, detail="corrupt advisory") from None
+    return JSONResponse({"found": True, "source": "gateway", **doc})
+
+
 @router.get("/{trace_id}/pipeline")
 async def trace_pipeline(trace_id: str, request: Request) -> JSONResponse:
     """Return the pipeline stage progress for a trace.

@@ -82,6 +82,11 @@ _executor_execute_skipped: Any = None
 _siem_chains_total: Any = None
 _chain_confidence: Any = None
 _chain_llm_skipped: Any = None
+# Feature: Autonomy tier (MASTER_PLAN §3/§5/§7)
+_autonomy_tier: Any = None
+_tier_gate_blocked: Any = None
+_tier_promotion_ready: Any = None
+_crat_outbox_pending: Any = None
 _started = False
 
 
@@ -104,6 +109,7 @@ def _ensure_metrics() -> None:
     global _kpi_mttd, _kpi_mttr, _kpi_advisory_acceptance_rate, _kpi_false_positive_rate, _kpi_incidents
     global _advisory_benchmark_score, _advisory_benchmark_pass_rate
     global _siem_chains_total, _chain_confidence, _chain_llm_skipped
+    global _autonomy_tier, _tier_gate_blocked, _tier_promotion_ready, _crat_outbox_pending
     if _build_info is not None:
         return
     from prometheus_client import Counter, Gauge, Histogram, Info
@@ -403,6 +409,26 @@ def _ensure_metrics() -> None:
         "omni_advisory_benchmark_pass_rate",
         "Fraction of benchmark cases that scored >= 70/100",
     )
+    # Autonomy tier (MASTER_PLAN §3/§5/§7)
+    _autonomy_tier = Gauge(
+        "omni_autonomy_tier",
+        "Active autonomy tier (1 = active) per tier label",
+        ["tier"],
+    )
+    _tier_gate_blocked = Counter(
+        "omni_tier_gate_blocked_total",
+        "Mutations blocked by tier gate (SUGGEST/HITL)",
+        ["tier", "risk_class", "reason"],
+    )
+    _tier_promotion_ready = Gauge(
+        "omni_tier_promotion_ready",
+        "1 when readiness criteria met for from→to tier promotion (display only)",
+        ["from_tier", "to_tier"],
+    )
+    _crat_outbox_pending = Gauge(
+        "omni_crat_outbox_pending",
+        "Number of PENDING rows in omni_admin.crat_outbox (CRAT chain lag)",
+    )
     # Initialize health check labels
     for _chk in ("kafka_lag", "redis_ping", "llm_up", "last_message_age"):
         _health_check_status.labels(check_name=_chk).set(1.0)
@@ -701,6 +727,32 @@ def inc_proactive_lease_conflict() -> None:
 def inc_proactive_skip_frozen(layer: str) -> None:
     _ensure_metrics()
     _proactive_skip_frozen.labels(layer=(layer or "resource")[:32]).inc()
+
+
+def set_autonomy_tier(tier: str) -> None:
+    """Set active tier gauge: 1 cho tier hiện tại, 0 cho các tier còn lại."""
+    _ensure_metrics()
+    for _t in ("shadow", "assist", "auto"):
+        _autonomy_tier.labels(tier=_t).set(1.0 if _t == tier else 0.0)
+
+
+def inc_tier_gate_blocked(tier: str, risk_class: str, reason: str) -> None:
+    _ensure_metrics()
+    _tier_gate_blocked.labels(
+        tier=(tier or "unknown")[:16],
+        risk_class=(risk_class or "HIGH")[:16],
+        reason=(reason or "unknown")[:16],
+    ).inc()
+
+
+def set_tier_promotion_ready(from_tier: str, to_tier: str, ready: bool) -> None:
+    _ensure_metrics()
+    _tier_promotion_ready.labels(from_tier=from_tier, to_tier=to_tier).set(1.0 if ready else 0.0)
+
+
+def set_crat_outbox_pending(count: int) -> None:
+    _ensure_metrics()
+    _crat_outbox_pending.set(max(0, int(count)))
 
 
 def set_wilson_confidence_score(value: float) -> None:

@@ -2169,6 +2169,18 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                                 _adv_z_mem,
                                 _adv_z_thr,
                             )
+                            # Make the suppression VISIBLE on the pipeline instead of silently
+                            # stopping at EVIDENCE: the 3σ baseline is ground truth, so a resource
+                            # alert with z within bounds is a false positive and the advisory is
+                            # correctly skipped. Operators see WHY the trace terminated.
+                            _sigma_detail = (
+                                f"3σ gate: z_cpu={_adv_z_cpu} z_mem={_adv_z_mem} "
+                                f"within ±{_adv_z_thr:.1f}σ — advisory suppressed (false positive)"
+                            )
+                            await mark_stage(ctx.redis, trace, "RAG", "skip", detail="sigma_gate_suppressed", lane="resource")
+                            await mark_stage(ctx.redis, trace, "LLM", "skip", detail=_sigma_detail, lane="resource")
+                            await mark_stage(ctx.redis, trace, "SCHEMA", "skip", detail="no advisory (sigma gate)", lane="resource")
+                            await mark_stage(ctx.redis, trace, "DISPATCH", "skip", detail="suppressed — no alert sent", lane="resource")
                             return ""
                     except Exception as _adv_snap_err:
                         logger.debug("advisory_sigma_gate snap parse error trace=%s err=%s", trace, _adv_snap_err)
@@ -2214,15 +2226,48 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     except Exception:
                         pass
 
+                # Pipeline stage: RAG — Redis Stack runs as Omni's SECOND BRAIN here.
+                # Instead of a single one-shot recall, run a multi-turn RAG loop over the
+                # vector store within ONE session for this alert (run_redis_brain). It
+                # accumulates context across turns (each turn refines its query from what
+                # it has learned), then injects that synthesized understanding into the LLM
+                # prompt — so the LLM starts from Redis's view of the whole alert, not a
+                # single snippet. A confident brain (strong hit) is flagged for the LLM.
+                from rag.redis_brain import run_redis_brain
+
+                _brain = await run_redis_brain(ctx, trace=trace, initial_query=sanitized_text)
+                if _brain.accumulated_context:
+                    _hdr = (
+                        f"=== REDIS SECOND-BRAIN CONTEXT (multi-turn RAG · {_brain.turn_count} turns · "
+                        f"top_score={_brain.top_score:.3f}"
+                        + (" · CONFIDENT" if _brain.confident else "")
+                        + ") ===\n"
+                        "Prior verified knowledge for THIS alert, retrieved iteratively. "
+                        "Treat high-score items as strong priors; reconcile with the live evidence below.\n"
+                    )
+                    sanitized_text = f"{_hdr}{_brain.accumulated_context}\n\n{sanitized_text}"
+                    await mark_stage(
+                        ctx.redis, trace, "RAG", "ok",
+                        detail=f"second-brain turns={_brain.turn_count} top={_brain.top_score:.3f} confident={_brain.confident}",
+                        lane=_adv_lane or "",
+                    )
+                    # S2.4: persist point_id so the feedback loop can downvote on failure.
+                    if _brain.answer_point_id:
+                        try:
+                            await ctx.redis.setex(
+                                f"omni:recall:trace_point_id:{trace}", 7200, _brain.answer_point_id
+                            )
+                        except Exception:
+                            pass
+                else:
+                    await mark_stage(
+                        ctx.redis, trace, "RAG", "skip",
+                        detail=f"second-brain no_hit turns={_brain.turn_count}", lane=_adv_lane or "",
+                    )
+
                 # Run advisory analyst (returns AnalystAdvisory schema)
                 import time as _llm_time
                 _llm_t0 = _llm_time.monotonic()
-                # Pipeline stage: RAG — advisory-mode analyst goes straight to LLM (no playbook
-                # recall on this path), so mark RAG as skipped rather than leaving it pending.
-                await mark_stage(
-                    ctx.redis, trace, "RAG", "skip",
-                    detail="advisory-mode: no playbook recall", lane=_adv_lane or "",
-                )
                 await mark_stage(ctx.redis, trace, "LLM", "ok", detail="advisory_analyst/start", lane=_adv_lane or "")
                 advisory = await run_advisory_analyst(
                     ctx,

@@ -21,6 +21,7 @@ from pkg.reasoning.analyst_advisory_schema import (
     DEFAULT_VERDICT,
     VALID_CONFIDENCE_LEVELS,
     VALID_VERDICTS,
+    normalize_evidence_lane,
     normalize_layer,
 )
 from services.audit_ledger.chain_writer import write_audit_block
@@ -106,6 +107,28 @@ def _repair_advisory_dict(d: dict[str, Any]) -> dict[str, Any]:
             rem["action"] = rem.get("description") or rem.get("command") or DEFAULT_ACTION_FALLBACK
         fixed_rems.append(rem)
     d["proposed_remediation"] = fixed_rems
+
+    # impact_chain — optional cross-tier causal chain. Drop malformed links,
+    # normalize evidence_lane to a canonical value, supply safe defaults.
+    chain: list[Any] = d.get("impact_chain") or []
+    fixed_chain: list[dict[str, Any]] = []
+    if isinstance(chain, list):
+        for link in chain:
+            if not isinstance(link, dict):
+                continue
+            cause = str(link.get("cause") or "").strip()
+            effect = str(link.get("effect") or "").strip()
+            # A link without both a cause and an effect carries no causal signal.
+            if not cause or not effect:
+                continue
+            link["cause"] = cause
+            link["effect"] = effect
+            link["mechanism"] = str(link.get("mechanism") or "propagation mechanism unspecified").strip()
+            link["evidence_lane"] = normalize_evidence_lane(str(link.get("evidence_lane") or "state"))
+            if link.get("confidence") not in VALID_CONFIDENCE_LEVELS:
+                link["confidence"] = "medium"
+            fixed_chain.append(link)
+    d["impact_chain"] = fixed_chain
 
     # forecast — repair if missing or lacks required method/forecasts fields
     fc = d.get("forecast")
@@ -271,6 +294,7 @@ async def run_advisory_analyst(
             '\n\nREMINDER: Output ONLY a JSON object. '
             'Required fields: trace_id, verdict, root_cause (1-sentence concrete fact), '
             'confidence, affected_workload, verification_steps, proposed_remediation, forecast. '
+            'For multi-tier faults ALSO include impact_chain (cause→mechanism→effect→evidence_lane). '
             'Do NOT echo the evidence structure. Do NOT output layer names as root_cause.'
         )
         user_blob = truncate_for_llm(evidence_text, user_evidence_budget - len(_reminder), tail=True) + _reminder

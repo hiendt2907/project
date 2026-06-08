@@ -18,15 +18,21 @@ import {
   Bell,
   Server,
   Shield,
-  Settings,
   Rocket,
   CircleHelp,
   ExternalLink,
   MonitorCheck,
+  Gauge,
+  ShieldAlert,
+  ToggleRight,
+  Building2,
+  UserCheck,
+  FlaskConical,
+  Workflow,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { useOmniUiRealm } from "@/components/providers";
-import { OMNI_HOST, PORTAL_HOST } from "@/lib/omni-ui-realm";
+import { PORTAL_HOST } from "@/lib/omni-ui-realm";
 
 type NavItem =
   | { href: string; label: string; icon: typeof LayoutDashboard; badge?: boolean }
@@ -40,21 +46,27 @@ const navOps: NavItem[] = [
   { href: "/playbooks", label: "Playbooks", icon: BookOpen },
   { href: "/kpi", label: "KPI Dashboard", icon: BarChart3 },
   { href: "/ledger", label: "Error Ledger", icon: AlertTriangle },
+  { href: "/remote-agents", label: "Remote Agents", icon: MonitorCheck },
   { section: "Admin" },
   { external: `//${PORTAL_HOST}/admin`, label: "Admin Console", icon: ExternalLink },
 ];
 
 const navPortal: NavItem[] = [
-  { href: "/admin", label: "Admin Console", icon: LayoutDashboard },
-  { href: "/workers", label: "Workers", icon: Server },
-  { href: "/kpi", label: "KPI Dashboard", icon: BarChart3 },
-  { href: "/ledger", label: "Error Ledger", icon: AlertTriangle },
+  { href: "/admin", label: "Overview", icon: LayoutDashboard },
+  { section: "Autonomy" },
+  { href: "/admin/tier", label: "Autonomy Tier", icon: Gauge },
+  { href: "/admin/risk-class", label: "Risk Classes", icon: ShieldAlert },
+  { href: "/admin/hitl", label: "HITL Queue", icon: UserCheck, badge: true },
+  { section: "Configuration" },
+  { href: "/admin/flags", label: "Runtime Flags", icon: ToggleRight },
+  { href: "/admin/tenants", label: "Tenants & Keys", icon: Building2 },
   { href: "/remote-agents", label: "Remote Agents", icon: MonitorCheck },
-  { href: "/deploy", label: "Deploy", icon: Rocket },
-  { section: "Config" },
+  { section: "Diagnostics" },
+  { href: "/pipeline", label: "Pipeline", icon: Workflow },
+  { href: "/simulator", label: "Simulator", icon: FlaskConical },
+  { section: "Help" },
+  { href: "/admin/guide", label: "User Guide", icon: BookOpen },
   { href: "/onboarding", label: "Setup", icon: CircleHelp },
-  { section: "Console" },
-  { external: `//${OMNI_HOST}/operator`, label: "Operator Console", icon: ExternalLink },
 ];
 
 const navFull: NavItem[] = [
@@ -67,6 +79,8 @@ const navFull: NavItem[] = [
   { href: "/remote-agents", label: "Remote Agents", icon: MonitorCheck },
   { href: "/siem", label: "SIEM", icon: Shield },
   { href: "/deploy", label: "Deploy", icon: Rocket },
+  { href: "/pipeline", label: "Pipeline", icon: Workflow },
+  { href: "/simulator", label: "Simulator", icon: FlaskConical },
   { section: "Config" },
   { href: "/onboarding", label: "Setup", icon: CircleHelp },
 ];

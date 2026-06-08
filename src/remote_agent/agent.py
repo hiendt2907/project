@@ -117,8 +117,14 @@ async def run_agent() -> None:
 
     import time
 
+    # Anomaly thresholds pushed by Omni (omni_admin runtime flags). None until
+    # the first successful register; collectors fall back to safe defaults.
+    thresholds: dict[str, float] | None = None
+
     # Initial registration + profile upload
-    await emitter.register(capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace)
+    thresholds = await emitter.register(
+        capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace, tenant_id=cfg.tenant_id
+    )
     if profile:
         await emitter.upload_profile(profile)
     last_register_ts = time.monotonic()
@@ -129,7 +135,11 @@ async def run_agent() -> None:
     while True:
         # Re-register every _REGISTER_INTERVAL seconds (must be < gateway TTL 120s)
         if time.monotonic() - last_register_ts >= _REGISTER_INTERVAL:
-            await emitter.register(capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace)
+            new_thresholds = await emitter.register(
+                capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace, tenant_id=cfg.tenant_id
+            )
+            if new_thresholds is not None:
+                thresholds = new_thresholds
             last_register_ts = time.monotonic()
 
         # Re-run VM discovery every 24h to pick up newly installed services
@@ -144,7 +154,7 @@ async def run_agent() -> None:
         evidence: list[dict] = []
 
         # Lane 1: system metrics
-        sys_ev = await collect_system_metrics(cfg.hostname)
+        sys_ev = await collect_system_metrics(cfg.hostname, thresholds)
         if sys_ev:
             evidence.append(sys_ev)
 

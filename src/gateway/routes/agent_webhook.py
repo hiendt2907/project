@@ -49,6 +49,7 @@ class AgentRegisterRequest(BaseModel):
     capabilities: list[str] = Field(default_factory=list)  # ["metrics", "logs", "k8s"]
     platform: str = Field(default="linux", max_length=64)
     k8s_namespace: str = Field(default="", max_length=256)
+    tenant_id: str = Field(default="default", max_length=128)
 
 
 class EvidenceItem(BaseModel):
@@ -61,6 +62,9 @@ class EvidenceItem(BaseModel):
     raw: str = Field(default="", max_length=4000)
     symptom_group: str = Field(default="", max_length=128)
     lane: str = Field(default="SYS_RESOURCE", max_length=64)
+    # NON-AUTHORITATIVE sensor hint — Omni re-derives the proof lane on ingest.
+    lane_hint: str = Field(default="", max_length=64)
+    lane_authoritative: bool = Field(default=False)
     stream_tags: list[str] = Field(default_factory=list)
     namespace: str = Field(default="", max_length=256)
     ts: str = Field(default="")
@@ -227,6 +231,13 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
     key = f"{_REGISTRY_PREFIX}{body.agent_id}"
     await redis.set(key, json.dumps(record), ex=_REGISTRY_TTL)
 
+    # Resolve anomaly thresholds from omni_admin runtime flags (write-through
+    # cache) so operators can tune them without redeploying agents on customer
+    # hosts. Always returns a safe-default bundle on cache miss.
+    from services.admin_config.agent_thresholds import resolve_agent_thresholds
+
+    thresholds = await resolve_agent_thresholds(redis, body.tenant_id)
+
     logger.info(
         "[AGENT-REGISTER] agent_id=%s hostname=%s caps=%s",
         body.agent_id,
@@ -238,6 +249,7 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
         "agent_id": body.agent_id,
         "ttl": _REGISTRY_TTL,
         "server_time": now,
+        "config": {"thresholds": thresholds},
     })
 
 
