@@ -211,6 +211,7 @@ async def test_emit_agentic_mutate_if_any_passes_attempt_count_to_emit(monkeypat
         omni_llm_first_autonomy_enabled=False,
         omni_legacy_deterministic_fallback=True,
         kafka_topic_actions="omni-actions",
+        kafka_topic_audit_chain="omni-audit-chain",
     )
     kafka = MagicMock()
     kafka.send_dict = AsyncMock()
@@ -542,6 +543,7 @@ async def test_llm_first_mode_disables_deterministic_fallback(monkeypatch: pytes
         omni_planner_precondition_gate_enabled=True,
         trace_correlation_ping_enabled=True,
         kafka_topic_actions="omni-actions",
+        kafka_topic_audit_chain="omni-audit-chain",
         autonomous_allowed_namespaces="multi-agent",
     )
     kafka = MagicMock()
@@ -591,6 +593,7 @@ async def test_precondition_gate_reasks_planner_before_mutate(monkeypatch: pytes
         omni_planner_precondition_gate_enabled=True,
         trace_correlation_ping_enabled=True,
         kafka_topic_actions="omni-actions",
+        kafka_topic_audit_chain="omni-audit-chain",
         autonomous_allowed_namespaces="multi-agent",
     )
     kafka = MagicMock()

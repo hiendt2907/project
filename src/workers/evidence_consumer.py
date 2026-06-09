@@ -1002,6 +1002,7 @@ async def _emit_suggest_remediation(
     thought_process: list[str] | None = None,
     invariant_id: str | None = None,
     reasoning_chain: dict[str, Any] | None = None,
+    audit: bool = True,
 ) -> None:
     if not ctx.settings.trace_correlation_ping_enabled:
         return
@@ -1011,6 +1012,34 @@ async def _emit_suggest_remediation(
     tid = str(trace or "").strip()
     if not tid:
         return
+    # CRAT Fail-Closed (INV): an advisory dispatch is an auditable action — the
+    # audit block MUST be written before ANY action emit. Callers that already
+    # wrote their own ADVISORY_DISPATCHED block (SIEM / contrast / LLM-analyst)
+    # pass audit=False; every other dispatch path is covered here by default so
+    # no early-exit can emit a suggestion without an audit trail.
+    if audit:
+        try:
+            await write_audit_block(
+                event_type="ADVISORY_DISPATCHED",
+                trace_id=tid,
+                payload={
+                    "source": source,
+                    "lane": lane or "",
+                    "suggested_tool": suggested_tool,
+                    "diagnosis": str(diagnosis)[:2000],
+                },
+                redis=ctx.redis,
+                kafka=ctx.kafka,
+                kafka_topic=ctx.settings.kafka_topic_audit_chain,
+            )
+        except AuditLedgerError as _audit_err:
+            logger.critical(
+                "event=crat_fail_closed_abort trace=%s source=%s err=%r — suggest dispatch aborted",
+                tid, source, _audit_err,
+            )
+            await mark_stage(ctx.redis, tid, "CRAT", "fail", detail="audit_chain_write_failed", lane=lane or "")
+            return
+        await mark_stage(ctx.redis, tid, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane=lane or "")
     if _shadow_os_mode(ctx) and suggested_tool in MUTATE_TOOL_ALLOWLIST:
         commands = _derive_shadow_os_commands(
             tool_name=suggested_tool,
@@ -1028,6 +1057,7 @@ async def _emit_suggest_remediation(
             commands=commands,
             reasoning_chain=reasoning_chain if isinstance(reasoning_chain, dict) else {},
             verification_evidence_digest=str(diagnosis)[:800],
+            audit=False,  # already audited above in _emit_suggest_remediation
         )
         if emitted:
             return
@@ -1066,6 +1096,7 @@ async def _emit_suggest_os_runbook(
     commands: list[dict[str, Any]],
     reasoning_chain: dict[str, Any] | None = None,
     verification_evidence_digest: str = "",
+    audit: bool = True,
 ) -> bool:
     """Emit Shadow OS runbook action to omni-actions."""
     if not ctx.settings.trace_correlation_ping_enabled:
@@ -1076,6 +1107,27 @@ async def _emit_suggest_os_runbook(
     tid = str(trace or "").strip()
     if not tid:
         return False
+    # CRAT Fail-Closed: a runbook dispatch is an auditable action. The delegating
+    # _emit_suggest_remediation path already audits (passes audit=False); direct
+    # callers are covered here so no runbook emit escapes the audit trail.
+    if audit:
+        try:
+            await write_audit_block(
+                event_type="ADVISORY_DISPATCHED",
+                trace_id=tid,
+                payload={"source": source, "mode": "os_runbook", "diagnosis": str(diagnosis)[:2000]},
+                redis=ctx.redis,
+                kafka=ctx.kafka,
+                kafka_topic=ctx.settings.kafka_topic_audit_chain,
+            )
+        except AuditLedgerError as _audit_err:
+            logger.critical(
+                "event=crat_fail_closed_abort trace=%s source=%s mode=os_runbook err=%r — dispatch aborted",
+                tid, source, _audit_err,
+            )
+            await mark_stage(ctx.redis, tid, "CRAT", "fail", detail="audit_chain_write_failed", lane="")
+            return False
+        await mark_stage(ctx.redis, tid, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane="")
     body = build_suggest_os_runbook_body(
         tid,
         diagnosis=diagnosis,
@@ -2107,6 +2159,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 confidence=0.95,
                 source="STATE_MACHINE_CONTRAST",
                 suggested_tool="verify_metrics_alignment",
+                audit=False,  # CRAT written by _crat_for_deterministic_advisory above
             )
             # Admin notify: structured plain text from probe fields (no LLM on this path).
             admin_cid = getattr(ctx.settings, "telegram_admin_chat_id", None)
@@ -2177,6 +2230,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 confidence=0.90,
                 source="OS_STATE_CONTRAST",
                 suggested_tool="k8s_describe_resource",
+                audit=False,  # CRAT written by _crat_for_deterministic_advisory above
             )
             admin_cid = getattr(ctx.settings, "telegram_admin_chat_id", None)
             digest_loc = str(getattr(ctx.settings, "omni_operator_digest_locale", "both") or "both").lower()
@@ -2256,6 +2310,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     source="SIEM_SUGGEST_ONLY",
                     suggested_tool="k8s_describe_resource",
                     lane="siem",
+                    audit=False,  # CRAT written above (fail-closed) — do not double-write
                 )
                 await _notify_siem_telegram(ctx, trace=trace, batch=batch, diagnosis=_siem_diag)
                 # SIEM is suggest-only: no human-approval queue, no mutate, no feedback loop.
@@ -2606,6 +2661,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                         confidence=0.9,
                         source=f"ADVISORY_MODE_ANALYST/{_tier}",
                         suggested_tool="kubectl_describe",
+                        audit=False,  # CRAT (ADVISORY_DISPATCHED) written above at the killswitch gate
                     )
                     logger.info(
                         "event=advisory_analyst_complete trace=%s verdict=%s chat_id=%s",

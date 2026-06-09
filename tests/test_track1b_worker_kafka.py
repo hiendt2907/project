@@ -26,7 +26,7 @@ class _KafkaCapture:
     def __init__(self) -> None:
         self.sent: list[tuple[str, dict]] = []
 
-    async def send_dict(self, topic: str, payload: dict) -> None:
+    async def send_dict(self, topic: str, payload: dict, **kwargs) -> None:
         self.sent.append((topic, payload))
 
     # Some code paths call send_envelope_inner

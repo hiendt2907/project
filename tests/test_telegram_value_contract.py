@@ -103,6 +103,7 @@ def _make_ctx(telegram_captures: list, **settings_overrides):
         "rag_truth_law_enforced": True,
         "trace_correlation_ping_enabled": True,
         "kafka_topic_actions": "omni-actions",
+        "kafka_topic_audit_chain": "omni-audit-chain",
         "kafka_topic_hitl_pending": "omni-hitl-pending",
         "model_reasoning_engine": "llama3",
         "diag_evidence_llm_model": "",
