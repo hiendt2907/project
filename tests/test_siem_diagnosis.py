@@ -95,6 +95,34 @@ def test_diag_ddos_has_network_steps():
     assert "frontend" in diag
 
 
+def test_diag_has_verify_block_before_howto():
+    """F6: scope-confirmation VERIFY block precedes the cluster-scoped HOW-TO."""
+    batch = _siem_batch(category="ddos", ns="frontend")
+    siem_labels = {"siem_category": "ddos", "severity": "critical", "namespace": "frontend"}
+    diag = _siem_diagnosis_from_batch(batch, siem_labels, "")
+    assert "VERIFY FIRST" in diag
+    assert diag.index("VERIFY FIRST") < diag.index("HOW-TO")
+
+
+def test_diag_ddos_private_ip_not_distributed():
+    """F6: a single RFC1918 source must NOT be described as a distributed external attack."""
+    batch = _siem_batch(category="ddos")  # affected_ip=10.0.1.5 (RFC1918)
+    siem_labels = {"siem_category": "ddos", "severity": "critical", "namespace": "multi-agent"}
+    diag = _siem_diagnosis_from_batch(batch, siem_labels, "")
+    assert "SINGLE INTERNAL source" in diag
+    assert "not a distributed external attack" in diag.lower()
+
+
+def test_diag_ddos_public_ip_keeps_distributed_basis():
+    """F6: a public source IP retains the volumetric/distributed framing."""
+    batch = _siem_batch(category="ddos")
+    batch[0]["extracted_fact"]["affected_ip"] = "8.8.8.8"  # genuinely public
+    siem_labels = {"siem_category": "ddos", "severity": "critical", "namespace": "multi-agent"}
+    diag = _siem_diagnosis_from_batch(batch, siem_labels, "")
+    assert "SINGLE INTERNAL source" not in diag
+    assert "public/external" in diag
+
+
 def test_diag_k8s_threat_has_rbac_steps():
     batch = _siem_batch(category="k8s_threat", ns="kube-system")
     siem_labels = {"siem_category": "k8s_threat", "severity": "critical", "namespace": "kube-system"}

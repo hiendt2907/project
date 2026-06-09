@@ -358,6 +358,48 @@ def _format_siem_forecast_text(forecast: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+# SIEM scope-confirmation steps per category. The HOW-TO remediation assumes the
+# K8s cluster is in-scope; these VERIFY steps prove that assumption FIRST, so an
+# operator never edge-blocks or runs kubectl on an incident that the evidence does
+# not actually tie to the cluster (scope discipline — see memory
+# project_rag_kb_and_scope_prompt). Placeholders: {ns} {ip}.
+_SIEM_CATEGORY_VERIFY: dict[str, list[str]] = {
+    "ddos": [
+        "Classify origin {ip}: public IP → external volumetric plausible; RFC1918/internal → single internal source, NOT distributed — investigate that host/pod first.",
+        "Find the saturation point: `conntrack -L | grep {ip}` and `cat /proc/sys/net/netfilter/nf_conntrack_count` on the node/LB — conntrack fills at the kernel netfilter layer, not inside K8s.",
+        "Confirm the flood actually reaches the cluster: check ingress-controller request rate / LB metrics. If traffic is dropped at the edge, the kubectl steps below do NOT apply.",
+    ],
+    "network_anomaly": [
+        "Classify origin {ip} (public vs RFC1918) and confirm the anomalous flow terminates inside the cluster, not at the node/edge.",
+        "Identify which node/interface sees the anomaly before assuming a service-mesh cause.",
+    ],
+    "lateral_movement": [
+        "Confirm {ip} maps to an in-cluster pod (`kubectl get pods -A -o wide | grep {ip}`); if it is not a pod IP, this is not pod-to-pod lateral movement.",
+    ],
+    "data_exfil": [
+        "Confirm the egress source is an in-cluster workload (pod IP), not a node or external host, before auditing RBAC/NetworkPolicy.",
+    ],
+}
+_SIEM_DEFAULT_VERIFY = [
+    "Confirm the incident scope actually involves the K8s cluster (source/target is a pod or service) before running the cluster-scoped steps below.",
+]
+
+
+def _is_private_ip(ip: str) -> bool:
+    """RFC1918 / loopback / link-local check — used to flag single-internal-source
+    incidents that should NOT be described as a distributed external attack."""
+    import ipaddress
+
+    raw = str(ip or "").strip()
+    if not raw or raw in ("?", "n/a"):
+        return False
+    try:
+        addr = ipaddress.ip_address(raw)
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback or addr.is_link_local
+
+
 def _siem_diagnosis_from_batch(
     batch: list[dict[str, Any]],
     siem_labels: dict[str, str],
@@ -402,10 +444,29 @@ def _siem_diagnosis_from_batch(
     steps = [s.replace("{ns}", _safe_ns).replace("{ip}", _safe_ip) for s in raw_steps]
     steps_text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(steps))
 
-    # Structured WHAT / WHO / WHY / HOW-TO / FORECAST
+    # Structured WHAT / WHO / WHY / VERIFY / HOW-TO / FORECAST
     what = f"[{category.upper()}] {description or suggested or 'Security incident detected by FinGuard SIEM.'}"
     who = f"namespace={_safe_ns}" + (f", tenant={tenant}" if tenant else "") + (f", source_ip={_safe_ip}" if affected_ip else "")
+
+    # Ground WHY in the observed evidence instead of asserting more than we know.
+    # A single RFC1918 source IP is NOT a distributed external attack — saying so
+    # would send the operator to the wrong layer (edge-block vs internal host).
     why = _SIEM_CATEGORY_WHY.get(category, _SIEM_DEFAULT_WHY)
+    _ip_is_private = bool(affected_ip) and _is_private_ip(affected_ip)
+    if _ip_is_private and category in ("ddos", "network_anomaly"):
+        why = (
+            f"Volumetric/traffic anomaly from a SINGLE INTERNAL source ({_safe_ip}, RFC1918) — "
+            "this is NOT a distributed external attack. Treat as a compromised/misbehaving "
+            "internal host or pod until proven otherwise; do not edge-block before confirming origin."
+        )
+    elif affected_ip:
+        why = f"{why} Observed origin: {_safe_ip} ({'public/external' if not _ip_is_private else 'internal'})."
+
+    # VERIFY block — prove the K8s cluster is actually in scope BEFORE the cluster-scoped HOW-TO.
+    raw_verify = _SIEM_CATEGORY_VERIFY.get(category, _SIEM_DEFAULT_VERIFY)
+    verify = [v.replace("{ns}", _safe_ns).replace("{ip}", _safe_ip) for v in raw_verify]
+    verify_text = "\n".join(f"{i+1}. {v}" for i, v in enumerate(verify))
+
     forecast_items = _siem_forecast_timeline(category, severity)
     forecast_text = _format_siem_forecast_text(forecast_items)
 
@@ -413,7 +474,9 @@ def _siem_diagnosis_from_batch(
         f"WHAT: {what}\n"
         f"WHO: {who} | incident={incident_id} | severity={severity}\n"
         f"WHY: {why}\n\n"
-        f"HOW-TO (operator next steps for [{category}] in namespace [{_safe_ns}]):\n"
+        f"VERIFY FIRST (confirm scope before acting — these may invalidate the steps below):\n"
+        f"{verify_text}\n\n"
+        f"HOW-TO (ONLY if VERIFY confirms the cluster is in scope) for [{category}] in namespace [{_safe_ns}]:\n"
         f"{steps_text}\n\n"
         f"{forecast_text}\n\n"
         "Omni does NOT auto-execute for SIEM incidents — human approval required."
