@@ -1,11 +1,47 @@
+import asyncio
 import logging
 
 import redis.asyncio as redis_async
+from redis.exceptions import BusyLoadingError, ConnectionError as RedisConnectionError
 from redis.asyncio.sentinel import Sentinel
 
 from workers.settings import WorkerSettings
 
 logger = logging.getLogger(__name__)
+
+# Redis có thể phình AOF/RDB lớn → load dataset vào memory chậm khi restart.
+# Trong lúc đó mọi command raise BusyLoadingError. Worker phải CHỜ thay vì crash-loop.
+_REDIS_READY_MAX_WAIT_SEC = 180
+_REDIS_READY_POLL_SEC = 2.0
+
+
+async def wait_until_ready(
+    client: redis_async.Redis,
+    *,
+    max_wait_sec: float = _REDIS_READY_MAX_WAIT_SEC,
+    poll_sec: float = _REDIS_READY_POLL_SEC,
+) -> None:
+    """Poll PING cho tới khi Redis nạp xong dataset (BusyLoadingError hết)."""
+    deadline = asyncio.get_event_loop().time() + max_wait_sec
+    attempt = 0
+    while True:
+        try:
+            await client.ping()
+            if attempt:
+                logger.info("event=redis_ready_after_loading attempts=%s", attempt)
+            return
+        except (BusyLoadingError, RedisConnectionError) as e:
+            attempt += 1
+            if asyncio.get_event_loop().time() >= deadline:
+                logger.error("event=redis_wait_ready_timeout attempts=%s err=%s", attempt, e)
+                raise
+            logger.warning(
+                "event=redis_loading_wait attempt=%s err=%s sleep=%.1fs",
+                attempt,
+                type(e).__name__,
+                poll_sec,
+            )
+            await asyncio.sleep(poll_sec)
 
 
 def _sentinel_endpoints(hosts_csv: str) -> list[tuple[str, int]]:
@@ -48,4 +84,5 @@ async def connect_redis(settings: WorkerSettings) -> redis_async.Redis:
     """redis-py 5 asyncio: await ``initialize()`` before use."""
     client = create_redis_client(settings)
     await client.initialize()
+    await wait_until_ready(client)
     return client

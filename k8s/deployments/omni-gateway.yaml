@@ -45,6 +45,12 @@ spec:
             - secretRef:
                 name: omni-gateway-secret
                 optional: true
+          env:
+            - name: OMNI_ADMIN_PG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: omni-pg-secret
+                  key: OMNI_ADMIN_PG_DSN
           resources:
             requests:
               cpu: "100m"

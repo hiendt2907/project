@@ -27,6 +27,9 @@ from workers.remote_triage import TriageResult, _build_symptom_text
 
 logger = logging.getLogger(__name__)
 
+# Rolling diagnostic memory TTL (14 ngày) — chống AOF/RDB phình vô hạn.
+DIAGNOSTIC_HISTORY_TTL_SEC = 14 * 24 * 3600
+
 
 def _embedding_from_response(resp: dict[str, Any]) -> list[float]:
     if "embedding" in resp:
@@ -99,6 +102,8 @@ async def write_lessons(
         await vs.upsert(
             COLLECTION_DIAGNOSTIC_HISTORY,
             [PointStruct(id=str(uuid.uuid4()), vector=vector, payload=history_payload)],
+            # Rolling diagnostic memory — cap growth so AOF/RDB stays bounded.
+            ttl_sec=DIAGNOSTIC_HISTORY_TTL_SEC,
         )
         logger.debug(
             "[ARCHIVER] history_written fp=%s domain=%s urgency=%s",

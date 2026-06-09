@@ -101,6 +101,8 @@ async def _list_collection(redis: Any, collection: str, limit: int) -> list[dict
             payload = {}
         text_content = getattr(doc, "text_content", "") or ""
         doc_id = str(doc.id).split(":")[-1]
+        stale_for_raw = payload.get("stale_for", [])
+        stale_for = stale_for_raw if isinstance(stale_for_raw, list) else []
         out.append(
             {
                 "id": doc_id,
@@ -112,6 +114,10 @@ async def _list_collection(redis: Any, collection: str, limit: int) -> list[dict
                 "score": _doc_score(payload),
                 "source": str(payload.get("source", "")),
                 "editable": collection == KB_WRITE_COLLECTION,
+                "confirmed_count": int(payload.get("confirmed_count", 0)),
+                "contradicted_count": int(payload.get("contradicted_count", 0)),
+                "stale": bool(payload.get("stale", False)),
+                "stale_for": stale_for,
             }
         )
     return out

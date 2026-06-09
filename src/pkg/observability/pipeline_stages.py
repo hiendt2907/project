@@ -21,6 +21,7 @@ PIPELINE_STAGES: list[str] = [
     "EVIDENCE",
     "RAG",
     "LLM",
+    "VERIFY",
     "SCHEMA",
     "KILLSWITCH",
     "CRAT",

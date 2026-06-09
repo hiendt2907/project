@@ -50,7 +50,7 @@
 
 | Mục | Câu hỏi |
 |---|---|
-| `omni-remote-agent/cmd/` | Source remote-agent — có phải bản chính hay trùng `src/remote_agent/`? |
+| ~~`omni-remote-agent/cmd/`~~ | **RESOLVED 2026-06-05: ĐÃ XOÁ.** Go skeleton v0.1.0 (dead, không build/CI/deploy). Bản chính = `src/remote_agent/` Python v1.1.3. |
 | `k8s/deployments/omni-worker-configmap-production-like.yaml.example` | Còn dùng làm template prod không? |
 | `k8s/deployments/omni-agent.yaml` | Deployment agent — còn active? |
 | `docker-compose.agent.yml`, `requirements-agent.txt` | Remote-agent local dev — còn dùng? |

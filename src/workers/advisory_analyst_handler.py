@@ -295,6 +295,8 @@ async def run_advisory_analyst(
             'Required fields: trace_id, verdict, root_cause (1-sentence concrete fact), '
             'confidence, affected_workload, verification_steps, proposed_remediation, forecast. '
             'For multi-tier faults ALSO include impact_chain (cause→mechanism→effect→evidence_lane). '
+            'If the evidence above contains [KB id=...] lines, ALSO emit kb_assessment[] judging each '
+            '(kb_id, collection, applicable, verdict=confirmed|refuted|unverifiable, reason). '
             'Do NOT echo the evidence structure. Do NOT output layer names as root_cause.'
         )
         user_blob = truncate_for_llm(evidence_text, user_evidence_budget - len(_reminder), tail=True) + _reminder

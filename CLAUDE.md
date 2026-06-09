@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+> **TRƯỚC MỌI TASK: đọc `MEMORY.md` (memory index) + `docs/CODEBASE.md` để hiểu dự án.** Bản đồ kiến trúc/hạ tầng/code điều hướng nhanh ở memory `project_architecture_map`; chi tiết file-level + autonomy/admin config ở `docs/CODEBASE.md`.
+
 **Omni** — async-first multi-agent SRE automation for K8s. Ollama diagnoses via 3 evidence lanes (state, app_log, metrics); split Kafka pipeline executes remediation.
 
 ## DIAGNOSTIC FLOWS (3 lanes + SIEM)
@@ -132,7 +134,7 @@ kafka: omni-action-feedback → omni-analyst (re-evaluation cycle)
 `omni_worker_last_message_age_seconds` · `omni_health_check_status{check_name}` · `omni_kpi_mttd_seconds{lane}` · `omni_kpi_mttr_seconds{lane}` · `omni_kpi_advisory_acceptance_rate` · `omni_kpi_false_positive_rate` · `omni_kpi_incidents_total{lane,outcome}` · `omni_advisory_benchmark_score{model,case_id}` · `omni_advisory_benchmark_pass_rate`
 
 ### docs/CODEBASE.md
-723-line codebase map: module index (1 dòng/file ~400 files), Kafka topic map, Redis key map, 4 critical data flows, worker role map, dependency graph.
+Codebase map: module index (1 dòng/file ~400 files), Kafka topic map, Redis key map, 4 critical data flows, worker role map, dependency graph + section **"Autonomy Tiers & Admin Config"** (omni_admin schema, admin_config service, tier gate, gateway endpoints, UI route-per-panel). ĐỌC TRƯỚC mọi task.
 
 ### Lane 2 (SYS_HARD_FAIL) — OS State Machine
 `src/workers/os_state_validator.py` — deterministic check chạy trong Omni analyst (không phải remote agent).
@@ -190,7 +192,8 @@ L1=os_baremetal · L2=network · L3=kubernetes (read-only) · L4=prometheus
 - **K8s**: OrbStack, namespace `multi-agent`; `finguard-customer` for HITL API
 - **Python**: async-first, Pydantic settings (`WorkerSettings`, `OMNI_` prefix)
 - **LLM**: Ollama `VLLMClient` — `qwen2.5-coder:7b` (active, all roles) + `nomic-embed-text:latest` (768-dim embed); `llm_num_ctx=8192` (default, env `OMNI_LLM_NUM_CTX`). `qwen3.6` available on host but NOT active.
-- **RAG**: Redis Stack HNSW `redis_vector_store.py` + `semantic_cache.py`
+- **Core DB**: **PostgreSQL** — source-of-truth cho Admin config (schema `omni_admin`: autonomy tier, risk-class override, runtime flags, tenant/api-key, HITL ledger, config_change_log). Shared với FinGuard. Redis = write-through cache cho hot-path gate.
+- **RAG**: Redis Stack HNSW `redis_vector_store.py` + `semantic_cache.py` (CHỈ RAG/cache, không phải config-of-record).
 - **Kafka**: `aiokafka`; `KafkaBus.send_dict(topic, dict)`
 - **Tests**: pytest `asyncio_mode=auto` `pythonpath=src`; `FakeAsyncRedis(decode_responses=True)`; `_KafkaCapture.send_dict(topic, envelope)`. Context: `SimpleNamespace(redis, kafka, settings)`.
 
@@ -229,7 +232,7 @@ CI order: build → rollout → unit → E2E.
 `OMNI_HITL_FALLBACK_CHANNEL` (slack|none, default none) · `OMNI_HITL_FALLBACK_WEBHOOK_URL` · `OMNI_HITL_ESCALATION_TIMEOUT_SEC` (default 900).
 `OMNI_SOP_AUTO_PROMOTE_ENABLED` (default true) · `OMNI_SOP_PROMOTION_MIN_SUCCESS` (default 3).
 `OMNI_FORECAST_PROACTIVE_INTEGRATION_ENABLED` (default true).
-Postgres removed — RAG on Redis Stack HNSW + semantic cache.
+**PostgreSQL = core DB** (Admin config source-of-truth, schema `omni_admin`, shared với FinGuard). RAG/cache vẫn trên Redis Stack HNSW + semantic cache. (Lịch sử: Postgres từng bị gỡ khỏi RAG path 2026-06; nay tái dùng làm config-of-record cho autonomy/Admin UI — KHÔNG đưa lại vào RAG.)
 
 **Smart-SIEM (brain-go) Kafka transport env:**
 `BRAIN_TRANSPORT=redis|kafka` (default=redis) · `BRAIN_KAFKA_BOOTSTRAP` · `BRAIN_KAFKA_CONSUME_TOPIC` (omni-siem-raw) · `BRAIN_KAFKA_PRODUCE_TOPIC` (omni-siem-incidents) · `BRAIN_KAFKA_CONSUMER_GROUP`.

@@ -17,6 +17,10 @@ interface KbItem {
   score: number;
   source: string;
   editable: boolean;
+  confirmed_count?: number;
+  contradicted_count?: number;
+  stale?: boolean;
+  stale_for?: string[];
 }
 
 interface KbResponse {
@@ -263,6 +267,24 @@ export function KnowledgeBasePanel() {
                   )}
                   <span className="text-[8px] text-zinc-700">{i.collection}</span>
                   {i.source && <span className="text-[8px] text-zinc-700">· {i.source}</span>}
+                  {i.stale === true && (
+                    <span
+                      className="text-[8px] font-bold text-rose-400 border border-rose-900/60 rounded px-1"
+                      title={i.stale_for && i.stale_for.length > 0 ? `stale for: ${i.stale_for.join(", ")}` : undefined}
+                    >
+                      ⚠ STALE
+                    </span>
+                  )}
+                  {!!i.contradicted_count && i.contradicted_count > 0 && (
+                    <span className="text-[8px] text-amber-400 border border-amber-900/60 rounded px-1">
+                      contradicted ×{i.contradicted_count}
+                    </span>
+                  )}
+                  {!!i.confirmed_count && i.confirmed_count > 0 && (
+                    <span className="text-[8px] text-emerald-400 border border-emerald-900/60 rounded px-1">
+                      confirmed ×{i.confirmed_count}
+                    </span>
+                  )}
                 </div>
               </div>
               {i.editable && (

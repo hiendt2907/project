@@ -4,3 +4,5 @@ uvicorn[standard]>=0.27.0
 redis[hiredis]>=5.0.0
 aiokafka>=0.11.0
 prometheus-client>=0.21.0
+# Admin config store (Postgres omni_admin source-of-truth)
+asyncpg>=0.29.0

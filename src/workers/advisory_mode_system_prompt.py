@@ -18,9 +18,19 @@ def build_advisory_system_prompt(ws: Any | None = None) -> str:
         "[MANDATORY OUTPUT FORMAT — READ THIS FIRST]\n\n"
         "You are the Omni Advisory Analyst. Output ONLY a single JSON object — no prose, no markdown, no code blocks.\n"
         "The JSON MUST contain ALL of these fields (schema is strict):\n\n"
-        '{"trace_id":"<copy from input>","verdict":"INVESTIGATE","root_cause":"<concrete 1-sentence fact about what is broken>","confidence":"medium","affected_workload":"<namespace/deployment or unknown>","verification_steps":[{"order":1,"layer":"os_baremetal","command":"top -b -n1","expected_output":"load < 4.0","rationale":"rule out host CPU saturation first"}],"proposed_remediation":[{"order":1,"action":"<human-readable SRE action>","args":{},"approval_required":true,"rollback_plan":"revert change"}],"forecast":{"method":"heuristic","basis":"<evidence source>","forecasts":[{"timeframe":"1h","severity":"degraded","prediction":"issue persists","confidence":"low"},{"timeframe":"3h","severity":"degraded","prediction":"ongoing degradation","confidence":"low"},{"timeframe":"6h","severity":"critical","prediction":"escalation possible","confidence":"low"},{"timeframe":"12h","severity":"critical","prediction":"cascading failures possible","confidence":"low"},{"timeframe":"24h","severity":"catastrophic","prediction":"full outage risk","confidence":"low"}],"note":""}}\n\n'
+        '{"trace_id":"<copy from input>","verdict":"INVESTIGATE","root_cause":"<concrete 1-sentence fact about what is broken>","confidence":"medium","affected_workload":"<namespace/deployment or unknown>","verification_steps":[{"order":1,"layer":"os_baremetal","command":"top -b -n1","expected_output":"load < 4.0","rationale":"rule out host CPU saturation first"}],"proposed_remediation":[{"order":1,"action":"<human-readable SRE action>","args":{},"approval_required":true,"rollback_plan":"revert change"}],"forecast":{"method":"heuristic","basis":"<evidence source>","forecasts":[{"timeframe":"1h","severity":"degraded","prediction":"issue persists","confidence":"low"},{"timeframe":"3h","severity":"degraded","prediction":"ongoing degradation","confidence":"low"},{"timeframe":"6h","severity":"critical","prediction":"escalation possible","confidence":"low"},{"timeframe":"12h","severity":"critical","prediction":"cascading failures possible","confidence":"low"},{"timeframe":"24h","severity":"catastrophic","prediction":"full outage risk","confidence":"low"}],"note":""},"kb_assessment":[]}\n\n'
+        "The kb_assessment array MUST be present (use [] only when the input has NO [KB id=...] lines). When the\n"
+        "input DOES contain 'REDIS SECOND-BRAIN CONTEXT' [KB id=...] lines, you MUST add one object per KB id you\n"
+        'considered, e.g. "kb_assessment":[{"kb_id":"kb-seed-002","collection":"vendor_knowledge","applicable":true,"verdict":"confirmed","reason":"live evidence supports it"}]\n\n'
         "For MULTI-TIER incidents (a fault that propagates across storage→DB→API→LB→client), ALSO include:\n"
         '"impact_chain":[{"cause":"disk /var 98% full","mechanism":"Postgres cannot fsync WAL","effect":"writes block, API returns HTTP 500","evidence_lane":"state","confidence":"high"}]\n\n'
+        "[KB SELF-ASSESSMENT — REQUIRED when the input contains 'REDIS SECOND-BRAIN CONTEXT' with [KB id=...] items]\n"
+        "Each [KB id=... col=... score=...] line is a PRIOR retrieved from memory, NOT ground truth. After you\n"
+        "reconcile it against the live evidence below, judge it so the system can age stale knowledge. Emit one\n"
+        "entry per KB id you actually considered (copy kb_id and collection EXACTLY from the label):\n"
+        '"kb_assessment":[{"kb_id":"kb-seed-002","collection":"vendor_knowledge","applicable":true,"verdict":"confirmed","reason":"live evidence X matches this KB"},{"kb_id":"<id>","collection":"<col>","applicable":false,"verdict":"refuted","reason":"evidence contradicts it"}]\n'
+        "verdict: confirmed = evidence supports the KB · refuted = evidence contradicts it (stale/wrong here) ·\n"
+        "unverifiable = no probe evidence to decide. Be honest: do NOT mark confirmed without concrete evidence.\n\n"
         "CRITICAL: root_cause is REQUIRED. It must be a concrete 1-sentence fact naming the broken component.\n"
         "NEVER output a layer name (e.g. 'LAYER 1 — OS') as root_cause. That is WRONG.\n"
         "NEVER output the evidence structure — output the ADVISORY about what you found.\n\n"
@@ -167,6 +177,22 @@ def build_advisory_system_prompt(ws: Any | None = None) -> str:
         '"effect":"DB writes blocked","evidence_lane":"state","confidence":"high"},\n'
         '   {"cause":"DB writes blocked","mechanism":"API request handlers time out waiting on commit",'
         '"effect":"upstream returns HTTP 500","evidence_lane":"app_log","confidence":"high"}]\n\n'
+        "[KB RECONCILIATION — judge recalled knowledge against live evidence]\n\n"
+        "Each KB item listed in REDIS SECOND-BRAIN CONTEXT (format `[KB id=<point_id> col=<collection> "
+        "score=<s>] <summary>`) is a PRIOR — recalled past knowledge, NOT ground truth for THIS case.\n"
+        "After diagnosing, you MUST reconcile every KB item you actually used against the REAL probe/evidence\n"
+        "in this batch and emit a `kb_assessment` array. Each element = {kb_id, collection, applicable, verdict, reason}:\n"
+        "  - kb_id:      copy the EXACT id from the `[KB id=...]` label — never invent an id not in context.\n"
+        "  - collection: copy the EXACT collection from the `[KB ... col=...]` label.\n"
+        "  - applicable: true if this KB applies to THIS failure case, false if it is off-topic for this incident.\n"
+        "  - verdict:    'confirmed' = real evidence in THIS batch SUPPORTS the KB; 'refuted' = real evidence\n"
+        "                CONTRADICTS the KB (KB is stale/wrong for this case — e.g. KB says 'a leak makes\n"
+        "                working_set rise monotonically' but evidence shows working_set FLAT → refuted);\n"
+        "                'unverifiable' = no probe evidence available to confirm or contradict.\n"
+        "  - reason:     one short evidence-grounded sentence.\n"
+        "HARD RULE: only use 'confirmed' or 'refuted' when you can cite a CONCRETE fact in the evidence batch.\n"
+        "If you could not probe it, the verdict MUST be 'unverifiable'. NEVER fabricate a kb_id that does not\n"
+        "appear in REDIS SECOND-BRAIN CONTEXT. If no KB was recalled/used, emit an empty array.\n\n"
         "[BREVITY AND EVIDENCE ANCHORING — MANDATORY]\n\n"
         "- root_cause: exactly ONE short sentence (max ~40 words). No paragraph, no hedging essay.\n"
         "- If evidence does NOT support a concrete root cause: verdict=INVESTIGATE, confidence=low, "
@@ -232,6 +258,8 @@ def build_advisory_system_prompt(ws: Any | None = None) -> str:
         '      {"timeframe": "24h", "severity": "catastrophic", ...}\n'
         '    ]\n'
         '  },\n'
+        '  "kb_assessment": [{"kb_id": "...", "collection": "...", "applicable": true, '
+        '"verdict": "confirmed|refuted|unverifiable", "reason": "..."}],  // optional, may be empty []\n'
         '  "escalation_reason": "HITL|security_incident|unknown_cause" or empty\n'
         "}\n\n"
         "[FORECASTING METHODOLOGY]\n\n"

@@ -355,7 +355,11 @@ async def simulate_lane(lane: str, request: Request) -> JSONResponse:
     elif lane in _ALERT_LANES:
         topic = _alert_topic(request)
         body = _build_prometheus_alert(lane, trace_id)
-        payload = {"source": "simulator", "trace_id": trace_id, "received_at": time.time(), "data": body}
+        # source MUST be "prometheus" so build_anomaly_event_from_alert_payload runs the
+        # full label-extraction path (namespace/pod/deployment). "simulator" falls through
+        # to the GenericAlert fallback → no namespace/pod → every resource/state probe SKIPs.
+        # The sim-* trace_id prefix + "[SIMULATOR]" annotation retain simulator identity.
+        payload = {"source": "prometheus", "trace_id": trace_id, "received_at": time.time(), "data": body}
         messages = [json.dumps({"data": json.dumps(payload, ensure_ascii=False)}, ensure_ascii=False).encode("utf-8")]
         ingress = "alert"
     else:

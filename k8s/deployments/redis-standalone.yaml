@@ -129,13 +129,18 @@ spec:
                 - ping
             initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 3
           livenessProbe:
+            # AOF/RDB lớn → load dataset chậm khi restart; redis-cli ping trả LOADING (exit≠0).
+            # Nới failureThreshold + initialDelay để không bị kill giữa lúc đang load.
             exec:
               command:
                 - redis-cli
                 - ping
-            initialDelaySeconds: 15
+            initialDelaySeconds: 30
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
       volumes:
         - name: config
           configMap:

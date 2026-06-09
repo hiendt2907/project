@@ -10,6 +10,9 @@ redis[hiredis]>=5.0.0
 # Kafka (event bus)
 aiokafka>=0.11.0
 
+# PostgreSQL — Admin config source-of-truth (omni_admin schema, MASTER_PLAN §6.5)
+asyncpg>=0.29.0
+
 # Redis Stack vector search (replaces pgvector/Postgres)
 tenacity>=8.3.0
 

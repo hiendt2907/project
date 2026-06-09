@@ -63,8 +63,7 @@
 ## Remote Agent (Python, external hosts)
 
 ```
-src/remote_agent/          Python async collector binary deployed to Linux hosts/VMs
-omni-remote-agent/         Go binary (omni-remote-agent/cmd/) — alternative lightweight agent
+src/remote_agent/          Python async collector (v1.1.3) — CANONICAL, deployed to Linux hosts/VMs
 Collectors: system · k8s · database (MySQL/ProxySQL) · logs · storage
 Auth: OMNI_AGENT_SECRET (pre-shared key in /agent/push route)
 ```

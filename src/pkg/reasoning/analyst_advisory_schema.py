@@ -283,6 +283,44 @@ class ImpactChainLink(BaseModel):
         return self
 
 
+class KbAssessment(BaseModel):
+    """One judgement of a recalled KB item against live read-only probe evidence.
+
+    Each recalled KB item is a PRIOR, not ground truth for this case. After
+    reconciling it with real evidence, the analyst stamps a verdict so the
+    system can detect stale/wrong knowledge.
+    """
+
+    kb_id: str = Field(default="", description="Exact point id copied from the [KB id=...] label")
+    collection: str = Field(default="", description="Source collection copied from the [KB ... col=...] label")
+    applicable: bool = Field(default=True, description="Whether this KB applies to THIS failure case")
+    verdict: Literal["confirmed", "refuted", "unverifiable"] = Field(
+        default="unverifiable",
+        description=(
+            "confirmed = real evidence supports KB; refuted = real evidence contradicts KB "
+            "(stale/wrong for this case); unverifiable = no probe evidence to conclude"
+        ),
+    )
+    reason: str = Field(default="", description="Short justification grounded in concrete evidence")
+
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def coerce_verdict(cls, v: object) -> object:
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in {"confirmed", "refuted", "unverifiable"}:
+                return s
+        return "unverifiable"
+
+    @model_validator(mode="after")
+    def clamp_reason(self) -> "KbAssessment":
+        reason, clipped = _truncate_words(self.reason, _IMPACT_LINK_FIELD_MAX_WORDS)
+        if clipped:
+            logger.warning("event=advisory_field_clamped component=kb_assessment kb_id=%s", self.kb_id)
+        object.__setattr__(self, "reason", reason)
+        return self
+
+
 class AnalystAdvisory(BaseModel):
     """The complete structured output of the Advisory-Mode Analyst."""
 
@@ -313,6 +351,13 @@ class AnalystAdvisory(BaseModel):
         description=(
             "Cross-tier causal chain: ROOT CAUSE → propagation mechanism → observed symptom. "
             "Ordered bottom-up (storage→DB→API→LB→client). Optional; populate for multi-tier incidents."
+        ),
+    )
+    kb_assessment: list[KbAssessment] = Field(
+        default_factory=list,
+        description=(
+            "Per-KB reconciliation: judge each recalled KB item (from REDIS SECOND-BRAIN CONTEXT) "
+            "against real probe evidence. Optional; empty when no KB was recalled/used."
         ),
     )
     escalation_reason: str = Field(

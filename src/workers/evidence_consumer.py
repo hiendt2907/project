@@ -2282,6 +2282,55 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     # Pipeline stage: advisory schema parsed/validated.
                     _adv_verdict = getattr(advisory, "verdict", "") or ""
                     await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"verdict={_adv_verdict}", lane=_adv_lane or "")
+
+                    # ── VERIFY stage — real diagnosis, not just doc lookup ──────────────
+                    # Actually RUN the advisory's read-only verification_steps, then
+                    # reconcile each recalled KB item against the live probe evidence and
+                    # write the outcome back to the KB. HONEST GATE: a KB entry only ages
+                    # (confirmed/refuted) when a probe ACTUALLY ran — no test ⇒ unverifiable.
+                    try:
+                        from workers.kb_verifier import run_readonly_verification
+                        from rag.kb_feedback import apply_kb_feedback
+                        from pkg.observability.pipeline_stages import append_trace_log
+
+                        _probes = await run_readonly_verification(
+                            ctx, advisory=advisory, trace=trace, max_probes=4
+                        )
+                        _ran = [p for p in _probes if getattr(p, "ran", False)]
+                        for _p in _probes:
+                            _lvl = "info" if _p.ran else ("warn" if _p.blocked else "info")
+                            _st = "ran" if _p.ran else ("BLOCKED" if _p.blocked else "skip")
+                            await append_trace_log(
+                                ctx.redis, trace, "VERIFY",
+                                f"{_st} rc={_p.rc} [{_p.layer}] {_p.command[:90]}"
+                                + (f" — {_p.error[:60]}" if _p.error else ""),
+                                level=_lvl,
+                            )
+                        _assess_raw = getattr(advisory, "kb_assessment", []) or []
+                        _assessments = [
+                            (a.model_dump() if hasattr(a, "model_dump") else dict(a))
+                            for a in _assess_raw
+                        ]
+                        # No probe actually executed ⇒ we did not TEST anything ⇒ never
+                        # score the KB on an untested guess.
+                        if not _ran:
+                            for _a in _assessments:
+                                _a["verdict"] = "unverifiable"
+                        _fb = await apply_kb_feedback(ctx.redis, trace=trace, assessments=_assessments)
+                        await mark_stage(
+                            ctx.redis, trace, "VERIFY", "ok",
+                            detail=(
+                                f"probes_ran={len(_ran)}/{len(_probes)} "
+                                f"kb confirmed={_fb.get('confirmed', 0)} refuted={_fb.get('refuted', 0)} "
+                                f"stale={len(_fb.get('stale_marked', []))}"
+                            ),
+                            lane=_adv_lane or "",
+                        )
+                    except Exception as _verr:  # best-effort — never block dispatch
+                        logger.warning("event=kb_verify_failed trace=%s err=%s", trace, _verr)
+                        await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="verify error", lane=_adv_lane or "")
+                    # ────────────────────────────────────────────────────────────────────
+
                     from workers.advisory_mode_kill_switch import AdvisoryModeKillSwitch
                     # Validate advisory output for forbidden mutation keywords (kill-switch layer 2)
                     _valid, _reason = AdvisoryModeKillSwitch.validate_advisor_output(

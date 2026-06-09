@@ -94,6 +94,11 @@ spec:
                 secretKeyRef:
                   name: omni-chaos-lab
                   key: pg-app-password
+            - name: OMNI_ADMIN_PG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: omni-pg-secret
+                  key: OMNI_ADMIN_PG_DSN
           securityContext:
             privileged: true
             runAsUser: 0

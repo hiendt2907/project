@@ -319,8 +319,14 @@ class RedisVectorStore:
         reraise=True,
         before_sleep=_before_retry_log,
     )
-    async def upsert(self, collection_name: str, points: list[Any]) -> None:
-        """Batch-upsert *points* into *collection_name* using a Redis pipeline."""
+    async def upsert(
+        self, collection_name: str, points: list[Any], *, ttl_sec: int | None = None
+    ) -> None:
+        """Batch-upsert *points* into *collection_name* using a Redis pipeline.
+
+        ``ttl_sec`` caps unbounded rolling-memory collections (e.g.
+        ``diagnostic_history``) so the AOF/RDB does not grow without limit.
+        """
         await self._ensure_index(collection_name)
         pipe = self._r.pipeline(transaction=False)
         for p in points:
@@ -352,6 +358,8 @@ class RedisVectorStore:
                     "doc_type": str(ppayload.get("type", "")),
                 },
             )
+            if ttl_sec and ttl_sec > 0:
+                pipe.expire(key, ttl_sec)
         try:
             await pipe.execute()
         except Exception as exc:

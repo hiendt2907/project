@@ -1,0 +1,116 @@
+# omni-postgres — PostgreSQL 18 (source-of-truth cho Admin config schema omni_admin).
+# Namespace: multi-agent. Thay thế CloudNativePG (cnpg) đã gỡ.
+# DSN: postgresql://omni:<pass>@omni-postgres.multi-agent.svc.cluster.local:5432/omnidb
+#
+# Lab credentials — KHÔNG dùng cho prod (rotate + K8s Secret riêng khi prod).
+# Apply: kubectl apply -f k8s/deployments/omni-postgres.yaml
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: omni-pg-secret
+  namespace: multi-agent
+  labels:
+    app: omni-postgres
+type: Opaque
+stringData:
+  POSTGRES_USER: "omni"
+  POSTGRES_PASSWORD: "omni-admin-s3cr3t-2026"
+  POSTGRES_DB: "omnidb"
+  # DSN tiện cho consumer mount thẳng (asyncpg).
+  OMNI_ADMIN_PG_DSN: "postgresql://omni:omni-admin-s3cr3t-2026@omni-postgres.multi-agent.svc.cluster.local:5432/omnidb"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: omni-postgres
+  namespace: multi-agent
+  labels:
+    app: omni-postgres
+spec:
+  serviceName: omni-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omni-postgres
+  template:
+    metadata:
+      labels:
+        app: omni-postgres
+    spec:
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:18
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: omni-pg-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: omni-pg-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: omni-pg-secret
+                  key: POSTGRES_DB
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "omni", "-d", "omnidb"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "omni", "-d", "omnidb"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omni-postgres
+  namespace: multi-agent
+  labels:
+    app: omni-postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: omni-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

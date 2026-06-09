@@ -12,7 +12,13 @@ COPY requirements-gateway.txt .
 RUN pip install --no-cache-dir -r requirements-gateway.txt
 
 COPY src/gateway/ /app/src/gateway/
+# Admin config store (Postgres omni_admin) — shared service, KHÔNG phải workers.
+# repo/pool/cache nhẹ (asyncpg lazy, không kéo chain_writer/cryptography).
+COPY src/services/__init__.py /app/src/services/__init__.py
+COPY src/services/admin_config/ /app/src/services/admin_config/
+COPY migrations/ /app/migrations/
 COPY src/pkg/__init__.py /app/src/pkg/__init__.py
+COPY src/pkg/risk_taxonomy.py /app/src/pkg/risk_taxonomy.py
 COPY src/pkg/autonomy/ /app/src/pkg/autonomy/
 COPY src/pkg/reasoning/ /app/src/pkg/reasoning/
 COPY src/pkg/rag/ /app/src/pkg/rag/

@@ -23,6 +23,7 @@ COPY src/ /app/src/
 COPY config/ /app/config/
 COPY data/ /app/data/
 COPY scripts/ /app/scripts/
+COPY migrations/ /app/migrations/
 RUN chown -R appuser:appuser /app/scripts
 
 ENV PYTHONPATH=/app/src

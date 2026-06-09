@@ -20,6 +20,7 @@ export type PipelineStage =
   | "EVIDENCE"
   | "RAG"
   | "LLM"
+  | "VERIFY"
   | "SCHEMA"
   | "KILLSWITCH"
   | "CRAT"

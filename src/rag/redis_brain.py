@@ -92,6 +92,31 @@ class BrainResult:
         return len(self.turns)
 
 
+def _is_noise_payload(payload: dict[str, Any]) -> bool:
+    """Reject synthetic 'proactive learning' self-reinforcement entries.
+
+    A proactive-fallback loop pre-seeds generic 'restart pod' reflexes with
+    placeholder args (`<namespace>`); these match ~0.70 against almost any alert and
+    drown out real knowledge. They are noise, not verified experience — never feed
+    them to the LLM as recalled knowledge.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("routing_source", "")).lower() == "proactive_fallback":
+        return True
+    for key in ("symptom_text", "lesson", "match_text", "summary"):
+        v = payload.get(key)
+        if isinstance(v, str) and v.lstrip().lower().startswith("[proactive"):
+            return True
+    for arg_key in ("args", "args_playbook"):
+        av = payload.get(arg_key)
+        if isinstance(av, dict) and any(
+            isinstance(x, str) and x.startswith("<") and x.endswith(">") for x in av.values()
+        ):
+            return True
+    return False
+
+
 def _payload_summary(payload: dict[str, Any]) -> str:
     """Reduce a recalled payload to a one-line advisory summary (arg KEYS only)."""
     if not isinstance(payload, dict):
@@ -132,11 +157,14 @@ async def _search_collection(
         return []
     hits: list[BrainHit] = []
     for p in getattr(resp, "points", None) or []:
+        payload = p.payload or {}
+        if _is_noise_payload(payload):
+            continue  # drop proactive-fallback 'restart pod' reflex noise
         hits.append(BrainHit(
             score=round(float(p.score or 0), 3),
             point_id=str(p.id or ""),
             collection=collection,
-            summary=_payload_summary(p.payload or {}),
+            summary=_payload_summary(payload),
         ))
     return hits
 
@@ -186,7 +214,9 @@ async def run_redis_brain(
         for h in turn_hits:
             if len(snippets) >= MAX_CONTEXT_SNIPPETS:
                 break
-            snippets.append(f"[{h.collection} score={h.score}] {h.summary}")
+            # Label each item with its KB id+collection so the analyst can echo them
+            # back in kb_assessment (the verify/reconcile loop scores them afterwards).
+            snippets.append(f"[KB id={h.point_id} col={h.collection} score={h.score}] {h.summary}")
         if turn_hits and turn_hits[0].score > best_score:
             best_score = turn_hits[0].score
             best_answer = turn_hits[0].summary

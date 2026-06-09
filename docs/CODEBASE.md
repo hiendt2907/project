@@ -2,7 +2,9 @@
 
 ## Architecture Overview
 
-Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbound signals arrive via three paths: HTTP alerts through the FastAPI Gateway (→ Kafka `omni-alerts`), SIEM incidents from FinGuard Redis streams (siem-bridge → `omni-alerts`), and direct SIEM evidence injection (evidence-adapter → `omni-diagnostic-evidence`). The **prober** role consumes `omni-alerts`, runs K8s SDK + Prometheus probes, and publishes per-probe evidence to `omni-diagnostic-evidence`. The **analyst** role batches evidence by `trace_id`, runs RAG gate + Ollama LLM (qwen3.6), and emits `SUGGEST_REMEDIATION` → `omni-actions` with mandatory CRAT audit writes before any Telegram or action emission. Approved mutations flow through `omni-hitl-pending` → HITL dispatcher → `omni-actions` → **executor**; feedback returns to analyst via `omni-action-feedback` for re-evaluation or learning. Smart-SIEM (Go) runs as a parallel pipeline: brain-go correlates events → agent applies LLM analysis → BFF serves the React UI.
+Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbound signals arrive via three paths: HTTP alerts through the FastAPI Gateway (→ Kafka `omni-alerts`), SIEM incidents from FinGuard Redis streams (siem-bridge → `omni-alerts`), and direct SIEM evidence injection (evidence-adapter → `omni-diagnostic-evidence`). The **prober** role consumes `omni-alerts`, runs K8s SDK + Prometheus probes, and publishes per-probe evidence to `omni-diagnostic-evidence`. The **analyst** role batches evidence by `trace_id`, runs RAG gate + Ollama LLM (qwen2.5-coder:7b, num_ctx=8192), and emits `SUGGEST_REMEDIATION` → `omni-actions` with mandatory CRAT audit writes before any Telegram or action emission. Approved mutations flow through `omni-hitl-pending` → HITL dispatcher → `omni-actions` → **executor**; feedback returns to analyst via `omni-action-feedback` for re-evaluation or learning. Smart-SIEM (Go) runs as a parallel pipeline: brain-go correlates events → agent applies LLM analysis → BFF serves the React UI.
+
+> **Lab deployment (2026-06-05):** single consolidated pod `omni-fullstack` (`OMNI_WORKER_ROLE=full`) — split-role deployments deleted. Active model `qwen2.5-coder:7b` (embed `nomic-embed-text`) on OrbStack host Ollama. Graduated-autonomy tiers (shadow→assist→auto) are live with PostgreSQL `omni_admin` as config source-of-truth — see [Autonomy Tiers & Admin Config](#autonomy-tiers--admin-config-2026-06-05) below.
 
 ---
 
@@ -721,3 +723,65 @@ graph TD
 | `evidence-adapter` | `evidence_adapter/worker.py` XREADGROUP loop: siem_evidence_raw Redis → omni-diagnostic-evidence Kafka |
 | `hitl-dispatcher` | `hitl_dispatcher.py` loop: omni-hitl-pending → FinGuard HITL API poll → omni-actions / omni-action-feedback |
 | `gateway` | FastAPI HTTP server (separate Docker image — MUST NOT import workers/) |
+
+> **analyst/full extra loops (autonomy tiers):** `crat_outbox_drainer_loop` (drain `crat_outbox` PENDING → CRAT block, FOR UPDATE SKIP LOCKED), `tier_readiness_loop` (compute Wilson-LB readiness → Redis `omni:tier:readiness:{tenant}`), `hitl_ui_decisions_loop` (consume `omni-hitl-decisions` → route APPROVED/REJECTED). All wired in `tier_loops.py`.
+
+---
+
+## Autonomy Tiers & Admin Config (2026-06-05)
+
+Graduated autonomy: every mutation passes a **tier gate** (`shadow`→`assist`→`auto`, default `shadow`, fail-closed) crossed with a **risk class** (`READONLY`<`LOW`<`MEDIUM`<`HIGH`). PostgreSQL schema `omni_admin` is the **source-of-truth**; Redis is a write-through cache for the hot-path gate. Every config write is an atomic **Transactional Outbox** TX (upsert target + `config_change_log` + `crat_outbox` PENDING) → COMMIT → cache invalidate → CRAT drainer writes the tamper-evident block (at-least-once, `dedup_key` UNIQUE). Tier changes are **operator-only** and never auto-jump.
+
+### PostgreSQL `omni_admin` (config source-of-truth)
+
+| Object | Mô tả |
+|--------|-------|
+| `migrations/omni_admin/0001_init.sql` | 9 tables: `autonomy_tier`, `risk_class_override`, `runtime_flag`, `tenant`, `tenant_api_key`, `hitl_pending`, `config_change_log`, `crat_outbox`, schema/version. Auto-run at startup via `pool.run_migrations` (reads `/app/migrations/omni_admin`). Seeds tier=`shadow`. |
+| `k8s/deployments/omni-postgres.yaml` | PostgreSQL 18.4 StatefulSet in ns `multi-agent`, Service `omni-postgres:5432`, Secret `omni-pg-secret` (user omni / db omnidb / DSN), PVC local-path 2Gi. (CloudNativePG removed — plain StatefulSet.) |
+| env `OMNI_ADMIN_PG_DSN` | DSN from secret → omni-fullstack + omni-gateway. Empty → store offline (fail-safe): config endpoints 503, gate falls back to env-derived tier. |
+
+### src/services/admin_config/ — Admin config store (shared, gateway-safe)
+
+| File | Mô tả | Depends on |
+|------|-------|------------|
+| `pool.py` | asyncpg pool factory + `run_migrations` (idempotent SQL apply from migrations dir) | asyncpg |
+| `cache.py` | Write-through Redis cache for tier/risk/flags hot-path reads | redis |
+| `repo.py` | `AdminConfigRepo`: atomic 3-in-1 outbox TX. Reads: `list_runtime_flags/list_risk_class_overrides/list_tenants/list_api_keys/list_hitl_pending`. Writes: `set_autonomy_tier/set_risk_class_override` (DANGEROUS_TOOLS clamp <HIGH → ValueError), `set_runtime_flag`, `create_tenant/set_tenant_status/create_api_key` (sha256 hash, plaintext once)/`revoke_api_key`, `decide_hitl` (idempotent; enqueues `HITL_DECISION` outbox). **Decoupled from audit_ledger** (local CRAT-mirror constants) so gateway stays light. | asyncpg, redis |
+| `drainer.py` | `CratOutboxDrainer`: `FOR UPDATE SKIP LOCKED` poll of `crat_outbox` PENDING → `write_audit_block` → mark SENT + crat_ref | audit_ledger, asyncpg |
+
+### Autonomy worker modules (src/workers/, src/pkg/)
+
+| File | Mô tả |
+|------|-------|
+| `pkg/risk_taxonomy.py` | STATIC §2 risk taxonomy: `STATIC_RISK_CLASS` (74 tools), `DANGEROUS_TOOLS`, fail-closed HIGH default. **Gateway-safe** (pure data, no workers import) — `Dockerfile.gateway` MUST `COPY src/pkg/risk_taxonomy.py`. |
+| `workers/risk_class.py` | Re-exports `risk_taxonomy` + worker-side helpers | 
+| `workers/risk_class_resolver.py` | Resolve effective risk: DB override → cache → STATIC default |
+| `workers/tier_gate.py` | `resolve_tier` (cache→DB→env-derive) + `evaluate_tier_gate`/`validate_execution_gate(tier=, risk_override=)` decision matrix. READONLY→ALLOW; shadow→SUGGEST; HIGH→HITL (any tier); assist LOW→ALLOW/MEDIUM→HITL; auto LOW+MEDIUM→ALLOW. `tier=None` keeps legacy path (backward-compat). |
+| `workers/tier_readiness.py` | `compute_tier_readiness`: KPI ZSET + Wilson lower-bound; display-only promotion hint |
+| `workers/tier_loops.py` | analyst/full loops: `crat_outbox_drainer_loop`, `tier_readiness_loop`, `hitl_ui_decisions_loop` (consume `omni-hitl-decisions`) |
+| `workers/hitl_telegram.py` | `build_hitl_card` (callback `hitl:approve\|reject:{id}`), `handle_hitl_callback` (CRAT HITL_DECISION before dispatch, fail-closed), `dispatch_hitl_ui_decision` (UI-origin: CRAT already in outbox, only routes APPROVED→omni-actions/REJECTED→omni-action-feedback) |
+
+### Gateway autonomy endpoints (src/gateway/routes/autonomy.py)
+
+All read `app.state.admin_repo` (503 if store offline) and never import workers (taxonomy via `pkg.risk_taxonomy`).
+
+| Endpoint | Mô tả |
+|----------|-------|
+| `GET/POST /autonomy/tier` · `GET /autonomy/readiness` | Tier read + change (raise requires `confirm=true`, else 409) |
+| `GET/POST /autonomy/risk-class` | STATIC + overrides; downgrade `confirm=true` (409); dangerous→<HIGH 400 |
+| `GET/POST /autonomy/flags` | Runtime flags |
+| `GET/POST /autonomy/tenants` · `POST /tenants/{id}/status` · `GET/POST /tenants/{id}/api-keys` · `DELETE /tenants/{id}/api-keys/{keyId}` | Tenant + API-key lifecycle (key sha256-hashed, plaintext returned once) |
+| `GET /autonomy/hitl/pending` · `POST /autonomy/hitl/{id}/decide` | HITL queue; decide publishes Kafka `omni-hitl-decisions` |
+
+### UI Admin Config (ui/) — write-capable, route-per-panel
+
+Proxy layer `ui/lib/gateway-proxy.ts` (`authHeaders` Bearer `OMNI_GATEWAY_API_KEY`, `proxyGet/proxyBody`) + `ui/app/api/autonomy/{tier,risk-class,flags,tenants,tenants/[tenantId]/{api-keys,api-keys/[keyId],status},hitl,hitl/[pendingId]}/route.ts` (NextAuth-gated). Config panels (`ui/components/admin/`): `TierControlPanel`, `RiskClassMatrixPanel` (dangerous-locked + 2-step downgrade confirm), `RuntimeFlagsPanel`, `TenantPanel` (plaintext key shown once), `HitlQueuePanel` (approve/reject + poll), `AutonomyPanel`. Rendered on **dedicated routes** `/admin/tier · /admin/risk-class · /admin/flags · /admin/tenants · /admin/hitl`; `/admin` is a short overview; observability panels grouped under `/admin/observability`.
+
+### New Kafka topic & Redis keys (autonomy)
+
+| New | Mô tả |
+|-----|-------|
+| Kafka `omni-hitl-decisions` (partitions=3) | UI HITL decisions → `hitl_ui_decisions_loop` |
+| Redis `omni:tier:readiness:{tenant}` | Tier readiness snapshot (Wilson LB) |
+| Redis `omni:kpi:z:{tenant_id}:{accepted\|rejected\|false_positive}` | Per-tenant KPI ZSETs (migrated from flat keys) |
+| Postgres `crat_outbox` | Transactional Outbox staging (PENDING→SENT, dedup_key UNIQUE) |
