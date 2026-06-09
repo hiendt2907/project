@@ -2522,6 +2522,13 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                         # reconciled verdict then CAPS the LLM's optimism.
                         from workers.verify_reconcile import cap_assessments, reconcile_advisory
 
+                        # Stash the probe-evidence map so the multi-layer reconciler
+                        # (OS/DB/host-metric/network) can read live ground truth without
+                        # changing reconcile_advisory's stable signature. Read-only.
+                        try:
+                            ctx.evidence_by_probe = by_probe
+                        except Exception:  # noqa: BLE001 — ctx may be slotted
+                            pass
                         _recon = await reconcile_advisory(ctx, advisory)
                         await append_trace_log(
                             ctx.redis, trace, "VERIFY",

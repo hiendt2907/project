@@ -236,15 +236,363 @@ def _combine(verdicts: list[Verdict]) -> Verdict:
     return "unverifiable"
 
 
-async def reconcile_advisory(ctx: Any, advisory: Any) -> ReconcileOutcome:
-    """Reconcile the advisory's root_cause against the live state of the claimed pod.
+# ===========================================================================
+# Multi-layer claim classification (L1 os_baremetal · L2 network · L3 k8s ·
+# remote-agent host metrics). The pod path above is L3 and stays exactly as it
+# was; the classifier only ROUTES — it never weakens the pod reconciler.
+# ===========================================================================
 
-    Returns an honest ground-truth verdict. Best-effort: any failure ⇒
-    ``unverifiable`` (no evidence ⇒ no confirmation). Never raises.
+# Keyword tables per layer. Pod signals (OOM/crash/imagepull/notready/evicted)
+# are detected separately by ``detect_claim_signals`` and win the routing tie:
+# a "pod OOMKilled" claim must stay on the live-container-status path, not be
+# mis-routed to the host OS layer just because it mentions "memory".
+_OS_KEYS = (
+    "systemd", "service down", "service failed", "unit failed", "unit is down",
+    "disk full", "disk is full", "no space", "disk usage", "filesystem full",
+    "inode", "df -h", "df -i", "nfs", "mount", "partition",
+)
+_DB_KEYS = (
+    "mysql", "proxysql", "postgres", "postgresql", "mongodb", "mongo",
+    "replication", "replica lag", "replication lag", "slave", "primary down",
+    "database down", "db down", "connection pool exhausted",
+)
+_HOSTMETRIC_KEYS = (
+    "cpu saturation", "cpu saturated", "high cpu", "cpu spike", "cpu pegged",
+    "memory saturation", "mem saturation", "memory pressure", "high memory",
+    "memory exhaustion", "host load", "load average", "host cpu", "host mem",
+    "host memory", "resource saturation", "saturated",
+)
+_NETWORK_KEYS = (
+    "packet loss", "packet drop", "conntrack", "latency", "rtt",
+    "network anomaly", "interface down", "link down", "dns resolution",
+    "tcp connection", "time_wait", "syn flood", "retransmit",
+)
+
+# Map a host-metric layer to the remote-agent probe + 3σ suffix it reconciles.
+_REMOTE_METRICS_PROBE = "remote_system_metrics"
+_HOSTMETRIC_FACT_TO_SUFFIX: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("cpu_percent", ("cpu",), "cpu"),
+    ("mem_percent", ("memory", "mem"), "mem"),
+    ("disk_percent", ("disk", "filesystem"), "disk"),
+)
+# Mirror remote_host_baseline.REMOTE_KEY_PREFIX without importing the writer
+# (read-only here). Kept in sync deliberately — see remote_host_baseline.py:28.
+_REMOTE_3SIGMA_PREFIX = "3sigma:remote:"
+_REMOTE_3SIGMA_THRESHOLD = 3.0
+
+
+def _any_kw(text: str, keys: tuple[str, ...]) -> bool:
+    return any(k in text for k in keys)
+
+
+Layer = Literal["pod", "os", "db", "host_metric", "network", ""]
+
+
+def detect_claim_layer(root_cause: str, affected_workload: str = "") -> Layer:
+    """Classify which infrastructure layer the advisory claim lives in.
+
+    Pod-state claims (the original path) take priority so K8s pod failures are
+    never down-routed. Otherwise route by keyword to the OS / DB / host-metric /
+    network reconciler. Empty string ⇒ no recognized testable layer.
+    """
+    text = f"{root_cause or ''} {affected_workload or ''}".lower()
+    if detect_claim_signals(root_cause):
+        return "pod"
+    if _any_kw(text, _DB_KEYS):
+        return "db"
+    if _any_kw(text, _OS_KEYS):
+        return "os"
+    # host-metric before network: "cpu saturation on host" must not be eaten by
+    # a stray "latency" mention; network is the most generic bucket.
+    if _any_kw(text, _HOSTMETRIC_KEYS):
+        return "host_metric"
+    if _any_kw(text, _NETWORK_KEYS):
+        return "network"
+    return ""
+
+
+def _evidence_by_probe(ctx: Any) -> dict[str, dict[str, Any]]:
+    """Read the probe-evidence map the caller stashed on ctx (read-only).
+
+    Honest gate: when the caller did not attach probe evidence we have nothing
+    to test against, so every layered reconciler degrades to ``unverifiable``.
+    """
+    raw = getattr(ctx, "evidence_by_probe", None)
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+def _import_os_validator():  # pragma: no cover - thin import shim
+    from workers import os_state_validator as osv
+
+    return osv
+
+
+def reconcile_os_signal(
+    probe_name: str, ev: dict[str, Any]
+) -> tuple[Verdict, str] | None:
+    """Reconcile ONE OS/DB probe envelope against the SYS_HARD_FAIL-style claim.
+
+    Ground truth = ``os_state_validator`` handler output (file:line cited in the
+    module docstring of os_state_validator.py). A registered handler returns a
+    *contrast string* when the probe PASSED but the alert claims failure → the
+    live host contradicts the claim → ``refuted``. A non-PASSED probe with the
+    failure indicators present → ``confirmed``. Missing/empty fact ⇒ None
+    (caller treats as unverifiable). Never raises.
+    """
+    try:
+        osv = _import_os_validator()
+        handler = osv._OS_PROBE_HANDLERS.get(probe_name)
+        if handler is None:
+            return None
+        result = osv._probe_result(ev)
+        ef = osv._parse_ef(ev.get("extracted_fact"), probe_name)
+        if not ef and result != "FAILED":
+            # No extracted fact and not an explicit failure ⇒ unknown state.
+            return None
+        # PASSED + handler emits contrast ⇒ live host healthy ⇒ claim refuted.
+        sanitized = osv._sanitize_probe_ev(ev)
+        contrast = handler(sanitized, {})
+        if contrast is not None:
+            return "refuted", f"{probe_name} PASSED contradicts failure claim — {contrast[:180]}"
+        # Handler returned None: either probe FAILED (real fault) or data is
+        # insufficient. A FAILED result with the probe present confirms the claim.
+        if result and result != "PASSED":
+            return "confirmed", f"{probe_name} result={result} confirms failure claim"
+        # PASSED but handler withheld contrast ⇒ the probe itself saw a fault
+        # (e.g. failed_units present) ⇒ claim stands.
+        return "confirmed", f"{probe_name} PASSED but fault indicators present — confirms claim"
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.debug("reconcile_os_signal: probe=%s err=%r", probe_name, exc)
+        return None
+
+
+async def reconcile_os_layer(
+    ctx: Any, advisory: Any, *, db: bool = False
+) -> ReconcileOutcome:
+    """Reconcile OS-state (or DB-health) claims against os_state_validator probes.
+
+    Reuses the existing probe handlers — no reinvention. Read-only, honest gate:
+    no relevant probe in the attached evidence ⇒ ``unverifiable``. Can REFUTE: a
+    PASSED systemd/disk/mysql probe contradicting a "service down" claim yields
+    ``refuted``.
+    """
+    layer_name = "db" if db else "os"
+    relevant = _DB_PROBES if db else _OS_PROBES
+    by_probe = _evidence_by_probe(ctx)
+    if not by_probe:
+        return ReconcileOutcome(
+            "unverifiable", f"no probe evidence attached to reconcile {layer_name} claim", ()
+        )
+    verdicts: list[Verdict] = []
+    parts: list[str] = []
+    seen: list[str] = []
+    for pname, ev in by_probe.items():
+        if pname not in relevant or not isinstance(ev, dict):
+            continue
+        outcome = reconcile_os_signal(pname, ev)
+        if outcome is None:
+            continue
+        v, why = outcome
+        verdicts.append(v)
+        parts.append(f"{pname}:{v} ({why})")
+        seen.append(pname)
+    if not verdicts:
+        return ReconcileOutcome(
+            "unverifiable", f"no testable {layer_name} probe ground-truth present", tuple(seen)
+        )
+    return ReconcileOutcome(_combine(verdicts), " | ".join(parts), tuple(seen))
+
+
+_OS_PROBES = frozenset(
+    {
+        "systemd_units", "disk_usage", "storage_nfs", "raid_mdadm", "lvm_volumes",
+        "swap_usage", "service_haproxy", "service_haproxy_prom", "service_nginx",
+        "service_keepalived", "cron_jobs", "oom_events", "zombie_processes",
+        "kernel_errors", "memory_hw_errors", "docker_daemon", "containerd_state",
+    }
+)
+_DB_PROBES = frozenset(
+    {"mysql_health", "proxysql_health", "postgresql_health", "redis_os_health", "mongodb_health"}
+)
+_NETWORK_PROBES = frozenset(
+    {"network_interfaces", "dns_resolution", "tcp_connections"}
+)
+
+
+async def reconcile_network_layer(ctx: Any, advisory: Any) -> ReconcileOutcome:
+    """Reconcile network claims against L2 network probes if present.
+
+    Honest gate: when no network probe ran (Prometheus/agent blind), the claim is
+    ``unverifiable`` — we never confirm a packet-loss/latency claim we cannot
+    observe. Can REFUTE: a PASSED ``network_interfaces``/``tcp_connections`` probe
+    contradicting an "interface down"/"connection saturation" claim → ``refuted``.
+    """
+    by_probe = _evidence_by_probe(ctx)
+    if not by_probe:
+        return ReconcileOutcome(
+            "unverifiable", "no probe evidence attached to reconcile network claim", ()
+        )
+    verdicts: list[Verdict] = []
+    parts: list[str] = []
+    seen: list[str] = []
+    for pname, ev in by_probe.items():
+        if pname not in _NETWORK_PROBES or not isinstance(ev, dict):
+            continue
+        outcome = reconcile_os_signal(pname, ev)  # same PASSED-contrast logic
+        if outcome is None:
+            continue
+        v, why = outcome
+        verdicts.append(v)
+        parts.append(f"{pname}:{v} ({why})")
+        seen.append(pname)
+    if not verdicts:
+        return ReconcileOutcome(
+            "unverifiable", "no testable network probe ground-truth present", tuple(seen)
+        )
+    return ReconcileOutcome(_combine(verdicts), " | ".join(parts), tuple(seen))
+
+
+def _host_from_workload(affected_workload: str) -> str:
+    """Remote host id. The agent stamps the hostname in the envelope ``namespace``
+    field (see remote_agent/evidence.py:42 + collectors/system.py:73), and the
+    advisory mirrors it in affected_workload. Tolerates ``host/...`` or bare host."""
+    ns, name = _split_workload(affected_workload)
+    return (name or ns).strip()
+
+
+def _remote_host_from_evidence(by_probe: dict[str, dict[str, Any]]) -> str:
+    ev = by_probe.get(_REMOTE_METRICS_PROBE)
+    if isinstance(ev, dict):
+        return str(ev.get("namespace") or "").strip()
+    return ""
+
+
+async def _remote_zscore(ctx: Any, tenant: str, host: str, suffix: str) -> float | None:
+    """Read-only 3σ z-score for a remote host metric from Redis.
+
+    Mirrors ``remote_host_baseline`` keying (3sigma:remote:{tenant}:{host}:{suf})
+    via ThreeSigmaGate.get_z_score (read-only — no sample is written). Returns
+    None when there is no baseline yet ⇒ caller treats as unverifiable.
+    """
+    redis = getattr(ctx, "redis", None)
+    if redis is None or not host:
+        return None
+    try:
+        from anomaly.three_sigma import ThreeSigmaGate
+
+        gate = ThreeSigmaGate(redis, key_prefix=_REMOTE_3SIGMA_PREFIX)
+        metric_id = f"{tenant}:{host}:{suffix}"
+        return await gate.get_z_score(metric_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.debug("_remote_zscore: host=%s suffix=%s err=%r", host, suffix, exc)
+        return None
+
+
+async def reconcile_host_metric_layer(ctx: Any, advisory: Any) -> ReconcileOutcome:
+    """Reconcile guest-host CPU/mem/disk saturation claims against the remote
+    agent payload + Omni-side 3σ baseline (NOT Prometheus — it is blind here).
+
+    Ground truth precedence:
+      1. Omni-side 3σ at ``3sigma:remote:{tenant}:{host}:{cpu|mem|disk}`` — if the
+         live sample sits within ±3σ of the host's own baseline, a "saturated"
+         claim is statistically ``refuted`` (this is the whole point: a number
+         that is *high but normal for this host* is not an incident).
+      2. Falls back to the agent's PASS/FAIL on the live percentage when no
+         baseline exists yet.
+    Honest gate: no remote payload AND no baseline ⇒ ``unverifiable``.
+    """
+    root_cause = str(getattr(advisory, "root_cause", "") or "")
+    workload = str(getattr(advisory, "affected_workload", "") or "")
+    text = f"{root_cause} {workload}".lower()
+    by_probe = _evidence_by_probe(ctx)
+    ev = by_probe.get(_REMOTE_METRICS_PROBE) if isinstance(by_probe, dict) else None
+    fact: dict[str, Any] = {}
+    if isinstance(ev, dict):
+        try:
+            osv = _import_os_validator()
+            fact = osv._parse_ef(ev.get("extracted_fact"), _REMOTE_METRICS_PROBE)
+        except Exception:  # noqa: BLE001
+            fact = {}
+
+    tenant = str(getattr(getattr(ctx, "settings", None), "tenant_id", "") or "default")
+    host = _remote_host_from_evidence(by_probe) or _host_from_workload(workload)
+
+    # Decide which metric the claim is about; default to whatever the text names.
+    targets = [
+        (fact_key, suffix)
+        for (fact_key, kws, suffix) in _HOSTMETRIC_FACT_TO_SUFFIX
+        if any(k in text for k in kws)
+    ] or [(fk, sx) for (fk, _kw, sx) in _HOSTMETRIC_FACT_TO_SUFFIX]
+
+    verdicts: list[Verdict] = []
+    parts: list[str] = []
+    seen: list[str] = []
+    for fact_key, suffix in targets:
+        z = await _remote_zscore(ctx, tenant, host, suffix)
+        live = fact.get(fact_key)
+        if z is not None:
+            seen.append(f"z_{suffix}")
+            if abs(z) <= _REMOTE_3SIGMA_THRESHOLD:
+                verdicts.append("refuted")
+                parts.append(
+                    f"{suffix}: z={z:.2f} within ±{_REMOTE_3SIGMA_THRESHOLD}σ of host baseline "
+                    f"— '{suffix} saturation' claim refuted (normal for {host or '?'})"
+                )
+            else:
+                verdicts.append("confirmed")
+                parts.append(f"{suffix}: z={z:.2f} exceeds ±{_REMOTE_3SIGMA_THRESHOLD}σ — saturation confirmed")
+            continue
+        # No baseline — fall back to the live agent percentage if present.
+        if live is not None:
+            seen.append(fact_key)
+            try:
+                pct = float(live)
+            except (TypeError, ValueError):
+                continue
+            if pct >= 90.0:
+                verdicts.append("confirmed")
+                parts.append(f"{suffix}: live={pct:.1f}% (no baseline) — saturation confirmed")
+            elif pct < 50.0:
+                verdicts.append("refuted")
+                parts.append(f"{suffix}: live={pct:.1f}% (no baseline) — contradicts saturation claim")
+            else:
+                parts.append(f"{suffix}: live={pct:.1f}% (no baseline) — ambiguous")
+
+    if not verdicts:
+        return ReconcileOutcome(
+            "unverifiable",
+            "no remote-host baseline or live metric to test saturation claim "
+            + (" | ".join(parts) if parts else ""),
+            tuple(seen),
+        )
+    return ReconcileOutcome(_combine(verdicts), " | ".join(parts), tuple(seen))
+
+
+async def reconcile_advisory(ctx: Any, advisory: Any) -> ReconcileOutcome:
+    """Reconcile the advisory's root_cause against live ground truth.
+
+    Routes BY CLAIM LAYER (L1 os_baremetal · L2 network · L3 kubernetes pod ·
+    remote-agent host metrics). The pod path is unchanged. Returns an honest
+    ground-truth verdict. Best-effort: any failure ⇒ ``unverifiable`` (no
+    evidence ⇒ no confirmation). Never raises.
     """
     try:
         root_cause = str(getattr(advisory, "root_cause", "") or "")
         workload = str(getattr(advisory, "affected_workload", "") or "")
+        layer = detect_claim_layer(root_cause, workload)
+
+        if layer == "os":
+            return await reconcile_os_layer(ctx, advisory, db=False)
+        if layer == "db":
+            return await reconcile_os_layer(ctx, advisory, db=True)
+        if layer == "host_metric":
+            return await reconcile_host_metric_layer(ctx, advisory)
+        if layer == "network":
+            return await reconcile_network_layer(ctx, advisory)
+
+        # Default / "pod" layer — original live-container-status path (unchanged).
         signals = detect_claim_signals(root_cause)
         if not signals:
             return ReconcileOutcome("unverifiable", "no testable failure-mode signal in root_cause", ())
