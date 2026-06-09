@@ -1415,6 +1415,34 @@ async def _emit_agentic_mutate_if_any(
         )
     fallback_lane_override: str | None = None
     if not plan:
+        # F15: the LLM agentic planner is flaky (emits read-only tools / "can't assist"
+        # / schema violations) and can leave a KNOWN, self-healable fault with no plan —
+        # degrading to SUGGEST even when a safe, reversible remediation is obvious. For
+        # well-defined fault classes (workload fault / CPU saturation), synthesize a
+        # deterministic k8s_rollout_restart so autonomy does not hinge on the LLM
+        # producing valid JSON. This flows through the SAME downstream gates as any
+        # mutate (proof-of-fault, INV_*, tier gate, namespace isolation, kill-switch,
+        # pre-mutate snapshot, post-mutate reconcile→rollback). In fail-closed mode the
+        # advisory kill-switch still routes it to SUGGEST — it only becomes a real mutate
+        # when auto-execute is explicitly enabled.
+        rr_sn = rollout_args_from_evidence_batch(batch)
+        if rr_sn and (
+            workload_fault_incident_rollout_eligible(batch)
+            or workload_cpu_incident_rollout_eligible(batch)
+        ):
+            plan = {
+                "tool_name": "k8s_rollout_restart",
+                "args": dict(rr_sn),
+                "discovery_steps": discovery_steps,
+                "lane_hint": None,
+                "reasoning_chain": None,
+                "planner_origin": "deterministic_safety_net_after_planner_fail",
+            }
+            logger.warning(
+                "event=deterministic_safety_net_after_planner_fail trace=%s tool=k8s_rollout_restart",
+                trace,
+            )
+    if not plan:
         if not allow_det:
             await _emit_suggest_remediation(
                 ctx,

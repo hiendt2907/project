@@ -345,6 +345,80 @@ async def test_emit_agentic_chaos_lab_autofix_after_planner_fail_llm_first(monke
 
 
 @pytest.mark.asyncio
+async def test_emit_agentic_deterministic_safety_net_rollout_after_planner_fail(monkeypatch: pytest.MonkeyPatch):
+    """F15: LLM planner returns None for a KNOWN self-healable fault (no chaos credential
+    case). The deterministic safety-net must synthesize k8s_rollout_restart instead of
+    degrading to SUGGEST, so autonomy does not hinge on flaky LLM JSON. Downstream gates
+    (proof-of-fault / INV_* / kill-switch) still run — here they are stubbed open."""
+    from workers import evidence_consumer as ec
+    from workers.handler_context import WorkerHandlerContext
+
+    captured: dict[str, Any] = {}
+
+    async def _capture_emit(
+        ctx: Any,
+        *,
+        trace: str,
+        tool_name: str,
+        args: dict[str, Any],
+        attempt_count: int = 1,
+        reasoning_chain: dict[str, Any] | None = None,
+    ) -> bool:
+        captured["tool_name"] = tool_name
+        captured["args"] = args
+        return True
+
+    monkeypatch.setattr(ec, "emit_execute_mutate", _capture_emit)
+    monkeypatch.setattr(ec, "infer_blind_proof_lane_hint", AsyncMock(return_value=None))
+    monkeypatch.setattr(ec, "deterministic_mutate_plan_from_batch", lambda *a, **k: None)
+    monkeypatch.setattr(ec, "recall_playbook_advisory", AsyncMock(return_value=None))
+    monkeypatch.setattr(ec, "run_agentic_mutate_plan", AsyncMock(return_value=None))
+    monkeypatch.setattr(ec, "_proof_of_fault_gate", AsyncMock(return_value=(True, "", {"proof_lane": "state"})))
+    monkeypatch.setattr(ec, "evaluate_diagnostic_invariants", lambda *_a, **_k: (True, "", {}))
+    # Known fault class with a safe reversible remediation.
+    monkeypatch.setattr(
+        ec,
+        "rollout_args_from_evidence_batch",
+        lambda _b: {"namespace": "multi-agent", "workload_kind": "deployment", "name": "nginx-test"},
+    )
+    monkeypatch.setattr(ec, "workload_fault_incident_rollout_eligible", lambda _b: True)
+    monkeypatch.setattr(ec, "workload_cpu_incident_rollout_eligible", lambda _b: False)
+
+    ws = SimpleNamespace(
+        autonomous_agentic_max_steps=2,
+        omni_diagnostic_react_enabled=False,
+        omni_planner_precondition_gate_enabled=False,
+        trace_correlation_ping_enabled=False,
+        omni_llm_first_autonomy_enabled=True,
+        omni_legacy_deterministic_fallback=False,
+        omni_unrestricted_tool_execution=True,
+        lab_chaos_credential_autofix_enabled=False,
+        omni_probe_driven_mutate_tools="k8s_rollout_restart",
+    )
+    ctx = WorkerHandlerContext(
+        settings=ws,
+        redis=fakeredis.aioredis.FakeRedis(decode_responses=True),
+        llm=MagicMock(),
+        vector_store=MagicMock(),
+        ledger=MagicMock(),
+        semaphore=AsyncMock(),
+        telegram=None,
+        kafka=None,
+    )
+    batch = [{"raw": "OOMKilled nginx container restarted", "alert_hint": "PodMemoryWorkingSetVsLimitHigh"}]
+    out = await ec._emit_agentic_mutate_if_any(
+        ctx,
+        "tr-f15-safety-net",
+        batch,
+        sanitized_text="workload fault OOM",
+    )
+    assert out is True
+    assert captured.get("tool_name") == "k8s_rollout_restart"
+    assert captured["args"].get("name") == "nginx-test"
+    assert captured["args"].get("namespace") == "multi-agent"
+
+
+@pytest.mark.asyncio
 async def test_emit_agentic_chaos_lab_vetoes_rollout_on_credential_failure(monkeypatch: pytest.MonkeyPatch):
     """Planner fault rollout_restart is replaced by chaos k8s_patch_secret when evidence shows auth failure."""
     from workers import evidence_consumer as ec
