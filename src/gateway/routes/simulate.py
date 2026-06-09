@@ -76,18 +76,34 @@ def _evidence_topic(request: Request) -> str:
     return getattr(request.app.state, "kafka_topic_evidence", "omni-diagnostic-evidence")
 
 
-def _build_prometheus_alert(lane: str, trace_id: str) -> dict[str, Any]:
-    """Build a firing Prometheus/Alertmanager webhook body for an alert-lane."""
+def _build_prometheus_alert(
+    lane: str,
+    trace_id: str,
+    *,
+    pod: str | None = None,
+    namespace: str | None = None,
+    drop_pod: bool = False,
+) -> dict[str, Any]:
+    """Build a firing Prometheus/Alertmanager webhook body for an alert-lane.
+
+    Optional overrides let an operator exercise edge cases (lab-only):
+      - ``pod`` / ``namespace``: target a different (e.g. non-existent) workload so
+        the VERIFY ground-truth reconciler can be tested (ghost pod ⇒ refuted).
+      - ``drop_pod``: omit the ``pod`` label entirely to test alert-completeness
+        handling (does the pipeline reject or hallucinate a pod?).
+    """
     stamp = _now_iso()
+    _ns = (namespace or "multi-agent").strip() or "multi-agent"
+    _pod = (pod or "nginx-test").strip() or "nginx-test"
     if lane == "sys_resource":
         alert = {
             "status": "firing",
             "labels": {
                 "alertname": "HighCPUUsage",
                 "severity": "warning",
-                "namespace": "multi-agent",
-                "pod": "nginx-test",
-                "deployment": "nginx-test",
+                "namespace": _ns,
+                "pod": _pod,
+                "deployment": _pod,
                 "container": "nginx",
             },
             "annotations": {
@@ -103,8 +119,8 @@ def _build_prometheus_alert(lane: str, trace_id: str) -> dict[str, Any]:
             "labels": {
                 "alertname": "PodMemoryWorkingSetVsLimitHigh",
                 "severity": "critical",
-                "namespace": "multi-agent",
-                "pod": "nginx-test",
+                "namespace": _ns,
+                "pod": _pod,
                 "container": "nginx",
                 "domain": "pod",
                 "signal": "memory",
@@ -116,6 +132,10 @@ def _build_prometheus_alert(lane: str, trace_id: str) -> dict[str, Any]:
             "startsAt": stamp,
             "endsAt": "0001-01-01T00:00:00Z",
         }
+    if drop_pod:
+        # Alert-completeness edge case: a critical alert with no pod label.
+        alert["labels"].pop("pod", None)
+        alert["labels"].pop("deployment", None)
     return {
         "receiver": "omni-webhook",
         "status": "firing",
@@ -360,7 +380,12 @@ async def simulate_lane(lane: str, request: Request) -> JSONResponse:
         ingress = "remote_agent"
     elif lane in _ALERT_LANES:
         topic = _alert_topic(request)
-        body = _build_prometheus_alert(lane, trace_id)
+        _ov_pod = str(body_in.get("pod") or "").strip()[:128] or None
+        _ov_ns = str(body_in.get("namespace") or "").strip()[:128] or None
+        _drop_pod = bool(body_in.get("drop_pod") or False)
+        body = _build_prometheus_alert(
+            lane, trace_id, pod=_ov_pod, namespace=_ov_ns, drop_pod=_drop_pod
+        )
         # source MUST be "prometheus" so build_anomaly_event_from_alert_payload runs the
         # full label-extraction path (namespace/pod/deployment). "simulator" falls through
         # to the GenericAlert fallback → no namespace/pod → every resource/state probe SKIPs.

@@ -2514,16 +2514,33 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                             (a.model_dump() if hasattr(a, "model_dump") else dict(a))
                             for a in _assess_raw
                         ]
-                        # No probe actually executed ⇒ we did not TEST anything ⇒ never
+                        # GROUND-TRUTH RECONCILIATION — the LLM's kb_assessment is a
+                        # self-graded hypothesis, NOT evidence. Read the claimed pod's
+                        # live container status and let it judge the root_cause claim, so
+                        # a hallucinated failure (e.g. "OOMKilled" on a healthy Running
+                        # pod) is REFUTED instead of rubber-stamped confirmed. The
+                        # reconciled verdict then CAPS the LLM's optimism.
+                        from workers.verify_reconcile import cap_assessments, reconcile_advisory
+
+                        _recon = await reconcile_advisory(ctx, advisory)
+                        await append_trace_log(
+                            ctx.redis, trace, "VERIFY",
+                            f"ground-truth={_recon.verdict} — {_recon.evidence[:160]}",
+                            level=("warn" if _recon.verdict == "refuted" else "info"),
+                        )
+                        # No probe executed AND nothing read ⇒ we tested nothing ⇒ never
                         # score the KB on an untested guess.
-                        if not _ran:
+                        if not _ran and _recon.verdict == "unverifiable":
                             for _a in _assessments:
                                 _a["verdict"] = "unverifiable"
+                        else:
+                            _assessments = cap_assessments(_assessments, _recon.verdict)
                         _fb = await apply_kb_feedback(ctx.redis, trace=trace, assessments=_assessments)
                         await mark_stage(
                             ctx.redis, trace, "VERIFY", "ok",
                             detail=(
                                 f"probes_ran={len(_ran)}/{len(_probes)} "
+                                f"ground_truth={_recon.verdict} "
                                 f"kb confirmed={_fb.get('confirmed', 0)} refuted={_fb.get('refuted', 0)} "
                                 f"stale={len(_fb.get('stale_marked', []))}"
                             ),
