@@ -100,10 +100,15 @@ def governance_check_executor_mutate(
                 "[DATA] error\n[DIAGNOSIS] reason_code=ERR_GOV_UNAUTHORIZED_MUTATION "
                 f"mutate tool {tn!r} requires valid Kubernetes DNS-label namespace"
             )
-        if settings is not None and is_prod_mode(settings) and not namespace_allowed(settings, ns):
+        # INV_NAMESPACE_ISOLATION — enforce the allowlist in ALL env modes.
+        # Auto-execute fires in lab; gating this only behind prod previously left
+        # lab mutates able to target ANY namespace. The allowlist defaults to
+        # {multi-agent}, so a legit lab mutate (multi-agent/nginx-test) is
+        # unaffected; out-of-scope namespaces are rejected fail-closed.
+        if settings is not None and not namespace_allowed(settings, ns):
             return False, (
                 f"[DATA] error\n[DIAGNOSIS] reason_code=ERR_GOV_NS_OUT_OF_BOUNDS "
-                f"namespace={ns!r} not in autonomous_allowed_namespaces"
+                f"namespace={ns!r} not in autonomous_allowed_namespaces (INV_NAMESPACE_ISOLATION)"
             )
 
     if tn == "k8s_rollout_restart":

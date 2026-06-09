@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer
@@ -183,6 +184,151 @@ async def kafka_actions_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
         await consumer.stop()
 
 
+def _advisory_from_envelope(data: dict[str, Any]) -> SimpleNamespace:
+    """Reconstruct a minimal advisory-like object (root_cause + affected_workload)
+    from the action envelope so ``reconcile_advisory`` can re-read ground truth.
+
+    The full AnalystAdvisory may not travel in the action; we carry just the claim
+    needed for ground-truth reconciliation: the asserted failure mode (root_cause)
+    and the target (affected_workload = "namespace/pod-or-deployment").
+    """
+    args = data.get("args") if isinstance(data.get("args"), dict) else {}
+    root_cause = str(
+        data.get("root_cause")
+        or data.get("claim")
+        or data.get("diagnosis")
+        or ""
+    )
+    workload = str(data.get("affected_workload") or "").strip()
+    if not workload:
+        ns = str(args.get("namespace") or "").strip()
+        target = str(
+            args.get("pod")
+            or args.get("name")
+            or args.get("deployment")
+            or ""
+        ).strip()
+        if ns and target:
+            workload = f"{ns}/{target}"
+        elif target:
+            workload = target
+    return SimpleNamespace(root_cause=root_cause, affected_workload=workload)
+
+
+async def _crat_rollback_executed(
+    ctx: WorkerHandlerContext, trace: str, *, reason_code: str, rollback_msg: str, verdict: str
+) -> None:
+    """Write a ROLLBACK_EXECUTED CRAT block (fail-closed INVARIANT).
+
+    Safety-over-audit for the rollback itself: an AuditLedgerError is logged but
+    the rollback is still attempted/recorded — we never block a safety rollback on
+    audit availability, but the attempt MUST be recorded.
+    """
+    from services.audit_ledger.chain_writer import write_audit_block
+    from services.audit_ledger.crat_event_types import CRAT_EVENT_ROLLBACK_EXECUTED
+    from services.audit_ledger.signer import AuditLedgerError
+
+    ws = ctx.settings
+    audit_topic = getattr(ws, "kafka_topic_audit_chain", "omni-audit-chain")
+    try:
+        await write_audit_block(
+            event_type=CRAT_EVENT_ROLLBACK_EXECUTED,
+            trace_id=trace,
+            payload={
+                "trace_id": trace,
+                "reason_code": reason_code,
+                "post_mutate_verdict": verdict,
+                "rollback_msg": rollback_msg,
+            },
+            redis=ctx.redis,
+            kafka=getattr(ctx, "kafka", None),
+            kafka_topic=audit_topic,
+        )
+    except AuditLedgerError as crat_err:
+        logger.critical(
+            "[%s] event=rollback_crat_failed reason=%s err=%s (rollback still recorded)",
+            trace, reason_code, crat_err,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[%s] event=rollback_crat_unexpected err=%s", trace, e)
+
+
+async def _post_mutate_reconcile_and_rollback(
+    ctx: WorkerHandlerContext,
+    trace: str,
+    data: dict[str, Any],
+    *,
+    tool_name: str,
+    correlation_id: str,
+    args: dict[str, Any],
+) -> None:
+    """After a successful mutation, re-read live ground truth. If the problem
+    persists (verdict=refuted) or the target became unhealthy, auto-rollback to the
+    pre-mutate snapshot and emit a ROLLBACK_EXECUTED CRAT block.
+    """
+    from workers.verify_reconcile import reconcile_advisory
+    from workers.rollback_executor import apply_rollback_from_snapshot
+
+    ws = ctx.settings
+    if not bool(getattr(ws, "omni_auto_rollback_enabled", True)):
+        return
+
+    advisory = _advisory_from_envelope(data)
+    outcome = await reconcile_advisory(ctx, advisory)
+    verdict = str(getattr(outcome, "verdict", "unverifiable"))
+    pod = getattr(outcome, "pod", None)
+    pod_unhealthy = bool(pod is not None and pod.found and not pod.is_healthy())
+
+    should_rollback = verdict == "refuted" or pod_unhealthy
+    logger.info(
+        "[%s] event=post_mutate_reconcile tool=%s verdict=%s pod_unhealthy=%s evidence=%s",
+        trace, tool_name, verdict, pod_unhealthy,
+        log_preview(getattr(outcome, "evidence", ""), max_chars=400),
+    )
+
+    if not should_rollback:
+        # Verified-healthy: the mutate handler already emitted the terminal 'ok'
+        # feedback for this action. Do NOT emit a second feedback here — one action
+        # yields one feedback (avoids analyst double re-evaluation + KPI double-count).
+        # The post-mutate ground-truth verdict is preserved in the log above.
+        return
+
+    reason_code = "POST_MUTATE_REFUTED" if verdict == "refuted" else "POST_MUTATE_UNHEALTHY"
+    # Ensure rollback target name is set from the envelope (real bug if unset:
+    # rollback_executor._apply reads ctx.rollback_target_name).
+    target_name = str(args.get("name") or args.get("deployment") or args.get("pod") or "").strip()
+    ctx.rollback_target_name = target_name  # type: ignore[attr-defined]
+
+    rolled_ok, rb_msg = await apply_rollback_from_snapshot(ctx, trace)
+    # CRAT fail-closed: record the ROLLBACK_EXECUTED attempt regardless.
+    await _crat_rollback_executed(
+        ctx, trace, reason_code=reason_code, rollback_msg=rb_msg, verdict=verdict,
+    )
+    logger.warning(
+        "[%s] event=post_mutate_auto_rollback reason=%s rolled_back=%s msg=%s",
+        trace, reason_code, rolled_ok, log_preview(rb_msg, max_chars=400),
+    )
+    await publish_action_feedback(
+        ctx,
+        trace_id=trace,
+        tool_name=tool_name or "unknown",
+        correlation_id=correlation_id,
+        stdout=f"rolled_back={rolled_ok} reason={reason_code} verdict={verdict} {rb_msg}",
+        stderr="",
+        exit_code=1,
+        status="rolled_back",
+        mutate_args=args,
+    )
+    await emit_transition(
+        ctx,
+        trace_id=trace,
+        transition=TRANSITION_EXECUTED,
+        status="error",
+        component="kafka_actions_consumer",
+        detail=f"auto_rollback reason={reason_code} rolled_back={rolled_ok} tool={tool_name}",
+    )
+
+
 async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: dict[str, Any]) -> None:
     tool_name = str(data.get("tool_name") or "").strip()
     args = data.get("args") if isinstance(data.get("args"), dict) else {}
@@ -310,3 +456,17 @@ async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: di
         component="kafka_actions_consumer",
         detail=f"dry_run_state tool={tool_name}",
     )
+
+    # Post-mutate ground-truth reconcile → auto-rollback if the mutation did NOT
+    # actually fix the problem (verdict still refuted / target now unhealthy).
+    # Only runs when the tool-level mutation itself succeeded (exit_code == 0);
+    # a failed mutation produced no state change to roll back.
+    if exit_code == 0:
+        await _post_mutate_reconcile_and_rollback(
+            ctx,
+            trace,
+            data,
+            tool_name=tool_name,
+            correlation_id=correlation_id,
+            args=args,
+        )

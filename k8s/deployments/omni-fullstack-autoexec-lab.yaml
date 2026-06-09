@@ -1,0 +1,80 @@
+# ============================================================================
+# LAB-ONLY auto-execute overlay for omni-fullstack.
+#
+# Enables the EXECUTE_MUTATE path end-to-end with rollback safety, scoped to
+# namespace `multi-agent` only. DO NOT apply in prod.
+#
+#   Guards in effect when this overlay is active:
+#     - OMNI_ENV_MODE=dev                  → lab posture (Pydantic Literal accepts
+#                                            only prod|dev; "lab" CRASHES settings load.
+#                                            dev == non-prod == lab governance.)
+#     - OMNI_AUTO_ROLLBACK_ENABLED=true    → pre-mutate snapshot + auto-rollback on refute
+#     - OMNI_AUTONOMOUS_ALLOWED_NAMESPACES=multi-agent
+#                                          → INV_NAMESPACE_ISOLATION (now enforced in
+#                                            ALL modes; out-of-scope ns → ERR_GOV_UNAUTHORIZED_MUTATION)
+#     - OMNI_AUTONOMY_TIER=auto            → tier×risk matrix; HIGH-risk tools still HITL
+#     - HIGH-risk tools (delete_pod, patch_secret, apply_rbac) NEVER auto-run (tier_gate)
+#     - Executor RBAC unchanged: namespaced workload patch only, NO cluster-admin,
+#       NO Secrets/RBAC WRITE (omni-fullstack-rbac.yaml).
+#
+# OMNI_SIEM_SUGGEST_ONLY may stay true — SIEM lane remains advisory-only even
+# with auto-execute on (defense in depth; only non-SIEM lanes auto-mutate).
+#
+# APPLY (orchestrator runs this later — DO NOT run from this session):
+#
+#   # Option A — declarative strategic-merge patch:
+#   kubectl patch deployment omni-fullstack -n multi-agent \
+#     --type strategic --patch-file k8s/deployments/omni-fullstack-autoexec-lab.yaml
+#
+#   # Option B — imperative (equivalent), explicit:
+#   kubectl set env deployment/omni-fullstack -n multi-agent \
+#     OMNI_ENV_MODE=dev \
+#     OMNI_AUTO_EXECUTE_ENABLED=true \
+#     OMNI_AUTO_ROLLBACK_ENABLED=true \
+#     OMNI_AUTONOMY_TIER=auto \
+#     OMNI_AUTONOMOUS_ALLOWED_NAMESPACES=multi-agent \
+#     OMNI_SIEM_SUGGEST_ONLY=true
+#
+# ROLLBACK (re-arm fail-closed):
+#   kubectl set env deployment/omni-fullstack -n multi-agent \
+#     OMNI_AUTO_EXECUTE_ENABLED=false OMNI_AUTONOMY_TIER-
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-fullstack
+  namespace: multi-agent
+  labels:
+    omni.io/env: lab
+    omni.io/autoexec: "enabled"
+  annotations:
+    omni.io/note: "LAB-ONLY auto-execute. Scoped to multi-agent. Delete env before prod."
+spec:
+  template:
+    metadata:
+      labels:
+        omni.io/autoexec: "enabled"
+    spec:
+      containers:
+        - name: omni-fullstack
+          env:
+            # Lab posture guard — auto-execute is only safe in lab.
+            - name: OMNI_ENV_MODE
+              value: "dev"   # Pydantic Literal: prod|dev only ("lab" crashes load)
+            # Master kill-switch flipped ON (lab only).
+            - name: OMNI_AUTO_EXECUTE_ENABLED
+              value: "true"
+            # Rollback safety: snapshot before mutate, auto-rollback on refute.
+            - name: OMNI_AUTO_ROLLBACK_ENABLED
+              value: "true"
+            - name: OMNI_ROLLBACK_SNAPSHOT_TTL_SEC
+              value: "3600"
+            # Tier matrix: LOW/MEDIUM auto, HIGH still HITL.
+            - name: OMNI_AUTONOMY_TIER
+              value: "auto"
+            # INV_NAMESPACE_ISOLATION — only multi-agent may be mutated.
+            - name: OMNI_AUTONOMOUS_ALLOWED_NAMESPACES
+              value: "multi-agent"
+            # SIEM lane stays advisory-only even with auto-execute on.
+            - name: OMNI_SIEM_SUGGEST_ONLY
+              value: "true"
