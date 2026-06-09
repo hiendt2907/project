@@ -150,6 +150,7 @@ def _make_ctx(telegram_captures: list, **overrides):
         "omni_sigma_log_bypass_enabled": False,
         "telegram_admin_chat_id": "99999",
         "kafka_topic_diagnostic_evidence": "omni-diagnostic-evidence",
+        "kafka_topic_audit_chain": "omni-audit-chain",
     }
     settings_defaults.update(overrides)
     settings = SimpleNamespace(**settings_defaults)
