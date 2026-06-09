@@ -179,16 +179,23 @@ def _alert_fingerprint(payload: dict[str, Any]) -> str | None:
         namespace = str(
             labels.get("namespace") or labels.get("exported_namespace") or ""
         )
-        deployment = str(
+        # Subject identity: prefer the stable workload (deployment/statefulset, which
+        # survives pod-restart churn). But a pod-scoped alert (OOMKilled,
+        # CrashLoop) often carries ONLY a pod label and no workload label — falling
+        # back to "" then collapses EVERY pod failure in the namespace into one
+        # fingerprint, silently dropping distinct pods' alerts within the window.
+        # Fall back to the pod label so distinct failing pods are distinct incidents.
+        subject = str(
             labels.get("deployment")
             or labels.get("workload")
             or labels.get("statefulset")
+            or labels.get("pod")
             or ""
         )
         # Include trace_id when present (e.g. chaos drills inject per-drill trace_id as a label)
         # so that each uniquely-traced alert is treated as a new incident, bypassing 300s dedup.
         trace_id_label = str(labels.get("trace_id") or "")
-        raw = f"{source}:{alertname}:{namespace}:{deployment}:{trace_id_label}"
+        raw = f"{source}:{alertname}:{namespace}:{subject}:{trace_id_label}"
         return hashlib.sha256(raw.encode()).hexdigest()[:20]
     except Exception:
         return None
