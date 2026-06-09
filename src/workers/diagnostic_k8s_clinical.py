@@ -220,6 +220,19 @@ async def _resolve_pods_when_pod_missing(
         if got:
             return got, "pod_name_pattern_deployment"
 
+    # Final fallback: the alert "pod" label may actually carry the bare workload
+    # name (no replica hash) — common when the deployment/app label is stripped
+    # during canonicalization. Treat alert_pod itself as a candidate workload so a
+    # rotated/abstracted pod reference still resolves to live pods instead of
+    # collapsing to "unresolved" (which strands the whole state lane). F14.
+    if alert_pod:
+        for kind in ("Deployment", "StatefulSet"):
+            got = await _list_pod_names_for_workload(
+                v1, apps, batch_api, namespace, kind, alert_pod
+            )
+            if got:
+                return got, f"alert_pod_as_{kind.lower()}"
+
     return [], "unresolved"
 
 
