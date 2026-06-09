@@ -39,6 +39,12 @@ from workers.alert_sdk_truth_compare import (
     compare_alert_claim_to_sdk_state,
 )
 from workers.os_state_validator import compare_alert_claim_to_os_state
+from workers.siem_reasoning import (
+    extract_siem_evidence,
+    reason_blast_radius,
+    reason_verify,
+    reason_why,
+)
 from workers.os_diagnostic_loop import run_os_diagnostic_loop
 from workers.analyst_agentic_loop import infer_blind_proof_lane_hint, run_agentic_mutate_plan
 from workers.memory.initial_symptom import initial_symptom_from_evidence_batch
@@ -239,18 +245,6 @@ _SIEM_DEFAULT_STEPS = [
     "Apply remediation from suggested_action below; verify with kubectl rollout status",
 ]
 
-# SIEM WHY context per category (root cause basis for operator)
-_SIEM_CATEGORY_WHY: dict[str, str] = {
-    "ddos": "Distributed volumetric attack detected — traffic anomaly exceeds baseline; origin IP triggered FinGuard ruleset.",
-    "malware": "Malicious executable or C2 beaconing detected — process/network behavior deviates from pod baseline.",
-    "data_exfil": "Unauthorized data transfer detected — egress volume or destination IP matches exfiltration signature.",
-    "k8s_threat": "Kubernetes privilege escalation or container breakout attempt detected — privileged pod/binding anomaly.",
-    "auth_failure": "Sustained authentication failures detected — credential stuffing or brute-force pattern confirmed.",
-    "lateral_movement": "East-west pod-to-pod traffic anomaly detected — signature matches lateral movement playbook.",
-    "network_anomaly": "Network traffic pattern deviation detected — anomalous port/protocol outside expected service mesh.",
-}
-_SIEM_DEFAULT_WHY = "Security incident detected by FinGuard SIEM — anomaly confidence exceeds alert threshold."
-
 # SIEM forecast by (category, severity) — heuristic kill-chain timeline
 # Keys: "critical"/"high"/"medium"/"low"; default to critical if not found
 _SIEM_FORECAST: dict[str, dict[str, list[tuple[str, str, str, str]]]] = {
@@ -358,48 +352,6 @@ def _format_siem_forecast_text(forecast: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-# SIEM scope-confirmation steps per category. The HOW-TO remediation assumes the
-# K8s cluster is in-scope; these VERIFY steps prove that assumption FIRST, so an
-# operator never edge-blocks or runs kubectl on an incident that the evidence does
-# not actually tie to the cluster (scope discipline — see memory
-# project_rag_kb_and_scope_prompt). Placeholders: {ns} {ip}.
-_SIEM_CATEGORY_VERIFY: dict[str, list[str]] = {
-    "ddos": [
-        "Classify origin {ip}: public IP → external volumetric plausible; RFC1918/internal → single internal source, NOT distributed — investigate that host/pod first.",
-        "Find the saturation point: `conntrack -L | grep {ip}` and `cat /proc/sys/net/netfilter/nf_conntrack_count` on the node/LB — conntrack fills at the kernel netfilter layer, not inside K8s.",
-        "Confirm the flood actually reaches the cluster: check ingress-controller request rate / LB metrics. If traffic is dropped at the edge, the kubectl steps below do NOT apply.",
-    ],
-    "network_anomaly": [
-        "Classify origin {ip} (public vs RFC1918) and confirm the anomalous flow terminates inside the cluster, not at the node/edge.",
-        "Identify which node/interface sees the anomaly before assuming a service-mesh cause.",
-    ],
-    "lateral_movement": [
-        "Confirm {ip} maps to an in-cluster pod (`kubectl get pods -A -o wide | grep {ip}`); if it is not a pod IP, this is not pod-to-pod lateral movement.",
-    ],
-    "data_exfil": [
-        "Confirm the egress source is an in-cluster workload (pod IP), not a node or external host, before auditing RBAC/NetworkPolicy.",
-    ],
-}
-_SIEM_DEFAULT_VERIFY = [
-    "Confirm the incident scope actually involves the K8s cluster (source/target is a pod or service) before running the cluster-scoped steps below.",
-]
-
-
-def _is_private_ip(ip: str) -> bool:
-    """RFC1918 / loopback / link-local check — used to flag single-internal-source
-    incidents that should NOT be described as a distributed external attack."""
-    import ipaddress
-
-    raw = str(ip or "").strip()
-    if not raw or raw in ("?", "n/a"):
-        return False
-    try:
-        addr = ipaddress.ip_address(raw)
-    except ValueError:
-        return False
-    return addr.is_private or addr.is_loopback or addr.is_link_local
-
-
 def _siem_diagnosis_from_batch(
     batch: list[dict[str, Any]],
     siem_labels: dict[str, str],
@@ -448,23 +400,15 @@ def _siem_diagnosis_from_batch(
     what = f"[{category.upper()}] {description or suggested or 'Security incident detected by FinGuard SIEM.'}"
     who = f"namespace={_safe_ns}" + (f", tenant={tenant}" if tenant else "") + (f", source_ip={_safe_ip}" if affected_ip else "")
 
-    # Ground WHY in the observed evidence instead of asserting more than we know.
-    # A single RFC1918 source IP is NOT a distributed external attack — saying so
-    # would send the operator to the wrong layer (edge-block vs internal host).
-    why = _SIEM_CATEGORY_WHY.get(category, _SIEM_DEFAULT_WHY)
-    _ip_is_private = bool(affected_ip) and _is_private_ip(affected_ip)
-    if _ip_is_private and category in ("ddos", "network_anomaly"):
-        why = (
-            f"Volumetric/traffic anomaly from a SINGLE INTERNAL source ({_safe_ip}, RFC1918) — "
-            "this is NOT a distributed external attack. Treat as a compromised/misbehaving "
-            "internal host or pod until proven otherwise; do not edge-block before confirming origin."
-        )
-    elif affected_ip:
-        why = f"{why} Observed origin: {_safe_ip} ({'public/external' if not _ip_is_private else 'internal'})."
-
-    # VERIFY block — prove the K8s cluster is actually in scope BEFORE the cluster-scoped HOW-TO.
-    raw_verify = _SIEM_CATEGORY_VERIFY.get(category, _SIEM_DEFAULT_VERIFY)
-    verify = [v.replace("{ns}", _safe_ns).replace("{ip}", _safe_ip) for v in raw_verify]
+    # WHY / VERIFY are reasoned from the incident *evidence* via the principle
+    # engine (origin class + source cardinality + confirm-ingress), not from a
+    # per-category lookup. A never-before-seen category or IP is still placed
+    # correctly — no "not in the table -> empty default" dead-end. See
+    # siem_reasoning.py + memory project_rag_kb_and_scope_prompt.
+    _ev = extract_siem_evidence(batch, siem_labels)
+    why = reason_why(_ev)
+    blast = reason_blast_radius(_ev)
+    verify = reason_verify(_ev)
     verify_text = "\n".join(f"{i+1}. {v}" for i, v in enumerate(verify))
 
     forecast_items = _siem_forecast_timeline(category, severity)
@@ -473,7 +417,8 @@ def _siem_diagnosis_from_batch(
     return (
         f"WHAT: {what}\n"
         f"WHO: {who} | incident={incident_id} | severity={severity}\n"
-        f"WHY: {why}\n\n"
+        f"WHY: {why}\n"
+        f"{blast}\n\n"
         f"VERIFY FIRST (confirm scope before acting — these may invalidate the steps below):\n"
         f"{verify_text}\n\n"
         f"HOW-TO (ONLY if VERIFY confirms the cluster is in scope) for [{category}] in namespace [{_safe_ns}]:\n"

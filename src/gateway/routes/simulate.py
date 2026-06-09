@@ -140,7 +140,9 @@ def _base_envelope(trace_id: str, lane_label: str, probe: str, now_ts: str) -> d
     }
 
 
-def _build_evidence_envelopes(lane: str, trace_id: str) -> list[dict[str, Any]]:
+def _build_evidence_envelopes(
+    lane: str, trace_id: str, *, siem_ip: str | None = None
+) -> list[dict[str, Any]]:
     """Build the omni-diagnostic-evidence batch for an evidence-lane.
 
     Returns TWO probes per lane: a primary diagnostic probe plus a companion
@@ -192,6 +194,10 @@ def _build_evidence_envelopes(lane: str, trace_id: str) -> list[dict[str, Any]]:
 
     # siem_security
     incident_id = f"sim-siem-{secrets.token_hex(4)}"
+    # Optional source-IP override lets the operator exercise the principle engine
+    # with a public IP (distributed/external framing) vs the default RFC1918 IP
+    # (single-internal framing). Default preserves the original internal scenario.
+    _ip = (siem_ip or "10.0.0.42").strip() or "10.0.0.42"
     # SIEM batch detection (_siem_alert_labels) keys off
     # canonical_query_snippet.labels.siem_source == "finguard".
     siem_snip = json.dumps({
@@ -214,25 +220,25 @@ def _build_evidence_envelopes(lane: str, trace_id: str) -> list[dict[str, Any]]:
             "severity": "critical",
             "incident_id": incident_id,
             "tenant": "default",
-            "description": "Simulator: DDoS flood from 10.0.0.42 against multi-agent namespace",
+            "description": f"Simulator: DDoS flood from {_ip} against multi-agent namespace",
             "suggested_action": "Block source IP at firewall and escalate to SOC",
-            "affected_ip": "10.0.0.42",
+            "affected_ip": _ip,
             "namespace": "multi-agent",
         },
-        "raw": "syn_flood rate=80000pps src=10.0.0.42",
+        "raw": f"syn_flood rate=80000pps src={_ip}",
         "symptom_group": "siem_ddos",
         "evidence_source": "SIEM",
     }
     companion = {
         **_base_envelope(trace_id, lane_label, "siem_network_flow", now_ts),
         "alert_rule": "DDoSFloodDetected",
-        "alert_hint": "[SIMULATOR] inbound pps 80k from 10.0.0.42 — conntrack table filling",
+        "alert_hint": f"[SIMULATOR] inbound pps 80k from {_ip} — conntrack table filling",
         "result": "FAILED",
         "extracted_fact": {
             "category": "ddos",
             "incident_id": incident_id,
             "pps": 80000,
-            "src_ip": "10.0.0.42",
+            "src_ip": _ip,
             "conntrack_pct": 92,
         },
         "raw": "conntrack: table full, dropping packet",
@@ -365,9 +371,10 @@ async def simulate_lane(lane: str, request: Request) -> JSONResponse:
     else:
         topic = _evidence_topic(request)
         # Two probes so the evidence aggregator flushes immediately (len(keys) >= 2).
+        _siem_ip = str(body_in.get("siem_ip") or "").strip()[:64] or None
         messages = [
             json.dumps({"data": json.dumps(envelope, ensure_ascii=False)}, ensure_ascii=False).encode("utf-8")
-            for envelope in _build_evidence_envelopes(lane, trace_id)
+            for envelope in _build_evidence_envelopes(lane, trace_id, siem_ip=_siem_ip)
         ]
         ingress = "evidence"
 

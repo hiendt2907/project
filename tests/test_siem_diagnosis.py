@@ -104,23 +104,94 @@ def test_diag_has_verify_block_before_howto():
     assert diag.index("VERIFY FIRST") < diag.index("HOW-TO")
 
 
-def test_diag_ddos_private_ip_not_distributed():
-    """F6: a single RFC1918 source must NOT be described as a distributed external attack."""
-    batch = _siem_batch(category="ddos")  # affected_ip=10.0.1.5 (RFC1918)
-    siem_labels = {"siem_category": "ddos", "severity": "critical", "namespace": "multi-agent"}
-    diag = _siem_diagnosis_from_batch(batch, siem_labels, "")
-    assert "SINGLE INTERNAL source" in diag
-    assert "not a distributed external attack" in diag.lower()
+# ---------------------------------------------------------------------------
+# F6-extra: principle-based reasoning — behavioral, not literal-string matching.
+# Each test asserts a *property of the conclusion* (scope correctness, no
+# over-claim, no dead-end) that must hold for ANY IP/category, not canned text.
+# ---------------------------------------------------------------------------
+
+def _set_sources(batch: list[dict], ips: list[str]) -> None:
+    """Override the source addresses the evidence carries."""
+    ef = batch[0]["extracted_fact"]
+    ef["affected_ip"] = ips[0] if ips else ""
+    ef["source_ips"] = list(ips)
 
 
-def test_diag_ddos_public_ip_keeps_distributed_basis():
-    """F6: a public source IP retains the volumetric/distributed framing."""
+def test_diag_single_internal_source_not_distributed():
+    """RFC1918 single source → investigate internal host, never edge-block, never 'distributed'."""
     batch = _siem_batch(category="ddos")
-    batch[0]["extracted_fact"]["affected_ip"] = "8.8.8.8"  # genuinely public
-    siem_labels = {"siem_category": "ddos", "severity": "critical", "namespace": "multi-agent"}
-    diag = _siem_diagnosis_from_batch(batch, siem_labels, "")
-    assert "SINGLE INTERNAL source" not in diag
-    assert "public/external" in diag
+    _set_sources(batch, ["10.0.0.42"])  # RFC1918
+    diag = _siem_diagnosis_from_batch(batch, {"siem_category": "ddos", "severity": "critical"}, "").lower()
+    assert "single internal source" in diag
+    assert "not a distributed external attack" in diag
+    assert "do not edge-block" in diag
+
+
+def test_diag_single_public_source_no_internal_claim():
+    """Genuinely public single source → external framing, must NOT claim internal/distributed."""
+    batch = _siem_batch(category="ddos")
+    _set_sources(batch, ["8.8.8.8"])  # genuinely public
+    diag = _siem_diagnosis_from_batch(batch, {"siem_category": "ddos", "severity": "critical"}, "")
+    why = diag.split("VERIFY FIRST")[0].lower()  # the load-bearing scope claim
+    assert "single internal source" not in why
+    assert "single external source" in why
+    # confirm-ingress principle present in VERIFY
+    assert "reach" in diag.lower() and "cluster" in diag.lower()
+
+
+def test_diag_unknown_category_unknown_ip_no_dead_end():
+    """Category never in any table + no source IP → still reasons, never an empty/default lookup."""
+    batch = _siem_batch(category="zero_day_xyz")
+    _set_sources(batch, [])  # no origin captured
+    diag = _siem_diagnosis_from_batch(batch, {"siem_category": "zero_day_xyz", "severity": "critical"}, "")
+    low = diag.lower()
+    assert len(diag) > 80
+    # the principle for missing origin: identify source first, do not assume scope
+    assert "unconfirmed" in low or "identify the source" in low
+    assert "verify first" in low  # VERIFY block always produced, never empty
+    # no canned "anomaly confidence exceeds threshold" default boilerplate
+    assert "anomaly confidence exceeds" not in low
+
+
+def test_diag_multiple_external_sources_is_distributed():
+    """Several distinct public sources → distributed classification, NOT single-source."""
+    batch = _siem_batch(category="ddos")
+    _set_sources(batch, ["8.8.8.8", "1.1.1.1", "9.9.9.9"])
+    diag = _siem_diagnosis_from_batch(batch, {"siem_category": "ddos", "severity": "critical"}, "").lower()
+    assert "distributed" in diag
+    assert "single" not in diag.split("verify first")[0]  # WHY part must not call it single
+    assert "3 distinct source" in diag
+
+
+def test_diag_multiple_internal_sources_is_lateral_not_flood():
+    """Several internal sources → lateral/compromised-segment framing, not external flood."""
+    batch = _siem_batch(category="network_anomaly")
+    _set_sources(batch, ["10.0.0.5", "10.0.0.9", "172.16.4.2"])
+    diag = _siem_diagnosis_from_batch(batch, {"siem_category": "network_anomaly", "severity": "high"}, "").lower()
+    assert "multiple internal sources" in diag
+    assert "external flood" not in diag.split("verify first")[0] or "not an external flood" in diag
+
+
+def test_diag_blast_radius_from_evidence_pps():
+    """Blast-radius line reflects observed pps from the evidence, not a hardcoded catastrophe."""
+    batch = _siem_batch(category="ddos")
+    _set_sources(batch, ["8.8.8.8"])
+    batch[0]["raw"] = "inbound pps 80k from 8.8.8.8 — conntrack table filling"
+    diag = _siem_diagnosis_from_batch(batch, {"siem_category": "ddos", "severity": "critical"}, "")
+    assert "Blast-radius (from evidence)" in diag
+    assert "80,000 pps" in diag
+
+
+def test_diag_verify_always_non_empty_for_any_category():
+    """VERIFY must generalise: every category (even unseen) yields concrete scope checks."""
+    for cat in ("ddos", "totally_new_category", "", "auth_failure"):
+        batch = _siem_batch(category=cat or "x")
+        _set_sources(batch, ["8.8.8.8"])
+        diag = _siem_diagnosis_from_batch(batch, {"siem_category": cat, "severity": "high"}, "")
+        verify_section = diag.split("VERIFY FIRST")[1].split("HOW-TO")[0]
+        # at least the origin-classify + confirm-ingress principles
+        assert "Classify source" in verify_section
+        assert "terminates inside the cluster" in verify_section
 
 
 def test_diag_k8s_threat_has_rbac_steps():
