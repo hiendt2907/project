@@ -264,6 +264,10 @@ async def _persist_session(redis: Any, result: BrainResult) -> None:
         "turn_count": result.turn_count,
         "answer": result.answer,
         "answer_point_id": result.answer_point_id,
+        # Persist the synthesized context actually injected into the LLM prompt so
+        # /trace/{id}/brain shows operators exactly what the second brain fed the
+        # analyst — not just per-turn hits.
+        "accumulated_context": result.accumulated_context,
         "updated_at": time.time(),
         "turns": [
             {
