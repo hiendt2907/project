@@ -1869,6 +1869,58 @@ async def _emit_agentic_mutate_if_any(
     return True
 
 
+async def _crat_for_deterministic_advisory(
+    ctx: WorkerHandlerContext,
+    *,
+    trace: str,
+    lane: str,
+    source: str,
+    diagnosis: str,
+) -> bool:
+    """Write the ADVISORY_DISPATCHED audit block + mark the deterministic-path
+    pipeline stages BEFORE any Telegram emit / action dispatch.
+
+    The deterministic contrast paths (STATE_MACHINE_CONTRAST / OS_STATE_CONTRAST)
+    bypass the LLM advisory block, so they must honour the CRAT fail-closed
+    invariant themselves — exactly like the SIEM short-circuit. Returns False
+    (caller MUST abort dispatch) if the audit write fails."""
+    await mark_stage(ctx.redis, trace, "RAG", "skip", detail="deterministic contrast — no second-brain RAG", lane=lane)
+    await mark_stage(ctx.redis, trace, "LLM", "skip", detail="deterministic contrast — no LLM", lane=lane)
+    await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no LLM advisory to verify (deterministic)", lane=lane)
+    await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=source, lane=lane)
+    await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="suggest-only — no mutate path", lane=lane)
+    try:
+        await write_audit_block(
+            event_type="ADVISORY_DISPATCHED",
+            trace_id=trace,
+            payload={"source": source, "lane": lane, "diagnosis": diagnosis[:2000], "mode": "deterministic_contrast"},
+            redis=ctx.redis,
+            kafka=ctx.kafka,
+            kafka_topic=ctx.settings.kafka_topic_audit_chain,
+        )
+    except AuditLedgerError as _audit_err:
+        logger.critical(
+            "event=crat_fail_closed_abort trace=%s source=%s err=%r — dispatch aborted",
+            trace, source, _audit_err,
+        )
+        await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed", lane=lane)
+        return False
+    await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane=lane)
+    return True
+
+
+async def _mark_suggest_only_terminal(ctx: WorkerHandlerContext, trace: str, lane: str) -> None:
+    """Resolve the terminal stages for a suggest-only advisory: there is no HITL
+    approval, executor mutation, or feedback loop on this path, so mark them skip
+    instead of leaving them perpetually pending on the operator dashboard."""
+    for _stage, _detail in (
+        ("HITL", "suggest-only — no approval queue"),
+        ("EXECUTOR", "suggest-only — no mutate"),
+        ("FEEDBACK", "suggest-only — terminal"),
+    ):
+        await mark_stage(ctx.redis, trace, _stage, "skip", detail=_detail, lane=lane)
+
+
 async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dict[str, str]) -> str:
     """Evidence → batch → so alert vs state machine SDK (nếu mâu thuẫn rõ) → RagGate | LLM."""
     raw = fields.get("data") or "{}"
@@ -2042,6 +2094,12 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         if contrast is not None:
             contrast_st = contrast.strip()
             diagnosis_rich = build_contrast_diagnosis_for_action(by_probe, contrast_st)
+            _c_lane, _ = resolve_proof_lane(batch)
+            # CRAT fail-closed: audit MUST be written before the Telegram emit below.
+            if not await _crat_for_deterministic_advisory(
+                ctx, trace=trace, lane=_c_lane or "", source="STATE_MACHINE_CONTRAST", diagnosis=diagnosis_rich,
+            ):
+                return "[ADVISORY MODE FAIL_CLOSED] state_machine_contrast audit_chain_write_failed — dispatch aborted"
             await _emit_suggest_remediation(
                 ctx,
                 trace=trace,
@@ -2092,6 +2150,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 component="evidence_consumer",
                 detail="state_machine_contrast_suggested",
             )
+            await _mark_suggest_only_terminal(ctx, trace, _c_lane or "")
             return contrast
 
         # Lane 2 (state/SYS_HARD_FAIL): iterative OS diagnostic loop.
@@ -2106,6 +2165,11 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         if os_contrast is not None:
             os_contrast_st = os_contrast.strip()
             os_diagnosis_rich = build_contrast_diagnosis_for_action(by_probe, os_contrast_st)
+            # CRAT fail-closed: audit MUST be written before the Telegram emit below.
+            if not await _crat_for_deterministic_advisory(
+                ctx, trace=trace, lane="state", source="OS_STATE_CONTRAST", diagnosis=os_diagnosis_rich,
+            ):
+                return "[ADVISORY MODE FAIL_CLOSED] os_state_contrast audit_chain_write_failed — dispatch aborted"
             await _emit_suggest_remediation(
                 ctx,
                 trace=trace,
@@ -2133,6 +2197,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 component="evidence_consumer",
                 detail="os_state_contrast_suggested",
             )
+            await _mark_suggest_only_terminal(ctx, trace, "state")
             return os_contrast
 
         # **ADVISORY MODE INTEGRATION (Phase 5)**
@@ -2555,6 +2620,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                         component="evidence_consumer",
                         detail="advisory_analyst_generated",
                     )
+                    await _mark_suggest_only_terminal(ctx, trace, _adv_lane or "")
                     return f"[ADVISORY MODE] {advisory.verdict}: {advisory.root_cause}"
                 else:
                     # LLM returned None (parse failure) — FAIL-CLOSED, never fall through to planner.
