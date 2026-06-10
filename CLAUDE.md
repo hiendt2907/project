@@ -242,7 +242,7 @@ CI order: build → rollout → unit → E2E.
 
 ## Tenant Isolation
 
-Gateway auth: `X-API-Key` header checked via `_require_api_key()` in `src/gateway/middleware/auth.py`.
+Gateway auth: HTTP `Authorization: Bearer <key>` (HTTPBearer) checked via `_require_api_key()` in `src/gateway/api.py`.
 `OMNI_TENANT_APIKEYS` format: `tenant_id:key,tenant_id2:key2` (comma-separated).
 Redis key prefix per tenant: `omni:tenant:{tenant_id}:` — rate limit buckets, KPI keys isolated per tenant.
 `OMNI_GATEWAY_API_KEY` env (K8s Secret `omni-gateway-secret`) — master key for admin endpoints.

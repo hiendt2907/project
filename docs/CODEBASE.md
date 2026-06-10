@@ -583,7 +583,7 @@ omni_worker [analyst]
     → HIT: build_suggest_remediation_body → SUGGEST_REMEDIATION
     → MISS: run_advisory_analyst_handler()
       → build_advisory_system_prompt (L1→L4 bottom-up)
-      → llm.chat (Ollama qwen3.6, num_ctx=4096)
+      → llm.chat (Ollama qwen2.5-coder:7b, num_ctx=8192)
       → AnalystAdvisory.model_validate (schema validation)
       → write_audit_block (CRAT: Redis hash-chain + Kafka omni-audit-chain)  ← FAIL-CLOSED
       → emit SUGGEST_REMEDIATION → omni-actions (Kafka)
@@ -677,7 +677,7 @@ graph TD
 
     KAFKA -->|omni-diagnostic-evidence| ANALYST[omni_worker analyst]
     ANALYST -->|FT KNN| RAG[(Redis Stack HNSW)]
-    ANALYST -->|chat/embed| LLM[(Ollama qwen3.6)]
+    ANALYST -->|chat/embed| LLM[(Ollama qwen2.5-coder:7b)]
     ANALYST -->|hash-chain| CRAT[(Redis audit_chain)]
     ANALYST -->|omni-audit-chain| KAFKA
     ANALYST -->|omni-actions SUGGEST| KAFKA

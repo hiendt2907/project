@@ -38,8 +38,11 @@ logger = logging.getLogger("chaos_lane_drill")
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-GATEWAY_URL = os.getenv("OMNI_GATEWAY_URL", "http://localhost:8000")
-GATEWAY_API_KEY = os.getenv("OMNI_GATEWAY_API_KEY", "")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
+from e2e_env import gateway_api_key as _gw_key, gateway_url as _gw_url  # noqa: E402
+
+GATEWAY_URL = _gw_url()
+GATEWAY_API_KEY = _gw_key()
 
 _SLO_SECONDS: dict[str, int] = {
     # K8s workload lanes

@@ -4,7 +4,7 @@
 Does not connect to PGVector. Use after lab runs for review / gold dataset workflows.
 
 Env:
-  OMNI_REDIS_URL (default redis://localhost:6379/0)
+  OMNI_REDIS_URL (default redis://localhost:16379/0)
 
 Examples:
   .venv/bin/python scripts/omni_redis_shadow_jsonl_exporter.py \\
@@ -125,7 +125,7 @@ def build_record(
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Redis shadow self-learn → JSONL exporter.")
-    p.add_argument("--redis-url", default=os.environ.get("OMNI_REDIS_URL", "redis://localhost:6379/0"))
+    p.add_argument("--redis-url", default=os.environ.get("OMNI_REDIS_URL", "redis://localhost:16379/0"))
     p.add_argument("--trace-ids", default="", help="Comma-separated trace ids")
     p.add_argument("--trace-ids-file", default="", help="File with one trace_id per line")
     p.add_argument(

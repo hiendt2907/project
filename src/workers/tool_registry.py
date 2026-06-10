@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -12,6 +14,27 @@ from pydantic import BaseModel
 from workers.tool_observation import prepare_tool_return_for_llm
 
 logger = logging.getLogger(__name__)
+
+# Legacy fallback sets — prefer spec.metadata["capability"] ("readonly"/"mutate").
+READONLY_TOOLS = frozenset(
+    {"k8s_list_nodes", "k8s_node_conditions", "k8s_list_services", "k8s_list_ingress"}
+)
+LEGACY_MUTATING_TOOLS = frozenset(
+    {
+        "k8s_rollout_restart",
+        "k8s_scale_deployment",
+        "k8s_scale_resource",
+        "k8s_patch_resource",
+        "k8s_delete_pod",
+        "kubectl_cluster",
+        "sandbox_cleanup",
+        "execute_in_sandbox",
+        "gated_allowlisted_execute",
+        "execute_shell_command",
+    }
+)
+
+_TOOL_CACHE_EPOCH_KEY = "omni:cache:tool_epoch"
 
 ToolHandler = Callable[[Any, Any], Awaitable[str]]
 
@@ -55,26 +78,9 @@ class ToolRegistry:
         if spec is None:
             raise KeyError(name)
         validated = spec.input_model.model_validate(raw_args)
-        
-        import hashlib
-        import json
-        import time
-        READONLY_TOOLS = {"k8s_list_nodes", "k8s_node_conditions", "k8s_list_services", "k8s_list_ingress"}
-        LEGACY_MUTATING_TOOLS = {
-            "k8s_rollout_restart",
-            "k8s_scale_deployment",
-            "k8s_scale_resource",
-            "k8s_patch_resource",
-            "k8s_delete_pod",
-            "kubectl_cluster",
-            "sandbox_cleanup",
-            "execute_in_sandbox",
-            "gated_allowlisted_execute",
-            "execute_shell_command",
-        }
-        
-        is_readonly = name in READONLY_TOOLS
+
         capability = str(spec.metadata.get("capability") or "").strip().lower()
+        is_readonly = capability == "readonly" or name in READONLY_TOOLS
         is_mutating = capability == "mutate" or name in LEGACY_MUTATING_TOOLS
         force_refresh_flag = raw_args.get("force_refresh", False)
         k8s_mutated_flag = getattr(ctx, "k8s_mutated", False)
@@ -96,7 +102,11 @@ class ToolRegistry:
         if is_readonly and r_client is not None:
             cache_raw = {k: v for k, v in raw_args.items() if k != "force_refresh"}
             args_digest = hashlib.sha256(json.dumps(cache_raw, sort_keys=True).encode()).hexdigest()
-            cache_key = f"omni:cache:tool:{name}:{args_digest}"
+            try:
+                epoch = await r_client.get(_TOOL_CACHE_EPOCH_KEY) or "0"
+            except Exception:
+                epoch = "0"
+            cache_key = f"omni:cache:tool:e{epoch}:{name}:{args_digest}"
             
             if not force_refresh_flag and not k8s_mutated_flag:
                 try:
@@ -106,11 +116,34 @@ class ToolRegistry:
                 except Exception:
                     pass
                     
-        raw = await spec.handler(ctx, validated)
+        try:
+            raw = await spec.handler(ctx, validated)
+        except Exception as exc:
+            # Handler never completed — release the PENDING idempotency lock so a
+            # legitimate retry is not refused for the rest of the TTL window.
+            if is_mutating and r_client is not None and idempotency_key:
+                try:
+                    await r_client.delete(idempotency_key)
+                except Exception:
+                    logger.warning("[IDEMPOTENCY_GUARD] failed to release lock %s", idempotency_key)
+            logger.warning("[TOOL_ERROR] handler %s raised %s: %s", name, type(exc).__name__, exc)
+            return prepare_tool_return_for_llm(
+                ctx,
+                f"[DATA] error\n[DIAGNOSIS] tool={name} exception={type(exc).__name__}: {str(exc)[:300]}\n"
+                "[NEXT] Re-check args against the tool schema or pick an alternative tool; do not retry identical args.",
+            )
         output = prepare_tool_return_for_llm(ctx, str(raw))
+        is_error_output = "[DATA] error" in output or "[DATA] api_error" in output
+
+        if is_mutating and r_client is not None and idempotency_key and is_error_output:
+            # Tool reported failure — no mutation happened; unlock for retry.
+            try:
+                await r_client.delete(idempotency_key)
+            except Exception:
+                logger.warning("[IDEMPOTENCY_GUARD] failed to release lock %s", idempotency_key)
         
         if is_readonly and r_client is not None and cache_key:
-            if "[DATA] api_error" not in output and "[DATA] error" not in output:
+            if not is_error_output:
                 ttl = getattr(getattr(ctx, "settings", None), "omni_readonly_tool_cache_ttl_sec", 300)
                 try:
                     await r_client.setex(cache_key, ttl, output)
@@ -118,7 +151,7 @@ class ToolRegistry:
                     pass
                     
         if is_mutating and r_client is not None and idempotency_key:
-            if "[DATA] error" not in output and "[DATA] api_error" not in output:
+            if not is_error_output:
                 idempotency_ttl = getattr(getattr(ctx, "settings", None), "idempotency_ttl_sec", 120)
                 try:
                     await r_client.setex(idempotency_key, idempotency_ttl, "success")
@@ -141,6 +174,14 @@ class ToolRegistry:
                 except Exception as e:
                     logger.error("[AUDIT] Failed to write ledger or update idempotency lock: %s", e)
 
+        if is_mutating and r_client is not None and not is_error_output:
+            # Bump the cache epoch — all readonly tool caches from before this
+            # mutation are invalidated across every trace.
+            try:
+                await r_client.incr(_TOOL_CACHE_EPOCH_KEY)
+            except Exception:
+                logger.warning("[CACHE_EPOCH] failed to incr %s", _TOOL_CACHE_EPOCH_KEY)
+
         return output
 
     def json_schema_for(self, name: str) -> dict[str, Any]:
@@ -160,12 +201,32 @@ class ToolRegistry:
         """Tool name → JSON Schema dict (prompt / OpenAI-style tool list)."""
         return {name: self.json_schema_for(name) for name in sorted(self._specs.keys())}
 
+    @staticmethod
+    def _json_fit_whole_entries(entries: dict[str, Any], max_chars: int | None) -> str:
+        """Serialize dict; nếu vượt max_chars thì DROP nguyên entry cuối cùng —
+        output luôn là JSON hợp lệ (không bao giờ cắt giữa chuỗi)."""
+        s = json.dumps(entries, ensure_ascii=False, separators=(",", ":"))
+        if max_chars is None or len(s) <= max_chars:
+            return s
+        kept: dict[str, Any] = {}
+        for name, val in entries.items():
+            candidate = {**kept, name: val}
+            cs = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
+            if len(cs) > max_chars:
+                logger.warning(
+                    "tool catalog truncated: dropped %r and later tools (max_chars=%d)",
+                    name, max_chars,
+                )
+                break
+            kept = candidate
+        return json.dumps(kept, ensure_ascii=False, separators=(",", ":"))
+
     def tools_json_for_prompt(self, max_chars: int | None = None) -> str:
-        """Chuỗi JSON gọn cho system prompt; cắt theo max_chars nếu có."""
-        s = self.all_schemas_json()
-        if max_chars is not None and len(s) > max_chars:
-            return s[: max_chars - 1] + "…"
-        return s
+        """Chuỗi JSON gọn cho system prompt; vượt max_chars → drop nguyên tool."""
+        out: dict[str, Any] = {}
+        for name, spec in sorted(self._specs.items()):
+            out[name] = spec.input_model.model_json_schema()
+        return self._json_fit_whole_entries(out, max_chars)
 
     def tool_names(self) -> frozenset[str]:
         return frozenset(self._specs.keys())
@@ -186,10 +247,7 @@ class ToolRegistry:
         return out
 
     def tool_catalog_json_for_prompt(self, max_chars: int | None = None) -> str:
-        s = json.dumps(self.list_tool_catalog(), ensure_ascii=False, separators=(",", ":"))
-        if max_chars is not None and len(s) > max_chars:
-            return s[: max_chars - 1] + "…"
-        return s
+        return self._json_fit_whole_entries(self.list_tool_catalog(), max_chars)
 
 
 _GLOBAL = ToolRegistry()

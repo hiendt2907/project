@@ -37,7 +37,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NS="${NS:-multi-agent}"
-GATEWAY_URL="${OMNI_GATEWAY_URL:-http://localhost:8080}"
+GATEWAY_URL="${OMNI_GATEWAY_URL:-http://gateway.ai-agent.local}"
 SKIP_SNAPSHOT_KILL="${SKIP_SNAPSHOT_KILL:-false}"
 
 # ── Safety gates ──────────────────────────────────────────────────────────────

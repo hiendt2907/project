@@ -1911,14 +1911,30 @@ async def _emit_agentic_mutate_if_any(
             advise=str((plan or {}).get("advise") or ""),
         )
     else:
-        enqueued = await emit_execute_mutate(
-            ctx,
-            trace=trace,
-            tool_name=tn,
-            args=args,
-            attempt_count=ac,
-            reasoning_chain=exec_rc if isinstance(exec_rc, dict) else None,
-        )
+        # L4 playbook-first (dual-run): mutate plan đã qua đủ gate ở trên — nếu match
+        # PlaybookSpec thì route EXECUTE_PLAYBOOK (engine có proof-of-fault/breaker/
+        # graduation); không match/flag off → EXECUTE_MUTATE cũ nguyên trạng.
+        from workers.autonomous_decider import _try_match_playbook
+        from workers.playbook_emit import emit_execute_playbook
+
+        pb_id = await _try_match_playbook(ctx, trace=trace, tool_name=tn, args=args)
+        if pb_id:
+            render_ctx_pb = {
+                k: str(v) for k, v in args.items()
+                if k in ("namespace", "deployment", "pod", "name") and v
+            }
+            enqueued = await emit_execute_playbook(
+                ctx, trace=trace, playbook_id=pb_id, render_ctx=render_ctx_pb,
+            )
+        else:
+            enqueued = await emit_execute_mutate(
+                ctx,
+                trace=trace,
+                tool_name=tn,
+                args=args,
+                attempt_count=ac,
+                reasoning_chain=exec_rc if isinstance(exec_rc, dict) else None,
+            )
         if not enqueued:
             await emit_terminal_tombstone(
                 ctx,

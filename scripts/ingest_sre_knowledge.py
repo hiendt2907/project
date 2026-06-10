@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Chunk + embed (Ollama) + upsert Markdown local vào ``rag_documents`` (collection = ``OMNI_PGVECTOR_COLLECTION_K8S_EXPERT``).
+"""[STALE — pgvector đã gỡ khỏi RAG path 2026-06; dùng src/training/advisory_ingest.py + Redis HNSW thay thế.]
+
+Chunk + embed (Ollama) + upsert Markdown local vào ``rag_documents`` (collection = ``OMNI_PGVECTOR_COLLECTION_K8S_EXPERT``).
 
 Cùng bảng/partition với ingest kubernetes.io; phân biệt bằng ``payload.metadata.source`` (local_docs).
 
@@ -8,6 +10,14 @@ Example:
 """
 
 from __future__ import annotations
+
+import os as _os
+
+if not _os.getenv("OMNI_PGVECTOR_DSN"):
+    raise SystemExit(
+        "ingest_sre_knowledge.py is STALE: RAG moved to Redis HNSW (use src/training/advisory_ingest.py). "
+        "Set OMNI_PGVECTOR_DSN explicitly if you really have a pgvector instance."
+    )
 
 import argparse
 import asyncio

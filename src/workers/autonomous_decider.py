@@ -381,6 +381,53 @@ async def _run_tool(ctx: Any, tool: str, args: dict[str, Any]) -> str:
     return f"[ERROR] unknown tool: {tool}"
 
 
+async def _try_match_playbook(
+    ctx: Any,
+    *,
+    trace: str,
+    tool_name: str,
+    args: dict[str, Any],
+) -> str:
+    """Deterministic PlaybookSpec match cho mutate call (L4 playbook-first).
+
+    Fault text = alertname/symptom_group từ autonomous ctx snapshot + reasoning.
+    Trả về playbook_id hoặc "" (fallback EXECUTE_MUTATE)."""
+    ws = getattr(ctx, "settings", None)
+    if not bool(getattr(ws, "omni_playbook_first", False)):
+        return ""
+    r = getattr(ctx, "redis", None)
+    if r is None:
+        return ""
+    fault_parts: list[str] = [str(getattr(ctx, "inbound_reasoning", "") or "")]
+    lane = ""
+    try:
+        raw = await r.get(f"omni:autonomous:ctx:{trace}")
+        if raw:
+            snap = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+            if isinstance(snap, dict):
+                fault_parts.append(str(snap.get("alertname") or ""))
+                fault_parts.append(str(snap.get("symptom_group") or ""))
+                ev = snap.get("anomaly_event_min")
+                if isinstance(ev, dict):
+                    lane = str(ev.get("lane") or ev.get("stream_tag") or "")
+    except Exception:
+        pass
+    try:
+        from services.playbook.matcher import PlaybookMatcher
+        from services.playbook.store import PlaybookStore
+
+        matcher = PlaybookMatcher(PlaybookStore(r))
+        spec = await matcher.match_spec(lane=lane, fault_text=" ".join(fault_parts))
+    except Exception as exc:  # noqa: BLE001 — match lỗi = fallback mutate cũ, không chặn remediation
+        logger.warning("[%s] event=playbook_match_failed err=%s (fallback EXECUTE_MUTATE)", trace, exc)
+        return ""
+    if spec is None:
+        return ""
+    # An toàn: playbook step đầu phải cùng họ tool với planner đề xuất hoặc là restart-family.
+    logger.info("[%s] event=playbook_first_match playbook=%s tool_requested=%s", trace, spec.playbook_id, tool_name)
+    return str(spec.playbook_id)
+
+
 async def _dispatch_tool_call(
     ctx: Any,
     *,
@@ -390,6 +437,22 @@ async def _dispatch_tool_call(
 ) -> str:
     """Route tool call: mutating tools → emit_execute_mutate (CRAT+Kafka), others → _run_tool."""
     if tool_name in _MUTATING_TOOLS:
+        # L4 playbook-first (dual-run): khi bật flag VÀ match được PlaybookSpec,
+        # emit EXECUTE_PLAYBOOK (engine có proof-of-fault/breaker/graduation gate);
+        # không match → giữ nguyên đường EXECUTE_MUTATE cũ.
+        pb_id = await _try_match_playbook(ctx, trace=trace, tool_name=tool_name, args=args)
+        if pb_id:
+            from workers.playbook_emit import emit_execute_playbook
+            render_ctx = {
+                k: str(v) for k, v in args.items()
+                if k in ("namespace", "deployment", "pod", "name") and v
+            }
+            enqueued_pb = await emit_execute_playbook(
+                ctx, trace=trace, playbook_id=pb_id, render_ctx=render_ctx,
+            )
+            if enqueued_pb:
+                return f"[ENQUEUED] playbook {pb_id} dispatched to executor (playbook-first)"
+            return "[ENQUEUE_FAILED] CRAT block failed — playbook not dispatched"
         from workers.evidence_mutate_emit import emit_execute_mutate
         enqueued = await emit_execute_mutate(ctx, trace=trace, tool_name=tool_name, args=args)
         return (

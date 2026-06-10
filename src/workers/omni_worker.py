@@ -792,6 +792,11 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
     if role == "executor":
         tasks.append(asyncio.create_task(kafka_actions_loop(ctx, stop), name="kafka_actions_loop"))
         return tasks
+    if role == "full":
+        # full = legacy monolith runs ALL loops (CODEBASE.md role map). The split-role
+        # consolidation (2026-06-03) left the executor loop wired ONLY for
+        # role=executor, so omni-fullstack silently stopped consuming omni-actions.
+        tasks.append(asyncio.create_task(kafka_actions_loop(ctx, stop), name="kafka_actions_loop"))
     if role in ("full", "prober"):
         tasks.extend(
             [

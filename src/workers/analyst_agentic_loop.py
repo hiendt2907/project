@@ -881,6 +881,7 @@ async def run_agentic_mutate_plan(
     ro_budget = max(ro_max, 1)  # always allow at least one readonly redirect from mistaken mutate JSON
     sys_content = _react_system_content(ws, post_mutate_verify=bool(post_mutate_verify))
     mem: OmniTraceMemory | None = None
+    pending_parse_hint = ""
     for step in range(total):
         # Redis authoritative when present; without Redis keep one in-process OmniTraceMemory for the loop.
         if r_redis is not None:
@@ -908,6 +909,15 @@ async def run_agentic_mutate_plan(
             + trace_block
             + f"\n(round {step + 1}/{total})\n"
         )
+        if pending_parse_hint:
+            # Error-recovery contract: feed the parse failure back to the model so
+            # the wasted round teaches it the exact repair, not just silence.
+            user_content += (
+                "\n[PARSE ERROR — PREVIOUS ROUND DISCARDED] Your last reply was not "
+                f"parseable: {pending_parse_hint[:300]}. Re-emit ONE complete JSON "
+                "object per the required schema; no markdown fences, no extra prose.\n"
+            )
+            pending_parse_hint = ""
         if step == 0:
             log_llm_trace(
                 ws,
@@ -1006,6 +1016,7 @@ async def run_agentic_mutate_plan(
                 if parsed_any:
                     break
             if not parsed_any:
+                hint = agentic_parse_failure_hint(last_content)
                 log_llm_trace(
                     ws,
                     trace=trace,
@@ -1013,8 +1024,9 @@ async def run_agentic_mutate_plan(
                     step=step + 1,
                     raw_response=last_content,
                     parse_ok=False,
-                    parse_hint=agentic_parse_failure_hint(last_content),
+                    parse_hint=hint,
                 )
+                pending_parse_hint = str(hint or "invalid JSON")
                 continue
 
             step_kind = str(parsed_any.get("step") or "").strip().lower()

@@ -526,6 +526,29 @@ class RedisVectorStore:
             logger.warning("event=rag_redis_query_failed err=%s", e)
             raise RuntimeError(f"rag_redis_query_failed:{e!s}") from e
 
+    async def similarity_search_by_vector(
+        self,
+        vector: list[float],
+        collection_id: str,
+        *,
+        limit: int = 8,
+        score_threshold: float | None = None,
+        payload_filters: dict[str, str] | None = None,
+    ) -> QueryResponse:
+        """Cosine-search with a pre-computed embedding (skips re-embedding the query)."""
+        try:
+            return await self.query_points(
+                collection_name=collection_id,
+                query=vector,
+                limit=int(limit),
+                score_threshold=score_threshold,
+                with_payload=True,
+                payload_filters=payload_filters,
+            )
+        except Exception as e:
+            logger.warning("event=rag_redis_query_failed err=%s", e)
+            raise RuntimeError(f"rag_redis_query_failed:{e!s}") from e
+
     def _rrf_merge_points(
         self,
         dense: list[PointStruct],

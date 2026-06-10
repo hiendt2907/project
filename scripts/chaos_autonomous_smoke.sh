@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LEGACY MONOLITH CHAOS SCRIPT: default targets `deployment/omni-worker`.
+# LEGACY MONOLITH CHAOS SCRIPT: default targets `deployment/omni-fullstack`.
 # Keep only for controlled comparison; split topology should use dedicated prober/core flows.
 # Chaos smoke: verify autonomous_decider (Redis manifest → Ollama → allowlist → tool + [AUTONOMOUS_FIX]).
 # Optional --god: bật OMNI_GOD_MODE (lab_unchained) + full autonomous_safe_tools như production (có k8s_rollout_restart — chỉ multi-agent).
@@ -30,7 +30,7 @@ for a in "$@"; do
 done
 
 if [[ "${CHAOS_CONFIRM:-}" != "1" ]]; then
-  echo "Refusing to run: set CHAOS_CONFIRM=1 (this patches live ConfigMap and restarts omni-worker)."
+  echo "Refusing to run: set CHAOS_CONFIRM=1 (this patches live ConfigMap and restarts omni-fullstack)."
   exit 2
 fi
 
@@ -56,7 +56,7 @@ cleanup() {
     echo "WARN: missing $CANONICAL_CM — apply backup $BACKUP manually"
     "$K" apply -f "$BACKUP" 2>/dev/null || true
   fi
-  "$K" rollout restart deployment/omni-worker -n "$NS" || true
+  "$K" rollout restart deployment/omni-fullstack -n "$NS" || true
 }
 trap cleanup EXIT
 
@@ -86,9 +86,9 @@ PATCH
 )"
 fi
 
-echo "== Rollout omni-worker"
-"$K" rollout restart deployment/omni-worker -n "$NS"
-"$K" rollout status deployment/omni-worker -n "$NS" --timeout=180s
+echo "== Rollout omni-fullstack"
+"$K" rollout restart deployment/omni-fullstack -n "$NS"
+"$K" rollout status deployment/omni-fullstack -n "$NS" --timeout=180s
 
 echo "== Wait for worker warm-up (scout + loops)"
 sleep 25
@@ -102,14 +102,14 @@ echo -n "$MANIFEST" | "$K" exec -i -n "$NS" deploy/redis -- redis-cli -x SET omn
 echo "== Wait for autonomous_decider tick + Ollama (up to 120s)"
 sleep 120
 
-echo "== Recent omni-worker logs ([AUTONOMOUS_FIX])"
+echo "== Recent omni-fullstack logs ([AUTONOMOUS_FIX])"
 set +e
-"$K" logs -n "$NS" -l app=omni-worker --tail=500 2>&1 | grep '\[AUTONOMOUS_FIX\]'
+"$K" logs -n "$NS" -l app=omni-fullstack --tail=500 2>&1 | grep '\[AUTONOMOUS_FIX\]'
 RC=$?
 set -e
 if [[ "$RC" -ne 0 ]]; then
   echo "WARN: no [AUTONOMOUS_FIX] lines — decider may not have ticked, Ollama down, or model silent."
-  "$K" logs -n "$NS" -l app=omni-worker --tail=120
+  "$K" logs -n "$NS" -l app=omni-fullstack --tail=120
   exit 1
 fi
 

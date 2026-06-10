@@ -7,7 +7,7 @@ Usage (from repo root):
 
 Env overrides:
     OMNI_VLLM_BASE_URL  — default http://host.orb.internal:11434/v1
-    OMNI_CHAT_MODEL     — default qwen3.6
+    OMNI_CHAT_MODEL     — default qwen2.5-coder:7b
 """
 from __future__ import annotations
 
@@ -275,7 +275,7 @@ async def _ping_ollama(base_url: str) -> None:
     models = r.json()
     ids = [m["id"] for m in models.get("data", [])]
     print(f"  Reachable. Models available: {ids}")
-    for required in ("qwen3.6", "nomic-embed-text:latest"):
+    for required in ("qwen2.5-coder:7b", "nomic-embed-text:latest"):
         tag = "✓" if any(required.split(":")[0] in i for i in ids) else "✗ MISSING"
         print(f"  {tag}  {required}")
 

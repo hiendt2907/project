@@ -33,7 +33,7 @@ set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-GATEWAY_URL="${OMNI_GATEWAY_URL:-http://localhost:8000}"
+GATEWAY_URL="${OMNI_GATEWAY_URL:-http://gateway.ai-agent.local}"
 DRILL_CMD=".venv/bin/python scripts/chaos_lane_drill.py"
 SCENARIO="all"
 DRY_FLAG=""

@@ -3,7 +3,7 @@
 Usage:
     python scripts/backfill_playbooks.py
 
-Reads OMNI_REDIS_URL from env (default: redis://localhost:6379/0).
+Reads OMNI_REDIS_URL from env (default: redis://localhost:16379/0).
 Ensures idx:playbooks exists, then upserts pre-approved SIEM playbooks.
 """
 
@@ -64,7 +64,7 @@ CORE_PLAYBOOKS: tuple[Playbook, ...] = (
 
 
 async def main() -> None:
-    url = os.environ.get("OMNI_REDIS_URL", "redis://localhost:6379/0")
+    url = os.environ.get("OMNI_REDIS_URL", "redis://localhost:16379/0")
     r = redis.from_url(url, decode_responses=True)
     store = PlaybookStore(r)
     await store.ensure_ready()

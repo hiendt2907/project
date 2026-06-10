@@ -129,6 +129,41 @@ Reference the EXACT paths/files/services you found in the command output. If you
 /var/log/vmware/*.log is the biggest, name that path in the remediation — do not say "VMware logs"."""
 
 
+_TRUNCATED_NOTE = "\n…[truncated for context budget]"
+_TRUNCATE_KEEP_CHARS = 400
+_CHARS_PER_TOKEN = 3  # heuristic for log-heavy text
+_KEEP_RECENT_MESSAGES = 4  # 2 most recent (assistant, user) pairs
+
+
+def _enforce_context_budget(
+    messages: list[dict[str, str]], num_ctx: int
+) -> list[dict[str, str]]:
+    """Return a NEW message list trimmed to fit the LLM context window.
+
+    Ollama silently drops the HEAD of the context (system prompt rules) when
+    num_ctx is exceeded. To prevent that, keep messages[0] (system) and
+    messages[1] (initial evidence) intact plus the 2 most recent turn pairs,
+    and truncate the content of everything in between.
+    """
+    budget = num_ctx * _CHARS_PER_TOKEN
+    total_chars = sum(len(m["content"]) for m in messages)
+    if total_chars <= budget or len(messages) <= 2 + _KEEP_RECENT_MESSAGES:
+        return list(messages)
+
+    head = [dict(m) for m in messages[:2]]
+    tail = [dict(m) for m in messages[-_KEEP_RECENT_MESSAGES:]]
+    middle = [
+        {**m, "content": m["content"][:_TRUNCATE_KEEP_CHARS] + _TRUNCATED_NOTE}
+        for m in messages[2:-_KEEP_RECENT_MESSAGES]
+    ]
+    trimmed = head + middle + tail
+    logger.warning(
+        "[diag-loop] context budget exceeded (%d chars > %d): truncated %d middle messages",
+        total_chars, budget, len(middle),
+    )
+    return trimmed
+
+
 def _format_command(cmd: dict[str, Any]) -> str:
     """Render a command dict as the exact shell-like string that was executed.
 
@@ -140,7 +175,16 @@ def _format_command(cmd: dict[str, Any]) -> str:
     return " ".join([name, *args]).strip()
 
 
+_FALLBACK_LABEL = "[generic fallback — not host-specific; verify before running]"
+
+
 def _fallback_remediation(text: str) -> list[str]:
+    """Labeled wrapper: prepend a generic-fallback notice so the operator knows
+    these steps are NOT host-specific diagnosis output."""
+    return [_FALLBACK_LABEL, *_fallback_remediation_steps(text)]
+
+
+def _fallback_remediation_steps(text: str) -> list[str]:
     """Generate keyword-based remediation steps when LLM leaves remediation_steps empty."""
     t = text.lower()
     if "disk" in t or "inode" in t or "space" in t or "partition" in t:
@@ -305,6 +349,7 @@ def _parse_llm_response(raw_text: str) -> dict[str, Any]:
         "commands_to_run": [],
         "diagnosis_complete": False,
         "confidence": 0.0,
+        "_parse_error": True,
     }
 
 
@@ -528,6 +573,7 @@ async def run_diagnosis_loop(
             turn_n, _MAX_TURNS, trace_id, len(messages),
         )
 
+        messages = _enforce_context_budget(messages, num_ctx)
         llm_resp, raw = await _call_llm_turn(llm_client, model, messages, num_ctx)
         # Append the assistant turn so the next call continues this same session.
         messages.append({"role": "assistant", "content": raw or json.dumps(llm_resp)})
@@ -620,10 +666,23 @@ async def run_diagnosis_loop(
         # Not complete → feed the new command results into the SAME session so
         # the next turn continues the conversation (INV_ONE_ALERT_ONE_SESSION).
         if turn_n < _MAX_TURNS:
-            messages.append({
-                "role": "user",
-                "content": _build_followup_context(command_results, turn_n + 1),
-            })
+            if llm_resp.get("_parse_error"):
+                # Error-recovery contract: tell the model WHY the turn was wasted
+                # and HOW to retry, instead of silently burning the turn.
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Your previous reply was NOT valid JSON and was discarded. "
+                        "Re-emit ONE complete JSON object exactly per OUTPUT FORMAT "
+                        "(no markdown fences, no prose outside the JSON). "
+                        f"Turn {turn_n + 1} of {_MAX_TURNS}."
+                    ),
+                })
+            else:
+                messages.append({
+                    "role": "user",
+                    "content": _build_followup_context(command_results, turn_n + 1),
+                })
 
     if not final:
         last = turns[-1] if turns else {}

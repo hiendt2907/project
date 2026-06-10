@@ -26,7 +26,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NS="${NS:-multi-agent}"
-GATEWAY_URL="${OMNI_GATEWAY_URL:-http://localhost:8080}"
+GATEWAY_URL="${OMNI_GATEWAY_URL:-http://gateway.ai-agent.local}"
 DRILL_GROUPS="${DRILL_GROUPS:-all}"
 DRY_RUN="${DRY_RUN:-false}"
 DRILL_CMD="${PROJECT_DIR}/.venv/bin/python ${PROJECT_DIR}/scripts/chaos_lane_drill.py"

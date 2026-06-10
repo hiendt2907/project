@@ -144,12 +144,26 @@ def _refine_query(initial_query: str, snippets: list[str]) -> str:
     return f"{base}\nKNOWN SO FAR: {tail[:600]}"
 
 
+async def _embed_query_once(llm: Any, query: str, embed_model: str) -> list[float] | None:
+    """Embed the turn query once so all collections reuse one vector. None on failure."""
+    from rag.redis_vector_store import _embed_query_robust
+
+    try:
+        return await _embed_query_robust(
+            llm, query, embed_model=embed_model, embed_model_fallback=None,
+            keep_alive="5m", query_max_chars=8000,
+        )
+    except Exception as exc:  # noqa: BLE001 — brain is best-effort, never fails ingest
+        logger.debug("event=redis_brain_embed_failed err=%r", exc)
+        return None
+
+
 async def _search_collection(
-    vs: Any, *, query: str, collection: str, llm: Any, embed_model: str
+    vs: Any, *, vector: list[float], collection: str
 ) -> list[BrainHit]:
     try:
-        resp = await vs.similarity_search(
-            query, collection, llm=llm, embed_model=embed_model,
+        resp = await vs.similarity_search_by_vector(
+            vector, collection,
             limit=PER_TURN_LIMIT, score_threshold=MIN_HIT_SCORE,
         )
     except Exception as exc:  # noqa: BLE001 — brain is best-effort, never fails ingest
@@ -201,8 +215,10 @@ async def run_redis_brain(
 
     for turn_no in range(1, max_turns + 1):
         turn_hits: list[BrainHit] = []
-        for coll in collections:
-            for h in await _search_collection(vs, query=query, collection=coll, llm=llm, embed_model=embed_model):
+        # Embed once per turn; the same vector serves every collection search.
+        vector = await _embed_query_once(llm, query, embed_model)
+        for coll in collections if vector is not None else ():
+            for h in await _search_collection(vs, vector=vector, collection=coll):
                 if h.point_id and h.point_id in seen_ids:
                     continue  # carry-forward de-dup: never re-count knowledge across turns
                 if h.point_id:

@@ -51,6 +51,41 @@ class PlaybookMatcher:
                 return pb
         return None
 
+    async def match_spec(
+        self,
+        *,
+        lane: str = "",
+        fault_text: str = "",
+        severity: str = "",
+    ) -> Any | None:
+        """Deterministic PlaybookSpec match (L4 playbook-first, chạy TRƯỚC LLM).
+
+        Match khi: lane ∈ trigger.lanes (nếu khai) AND ≥1 fault_keyword xuất hiện
+        trong fault_text (lowercase contains) AND severity khớp filter (nếu khai).
+        Nhiều match → chọn playbook có NHIỀU keyword khớp nhất (specific thắng generic).
+        """
+        text = (fault_text or "").lower()
+        ln = (lane or "").strip().upper()
+        sev = (severity or "").strip().lower()
+        best = None
+        best_hits = 0
+        for spec in await self._store.list_specs():
+            trig = spec.trigger
+            if trig.lanes and ln and ln not in [x.upper() for x in trig.lanes]:
+                continue
+            if trig.severity_filter and sev and trig.severity_filter.lower() != sev:
+                continue
+            hits = sum(1 for kw in trig.fault_keywords if kw.lower() in text)
+            if trig.fault_keywords and hits == 0:
+                continue
+            if hits > best_hits or best is None:
+                best, best_hits = spec, hits
+        if best is not None:
+            logger.info(
+                "event=playbook_spec_matched playbook_id=%s hits=%d lane=%s", best.playbook_id, best_hits, ln,
+            )
+        return best
+
     async def match_from_batch(self, batch: list[dict[str, Any]]) -> Playbook | None:
         """Convenience: extract SIEM labels from canonical_query_snippet and match."""
         import json

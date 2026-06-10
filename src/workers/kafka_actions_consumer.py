@@ -87,12 +87,56 @@ async def _is_rate_limited(ctx: WorkerHandlerContext, tool_name: str, args: dict
     fp = _action_fingerprint(tool_name, args)
     key = f"omni:executor:rate:{fp}"
     try:
+        # SET NX EX first so the key ALWAYS carries a TTL — the old incr-then-expire
+        # order could leave a TTL-less key (permanent rate limit) if expire failed.
+        await ctx.redis.set(key, 0, nx=True, ex=window_sec)
         n = int(await ctx.redis.incr(key))
-        if n == 1:
-            await ctx.redis.expire(key, window_sec)
         return n > burst
     except Exception:
         return False
+
+
+_POISON_MAX_FAILURES = 3
+_POISON_COUNTER_TTL_SEC = 3600
+
+
+async def _poison_guard(ctx: WorkerHandlerContext, consumer: Any, msg: Any, *, err: Exception) -> None:
+    """After N failures on the SAME message, archive it to the DLQ topic and
+    commit the offset — otherwise a poison message pins the consumer group
+    offset forever (redelivered after every rebalance/restart)."""
+    msg_id = kafka_msg_id(msg.topic, msg.partition, msg.offset)
+    key = f"omni:executor:poison:{msg_id}"
+    try:
+        n = int(await ctx.redis.incr(key))
+        if n == 1:
+            await ctx.redis.expire(key, _POISON_COUNTER_TTL_SEC)
+    except Exception:
+        return  # no Redis → keep legacy behaviour (no commit)
+
+    if n < _POISON_MAX_FAILURES:
+        return
+    ws = ctx.settings
+    dlq_topic = str(getattr(ws, "kafka_topic_actions_dlq", "omni-actions-dlq") or "omni-actions-dlq")
+    try:
+        raw_value = msg.value.decode("utf-8", "replace") if isinstance(msg.value, bytes) else str(msg.value)
+        kbus = getattr(ctx, "kafka", None)
+        if kbus is not None:
+            await kbus.send_dict(dlq_topic, {
+                "source_topic": msg.topic,
+                "partition": msg.partition,
+                "offset": msg.offset,
+                "failures": n,
+                "error": str(err)[:500],
+                "data": raw_value[:65536],
+            })
+        await consumer.commit()
+        await ctx.redis.delete(key)
+        logger.error(
+            "event=poison_message_dlq topic=%s partition=%s offset=%s failures=%d dlq=%s",
+            msg.topic, msg.partition, msg.offset, n, dlq_topic,
+        )
+    except Exception as dlq_err:  # noqa: BLE001 — DLQ must never crash the loop
+        logger.error("event=poison_dlq_failed msg_id=%s err=%s", msg_id, dlq_err)
 
 
 async def kafka_actions_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
@@ -155,6 +199,9 @@ async def kafka_actions_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
                     elif action in ("execute_mutate", "action_execute_mutate"):
                         await _handle_execute_mutate(ctx, trace, data)
                         await mark_stage(ctx.redis, trace, "EXECUTOR", "ok", detail="execute_mutate")
+                    elif action == "execute_playbook":
+                        await _handle_execute_playbook(ctx, trace, data)
+                        await mark_stage(ctx.redis, trace, "EXECUTOR", "ok", detail="execute_playbook")
                     elif action == "suggest_remediation":
                         await mark_stage(ctx.redis, trace, "EXECUTOR", "skip", detail="suggest-only (no execute)")
                         logger.info(
@@ -179,6 +226,7 @@ async def kafka_actions_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
             except Exception as e:
                 await ctx.ledger.record_exception(e, phase="4", component="kafka_actions_loop", swallow_errors=True)
                 logger.exception("kafka_actions_loop message error: %s", e)
+                await _poison_guard(ctx, consumer, msg, err=e)
                 await asyncio.sleep(0.5)
     finally:
         await consumer.stop()
@@ -274,10 +322,35 @@ async def _post_mutate_reconcile_and_rollback(
         return
 
     advisory = _advisory_from_envelope(data)
-    outcome = await reconcile_advisory(ctx, advisory)
-    verdict = str(getattr(outcome, "verdict", "unverifiable"))
-    pod = getattr(outcome, "pod", None)
-    pod_unhealthy = bool(pod is not None and pod.found and not pod.is_healthy())
+
+    # Convergence settle window: a scale/patch/restart needs time to roll out.
+    # Reconciling immediately reads a mid-rollout (transiently unhealthy) state
+    # and would rollback a CORRECT mutation. Poll across the settle window and
+    # only rollback if the LAST read still shows refuted/unhealthy; any healthy
+    # read inside the window means the mutation converged — stop early.
+    settle_sec = float(getattr(ws, "omni_post_mutate_settle_sec", 30) or 30)
+    attempts = max(1, int(getattr(ws, "omni_post_mutate_reconcile_attempts", 3) or 3))
+    interval = settle_sec / attempts
+
+    verdict = "unverifiable"
+    pod = None
+    pod_unhealthy = False
+    for attempt in range(1, attempts + 1):
+        await asyncio.sleep(interval)
+        outcome = await reconcile_advisory(ctx, advisory)
+        verdict = str(getattr(outcome, "verdict", "unverifiable"))
+        pod = getattr(outcome, "pod", None)
+        pod_unhealthy = bool(pod is not None and pod.found and not pod.is_healthy())
+        if verdict != "refuted" and not pod_unhealthy:
+            logger.info(
+                "[%s] event=post_mutate_settled attempt=%d/%d verdict=%s",
+                trace, attempt, attempts, verdict,
+            )
+            break
+        logger.info(
+            "[%s] event=post_mutate_settle_wait attempt=%d/%d verdict=%s pod_unhealthy=%s",
+            trace, attempt, attempts, verdict, pod_unhealthy,
+        )
 
     should_rollback = verdict == "refuted" or pod_unhealthy
     logger.info(
@@ -327,6 +400,65 @@ async def _post_mutate_reconcile_and_rollback(
         component="kafka_actions_consumer",
         detail=f"auto_rollback reason={reason_code} rolled_back={rolled_ok} tool={tool_name}",
     )
+
+
+async def _handle_execute_playbook(ctx: WorkerHandlerContext, trace: str, data: dict[str, Any]) -> None:
+    """EXECUTE_PLAYBOOK: load spec → playbook_engine.run_playbook → feedback.
+
+    Engine tự lo mọi gate (kill-switch, breaker, blast-radius, proof-of-fault,
+    verify, rollback, CRAT) — handler chỉ load spec + publish feedback.
+    """
+    from execution.playbook_engine import run_playbook
+    from services.playbook.store import PlaybookStore
+
+    playbook_id = str(data.get("playbook_id") or "").strip()
+    render_ctx = data.get("render_ctx") if isinstance(data.get("render_ctx"), dict) else {}
+    tenant = str(data.get("tenant") or "default").strip() or "default"
+    hitl_approved = bool(data.get("hitl_approved", False))
+    correlation_id = str(data.get("correlation_id") or trace).strip()
+
+    spec = await PlaybookStore(ctx.redis).get_spec(playbook_id)
+    if spec is None:
+        await publish_action_feedback(
+            ctx, trace_id=trace, tool_name=f"playbook:{playbook_id or 'unknown'}",
+            correlation_id=correlation_id, stdout="", stderr="",
+            exit_code=-1, status="skipped",
+            skipped_reason=f"playbook_spec_not_found id={playbook_id}",
+            mutate_args=dict(render_ctx),
+        )
+        return
+
+    result = await run_playbook(
+        ctx, trace=trace, spec=spec,
+        render_ctx={k: str(v) for k, v in render_ctx.items()},
+        tenant=tenant, hitl_approved=hitl_approved,
+    )
+    status_map = {"ok": "ok", "rolled_back": "rolled_back", "skipped": "skipped"}
+    fb_status = status_map.get(result.status, "error")
+    await publish_action_feedback(
+        ctx, trace_id=trace, tool_name=f"playbook:{playbook_id}",
+        correlation_id=correlation_id,
+        stdout=result.detail, stderr="",
+        exit_code=0 if result.status == "ok" else 1,
+        status=fb_status,
+        skipped_reason=result.detail if fb_status == "skipped" else "",
+        mutate_args=dict(render_ctx),
+    )
+    await emit_transition(
+        ctx, trace_id=trace, transition=TRANSITION_EXECUTED,
+        status="ok" if result.status == "ok" else "error",
+        component="kafka_actions_consumer",
+        detail=f"playbook={playbook_id} result={result.status} steps={result.steps_executed}",
+    )
+    if result.status in ("proof_failed", "skipped"):
+        await emit_terminal_tombstone(
+            ctx, trace_id=trace,
+            reason_code="PLAYBOOK_PROOF_OF_FAULT_FAILED" if result.status == "proof_failed" else "PLAYBOOK_SKIPPED",
+            component="kafka_actions_consumer",
+            detail=result.detail[:400],
+        )
+    logger.info("[%s] event=playbook_result playbook=%s status=%s detail=%s",
+                trace, playbook_id, result.status, log_preview(result.detail, max_chars=400))
 
 
 async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: dict[str, Any]) -> None:

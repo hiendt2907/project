@@ -26,8 +26,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("chaos_drill_rollback")
 
 NS = os.getenv("NS", "multi-agent")
-REDIS_URL = os.getenv("OMNI_REDIS_URL", "redis://localhost:6379/0")
-KAFKA_BOOTSTRAP = os.getenv("OMNI_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
+from e2e_env import kafka_bootstrap as _kafka_bootstrap, redis_url as _redis_url  # noqa: E402
+
+REDIS_URL = _redis_url() or "redis://localhost:16379/0"
+KAFKA_BOOTSTRAP = _kafka_bootstrap() or "localhost:9092"
 TARGET_CONFIGMAP = "omni-chaos-drill-target"
 DRILL_KEY = "chaos_drill_bad_value"
 WAIT_FOR_ROLLBACK_SEC = 120

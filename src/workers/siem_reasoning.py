@@ -29,6 +29,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_IPV6_RE = re.compile(r"\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{0,4}\b")
 
 
 @dataclass(frozen=True)
@@ -115,15 +116,17 @@ def _parse_pps(text: str) -> int | None:
     """Extract a peak rate like '80k pps' / 'pps 80000' / '80000 req/s' from text."""
     if not text:
         return None
-    # `<num>[k|m] pps|req/s|rps`
-    m = re.search(r"(\d+(?:\.\d+)?)\s*([kKmM]?)\s*(?:pps|req/?s|rps|packets?/s)", text)
-    if not m:
-        m = re.search(r"(?:pps|rate|req/?s|rps)\D{0,4}(\d+(?:\.\d+)?)\s*([kKmM]?)", text)
-    if not m:
-        return None
-    val = float(m.group(1))
-    mult = {"k": 1_000, "m": 1_000_000}.get(m.group(2).lower(), 1)
-    return int(val * mult)
+    # `<num>[k|m] pps|req/s|rps` — collect ALL rates, return the peak
+    values: list[int] = []
+    for pattern in (
+        r"(\d+(?:\.\d+)?)\s*([kKmM]?)\s*(?:pps|req/?s|rps|packets?/s)",
+        r"(?:pps|rate|req/?s|rps)\D{0,4}(\d+(?:\.\d+)?)\s*([kKmM]?)",
+    ):
+        for m in re.finditer(pattern, text):
+            val = float(m.group(1))
+            mult = {"k": 1_000, "m": 1_000_000}.get(m.group(2).lower(), 1)
+            values.append(int(val * mult))
+    return max(values) if values else None
 
 
 def extract_siem_evidence(
@@ -156,6 +159,7 @@ def extract_siem_evidence(
             if isinstance(piece, str) and piece:
                 text_blob.append(piece)
                 ips.extend(_IPV4_RE.findall(piece))
+                ips.extend(_IPV6_RE.findall(piece))
 
     blob = "  ".join(text_blob)
     # keep explicit field IPs first; only count addresses that classify as real IPs

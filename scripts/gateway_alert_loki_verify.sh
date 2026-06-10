@@ -71,6 +71,9 @@ _e2e_alert_payload_cleanup() {
 }
 trap '_e2e_alert_payload_cleanup' EXIT
 
+# Known issue: stale /tmp/e2e-gw-*.json from killed runs cause false E2E results — sweep first.
+rm -f "${TMPDIR:-/tmp}"/e2e-gw-*.json 2>/dev/null || true
+
 _E2E_NS_PATCH="$(mktemp "${TMPDIR:-/tmp}/e2e-gw-ns.XXXXXX.json")"
 python3 -c "
 import json, sys

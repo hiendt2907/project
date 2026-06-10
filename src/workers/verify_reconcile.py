@@ -133,7 +133,10 @@ async def read_pod_ground_truth(ctx: Any, namespace: str, pod_hint: str) -> PodG
     match = None
     for p in resp.items or []:
         name = (getattr(p.metadata, "name", "") or "").lower()
-        if name == hint or name.startswith(hint) or hint in name:
+        # Exact name, or hint as the pod's base name followed by a generated
+        # suffix ("nginx-test" → "nginx-test-69c..."). A bare substring match
+        # ("test" in "nginx-test-proxy-...") picks the WRONG pod — never use it.
+        if name == hint or name.startswith(hint + "-"):
             match = p
             break
     if match is None:

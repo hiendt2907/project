@@ -55,6 +55,9 @@ async def capture_pre_mutate_snapshot(
         "tool_name": resolved_tool_name,
         "args_keys": sorted(args.keys()),
         "namespace": str(args.get("namespace") or ""),
+        # Target name captured AT SNAPSHOT TIME — rollback must not depend on a
+        # ctx side-channel set by whoever happens to trigger it later.
+        "name": str(args.get("name") or args.get("deployment") or args.get("pod") or "").strip(),
         "trace_id": trace_id,
     }
 
@@ -216,10 +219,9 @@ async def _apply(
 
     await _load_k8s_config()
     ns = str(snap.get("namespace") or "").strip()
-    # Name not always in snap top-level — it's in args_keys, reconstruct from context.
-    # We stored name via args; use trace_id logs for audit. The actual name must come
-    # from the action envelope — passed via ctx.rollback_target_name if set.
-    name = str(getattr(ctx, "rollback_target_name", "") or "")
+    # Primary: name stored in the snapshot at capture time. Legacy fallback:
+    # ctx.rollback_target_name (kept one release for old snapshots still in Redis).
+    name = str(snap.get("name") or "").strip() or str(getattr(ctx, "rollback_target_name", "") or "")
 
     if tool_name == "k8s_scale_deployment":
         prior = snap.get("prior_replicas")

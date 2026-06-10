@@ -151,6 +151,11 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_AUTO_EXECUTE_ENABLED"),
         description="Lab: EXECUTE_MUTATE runs after Pre-apply without Telegram/Redis confirm.",
     )
+    omni_playbook_first: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_PLAYBOOK_FIRST"),
+        description="L4 dual-run: mutate call match được PlaybookSpec → EXECUTE_PLAYBOOK (engine gate đầy đủ); không match → EXECUTE_MUTATE cũ.",
+    )
     # Graduated autonomy tier (MASTER_PLAN §3). Default fail-closed shadow. Rỗng =
     # dẫn xuất từ omni_auto_execute_enabled. Runtime source-of-truth = Postgres(cache).
     omni_autonomy_tier: str = Field(

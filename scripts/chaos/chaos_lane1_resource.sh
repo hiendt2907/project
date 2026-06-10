@@ -37,8 +37,8 @@
 set -euo pipefail
 
 NS="${NS:-multi-agent}"
-GATEWAY_URL="${OMNI_GATEWAY_URL:-http://localhost:8080}"
-GATEWAY_API_KEY="${OMNI_GATEWAY_API_KEY:-}"
+GATEWAY_URL="${OMNI_GATEWAY_URL:-http://gateway.ai-agent.local}"
+GATEWAY_API_KEY="${OMNI_GATEWAY_API_KEY:-$(kubectl get secret -n "${NS:-multi-agent}" omni-gateway-secret -o jsonpath="{.data.OMNI_GATEWAY_API_KEY}" 2>/dev/null | base64 -d)}"
 REDIS_HOST="${OMNI_REDIS_HOST:-localhost}"
 REDIS_PORT="${OMNI_REDIS_PORT:-16379}"
 SLO_ADVISORY_SEC="${SLO_ADVISORY_SEC:-120}"
@@ -72,7 +72,7 @@ _info() { echo "[INFO] $*"; }
 _warn() { echo "[WARN] $*"; }
 
 HTTP_HEADERS=(-H "Content-Type: application/json")
-[ -n "$GATEWAY_API_KEY" ] && HTTP_HEADERS+=(-H "X-API-Key: $GATEWAY_API_KEY")
+[ -n "$GATEWAY_API_KEY" ] && HTTP_HEADERS+=(-H "Authorization: Bearer $GATEWAY_API_KEY")
 
 # ── Cleanup on exit ───────────────────────────────────────────────────────────
 cleanup() {

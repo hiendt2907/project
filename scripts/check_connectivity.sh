@@ -4,7 +4,7 @@
 set -euo pipefail
 
 NAMESPACE="${1:-multi-agent}"
-POD=$(kubectl -n "$NAMESPACE" get pod -l app=omni-worker -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+POD=$(kubectl -n "$NAMESPACE" get pod -l app=omni-fullstack -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
 if [[ -z "$POD" ]]; then
   echo "ERROR: No omni-worker pod found in namespace $NAMESPACE"

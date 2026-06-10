@@ -24,7 +24,7 @@
 #   OMNI_DEATH_PROACTIVE_RESTART=1  Run proactive_e2e without --skip-restart (re-apply + rollout + metrics wait).
 #   OMNI_DEATH_MATRIX=0|1         Run matrix subset (default 1). Set 0 to skip.
 #   SCENARIOS                     If set, passed to e2e_incident_matrix.sh as-is. If unset and MATRIX=1, see header.
-#   OMNI_GATEWAY_URL             Gateway URL for matrix reachability probe (default http://localhost:8000).
+#   OMNI_GATEWAY_URL             Gateway URL for matrix reachability probe (default http://gateway.ai-agent.local via scripts/lib/e2e_env.py).
 #
 # Exit codes (first failure wins):
 #   2   Missing NS, or --help only (exit 0 for --help)

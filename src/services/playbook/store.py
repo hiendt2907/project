@@ -145,6 +145,39 @@ class PlaybookStore:
         return playbooks
 
 
+    # ------------------------------------------------------------------
+    # PlaybookSpec (L4 playbook-first) — key pbspec:{playbook_id}, plain JSON string
+    # ------------------------------------------------------------------
+
+    async def upsert_spec(self, spec: Any) -> None:
+        """Lưu PlaybookSpec (workers.schemas.playbook.PlaybookSpec) — idempotent."""
+        key = f"pbspec:{spec.playbook_id}"
+        await self._r.set(key, spec.model_dump_json())
+        await self._r.sadd("pbspec:index", spec.playbook_id)
+        logger.info("event=playbook_spec_upserted playbook_id=%s v=%s", spec.playbook_id, spec.version)
+
+    async def get_spec(self, playbook_id: str) -> Any | None:
+        from workers.schemas.playbook import PlaybookSpec
+
+        raw = await self._r.get(f"pbspec:{playbook_id}")
+        if not raw:
+            return None
+        try:
+            return PlaybookSpec.model_validate_json(raw.decode() if isinstance(raw, bytes) else raw)
+        except Exception as exc:  # noqa: BLE001 — spec hỏng không được crash matcher
+            logger.warning("event=playbook_spec_invalid playbook_id=%s err=%s", playbook_id, exc)
+            return None
+
+    async def list_specs(self) -> list[Any]:
+        ids = await self._r.smembers("pbspec:index")
+        out = []
+        for pid in sorted(i.decode() if isinstance(i, bytes) else str(i) for i in (ids or set())):
+            spec = await self.get_spec(pid)
+            if spec is not None:
+                out.append(spec)
+        return out
+
+
 # ------------------------------------------------------------------
 # Internal helpers
 # ------------------------------------------------------------------
