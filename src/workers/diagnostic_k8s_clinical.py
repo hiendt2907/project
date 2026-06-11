@@ -112,6 +112,11 @@ async def _list_pod_names_for_workload(
     name: str,
 ) -> list[str]:
     ml: dict[str, str] | None = None
+    # Defensive: callers may pass uninitialized clients (e.g. when every prior
+    # resolution strategy already failed). Treat a missing client as "no pods" rather
+    # than raising AttributeError mid-resolution.
+    if apps is None or (kind == "Job" and batch_api is None):
+        return []
     try:
         if kind == "Deployment":
             obj = await apps.read_namespaced_deployment(name, namespace)
@@ -414,8 +419,12 @@ def _single_pod_status_fragment(ns: str, pod_name: str, p: Any) -> tuple[str, di
         if getattr(c, "type", None) == "Ready" and getattr(c, "status", None) == "False":
             ready_false = True
             break
+    max_restart_count = 0
     for c in getattr(st, "container_statuses", None) or []:
         nm = c.name or "?"
+        rc = int(getattr(c, "restart_count", 0) or 0)
+        if rc > max_restart_count:
+            max_restart_count = rc
         if c.state and c.state.waiting:
             wr = (getattr(c.state.waiting, "reason", None) or "").strip()
             if wr:
@@ -428,6 +437,25 @@ def _single_pod_status_fragment(ns: str, pod_name: str, p: Any) -> tuple[str, di
             if tr == "OOMKilled":
                 has_oom_killed = True
             ctr_bits.append(f"{nm}:term={c.state.terminated.reason} exit={c.state.terminated.exit_code}")
+        # A crash-looping pod oscillates Running<->Terminated; when sampled mid-Running
+        # the *current* state looks healthy. The canonical K8s signals for "recently
+        # crashed" are last_state.terminated + restart_count — consult them so a real
+        # OOM/crash fault is not dismissed as a false alarm (proof-of-fault gate).
+        ls = getattr(c, "last_state", None)
+        ls_term = getattr(ls, "terminated", None) if ls else None
+        if ls_term is not None:
+            ls_reason = (getattr(ls_term, "reason", None) or "").strip()
+            ls_exit = getattr(ls_term, "exit_code", None)
+            if ls_reason == "OOMKilled":
+                has_oom_killed = True
+            # Repeated non-zero-exit terminations = effective crash loop even if the
+            # current snapshot caught the container momentarily Running.
+            if rc >= 2 and (ls_reason in ("OOMKilled", "Error") or (ls_exit not in (None, 0))):
+                has_crash_loop = True
+            if ls_reason or ls_exit not in (None, 0):
+                ctr_bits.append(
+                    f"{nm}:last_term={ls_reason or '?'} exit={ls_exit} restarts={rc}"
+                )
     wr_u: list[str] = []
     for w in waiting_reasons:
         if w not in wr_u:
@@ -447,6 +475,7 @@ def _single_pod_status_fragment(ns: str, pod_name: str, p: Any) -> tuple[str, di
         "has_crash_loop": has_crash_loop,
         "has_oom_killed": has_oom_killed,
         "ready_false": ready_false,
+        "restart_count": max_restart_count,
     }
     return frag, structured
 

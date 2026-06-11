@@ -44,6 +44,13 @@ _POD_SCOPED_READONLY_TOOLS = frozenset(
         "k8s_get_pod_log_tail",
         "k8s_get_pod_log_previous",
         "k8s_get_pod_secret_refs",
+        # qwen2.5-coder frequently hallucinates these pod-scoped log aliases (not in the
+        # canonical registry). Treat them as pod-scoped so they redirect to a workload probe
+        # instead of dead-cycling ERR_REA_HALLUCINATION_DETECTED on an unknown tool name.
+        "k8s_get_pod_logs",
+        "k8s_get_pod_log",
+        "k8s_logs",
+        "k8s_pod_logs",
     }
 )
 
@@ -556,6 +563,18 @@ def _normalize_planner_dialect(o: dict[str, Any]) -> dict[str, Any]:
                             out["args"] = nv["args"]
                         elif isinstance(nv.get("tool_args"), dict):
                             out["args"] = nv["tool_args"]
+                    # Honor the model's explicit intent on the nested call (qwen emits
+                    # next_action.kind="readonly_executed"/"mutate_executed"). Without this,
+                    # a read-only pod call falls through to decision="mutate" (tool not in the
+                    # readonly allowlist) and dead-cycles ERR_REA_HALLUCINATION_DETECTED instead
+                    # of being redirected to a workload-scoped probe like the flat-shape path.
+                    if not str(out.get("decision") or "").strip():
+                        nk = str(nv.get("kind") or nv.get("decision") or nv.get("step") or "").strip().lower()
+                        if nk:
+                            if any(w in nk for w in ("readonly", "read_only", "discovery", "observe")):
+                                out["decision"] = "discovery"
+                            elif any(w in nk for w in ("mutate", "remediat")):
+                                out["decision"] = "mutate"
                     break
     # action/tool -> tool_name (flat string shape, when still unset).
     if not str(out.get("tool_name") or "").strip():
@@ -880,7 +899,14 @@ async def run_agentic_mutate_plan(
 
     pm_block = _format_post_mutate_verify_user_block(post_mutate_verify) if post_mutate_verify else ""
     repeat_guard_threshold = 2
+    repeat_tool_name_threshold = 3  # F22: same discovery tool N times w/ varied args = arg-evasion loop
     repeat_guard_hits = 0
+    # F23: qwen degrades into free-text prose (e.g. next_action as a sentence) when
+    # confused — yielding decision=na/tool=na schema violations on every step until
+    # max_steps. Abort early to the deterministic safety-net/escalation instead of
+    # burning the full LLM budget on unparseable rounds.
+    schema_reject_threshold = 3
+    consecutive_schema_rejects = 0
     forced_decision_instruction = ""
     workload_ns, workload_dep = _infer_workload_identity(batch, sanitized_text)
 
@@ -946,6 +972,16 @@ async def run_agentic_mutate_plan(
         "Never guess secret name; read secretKeyRef from k8s_describe_resource (Deployment workload) — "
         "do NOT use k8s_get_pod_secret_refs (pod-scoped; blocked).\n"
         "For k8s_patch_resource (Deployment), args must include namespace, name, patch_json (object as JSON string).\n"
+        "For OOMKilled / memory-pressure faults the correct mutate is k8s_patch_resource raising the container "
+        'memory limit — e.g. '
+        '{"tool_name":"k8s_patch_resource","args":{"namespace":"multi-agent","name":"omni-api",'
+        '"patch_json":"{\\"spec\\":{\\"template\\":{\\"spec\\":{\\"containers\\":[{\\"name\\":\\"app\\",'
+        '\\"resources\\":{\\"limits\\":{\\"memory\\":\\"256Mi\\"}}}]}}}}",'
+        '"reasoning":"pod OOMKilled at 16Mi limit; raise to 256Mi"},"step":"mutate","decision":"mutate",'
+        '"evidence_refs":["fact:pod_state.reason=OOMKilled"]}. '
+        "Container name + current limit come from prior k8s_describe_resource(Deployment); do NOT copy 256Mi blindly. "
+        "If the crashloop is a deliberately broken command/spec (e.g. exit 1, bad image), there is NO valid mutate — "
+        'emit decision="escalate" with escalation_reason (human-introduced fault).\n'
         "TOOL_CATALOG_WITH_PRECONDITIONS (JSON):\n"
         f"{_planner_tool_catalog_prompt(max_chars=12000)}\n"
     )
@@ -1253,9 +1289,16 @@ async def run_agentic_mutate_plan(
                     args = new_args
                 args_fp = _json_fingerprint(args)
                 same_calls = 0
+                same_tool_name_calls = 0
                 for rec in mem.action_history:
                     if _repeat_key_from_record(rec) == repeat_dedupe_key:
                         same_calls += 1
+                    if (
+                        str(rec.tool_name or "").strip() == tn
+                        and getattr(rec, "kind", "") == "readonly_executed"
+                    ):
+                        same_tool_name_calls += 1
+                tool_name_loop = same_tool_name_calls + 1 >= repeat_tool_name_threshold
                 if same_calls >= 1:
                     log_llm_trace(
                         ws,
@@ -1270,11 +1313,14 @@ async def run_agentic_mutate_plan(
                             f"repeat_count={same_calls + 1} action_history={len(mem.action_history)}"
                         ),
                     )
-                if same_calls + 1 >= repeat_guard_threshold:
+                if same_calls + 1 >= repeat_guard_threshold or tool_name_loop:
                     repeat_guard_hits += 1
+                    guard_kind = "identical args" if same_calls + 1 >= repeat_guard_threshold else (
+                        f"the same tool {same_tool_name_calls + 1}x with varied args"
+                    )
                     forced_decision_instruction = (
-                        "\nOMNI_GUARD: You already requested this read-only call with identical args "
-                        f"at least {repeat_guard_threshold} times. This is an infinite loop risk. "
+                        f"\nOMNI_GUARD: You already requested this read-only call with {guard_kind}. "
+                        "This is an infinite loop risk. "
                         "You MUST now either: "
                         '1) emit decision="mutate" with complete args and provenance fields, or '
                         '2) emit decision="escalate" with escalation_reason. '
@@ -1282,7 +1328,7 @@ async def run_agentic_mutate_plan(
                     )
                     guard_summary = (
                         f"loop_guard_triggered tool={tn} args_sha={args_fp} repeat_key={repeat_dedupe_key[:16]} "
-                        f"repeat_count={same_calls + 1}"
+                        f"repeat_count={same_calls + 1} tool_name_count={same_tool_name_calls + 1}"
                     )
                     thought_process.append(guard_summary)
                     mem.action_history.append(
@@ -1325,6 +1371,7 @@ async def run_agentic_mutate_plan(
                 exec_args = coerce_k8s_readonly_args(tn, dict(args))
                 obs = await _execute_readonly_tool(ctx, tn, exec_args, output_max_chars=ro_cap)
                 discovery_steps.append(tn)
+                consecutive_schema_rejects = 0  # progress made — reset prose-spin counter
                 is_err = _infer_readonly_error(obs)
                 mem.action_history.append(
                     ActionRecord(
@@ -1356,6 +1403,10 @@ async def run_agentic_mutate_plan(
             reason = _reject_reason(parsed)
             if reason:
                 rejected_tool = str(parsed.get("tool_name") or "").strip()
+                if reason == ERR_REA_SCHEMA_VIOLATION and not rejected_tool:
+                    consecutive_schema_rejects += 1
+                else:
+                    consecutive_schema_rejects = 0
                 logger.info(
                     "event=agentic_mutate_plan_reject trace=%s step=%s reason_code=%s tool=%s",
                     trace,
@@ -1373,6 +1424,24 @@ async def run_agentic_mutate_plan(
                     reject_reason=reason,
                     detail=json.dumps(parsed, ensure_ascii=False, default=str)[:2500],
                 )
+                if consecutive_schema_rejects >= schema_reject_threshold:
+                    logger.info(
+                        "event=agentic_mutate_plan_schema_reject_streak_abort trace=%s step=%s streak=%s",
+                        trace,
+                        step + 1,
+                        consecutive_schema_rejects,
+                    )
+                    return {
+                        "reason_code": "PLANNER_UNPARSEABLE_PROSE",
+                        "phase": "escalate",
+                        "decision": "escalate",
+                        "tool_name": "",
+                        "args": {},
+                        "final_analysis": (
+                            f"planner emitted {consecutive_schema_rejects} consecutive unparseable "
+                            "(prose / no tool_name) rounds — model-ceiling; deterministic safety-net / HITL"
+                        )[:2000],
+                    }
                 continue
             tn = str(parsed.get("tool_name") or "").strip()
             args_raw = parsed.get("args")

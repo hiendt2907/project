@@ -73,6 +73,14 @@ def _sdk_invalidates_workload_cpu_stale_metric(stat_ev: dict[str, Any] | None) -
     if not stat_ev:
         return False
     ef = _parse_extracted_fact(str(stat_ev.get("extracted_fact") or ""))
+    # Proof-of-fault: an OOMKilled / crash-looping pod is a CONFIRMED fault, not a
+    # stale-metric false alarm — even if sampled momentarily Running between restarts.
+    # The contrast path must yield so the pipeline proceeds to remediation/advisory.
+    if bool(ef.get("has_oom_killed")) or bool(ef.get("has_crash_loop")):
+        return True
+    for pod in ef.get("pods") or []:
+        if isinstance(pod, dict) and (pod.get("has_oom_killed") or pod.get("has_crash_loop")):
+            return True
     ph = str(ef.get("phase") or "").strip()
     if ph in ("Failed", "Unknown", "Pending"):
         return True
