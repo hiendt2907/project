@@ -75,6 +75,10 @@ spec:
             # INV_NAMESPACE_ISOLATION — only multi-agent may be mutated.
             - name: OMNI_AUTONOMOUS_ALLOWED_NAMESPACES
               value: "multi-agent"
-            # SIEM lane stays advisory-only even with auto-execute on.
+            # SIEM lane self-heal ENABLED (user-authorized 2026-06-11, lab-only).
+            # HIGH-risk SIEM remediations (delete_pod/patch_rbac/networkpolicy)
+            # still gate to HITL via tier_gate; partial-identity incidents (ns-only,
+            # no workload) still SUGGEST. Auto-mutate only when a concrete LOW/MEDIUM
+            # workload target is identified.
             - name: OMNI_SIEM_SUGGEST_ONLY
-              value: "true"
+              value: "false"
