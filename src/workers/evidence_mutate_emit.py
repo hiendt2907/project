@@ -68,7 +68,12 @@ _RE_CPU_INCIDENT = re.compile(
     re.IGNORECASE,
 )
 _RE_FAULT_INCIDENT = re.compile(
-    r"(createcontainer|crashloop|imagepull|probefail|readiness|liveness|backoff|oom|oomkilled|failedmount|unschedul)",
+    r"(createcontainer|crashloop|imagepull|probefail|readiness|liveness|backoff|oom|oomkilled|failedmount|unschedul"
+    # Workload-availability faults: a Deployment/StatefulSet with 0 ready replicas (pods stuck
+    # NotReady) where the spec is valid is the textbook case for `kubectl rollout restart`.
+    # Canonical Prometheus/kube-state alertnames: KubePodNotReady, KubeDeploymentReplicasMismatch.
+    # Downstream proof-of-fault + INV_NO_RESTART_ON_BROKEN_SPEC still gate the actual mutate.
+    r"|notready|not[\s_-]?ready|podnotready|replicas?[\s_-]?mismatch|noavailablereplicas|workload[\s_-]?unavailable)",
     re.IGNORECASE,
 )
 

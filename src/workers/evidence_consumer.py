@@ -1330,6 +1330,30 @@ async def _emit_agentic_mutate_if_any(
                     trace,
                     chaos_p.get("tool_name"),
                 )
+    # F15-extra: qwen's most common failure mode is NOT "no plan" (None) but a tool-less
+    # planner result — decision=escalate / schema-reject-streak abort / "can't assist" — which
+    # is truthy and so slips PAST the `if not plan:` deterministic safety-net below, degrading a
+    # KNOWN self-healable workload fault to SUGGEST. Normalize any tool-less planner result to
+    # None here so the safety-net + suggest fallback treat it uniformly as "no mutate plan".
+    # PHASE_DONE and CHANNEL_MISMATCH carry their own handled semantics and are preserved.
+    if plan is not None:
+        _rc_norm = str(plan.get("reason_code") or "")
+        _tn_norm = str(plan.get("tool_name") or "").strip()
+        # qwen non-convergence is polymorphic: tool-less (decision=escalate/prose), OR a
+        # parseable-but-non-mutate terminal tool (read-only kubectl_cluster repeated with bad
+        # args). Both must route to the deterministic safety-net, not block it. Normalize ANY
+        # planner result that did NOT terminate on a valid MUTATE_TOOL_ALLOWLIST tool to None.
+        # PHASE_DONE (resolved) and CHANNEL_MISMATCH (explicit read-only route) keep their own
+        # handlers below and are preserved.
+        if (
+            _rc_norm not in (PLANNER_PHASE_DONE, ERR_SEM_CHANNEL_MISMATCH)
+            and _tn_norm not in MUTATE_TOOL_ALLOWLIST
+        ):
+            logger.info(
+                "event=planner_nonmutate_result_normalized_to_none trace=%s reason_code=%s tool=%s",
+                trace, _rc_norm or "none", _tn_norm or "none",
+            )
+            plan = None
     if plan and str(plan.get("reason_code") or "") == PLANNER_PHASE_DONE:
         fa = str(plan.get("final_analysis") or "").strip()
         rs = str(plan.get("resolution_summary") or "").strip()
@@ -1606,11 +1630,18 @@ async def _emit_agentic_mutate_if_any(
                 tn,
             )
     plan_origin = str((plan or {}).get("planner_origin") or "llm")
+    # The precondition gate validates LLM-planner output and RE-ASKS the (flaky) LLM when a
+    # precondition (e.g. prior discovery) is missing. A deterministically synthesized plan
+    # (origin "deterministic" / "deterministic_safety_net_after_planner_fail") carries trusted
+    # args (namespace+deployment from the alert labels) for an already proof-of-fault-confirmed
+    # workload fault — re-asking the LLM here only re-triggers the abort that produced the
+    # safety-net in the first place. Bypass the gate for ALL deterministic origins; the real
+    # safety gates (proof-of-fault, INV_NO_RESTART_ON_BROKEN_SPEC, tier, namespace) still run below.
     if (
         plan
         and bool(getattr(ctx.settings, "omni_planner_precondition_gate_enabled", True))
         and (not unrestricted)
-        and plan_origin != "deterministic"
+        and not plan_origin.startswith("deterministic")
     ):
         planner_missing = (
             [str(x).strip() for x in (plan.get("missing_preconditions") or []) if str(x).strip()]
