@@ -2298,87 +2298,92 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             await _mark_suggest_only_terminal(ctx, trace, "state")
             return os_contrast
 
+        # Lane 4 (SIEM): canonical DETERMINISTIC kill-chain card — runs for EVERY SIEM
+        # batch, independent of omni_siem_suggest_only / omni_auto_execute_enabled.
+        # Rationale (F25): a FinGuard SIEM incident (DDoS, network anomaly, exfil, auth
+        # surge, …) has NO in-cluster workload to mutate — the K8s pod-mutate planner only
+        # hallucinates fake pod targets (e.g. "nginx-ingress-controller-…", "nginx-pod")
+        # for a DDoS from an external IP, then dead-ends to a schema-reject streak + DLQ.
+        # Real SIEM remediation is firewall/NetworkPolicy (HIGH-risk → HITL via tier_gate),
+        # never an autonomous pod mutate. The canonical, grounded output is the per-category
+        # structured card (_siem_diagnosis_from_batch + principle-based WHY/VERIFY +
+        # kill-chain forecast). Emit it directly, skip second-brain RAG + the agentic planner.
+        # CRAT is written here (fail-closed) — the downstream _emit_suggest_remediation path
+        # does NOT write its own audit block.
+        if _is_siem_batch(batch):
+            _siem = _siem_alert_labels(batch)
+            _siem_text = format_batch_sanitized_analyst_user_text(batch)
+            if len(batch) == 1:
+                _siem_text = format_sanitized_analyst_user_text(batch[0])
+            _siem_diag = _siem_diagnosis_from_batch(batch, _siem, _siem_text)
+            await mark_stage(ctx.redis, trace, "RAG", "skip", detail="siem deterministic — no second-brain RAG", lane="siem")
+            await mark_stage(ctx.redis, trace, "LLM", "skip", detail="siem kill-chain — deterministic, no LLM", lane="siem")
+            await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no LLM advisory to verify (deterministic)", lane="siem")
+            await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"siem_category={_siem.get('siem_category', 'unknown')}", lane="siem")
+            await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="siem — no in-cluster mutate path (firewall/NetworkPolicy is HITL)", lane="siem")
+            # CRAT Fail-Closed Gate: audit write MUST succeed before any Telegram emit.
+            try:
+                await write_audit_block(
+                    event_type="ADVISORY_DISPATCHED",
+                    trace_id=trace,
+                    payload={
+                        "lane": "siem",
+                        "siem_incident_id": _siem.get("siem_incident_id", ""),
+                        "siem_category": _siem.get("siem_category", "unknown"),
+                        "diagnosis": _siem_diag,
+                        "source": "SIEM_DETERMINISTIC",
+                    },
+                    redis=ctx.redis,
+                    kafka=ctx.kafka,
+                    kafka_topic=ctx.settings.kafka_topic_audit_chain,
+                )
+            except AuditLedgerError as _siem_audit_err:
+                logger.critical(
+                    "event=audit_chain_write_failed phase=evidence_consumer lane=siem trace=%s err=%s FAIL_CLOSED",
+                    trace, _siem_audit_err,
+                )
+                await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed", lane="siem")
+                return "[ADVISORY MODE FAIL_CLOSED] siem audit_chain_write_failed — dispatch aborted"
+            await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane="siem")
+            await _emit_suggest_remediation(
+                ctx,
+                trace=trace,
+                diagnosis=_siem_diag,
+                confidence=0.9,
+                source="SIEM_DETERMINISTIC",
+                suggested_tool="k8s_describe_resource",
+                lane="siem",
+                audit=False,  # CRAT written above (fail-closed) — do not double-write
+            )
+            await _notify_siem_telegram(ctx, trace=trace, batch=batch, diagnosis=_siem_diag)
+            # SIEM remediation is firewall/NetworkPolicy (HIGH-risk → HITL), never an autonomous
+            # in-cluster pod mutate. Mark terminal stages "skip" so operators don't see a
+            # perpetually-pending pipeline (and so self-heal mode does not strand it at LLM-pending).
+            for _term_stage, _term_detail in (
+                ("HITL", "siem — firewall/NetworkPolicy remediation is out-of-band (SOC/HITL)"),
+                ("EXECUTOR", "siem — no in-cluster mutate"),
+                ("FEEDBACK", "siem — terminal"),
+            ):
+                await mark_stage(ctx.redis, trace, _term_stage, "skip", detail=_term_detail, lane="siem")
+            await emit_transition(
+                ctx,
+                trace_id=trace,
+                transition=TRANSITION_PLAN_EMITTED,
+                component="evidence_consumer",
+                detail="siem_deterministic",
+                meta={"siem_incident_id": _siem.get("siem_incident_id", "")},
+            )
+            logger.info(
+                "event=siem_deterministic_advisory_emitted trace=%s siem_incident=%s category=%s",
+                trace, _siem.get("siem_incident_id", ""), _siem.get("siem_category", "unknown"),
+            )
+            return _siem_diag
+
         # **ADVISORY MODE INTEGRATION (Phase 5)**
         # Check if we should run advisory analyst instead of traditional flow
         if bool(getattr(ctx.settings, "omni_siem_suggest_only", True)) and not bool(
             getattr(ctx.settings, "omni_auto_execute_enabled", False)
         ):
-            # Lane 4 (SIEM): short-circuit to the DETERMINISTIC kill-chain card.
-            # The generic LLM advisory + Redis second-brain RAG are designed for K8s/OS
-            # lanes; for FinGuard SIEM incidents they add ~17s latency and surface
-            # irrelevant ops priors (e.g. OOM blast-radius for a DDoS event). The canonical
-            # SIEM output is the per-category structured card (_siem_diagnosis_from_batch +
-            # _SIEM_CATEGORY_WHY/STEPS + kill-chain forecast). Emit it directly, skipping the
-            # second-brain RAG and the LLM. CRAT is written here (fail-closed) because the
-            # downstream _emit_suggest_remediation path does NOT write its own audit block.
-            if _is_siem_batch(batch):
-                _siem = _siem_alert_labels(batch)
-                _siem_text = format_batch_sanitized_analyst_user_text(batch)
-                if len(batch) == 1:
-                    _siem_text = format_sanitized_analyst_user_text(batch[0])
-                _siem_diag = _siem_diagnosis_from_batch(batch, _siem, _siem_text)
-                await mark_stage(ctx.redis, trace, "RAG", "skip", detail="siem deterministic — no second-brain RAG", lane="siem")
-                await mark_stage(ctx.redis, trace, "LLM", "skip", detail="siem kill-chain — deterministic, no LLM", lane="siem")
-                await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no LLM advisory to verify (deterministic)", lane="siem")
-                await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"siem_category={_siem.get('siem_category', 'unknown')}", lane="siem")
-                await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="siem suggest-only — no mutate path", lane="siem")
-                # CRAT Fail-Closed Gate: audit write MUST succeed before any Telegram emit.
-                try:
-                    await write_audit_block(
-                        event_type="ADVISORY_DISPATCHED",
-                        trace_id=trace,
-                        payload={
-                            "lane": "siem",
-                            "siem_incident_id": _siem.get("siem_incident_id", ""),
-                            "siem_category": _siem.get("siem_category", "unknown"),
-                            "diagnosis": _siem_diag,
-                            "source": "SIEM_SUGGEST_ONLY",
-                        },
-                        redis=ctx.redis,
-                        kafka=ctx.kafka,
-                        kafka_topic=ctx.settings.kafka_topic_audit_chain,
-                    )
-                except AuditLedgerError as _siem_audit_err:
-                    logger.critical(
-                        "event=audit_chain_write_failed phase=evidence_consumer lane=siem trace=%s err=%s FAIL_CLOSED",
-                        trace, _siem_audit_err,
-                    )
-                    await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed", lane="siem")
-                    return "[ADVISORY MODE FAIL_CLOSED] siem audit_chain_write_failed — dispatch aborted"
-                await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane="siem")
-                await _emit_suggest_remediation(
-                    ctx,
-                    trace=trace,
-                    diagnosis=_siem_diag,
-                    confidence=0.9,
-                    source="SIEM_SUGGEST_ONLY",
-                    suggested_tool="k8s_describe_resource",
-                    lane="siem",
-                    audit=False,  # CRAT written above (fail-closed) — do not double-write
-                )
-                await _notify_siem_telegram(ctx, trace=trace, batch=batch, diagnosis=_siem_diag)
-                # SIEM is suggest-only: no human-approval queue, no mutate, no feedback loop.
-                # Mark the terminal stages "skip" so operators don't see a perpetually-pending pipeline.
-                for _term_stage, _term_detail in (
-                    ("HITL", "siem suggest-only — no approval queue"),
-                    ("EXECUTOR", "siem suggest-only — no mutate"),
-                    ("FEEDBACK", "siem suggest-only — terminal"),
-                ):
-                    await mark_stage(ctx.redis, trace, _term_stage, "skip", detail=_term_detail, lane="siem")
-                await emit_transition(
-                    ctx,
-                    trace_id=trace,
-                    transition=TRANSITION_PLAN_EMITTED,
-                    component="evidence_consumer",
-                    detail="siem_suggest_only_deterministic",
-                    meta={"siem_incident_id": _siem.get("siem_incident_id", "")},
-                )
-                logger.info(
-                    "event=siem_deterministic_advisory_emitted trace=%s siem_incident=%s category=%s",
-                    trace, _siem.get("siem_incident_id", ""), _siem.get("siem_category", "unknown"),
-                )
-                return _siem_diag
-
             # Lane 1 (resource): 3σ gate must pass before advisory — alert may be wrong, sigma is ground truth.
             _adv_lane, _ = resolve_proof_lane(batch)
             if _adv_lane == "resource":
