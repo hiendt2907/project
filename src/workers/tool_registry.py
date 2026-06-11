@@ -247,7 +247,20 @@ class ToolRegistry:
         return out
 
     def tool_catalog_json_for_prompt(self, max_chars: int | None = None) -> str:
-        return self._json_fit_whole_entries(self.list_tool_catalog(), max_chars)
+        # Mutate/remediation tools MUST survive truncation — emit them first so that
+        # _json_fit_whole_entries only ever drops trailing read-only tools. Otherwise
+        # alphabetical ordering silently drops k8s_scale_deployment et al. and the
+        # agentic planner cannot propose the correct remediation.
+        catalog = self.list_tool_catalog()
+        mutate_first: dict[str, Any] = {}
+        for name, val in catalog.items():
+            cap = str((val.get("metadata") or {}).get("capability") or "")
+            if cap == "mutate" or name in LEGACY_MUTATING_TOOLS:
+                mutate_first[name] = val
+        for name, val in catalog.items():
+            if name not in mutate_first:
+                mutate_first[name] = val
+        return self._json_fit_whole_entries(mutate_first, max_chars)
 
 
 _GLOBAL = ToolRegistry()

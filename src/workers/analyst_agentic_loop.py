@@ -383,7 +383,7 @@ def build_fact_table_prompt(batch: list[dict[str, Any]], sanitized_text: str) ->
     )
 
 
-def _planner_tool_catalog_prompt(max_chars: int = 12000) -> str:
+def _planner_tool_catalog_prompt(max_chars: int = 16000) -> str:
     """Machine-readable tool catalog (args schema + preconditions metadata)."""
     reg = get_tool_registry()
     return reg.tool_catalog_json_for_prompt(max_chars=max_chars)
@@ -507,6 +507,79 @@ def _broken_spec_first_round_instruction(batch: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+# Flat top-level keys some local models (qwen2.5-coder) emit instead of nesting
+# under "args" — folded into args by the dialect normalizer below. "resource_type"
+# is aliased to "kind" (describe/list tool arg name).
+_PLANNER_FLAT_ARG_KEYS: tuple[str, ...] = (
+    "namespace",
+    "name",
+    "deployment",
+    "kind",
+    "replicas",
+    "patch_json",
+    "key",
+    "value",
+    "container",
+    "selector",
+    "workload",
+    "workload_kind",
+)
+
+
+def _normalize_planner_dialect(o: dict[str, Any]) -> dict[str, Any]:
+    """Map a local-model dialect to the canonical planner schema (immutably).
+
+    qwen2.5-coder reliably emits ``{"action": <tool>, "resource_type": ..., "name": ...,
+    "namespace": ...}`` instead of ``{"decision","tool_name","args":{...}}``. Without this
+    adapter every agentic step is rejected ERR_REA_SCHEMA_VIOLATION and the loop never
+    progresses. We only fill MISSING canonical keys — a correctly-shaped output is untouched,
+    and all downstream safety gates (_reject_reason, evidence_refs, namespace-bound) still apply.
+    """
+    if not isinstance(o, dict):
+        return o
+    out = dict(o)
+    # "thoughts" (qwen) -> "thought" (canonical reasoning field).
+    if "thought" not in out and isinstance(out.get("thoughts"), str):
+        out["thought"] = out["thoughts"]
+    # Nested tool-call shape: {"next_action"|"action": {"tool": <t>, "args": {...}}}.
+    # qwen alternates between this and the flat shape; unwrap when the canonical
+    # tool_name is absent and no args dict was provided yet.
+    if not str(out.get("tool_name") or "").strip():
+        for nest_key in ("next_action", "action"):
+            nv = out.get(nest_key)
+            if isinstance(nv, dict):
+                nested_tool = str(nv.get("tool") or nv.get("tool_name") or nv.get("action") or nv.get("name") or "").strip()
+                if nested_tool:
+                    out["tool_name"] = nested_tool
+                    if not isinstance(out.get("args"), dict) and not isinstance(out.get("tool_args"), dict):
+                        if isinstance(nv.get("args"), dict):
+                            out["args"] = nv["args"]
+                        elif isinstance(nv.get("tool_args"), dict):
+                            out["args"] = nv["tool_args"]
+                    break
+    # action/tool -> tool_name (flat string shape, when still unset).
+    if not str(out.get("tool_name") or "").strip():
+        for alias in ("action", "tool"):
+            av = out.get(alias)
+            if isinstance(av, str) and av.strip():
+                out["tool_name"] = av.strip()
+                break
+    # Fold flat tool arguments into args only when this is a tool call (tool_name present)
+    # and no args/tool_args dict was provided — never touch non-tool JSON.
+    has_args = isinstance(out.get("args"), dict) or isinstance(out.get("tool_args"), dict)
+    if str(out.get("tool_name") or "").strip() and not has_args:
+        folded: dict[str, Any] = {}
+        rt = out.get("resource_type")
+        if isinstance(rt, str) and rt.strip():
+            folded["kind"] = rt.strip()
+        for k in _PLANNER_FLAT_ARG_KEYS:
+            if k in out and not isinstance(out[k], (dict, list)):
+                folded[k] = out[k]
+        if folded:
+            out["args"] = folded
+    return out
+
+
 def _parse_agentic_json(raw: str) -> dict[str, Any] | None:
     s = (raw or "").strip()
     if not s:
@@ -516,7 +589,7 @@ def _parse_agentic_json(raw: str) -> dict[str, Any] | None:
         return None
     try:
         o = json.loads(s[i : j + 1])
-        return o if isinstance(o, dict) else None
+        return _normalize_planner_dialect(o) if isinstance(o, dict) else None
     except Exception:
         return None
 
@@ -1043,6 +1116,12 @@ async def run_agentic_mutate_plan(
                     decision = "discovery"
                 elif tn:
                     decision = "mutate"
+            # Tool capability is authoritative over the model's self-label: a read-only
+            # tool tagged decision="mutate" is a mislabel, not a mutation — reclassify as
+            # discovery so the loop runs the probe and progresses, instead of dead-cycling
+            # ERR_REA_HALLUCINATION_DETECTED on a tool that cannot mutate anything.
+            if decision == "mutate" and tn in READONLY_TOOL_ALLOWLIST:
+                decision = "discovery"
             args_fp = _json_fingerprint(args)
             log_llm_trace(
                 ws,
