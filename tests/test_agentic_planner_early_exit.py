@@ -450,3 +450,66 @@ def test_os_command_item_empty_evidence_refs_raises():
             rollback_command="no rollback",
             evidence_refs=["   "],  # blank strings → normalizes to [] → raises
         )
+
+
+@pytest.mark.asyncio
+async def test_schema_reject_recorded_in_trace_memory_so_next_round_reacts():
+    """A rejected (no tool_name) round must be appended to TRACE_MEMORY so the NEXT
+    prompt shows the failed attempt — the loop reacts instead of repeating verbatim.
+
+    Regression: previously the reject branch `continue`d without recording, so every
+    round received an identical prompt (trace_history_actions=0) and the planner
+    re-emitted the identical invalid output until the streak-abort backstop fired.
+    """
+    from workers import analyst_agentic_loop as aal
+
+    batch = [
+        {
+            "probe": "node_cpu_saturation",
+            "result": "PASSED",
+            "raw": "KubePodNotReady pod=nginx-test not Ready",
+            "extracted_fact": {"status": "PASSED"},
+        }
+    ]
+    # qwen's bare dialect: valid JSON but NO tool_name/decision → ERR_REA_SCHEMA_VIOLATION.
+    bare = {"message": {"content": '{"resource_type":"Pod","name":"nginx-test","namespace":"multi-agent"}'}}
+    llm = CompatLLM()
+    llm.chat = AsyncMock(side_effect=[bare, bare, bare])
+
+    stored: dict[str, str] = {}
+
+    async def fake_get(key: str) -> str | None:
+        return stored.get(key)
+
+    async def fake_setex(key: str, _ttl: int, raw: str) -> None:
+        stored[key] = raw if isinstance(raw, str) else str(raw)
+
+    redis = AsyncMock()
+    redis.get = fake_get
+    redis.setex = fake_setex
+    ctx = SimpleNamespace(
+        settings=SimpleNamespace(
+            diag_evidence_llm_model="m1",
+            model_reasoning_engine="",
+            model_helper="",
+            chat_model="",
+            omni_diagnostic_react_enabled=True,
+            omni_diagnostic_react_readonly_max=3,
+            autonomous_agentic_max_steps=5,
+        ),
+        llm=llm,
+        redis=redis,
+    )
+    out = await aal.run_agentic_mutate_plan(
+        ctx,
+        trace="tr-reject-react",
+        sanitized_text="symptom",
+        batch=batch,
+        max_steps=5,
+    )
+    assert out is not None
+    # Round 2 must have seen the round-1 rejection recorded in TRACE_MEMORY.
+    assert llm.chat.await_count >= 2
+    second_user = llm.chat.call_args_list[1].kwargs["messages"][1]["content"]
+    assert "REJECTED" in second_user
+    assert "schema_reject" in second_user

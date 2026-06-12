@@ -42,6 +42,7 @@ class ActionRecord(BaseModel):
         "mutate_planned",
         "phase_done",
         "post_mutate_verify",
+        "schema_reject",
     ] = "readonly_executed"
 
 

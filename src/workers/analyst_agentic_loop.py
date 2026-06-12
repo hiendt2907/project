@@ -1424,6 +1424,30 @@ async def run_agentic_mutate_plan(
                     reject_reason=reason,
                     detail=json.dumps(parsed, ensure_ascii=False, default=str)[:2500],
                 )
+                # Feed the rejection back into TRACE_MEMORY so the NEXT round is not
+                # a verbatim repeat of this prompt. Without this breadcrumb the planner
+                # re-receives an identical prompt and re-emits the identical invalid
+                # output until the streak-abort backstop fires — the loop iterates but
+                # never "reacts". Recording the failed attempt lets the model self-correct.
+                mem.action_history.append(
+                    ActionRecord(
+                        step=step + 1,
+                        tool_name=rejected_tool or "",
+                        args={},
+                        result_summary=truncate_for_action_record(
+                            f"REJECTED ({reason}): prior output was not a valid tool call "
+                            f"[{json.dumps(parsed, ensure_ascii=False, default=str)[:300]}]. "
+                            "Do NOT repeat it — emit a valid discovery tool_name (workload-scoped) "
+                            "with structured args, or escalate.",
+                            max_chars=mem_out_cap,
+                        ),
+                        is_error=True,
+                        kind="schema_reject",
+                    )
+                )
+                mem.attempt_count = len(mem.action_history)
+                if r_redis is not None:
+                    await save_trace_memory(r_redis, mem)
                 if consecutive_schema_rejects >= schema_reject_threshold:
                     logger.info(
                         "event=agentic_mutate_plan_schema_reject_streak_abort trace=%s step=%s streak=%s",
