@@ -190,6 +190,7 @@ async def test_emit_agentic_mutate_if_any_passes_attempt_count_to_emit(monkeypat
         args: dict[str, Any],
         attempt_count: int = 1,
         reasoning_chain: dict[str, Any] | None = None,
+        planner_origin: str | None = None,
     ) -> bool:
         captured["attempt_count"] = attempt_count
         captured["trace"] = trace
@@ -283,6 +284,7 @@ async def test_emit_agentic_chaos_lab_autofix_after_planner_fail_llm_first(monke
         args: dict[str, Any],
         attempt_count: int = 1,
         reasoning_chain: dict[str, Any] | None = None,
+        planner_origin: str | None = None,
     ) -> bool:
         captured["tool_name"] = tool_name
         captured["args"] = args
@@ -363,6 +365,7 @@ async def test_emit_agentic_deterministic_safety_net_rollout_after_planner_fail(
         args: dict[str, Any],
         attempt_count: int = 1,
         reasoning_chain: dict[str, Any] | None = None,
+        planner_origin: str | None = None,
     ) -> bool:
         captured["tool_name"] = tool_name
         captured["args"] = args
@@ -434,6 +437,7 @@ async def test_emit_agentic_chaos_lab_vetoes_rollout_on_credential_failure(monke
         args: dict[str, Any],
         attempt_count: int = 1,
         reasoning_chain: dict[str, Any] | None = None,
+        planner_origin: str | None = None,
     ) -> bool:
         captured["tool_name"] = tool_name
         return True
@@ -694,6 +698,7 @@ async def test_precondition_gate_reasks_planner_before_mutate(monkeypatch: pytes
         args: dict[str, Any],
         attempt_count: int = 1,
         reasoning_chain: dict[str, Any] | None = None,
+        planner_origin: str | None = None,
     ) -> bool:
         calls["emit"] += 1
         calls["tool"] = tool_name

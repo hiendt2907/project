@@ -161,7 +161,12 @@ class WorkerSettings(BaseSettings):
     omni_autonomy_tier: str = Field(
         default="",
         validation_alias=AliasChoices("OMNI_AUTONOMY_TIER"),
-        description="shadow|assist|auto. Rỗng → derive từ omni_auto_execute_enabled.",
+        description=(
+            "SRE-Autonomous mode: shadow|minimal|autonomous (alias: shadow|assist|auto). "
+            "shadow=observe-only (mọi mutate SUGGEST); minimal=auto chỉ lỗi cơ bản từ "
+            "RAG/deterministic ReAct (origin tin cậy, risk LOW); autonomous=auto cả LLM "
+            "ReAct (LOW+MEDIUM, HIGH→HITL). Rỗng → derive từ omni_auto_execute_enabled."
+        ),
     )
     # Readiness gating (CHỈ hiển thị — không tự nhảy tier, MASTER_PLAN §5).
     omni_tier_min_days_shadow: int = Field(

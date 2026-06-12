@@ -195,6 +195,7 @@ async def emit_execute_mutate(
     args: dict[str, Any],
     attempt_count: int = 1,
     reasoning_chain: dict[str, Any] | None = None,
+    planner_origin: str | None = None,
 ) -> bool:
     k = getattr(ctx, "kafka", None)
     ws = getattr(ctx, "settings", None)
@@ -217,6 +218,7 @@ async def emit_execute_mutate(
         args=args,
         attempt_count=attempt_count,
         reasoning_chain=reasoning_chain,
+        planner_origin=planner_origin,
     )
     audit_topic = getattr(ws, "kafka_topic_audit_chain", "omni-audit-chain")
     audit_payload = _mutation_enqueue_audit_payload(body)

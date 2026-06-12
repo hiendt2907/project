@@ -2020,6 +2020,11 @@ async def _emit_agentic_mutate_if_any(
             )
             return True
         return False
+    # NOTE: SRE-Autonomous tier gate (shadow|minimal|autonomous) is enforced at the
+    # EXECUTOR boundary (kafka_actions_consumer), NOT here — evidence_consumer only
+    # emits EXECUTE_MUTATE *intent*. The plan's reasoning-source provenance travels in
+    # the action payload (planner_origin) so the executor can apply the origin-aware
+    # tier matrix. This keeps the plan→execute contract intact.
     # HITL gate: SIEM-sourced critical incidents must pause for human approval.
     if _siem_hitl_required(batch):
         await emit_hitl_pending(
@@ -2058,6 +2063,7 @@ async def _emit_agentic_mutate_if_any(
                 args=args,
                 attempt_count=ac,
                 reasoning_chain=exec_rc if isinstance(exec_rc, dict) else None,
+                planner_origin=plan_origin,
             )
         if not enqueued:
             await emit_terminal_tombstone(
