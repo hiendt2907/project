@@ -64,20 +64,20 @@ def test_cardinality_single_multiple_unknown():
 
 def test_why_single_internal_blocks_edge_action():
     why = reason_why(_ev(source_ips=("10.0.0.42",))).lower()
-    assert "single internal source" in why
-    assert "not a distributed external attack" in why
+    assert "một nguồn nội bộ duy nhất" in why
+    assert "không phải tấn công phân tán" in why
 
 
 def test_why_multiple_external_is_distributed():
     why = reason_why(_ev(source_ips=("8.8.8.8", "1.1.1.1", "9.9.9.9"))).lower()
-    assert "distributed" in why
+    assert "phân tán" in why
     assert "single" not in why
 
 
 def test_why_unknown_origin_is_not_dead_end():
     why = reason_why(_ev(category="brand_new_threat", source_ips=())).lower()
-    assert "unconfirmed" in why
-    assert "identify the source" in why
+    assert "chưa xác nhận" in why
+    assert "xác định (các) nguồn" in why
     # category it has never seen is still carried, not dropped
     assert "brand_new_threat" in why
 
@@ -85,7 +85,7 @@ def test_why_unknown_origin_is_not_dead_end():
 def test_why_unseen_category_single_external():
     """A category absent from every table still produces a sound single-source claim."""
     why = reason_why(_ev(category="quantum_exploit", source_ips=("8.8.8.8",))).lower()
-    assert "single external source" in why
+    assert "một nguồn bên ngoài duy nhất" in why
     assert "quantum_exploit" in why
 
 
@@ -96,7 +96,7 @@ def test_verify_always_has_classify_and_ingress():
         steps = reason_verify(ev)
         assert steps  # never empty
         joined = " ".join(steps).lower()
-        assert "terminates inside the cluster" in joined
+        assert "kết thúc bên trong cụm" in joined
 
 
 # --- pps extraction from free text --------------------------------------------
@@ -136,4 +136,4 @@ def test_blast_radius_reflects_observed_pps():
     ev = _ev(source_ips=("8.8.8.8",), pps=80_000)
     line = reason_blast_radius(ev)
     assert "80,000 pps" in line
-    assert "1 source" in line
+    assert "1 nguồn" in line

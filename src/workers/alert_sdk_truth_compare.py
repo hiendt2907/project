@@ -487,9 +487,9 @@ def build_contrast_diagnosis_for_action(
     pod = str(labels.get("pod") or "").strip() or "unknown"
     alertname = str(labels.get("alertname") or "").strip() or "unknown"
     head = (
-        f"[contrast scope ns={ns} deploy={dep} pod={pod} alertname={alertname}] "
-        f"Trust state machine: PodMetrics negligible vs alert CPU claim — firing alert suspect (false alarm / "
-        f"stale or mismatched series) until Prometheus/rule verified."
+        f"[phạm vi đối chiếu ns={ns} deploy={dep} pod={pod} alertname={alertname}] "
+        f"Tin vào state machine: PodMetrics không đáng kể so với mức CPU mà alert tuyên bố — alert đang kích "
+        f"hoạt bị nghi ngờ (báo động giả / series cũ hoặc lệch) cho tới khi xác minh lại Prometheus/rule."
     )
     tail = contrast_narrative.strip()
     out = f"{head}\n\n{tail}"

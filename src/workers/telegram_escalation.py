@@ -25,25 +25,25 @@ def format_operator_triage_card(
     - advise: concrete next actions (kubectl commands, playbook refs, oncall handoff).
     """
     lines: list[str] = []
-    lines.append("Problem:")
-    lines.append(f"  {problem.strip() or '(no problem description extracted)'}")
+    lines.append("Vấn đề:")
+    lines.append(f"  {problem.strip() or '(không trích được mô tả vấn đề)'}")
     lines.append("")
-    lines.append("Reason:")
-    lines.append(f"  {reason.strip() or '(reason unknown — LLM + RAG both produced no hypothesis)'}")
+    lines.append("Nguyên nhân:")
+    lines.append(f"  {reason.strip() or '(chưa rõ nguyên nhân — cả LLM + RAG đều không đưa ra giả thuyết)'}")
     lines.append("")
-    lines.append("Chain:")
+    lines.append("Chuỗi sự kiện:")
     if chain:
         for i, step in enumerate(chain, start=1):
             lines.append(f"  {i}. {step}")
     else:
-        lines.append("  (no correlated events — isolated single alert)")
+        lines.append("  (không có sự kiện tương quan — cảnh báo đơn lẻ)")
     lines.append("")
-    lines.append("Advise:")
+    lines.append("Khuyến nghị:")
     if advise:
         for s in advise:
             lines.append(f"  - {s}")
     else:
-        lines.append("  - escalate to on-call — insufficient context for automated action")
+        lines.append("  - chuyển on-call — thiếu ngữ cảnh để xử lý tự động")
     return "\n".join(lines)
 
 

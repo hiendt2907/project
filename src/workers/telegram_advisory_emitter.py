@@ -252,26 +252,26 @@ def _render_header(advisory: AnalystAdvisory, lane_label: str | None = None) -> 
     title = root_cause[:70].rstrip()
     if len(root_cause) > 70:
         title += "..."
-    return f"{emoji} *{badge_prefix}{_e(advisory.verdict)} Alert: {_e(title)}*"
+    return f"{emoji} *{badge_prefix}Cảnh báo {_e(advisory.verdict)}: {_e(title)}*"
 
 
 def _render_what_happened(advisory: AnalystAdvisory) -> str:
     root_cause = _fix_z_score_root_cause(advisory.root_cause or "")
     confidence = advisory.confidence or "medium"
     lines = [
-        "*What happened?*",
+        "*Chuyện gì đang xảy ra?*",
         f"• {_e(root_cause)}",
     ]
     if confidence != "medium":
-        lines.append(f"• Confidence: {_e(confidence)}")
+        lines.append(f"• Độ tin cậy: {_e(confidence)}")
     return "\n".join(lines)
 
 
 def _render_who(advisory: AnalystAdvisory) -> str:
     workload = advisory.affected_workload or ""
     if not workload or workload.strip().lower() == "unknown":
-        workload = "cluster (unknown workload)"
-    return f"*Who?*\n• {_e(workload)}"
+        workload = "cụm (chưa xác định workload)"
+    return f"*Ở đâu? (Workload)*\n• {_e(workload)}"
 
 
 def _render_when(advisory: AnalystAdvisory) -> str:
@@ -279,15 +279,15 @@ def _render_when(advisory: AnalystAdvisory) -> str:
     if ts:
         ts_str = ts.strftime("%Y-%m-%d %H:%M:%S UTC") if hasattr(ts, "strftime") else str(ts)
     else:
-        ts_str = "detection time unknown"
-    return f"*When?*\n• {_e(ts_str)}"
+        ts_str = "chưa rõ thời điểm phát hiện"
+    return f"*Khi nào?*\n• {_e(ts_str)}"
 
 
 def _render_why(steps: list[VerificationStep]) -> str:
     if not steps:
         return ""
     shown = sorted(steps, key=lambda x: x.order)[:3]
-    lines = ["*Why? (Verification steps)*"]
+    lines = ["*Vì sao? (Bước kiểm chứng)*"]
     for step in shown:
         badge = _LAYER_BADGE.get(step.layer, step.layer.upper())
         layer_name = _LAYER_NAME.get(step.layer, step.layer)
@@ -307,30 +307,30 @@ def _render_why(steps: list[VerificationStep]) -> str:
 def _render_how_to_fix(steps: list[ProposedRemediationStep]) -> str:
     if not steps:
         return ""
-    lines = ["*How to fix?*"]
+    lines = ["*Cách khắc phục?*"]
     for step in sorted(steps, key=lambda x: x.order):
-        approval = " [APPROVAL REQUIRED]" if step.approval_required else ""
-        lines.append(f"• Step {step.order}:{approval} {_e(step.action)}")
+        approval = " [CẦN PHÊ DUYỆT]" if step.approval_required else ""
+        lines.append(f"• Bước {step.order}:{approval} {_e(step.action)}")
         if step.rollback_plan:
-            lines.append(f"  ↩ Rollback: `{step.rollback_plan}`")
+            lines.append(f"  ↩ Hoàn tác: `{step.rollback_plan}`")
     return "\n".join(lines)
 
 
 def _render_impact_if_not_fixed(forecast: ForecastTimeline) -> str:
     if _is_heuristic_fallback(forecast) or not forecast.forecasts:
-        return "*What happens if not fixed?*\n• Insufficient data for exact projection"
+        return "*Nếu không xử lý thì sao?*\n• Chưa đủ dữ liệu để dự báo chính xác"
     sorted_fc = sorted(forecast.forecasts, key=lambda x: _TIMEFRAME_ORDER.get(x.timeframe, 99))
     first = sorted_fc[0]
     label = _SEVERITY_LABEL.get(first.severity, first.severity.upper())
-    prediction = (first.prediction or "").strip() or f"Status escalates to {label}"
-    return f"*What happens if not fixed?*\n• +{first.timeframe}: {_e(prediction)}"
+    prediction = (first.prediction or "").strip() or f"Trạng thái leo thang lên {label}"
+    return f"*Nếu không xử lý thì sao?*\n• +{first.timeframe}: {_e(prediction)}"
 
 
 def _render_forecast_projection(forecast: ForecastTimeline) -> str:
     if _is_heuristic_fallback(forecast) or not forecast.forecasts:
         return ""
     sorted_fc = sorted(forecast.forecasts, key=lambda x: _TIMEFRAME_ORDER.get(x.timeframe, 99))
-    lines = ["*Forecast impact (EWMA Projection):*"]
+    lines = ["*Dự báo tác động (EWMA):*"]
     shown = {fc.timeframe: fc for fc in sorted_fc}
     for tf in ("1h", "3h", "6h", "12h", "24h"):
         fc = shown.get(tf)
@@ -346,7 +346,7 @@ def _render_forecast_projection(forecast: ForecastTimeline) -> str:
 def _render_escalation(reason: str) -> str:
     if not reason:
         return ""
-    return f"*ESCALATION REQUIRED:*\n{_e(reason)}"
+    return f"*CẦN LEO THANG:*\n{_e(reason)}"
 
 
 # ---------------------------------------------------------------------------

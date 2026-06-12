@@ -193,37 +193,37 @@ def assess_cardinality(ev: SiemEvidence) -> str:
 
 def _origin_summary(ev: SiemEvidence) -> str:
     if not ev.source_ips:
-        return "no source address captured in evidence"
+        return "không bắt được địa chỉ nguồn trong bằng chứng"
     kinds = {classify_origin(ip).kind for ip in ev.source_ips}
     n = len(ev.source_ips)
     shown = ", ".join(ev.source_ips[:4]) + (" …" if n > 4 else "")
     if kinds == {"external_routable"}:
-        scope = "all external/public"
+        scope = "tất cả ngoài/công khai"
     elif kinds <= {"internal_rfc1918", "loopback", "link_local"}:
-        scope = "all internal (RFC1918/loopback)"
+        scope = "tất cả nội bộ (RFC1918/loopback)"
     else:
-        scope = "mixed internal+external"
-    return f"{n} distinct source(s) [{shown}] — {scope}"
+        scope = "lẫn nội bộ + bên ngoài"
+    return f"{n} nguồn riêng biệt [{shown}] — {scope}"
 
 
 def _magnitude_clause(ev: SiemEvidence) -> str:
     if ev.pps is None:
         return ""
-    return f" Observed peak ~{ev.pps:,} pps."
+    return f" Đỉnh quan sát ~{ev.pps:,} pps."
 
 
 # threat category -> which OS/cluster *layer* the signal lives at (principle, not
 # a canned answer). Unknown category -> generic but still non-empty guidance.
 _CATEGORY_LAYER: dict[str, str] = {
-    "ddos": "node/netfilter conntrack + edge/LB before any K8s object",
-    "network_anomaly": "node interface / routing before service-mesh",
-    "lateral_movement": "pod-to-pod east-west (NetworkPolicy / pod IPs)",
-    "data_exfil": "egress + RBAC of the originating workload",
-    "malware": "the suspect pod's process/network behaviour",
-    "k8s_threat": "RBAC / pod securityContext / control-plane audit",
-    "auth_failure": "auth service logs + service-account tokens",
+    "ddos": "conntrack netfilter ở node + edge/LB trước mọi đối tượng K8s",
+    "network_anomaly": "interface/định tuyến ở node trước service-mesh",
+    "lateral_movement": "lưu lượng đông-tây pod-tới-pod (NetworkPolicy / IP pod)",
+    "data_exfil": "luồng ra (egress) + RBAC của workload khởi nguồn",
+    "malware": "hành vi tiến trình/mạng của pod khả nghi",
+    "k8s_threat": "RBAC / securityContext pod / audit control-plane",
+    "auth_failure": "log dịch vụ auth + token service-account",
 }
-_DEFAULT_LAYER = "the workload/node the evidence points at"
+_DEFAULT_LAYER = "workload/node mà bằng chứng trỏ tới"
 
 
 def reason_why(ev: SiemEvidence) -> str:
@@ -232,41 +232,41 @@ def reason_why(ev: SiemEvidence) -> str:
     card = assess_cardinality(ev)
     origin = _origin_summary(ev)
     mag = _magnitude_clause(ev)
-    cat = ev.category if ev.category and ev.category != "unknown" else "security incident"
+    cat = ev.category if ev.category and ev.category != "unknown" else "sự cố bảo mật"
 
     if card == "single":
         oc = classify_origin(ev.source_ips[0])
         if oc.is_internal:
             return (
-                f"{cat}: traffic/activity from a SINGLE INTERNAL source ({oc.raw}, {oc.kind}). "
-                "This is NOT a distributed external attack — treat as a compromised or "
-                "misbehaving internal host/pod until proven otherwise; do NOT edge-block "
-                f"before confirming origin.{mag} Source profile: {origin}."
+                f"{cat}: lưu lượng/hoạt động từ MỘT nguồn NỘI BỘ duy nhất ({oc.raw}, {oc.kind}). "
+                "Đây KHÔNG phải tấn công phân tán từ bên ngoài — xem như một host/pod nội bộ bị "
+                "xâm nhập hoặc lỗi cho tới khi chứng minh ngược lại; KHÔNG chặn ở edge trước khi "
+                f"xác nhận nguồn.{mag} Hồ sơ nguồn: {origin}."
             )
         return (
-            f"{cat}: high-rate traffic from a SINGLE external source ({oc.raw}). "
-            "One origin — rate-limiting/blocking that specific source at the edge is "
-            "plausible, but first confirm it actually reaches the cluster (it may be "
-            f"dropped upstream).{mag} Source profile: {origin}."
+            f"{cat}: lưu lượng tốc độ cao từ MỘT nguồn bên ngoài duy nhất ({oc.raw}). "
+            "Chỉ một nguồn — rate-limit/chặn riêng nguồn đó ở edge là hợp lý, nhưng trước hết "
+            "phải xác nhận nó thực sự tới được cụm (có thể đã bị chặn ở thượng nguồn)."
+            f"{mag} Hồ sơ nguồn: {origin}."
         )
     if card == "multiple":
         kinds = {classify_origin(ip).kind for ip in ev.source_ips}
         if kinds <= {"internal_rfc1918", "loopback", "link_local"}:
             return (
-                f"{cat}: multiple INTERNAL sources — consistent with lateral movement or a "
-                "compromised internal segment, not an external flood. Investigate east-west "
-                f"traffic and the affected workloads.{mag} Source profile: {origin}."
+                f"{cat}: nhiều nguồn NỘI BỘ — phù hợp với di chuyển ngang (lateral movement) hoặc "
+                "một phân đoạn nội bộ bị xâm nhập, không phải flood từ bên ngoài. Điều tra lưu "
+                f"lượng đông-tây và các workload bị ảnh hưởng.{mag} Hồ sơ nguồn: {origin}."
             )
         return (
-            f"{cat}: multiple distinct external sources — pattern consistent with a "
-            "DISTRIBUTED attack; edge/WAF mitigation is appropriate once you confirm the "
-            f"traffic terminates inside the cluster.{mag} Source profile: {origin}."
+            f"{cat}: nhiều nguồn bên ngoài riêng biệt — mẫu phù hợp với tấn công PHÂN TÁN; giảm "
+            "thiểu bằng edge/WAF là phù hợp sau khi xác nhận lưu lượng kết thúc bên trong cụm."
+            f"{mag} Hồ sơ nguồn: {origin}."
         )
-    # unknown origin — never a dead-end: state the gap as the next action
+    # nguồn chưa rõ — không bao giờ bế tắc: nêu khoảng trống làm hành động kế tiếp
     return (
-        f"{cat}: origin not captured in the evidence, so distribution and scope are "
-        "UNCONFIRMED. Do NOT assume a distributed external attack or a cluster cause — "
-        f"the first job is to identify the source(s).{mag}"
+        f"{cat}: bằng chứng không bắt được nguồn, nên mức phân tán và phạm vi CHƯA XÁC NHẬN. "
+        "KHÔNG giả định tấn công phân tán từ bên ngoài hay nguyên nhân từ cụm — việc đầu tiên "
+        f"là xác định (các) nguồn.{mag}"
     )
 
 
@@ -281,34 +281,34 @@ def reason_verify(ev: SiemEvidence) -> list[str]:
     if ev.source_ips:
         ip_list = " ".join(ev.source_ips[:4])
         steps.append(
-            f"Classify source(s) {ip_list}: external/public vs RFC1918/internal. A single "
-            "internal source means investigate that host/pod — it is NOT a distributed "
-            "external attack and must not be edge-blocked."
+            f"Phân loại (các) nguồn {ip_list}: bên ngoài/công khai vs RFC1918/nội bộ. Một nguồn "
+            "nội bộ duy nhất nghĩa là điều tra host/pod đó — đây KHÔNG phải tấn công phân tán từ "
+            "bên ngoài và không được chặn ở edge."
         )
     else:
         steps.append(
-            "Identify the source address(es) first — the incident carries no origin, so "
-            "neither distribution nor cluster-scope can be assumed yet."
+            "Xác định (các) địa chỉ nguồn trước — sự cố không mang theo nguồn, nên chưa thể giả "
+            "định mức phân tán hay phạm vi cụm."
         )
 
     # 2. Always: confirm-ingress-before-block — does the activity reach the cluster?
     steps.append(
-        f"Confirm the activity actually terminates inside the cluster (a pod/service in "
-        f"namespace {ns}), not at the node/edge. Inspect {layer}. If it is dropped or "
-        "handled upstream, the cluster-scoped HOW-TO below does not apply."
+        f"Xác nhận hoạt động thực sự kết thúc bên trong cụm (một pod/service trong namespace "
+        f"{ns}), không phải ở node/edge. Kiểm tra {layer}. Nếu bị chặn hoặc xử lý ở thượng "
+        "nguồn, phần HOW-TO phạm vi cụm bên dưới không áp dụng."
     )
 
     # 3. Cardinality-specific check — verify the claim the evidence implies.
     card = assess_cardinality(ev)
     if card == "single":
         steps.append(
-            "Verify this really is one origin (de-dup NAT/proxy) before describing it as "
-            "single-source."
+            "Xác minh đây thực sự là một nguồn duy nhất (khử trùng NAT/proxy) trước khi mô tả là "
+            "nguồn-đơn."
         )
     elif card == "multiple":
         steps.append(
-            f"Verify the distinct-source count ({len(ev.source_ips)} seen) to justify a "
-            "'distributed' classification before engaging WAF/edge mitigation."
+            f"Xác minh số nguồn riêng biệt ({len(ev.source_ips)} thấy được) để biện minh cho phân "
+            "loại 'phân tán' trước khi dùng giảm thiểu WAF/edge."
         )
     return steps
 
@@ -318,7 +318,7 @@ def reason_blast_radius(ev: SiemEvidence) -> str:
     card = assess_cardinality(ev)
     bits: list[str] = []
     if ev.pps is not None:
-        bits.append(f"~{ev.pps:,} pps observed")
-    bits.append(f"{len(ev.source_ips) or 'unknown'} source(s)")
-    bits.append(f"scope claim: {card}")
-    return "Blast-radius (from evidence): " + ", ".join(bits) + f"; namespace {ev.namespace}."
+        bits.append(f"~{ev.pps:,} pps quan sát")
+    bits.append(f"{len(ev.source_ips) or 'chưa rõ'} nguồn")
+    bits.append(f"phạm vi tuyên bố: {card}")
+    return "Bán kính ảnh hưởng (từ bằng chứng): " + ", ".join(bits) + f"; namespace {ev.namespace}."

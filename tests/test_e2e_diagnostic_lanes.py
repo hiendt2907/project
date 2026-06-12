@@ -348,7 +348,7 @@ def test_siem_lane_diagnosis_all_sections_present(category: str, severity: str) 
     assert "WHO:" in diag, f"[{category}] WHO section missing"
     assert "WHY:" in diag, f"[{category}] WHY section missing"
     assert "HOW-TO" in diag, f"[{category}] HOW-TO section missing"
-    assert "Forecast" in diag, f"[{category}] Forecast section missing"
+    assert "Dự báo" in diag, f"[{category}] Du bao section missing"
     assert "+1h" in diag, f"[{category}] 1h forecast missing"
     assert "+24h" in diag, f"[{category}] 24h forecast missing"
 
@@ -376,7 +376,7 @@ async def test_siem_lane_telegram_card_has_forecast():
 
     assert tg_captures, "Expected Telegram message"
     card = tg_captures[0]
-    assert "Forecast" in card, f"Forecast missing in card: {card[:400]}"
+    assert "Dự báo" in card, f"Du bao missing in card: {card[:400]}"
     assert "+1h" in card or "1h" in card, "1h horizon missing in card"
     assert "CRITICAL" in card or "CATASTROPHIC" in card, "Severity missing in card"
 

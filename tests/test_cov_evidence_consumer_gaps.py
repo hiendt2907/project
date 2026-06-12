@@ -349,7 +349,7 @@ class TestFormatSiemForecastText:
         text = _format_siem_forecast_text(items)
         assert "+1h:" in text
         assert "+3h:" in text
-        assert "confidence=" in text
+        assert "độ tin cậy=" in text
 
     def test_severity_is_uppercased(self):
         from workers.evidence_consumer import _format_siem_forecast_text
@@ -420,7 +420,7 @@ class TestSiemDiagnosisFromBatch:
         batch = _siem_batch("k8s_threat", "high")
         labels = {"siem_category": "k8s_threat", "severity": "high", "siem_incident_id": "inc-003"}
         result = _siem_diagnosis_from_batch(batch, labels, "text")
-        assert "Forecast" in result
+        assert "Dự báo" in result
 
     def test_default_steps_for_unknown_category(self):
         from workers.evidence_consumer import _siem_diagnosis_from_batch

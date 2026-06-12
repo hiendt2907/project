@@ -122,9 +122,9 @@ def test_diag_single_internal_source_not_distributed():
     batch = _siem_batch(category="ddos")
     _set_sources(batch, ["10.0.0.42"])  # RFC1918
     diag = _siem_diagnosis_from_batch(batch, {"siem_category": "ddos", "severity": "critical"}, "").lower()
-    assert "single internal source" in diag
-    assert "not a distributed external attack" in diag
-    assert "do not edge-block" in diag
+    assert "một nguồn nội bộ duy nhất" in diag
+    assert "không phải tấn công phân tán" in diag
+    assert "không chặn ở edge" in diag or "không được chặn ở edge" in diag
 
 
 def test_diag_single_public_source_no_internal_claim():
@@ -133,10 +133,10 @@ def test_diag_single_public_source_no_internal_claim():
     _set_sources(batch, ["8.8.8.8"])  # genuinely public
     diag = _siem_diagnosis_from_batch(batch, {"siem_category": "ddos", "severity": "critical"}, "")
     why = diag.split("VERIFY FIRST")[0].lower()  # the load-bearing scope claim
-    assert "single internal source" not in why
-    assert "single external source" in why
+    assert "một nguồn nội bộ duy nhất" not in why
+    assert "một nguồn bên ngoài duy nhất" in why
     # confirm-ingress principle present in VERIFY
-    assert "reach" in diag.lower() and "cluster" in diag.lower()
+    assert "tới được" in diag.lower() and "cụm" in diag.lower()
 
 
 def test_diag_unknown_category_unknown_ip_no_dead_end():
@@ -147,7 +147,7 @@ def test_diag_unknown_category_unknown_ip_no_dead_end():
     low = diag.lower()
     assert len(diag) > 80
     # the principle for missing origin: identify source first, do not assume scope
-    assert "unconfirmed" in low or "identify the source" in low
+    assert "chưa xác nhận" in low or "xác định (các) nguồn" in low
     assert "verify first" in low  # VERIFY block always produced, never empty
     # no canned "anomaly confidence exceeds threshold" default boilerplate
     assert "anomaly confidence exceeds" not in low
@@ -158,9 +158,9 @@ def test_diag_multiple_external_sources_is_distributed():
     batch = _siem_batch(category="ddos")
     _set_sources(batch, ["8.8.8.8", "1.1.1.1", "9.9.9.9"])
     diag = _siem_diagnosis_from_batch(batch, {"siem_category": "ddos", "severity": "critical"}, "").lower()
-    assert "distributed" in diag
+    assert "phân tán" in diag
     assert "single" not in diag.split("verify first")[0]  # WHY part must not call it single
-    assert "3 distinct source" in diag
+    assert "3 nguồn riêng biệt" in diag
 
 
 def test_diag_multiple_internal_sources_is_lateral_not_flood():
@@ -168,7 +168,7 @@ def test_diag_multiple_internal_sources_is_lateral_not_flood():
     batch = _siem_batch(category="network_anomaly")
     _set_sources(batch, ["10.0.0.5", "10.0.0.9", "172.16.4.2"])
     diag = _siem_diagnosis_from_batch(batch, {"siem_category": "network_anomaly", "severity": "high"}, "").lower()
-    assert "multiple internal sources" in diag
+    assert "nhiều nguồn nội bộ" in diag
     assert "external flood" not in diag.split("verify first")[0] or "not an external flood" in diag
 
 
@@ -178,7 +178,7 @@ def test_diag_blast_radius_from_evidence_pps():
     _set_sources(batch, ["8.8.8.8"])
     batch[0]["raw"] = "inbound pps 80k from 8.8.8.8 — conntrack table filling"
     diag = _siem_diagnosis_from_batch(batch, {"siem_category": "ddos", "severity": "critical"}, "")
-    assert "Blast-radius (from evidence)" in diag
+    assert "Bán kính ảnh hưởng (từ bằng chứng)" in diag
     assert "80,000 pps" in diag
 
 
@@ -190,8 +190,8 @@ def test_diag_verify_always_non_empty_for_any_category():
         diag = _siem_diagnosis_from_batch(batch, {"siem_category": cat, "severity": "high"}, "")
         verify_section = diag.split("VERIFY FIRST")[1].split("HOW-TO")[0]
         # at least the origin-classify + confirm-ingress principles
-        assert "Classify source" in verify_section
-        assert "terminates inside the cluster" in verify_section
+        assert "Phân loại" in verify_section
+        assert "kết thúc bên trong cụm" in verify_section
 
 
 def test_diag_k8s_threat_has_rbac_steps():
@@ -320,8 +320,8 @@ async def test_siem_telegram_has_real_incident_data():
     assert "ddos" in full_text.lower(), f"category missing: {full_text!r}"
     assert "prod-ns" in full_text, f"namespace missing: {full_text!r}"
     assert "10.0.1.5" in full_text, f"affected_ip missing: {full_text!r}"
-    assert "Problem:" in full_text, f"Problem: section missing: {full_text!r}"
-    assert "Advise:" in full_text, f"Advise: section missing: {full_text!r}"
+    assert "Vấn đề:" in full_text, f"Vấn đề section missing: {full_text!r}"
+    assert "Khuyến nghị:" in full_text, f"Khuyến nghị section missing: {full_text!r}"
 
 
 @pytest.mark.asyncio

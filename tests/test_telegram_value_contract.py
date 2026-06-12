@@ -26,10 +26,10 @@ def test_card_has_all_four_sections():
         chain=["t1 state: pod=Pending", "t2 app_log: ERR connection refused"],
         advise=["kubectl get pods -n prod"],
     )
-    assert "Problem:" in body
-    assert "Reason:" in body
-    assert "Chain:" in body
-    assert "Advise:" in body
+    assert "Vấn đề:" in body
+    assert "Nguyên nhân:" in body
+    assert "Chuỗi sự kiện:" in body
+    assert "Khuyến nghị:" in body
 
 
 def test_card_problem_and_reason_rendered():
@@ -50,8 +50,8 @@ def test_card_empty_problem_has_fallback():
         chain=None,
         advise=None,
     )
-    assert "no problem description extracted" in body
-    assert "reason unknown" in body
+    assert "không trích được mô tả vấn đề" in body
+    assert "chưa rõ nguyên nhân" in body
 
 
 def test_card_back_compat_action_card_maps_to_triage():
@@ -60,7 +60,7 @@ def test_card_back_compat_action_card_maps_to_triage():
         missing_facts=["pod name"],
         suggested_steps=["kubectl get pods -n prod"],
     )
-    assert "Problem:" in body
+    assert "Vấn đề:" in body
     assert "CrashLoop on prod/api" in body
     assert "kubectl get pods -n prod" in body
 
@@ -71,7 +71,7 @@ def test_card_empty_steps_has_fallback():
         missing_facts=[],
         suggested_steps=[],
     )
-    assert "escalate to on-call" in body
+    assert "chuyển on-call" in body
 
 
 def test_card_missing_facts_rendered():
@@ -88,10 +88,10 @@ def test_card_suggested_steps_rendered():
     body = format_operator_action_card(
         known_facts={"namespace": "ns"},
         missing_facts=["pod name"],
-        suggested_steps=["kubectl get pods -n ns --show-labels", "escalate to on-call"],
+        suggested_steps=["kubectl get pods -n ns --show-labels", "chuyển on-call"],
     )
     assert "kubectl get pods -n ns --show-labels" in body
-    assert "escalate to on-call" in body
+    assert "chuyển on-call" in body
 
 
 # ---------------------------------------------------------------------------
@@ -224,10 +224,10 @@ async def test_rag_miss_sdk_escalate_telegram_has_structure():
     body = escalate_msgs[0]["text"]
 
     assert "trace=" in body, f"Missing trace= in: {body!r}"
-    assert "Problem:" in body, f"Missing Problem: section in: {body!r}"
-    assert "Reason:" in body, f"Missing Reason: section in: {body!r}"
-    assert "Chain:" in body, f"Missing Chain: section in: {body!r}"
-    assert "Advise:" in body, f"Missing Advise: section in: {body!r}"
+    assert "Vấn đề:" in body, f"Missing Vấn đề section in: {body!r}"
+    assert "Nguyên nhân:" in body, f"Missing Reason: section in: {body!r}"
+    assert "Chuỗi sự kiện:" in body, f"Missing Chain: section in: {body!r}"
+    assert "Khuyến nghị:" in body, f"Missing Advise: section in: {body!r}"
 
 
 @pytest.mark.asyncio

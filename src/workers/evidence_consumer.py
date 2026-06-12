@@ -206,44 +206,44 @@ _SIEM_CATEGORY_STEPS: dict[str, list[str]] = {
         "kubectl get networkpolicy -n {ns}",
         "kubectl get ingress -n {ns}",
         "kubectl get hpa -n {ns}",
-        "Review WAF/ingress rate-limit config; apply IP block for affected_ip={ip}",
+        "Rà soát cấu hình rate-limit WAF/ingress; chặn IP affected_ip={ip}",
     ],
     "malware": [
         "kubectl get pods -n {ns} --show-labels",
         "kubectl get pods -n {ns} -o wide | grep {ip}",
         "kubectl get pods -n {ns} -o jsonpath='{{range .items[*]}}{{.metadata.name}}{{\"\\n\"}}{{end}}' | xargs -I{{}} kubectl describe pod {{}} -n {ns}",
-        "Isolate: kubectl cordon <node-hosting-suspect-pod>; collect forensics before delete",
+        "Cô lập: kubectl cordon <node-chứa-pod-khả-nghi>; thu thập forensics trước khi xoá",
     ],
     "data_exfil": [
         "kubectl get networkpolicy -n {ns}",
         "kubectl get rolebindings,clusterrolebindings -n {ns}",
         "kubectl get pods -n {ns} -o wide | grep {ip}",
-        "Audit egress traffic and RBAC; revoke over-permissive roles",
+        "Soát lưu lượng egress và RBAC; thu hồi các role quá quyền",
     ],
     "k8s_threat": [
         "kubectl get clusterrolebindings | grep -i admin",
         "kubectl get pods -n {ns} -o wide --show-labels",
         "kubectl get pods -n {ns} -o json | grep -E 'hostPID|privileged|hostNetwork'",
-        "Check privilege escalation; review RBAC and pod securityContext",
+        "Kiểm tra leo thang đặc quyền; rà RBAC và securityContext của pod",
     ],
     "auth_failure": [
         "kubectl logs -n {ns} -l app=auth --tail=200",
         "kubectl get serviceaccounts -n {ns}",
         "kubectl get rolebindings -n {ns}",
-        "Rotate credentials; audit service account tokens",
+        "Xoay vòng credential; soát token service-account",
     ],
     "lateral_movement": [
         "kubectl get networkpolicy -n {ns}",
         "kubectl get pods -n {ns} -o wide | grep {ip}",
         "kubectl get pods -n {ns} --show-labels",
-        "Segment namespace: apply network policy deny-all; investigate pod-to-pod traffic",
+        "Phân đoạn namespace: áp network policy deny-all; điều tra lưu lượng pod-tới-pod",
     ],
 }
 _SIEM_DEFAULT_STEPS = [
     "kubectl get pods -n {ns} --show-labels",
     "kubectl get events -n {ns} --sort-by=.lastTimestamp",
     "kubectl get pods -n {ns} -o wide | grep {ip}",
-    "Apply remediation from suggested_action below; verify with kubectl rollout status",
+    "Áp khắc phục từ suggested_action bên dưới; xác minh bằng kubectl rollout status",
 ]
 
 # SIEM forecast by (category, severity) — heuristic kill-chain timeline
@@ -252,82 +252,82 @@ _SIEM_FORECAST: dict[str, dict[str, list[tuple[str, str, str, str]]]] = {
     # (timeframe, severity_level, prediction, confidence)
     "ddos": {
         "critical": [
-            ("1h", "critical", "Service throughput drops >70%; HPA may not scale fast enough.", "high"),
-            ("3h", "catastrophic", "Service fully unavailable; downstream cascading failures expected.", "high"),
-            ("6h", "catastrophic", "Infrastructure exhaustion; database connection pool saturation.", "medium"),
-            ("12h", "catastrophic", "Multi-region impact if CDN/WAF not engaged.", "medium"),
-            ("24h", "catastrophic", "Full outage without WAF/IP-block remediation.", "low"),
+            ("1h", "critical", "Throughput dịch vụ giảm >70%; HPA có thể không scale kịp.", "high"),
+            ("3h", "catastrophic", "Dịch vụ ngừng hoàn toàn; dự kiến lỗi dây chuyền xuống hạ nguồn.", "high"),
+            ("6h", "catastrophic", "Cạn kiệt hạ tầng; bão hoà connection pool database.", "medium"),
+            ("12h", "catastrophic", "Ảnh hưởng đa vùng nếu chưa kích hoạt CDN/WAF.", "medium"),
+            ("24h", "catastrophic", "Mất dịch vụ toàn bộ nếu không khắc phục bằng WAF/chặn IP.", "low"),
         ],
     },
     "malware": {
         "critical": [
-            ("1h", "critical", "Malware lateral movement begins; adjacent pods at risk.", "high"),
-            ("3h", "catastrophic", "C2 exfiltration channel established; data breach underway.", "high"),
-            ("6h", "catastrophic", "Persistence mechanisms installed; full cluster compromise risk.", "medium"),
-            ("12h", "catastrophic", "Regulatory breach window exceeded (GDPR 72h timer starts).", "high"),
-            ("24h", "catastrophic", "Incident uncontainable without full forensic isolation.", "medium"),
+            ("1h", "critical", "Malware bắt đầu di chuyển ngang; các pod lân cận có nguy cơ.", "high"),
+            ("3h", "catastrophic", "Kênh exfiltration C2 được thiết lập; rò rỉ dữ liệu đang diễn ra.", "high"),
+            ("6h", "catastrophic", "Cài cơ chế bám trụ (persistence); nguy cơ xâm nhập toàn cụm.", "medium"),
+            ("12h", "catastrophic", "Vượt cửa sổ vi phạm quy định (đồng hồ GDPR 72h bắt đầu).", "high"),
+            ("24h", "catastrophic", "Sự cố không kiểm soát được nếu không cô lập forensic toàn bộ.", "medium"),
         ],
     },
     "data_exfil": {
         "critical": [
-            ("1h", "critical", "Active exfiltration in progress; data already partially exposed.", "high"),
-            ("3h", "catastrophic", "Full exfiltration complete; breach notification mandatory.", "high"),
-            ("6h", "catastrophic", "Attacker pivots to destroy evidence; log tampering risk.", "medium"),
-            ("12h", "catastrophic", "Compliance violation window exceeded.", "high"),
-            ("24h", "catastrophic", "Attacker may have destroyed forensic evidence.", "low"),
+            ("1h", "critical", "Exfiltration đang diễn ra; dữ liệu đã lộ một phần.", "high"),
+            ("3h", "catastrophic", "Exfiltration hoàn tất; bắt buộc thông báo vi phạm.", "high"),
+            ("6h", "catastrophic", "Kẻ tấn công xoá dấu vết; nguy cơ giả mạo log.", "medium"),
+            ("12h", "catastrophic", "Vượt cửa sổ vi phạm tuân thủ.", "high"),
+            ("24h", "catastrophic", "Kẻ tấn công có thể đã phá huỷ bằng chứng forensic.", "low"),
         ],
     },
     "k8s_threat": {
         "critical": [
-            ("1h", "critical", "Privileged pod may gain node-level access.", "high"),
-            ("3h", "catastrophic", "Cluster-admin level compromise; all namespaces at risk.", "high"),
-            ("6h", "catastrophic", "Supply chain compromise; image tampering possible.", "medium"),
-            ("12h", "catastrophic", "Full cluster takeover; data and CI/CD pipeline at risk.", "medium"),
-            ("24h", "catastrophic", "Unrecoverable without full cluster rebuild.", "low"),
+            ("1h", "critical", "Pod đặc quyền có thể giành quyền cấp node.", "high"),
+            ("3h", "catastrophic", "Xâm nhập cấp cluster-admin; mọi namespace có nguy cơ.", "high"),
+            ("6h", "catastrophic", "Xâm nhập chuỗi cung ứng; có thể giả mạo image.", "medium"),
+            ("12h", "catastrophic", "Chiếm toàn cụm; dữ liệu và pipeline CI/CD có nguy cơ.", "medium"),
+            ("24h", "catastrophic", "Không thể phục hồi nếu không dựng lại cụm.", "low"),
         ],
     },
     "auth_failure": {
         "critical": [
-            ("1h", "degraded", "Brute-force continues; account lockout may impact legitimate users.", "high"),
-            ("3h", "critical", "Credential compromise imminent if rate-limit not enforced.", "high"),
-            ("6h", "critical", "Account takeover likely; token rotation required.", "medium"),
-            ("12h", "catastrophic", "Compromised credentials used for lateral access.", "medium"),
-            ("24h", "catastrophic", "Full breach if multi-factor not enforced.", "low"),
+            ("1h", "degraded", "Brute-force tiếp diễn; khoá tài khoản có thể ảnh hưởng người dùng hợp lệ.", "high"),
+            ("3h", "critical", "Credential sắp bị xâm nhập nếu không áp rate-limit.", "high"),
+            ("6h", "critical", "Khả năng chiếm tài khoản cao; cần xoay vòng token.", "medium"),
+            ("12h", "catastrophic", "Credential bị xâm nhập dùng để truy cập ngang.", "medium"),
+            ("24h", "catastrophic", "Vi phạm toàn diện nếu không bật multi-factor.", "low"),
         ],
         "high": [
-            ("1h", "degraded", "Continued auth failures; service degradation possible.", "high"),
-            ("3h", "degraded", "Credential lockout risk for legitimate users.", "medium"),
-            ("6h", "critical", "Escalation if attacker adapts credentials.", "medium"),
-            ("12h", "critical", "Sustained attack; credential compromise risk.", "low"),
-            ("24h", "critical", "Account takeover without remediation.", "low"),
+            ("1h", "degraded", "Auth tiếp tục thất bại; có thể suy giảm dịch vụ.", "high"),
+            ("3h", "degraded", "Nguy cơ khoá credential với người dùng hợp lệ.", "medium"),
+            ("6h", "critical", "Leo thang nếu kẻ tấn công đổi credential.", "medium"),
+            ("12h", "critical", "Tấn công kéo dài; nguy cơ xâm nhập credential.", "low"),
+            ("24h", "critical", "Chiếm tài khoản nếu không khắc phục.", "low"),
         ],
     },
     "lateral_movement": {
         "critical": [
-            ("1h", "critical", "Attacker pivoting between pods; network policy breach.", "high"),
-            ("3h", "catastrophic", "Multiple namespaces compromised; secrets at risk.", "high"),
-            ("6h", "catastrophic", "Attacker gains control plane access.", "medium"),
-            ("12h", "catastrophic", "Full cluster lateral compromise.", "medium"),
-            ("24h", "catastrophic", "Incident uncontainable; full rebuild required.", "low"),
+            ("1h", "critical", "Kẻ tấn công nhảy giữa các pod; vi phạm network policy.", "high"),
+            ("3h", "catastrophic", "Nhiều namespace bị xâm nhập; secret có nguy cơ.", "high"),
+            ("6h", "catastrophic", "Kẻ tấn công giành quyền control plane.", "medium"),
+            ("12h", "catastrophic", "Xâm nhập ngang toàn cụm.", "medium"),
+            ("24h", "catastrophic", "Sự cố không kiểm soát được; cần dựng lại toàn bộ.", "low"),
         ],
     },
     "network_anomaly": {
         "critical": [
-            ("1h", "degraded", "Network throughput degraded; service latency increasing.", "high"),
-            ("3h", "critical", "Service degradation cascades to dependent microservices.", "medium"),
-            ("6h", "critical", "Network partition risk if anomaly is routing-related.", "medium"),
-            ("12h", "catastrophic", "Full service mesh failure without routing correction.", "low"),
-            ("24h", "catastrophic", "Infrastructure-level network failure.", "low"),
+            ("1h", "degraded", "Throughput mạng suy giảm; độ trễ dịch vụ tăng.", "high"),
+            ("3h", "critical", "Suy giảm dịch vụ lan tới các microservice phụ thuộc.", "medium"),
+            ("6h", "critical", "Nguy cơ phân mảnh mạng nếu bất thường liên quan định tuyến.", "medium"),
+            ("12h", "catastrophic", "Service mesh sập hoàn toàn nếu không sửa định tuyến.", "low"),
+            ("24h", "catastrophic", "Lỗi mạng cấp hạ tầng.", "low"),
         ],
     },
 }
 
 _SIEM_DEFAULT_FORECAST: list[tuple[str, str, str, str]] = [
-    ("1h", "degraded", "Security incident impact spreading; active threat uncontained.", "medium"),
-    ("3h", "critical", "Threat escalation likely without containment.", "medium"),
-    ("6h", "critical", "Sustained attack; lateral movement or data exposure risk.", "low"),
-    ("12h", "catastrophic", "Full incident impact if unmitigated.", "low"),
-    ("24h", "catastrophic", "Regulatory and operational breach without remediation.", "low"),
+    ("1h", "degraded", "Tác động sự cố bảo mật lan rộng; mối đe doạ chưa được khống chế.", "medium"),
+    ("3h", "critical", "Khả năng leo thang nếu không khống chế.", "medium"),
+    ("6h", "critical", "Tấn công kéo dài; nguy cơ di chuyển ngang hoặc lộ dữ liệu.", "low"),
+    ("12h", "catastrophic", "Tác động toàn diện nếu không xử lý.", "low"),
+    ("24h", "catastrophic", "Vi phạm quy định và vận hành nếu không khắc phục.", "low"),
 ]
 
 
@@ -343,13 +343,13 @@ def _siem_forecast_timeline(category: str, severity: str) -> list[dict[str, str]
 
 def _format_siem_forecast_text(forecast: list[dict[str, str]]) -> str:
     """Format forecast timeline as operator-readable text."""
-    lines = ["Forecast (if unmitigated):"]
+    lines = ["Dự báo (nếu không xử lý):"]
     for f in forecast:
         tf = f["timeframe"]
         sev = f["severity"].upper()
         pred = f["prediction"]
         conf = f["confidence"]
-        lines.append(f"  +{tf}: [{sev}] {pred} (confidence={conf})")
+        lines.append(f"  +{tf}: [{sev}] {pred} (độ tin cậy={conf})")
     return "\n".join(lines)
 
 
@@ -420,12 +420,12 @@ def _siem_diagnosis_from_batch(
         f"WHO: {who} | incident={incident_id} | severity={severity}\n"
         f"WHY: {why}\n"
         f"{blast}\n\n"
-        f"VERIFY FIRST (confirm scope before acting — these may invalidate the steps below):\n"
+        f"VERIFY FIRST (xác nhận phạm vi trước khi hành động — các bước này có thể vô hiệu hoá phần bên dưới):\n"
         f"{verify_text}\n\n"
-        f"HOW-TO (ONLY if VERIFY confirms the cluster is in scope) for [{category}] in namespace [{_safe_ns}]:\n"
+        f"HOW-TO (CHỈ khi VERIFY xác nhận cụm nằm trong phạm vi) cho [{category}] tại namespace [{_safe_ns}]:\n"
         f"{steps_text}\n\n"
         f"{forecast_text}\n\n"
-        "Omni does NOT auto-execute for SIEM incidents — human approval required."
+        "Omni does NOT auto-execute — sự cố SIEM cần người phê duyệt."
     )
 
 
@@ -508,33 +508,33 @@ async def _notify_siem_telegram(
             continue
         if in_howto:
             # Stop at forecast section
-            if s.startswith("Forecast") or s.startswith("Omni does NOT"):
+            if s.startswith(("Forecast", "Dự báo", "Omni does NOT", "Omni KHÔNG")):
                 in_howto = False
                 continue
-            if s[0].isdigit() or s.startswith(("kubectl", "Review", "Apply", "Isolate", "Rotate", "Segment", "Audit", "Check")):
+            if s[0].isdigit() or s.startswith(("kubectl", "Review", "Apply", "Isolate", "Rotate", "Segment", "Audit", "Check", "Rà", "Cô lập", "Soát", "Kiểm tra", "Xoay", "Phân đoạn", "Áp")):
                 advise.append(s)
     if not advise:
         # Fallback: parse old-style diagnosis
         for ln in diagnosis.splitlines():
             s = ln.strip()
-            if s and (s[0].isdigit() or s.startswith(("kubectl", "Review", "Apply", "Isolate", "Rotate", "Segment", "Audit", "Check"))):
+            if s and (s[0].isdigit() or s.startswith(("kubectl", "Review", "Apply", "Isolate", "Rotate", "Segment", "Audit", "Check", "Rà", "Cô lập", "Soát", "Kiểm tra", "Xoay", "Phân đoạn", "Áp"))):
                 advise.append(s)
     if suggested_action:
-        advise.append(f"SIEM recommendation: {suggested_action[:200]}")
+        advise.append(f"Khuyến nghị SIEM: {suggested_action[:200]}")
     if not advise:
-        advise.append(f"Review: {diagnosis[:400]}")
-    advise.append("Omni does NOT auto-execute SIEM incidents — human approval required")
+        advise.append(f"Rà soát: {diagnosis[:400]}")
+    advise.append("Omni KHÔNG tự thực thi sự cố SIEM — cần người phê duyệt")
 
     # Build forecast section for Telegram
     forecast_items = _siem_forecast_timeline(category, severity)
     forecast_lines = [f"  +{f['timeframe']}: [{f['severity'].upper()}] {f['prediction']}" for f in forecast_items[:3]]
-    forecast_section = "Forecast (worst-case if unmitigated):\n" + "\n".join(forecast_lines)
+    forecast_section = "Dự báo (xấu nhất nếu không xử lý):\n" + "\n".join(forecast_lines)
 
     card_body = format_operator_triage_card(
         problem=problem, reason=reason, chain=chain_items, advise=advise,
     )
     msg = (
-        f"[SIEM] FinGuard incident — human execution required\n"
+        f"[SIEM] Sự cố FinGuard — cần người xử lý\n"
         f"trace={trace}\n"
         f"{card_body}\n"
         f"{forecast_section}"
