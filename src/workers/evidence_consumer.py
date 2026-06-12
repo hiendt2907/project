@@ -61,6 +61,7 @@ from workers.evidence_mutate_emit import (
     store_autonomous_trace_context,
 )
 from workers.handler_context import WorkerHandlerContext
+from workers.diagnostic_k8s_clinical import confirm_workload_unavailable, resolve_workload_from_pod
 from workers.baseline_snapshot import REDIS_KEY_SNAPSHOT, REDIS_KEY_TS
 from workers.autonomous_execute import MUTATE_TOOL_ALLOWLIST
 from workers.k8s_tools import deployment_evidence_snapshot
@@ -716,7 +717,28 @@ async def _proof_of_fault_gate(
         "proof_lane_source": lane_src,
     }
     if not critical:
-        return False, ERR_REA_NO_PHYSICAL_PROOF, meta
+        # Workload-availability faults (KubePodNotReady / replicas-mismatch) carry no
+        # sigma or alert-side critical evidence — the alert claim alone is NOT proof.
+        # Confirm via a LIVE read-only ground-truth check of the target's readiness.
+        # Only a genuinely Ready=False workload yields physical proof; a healthy pod
+        # keeps the gate closed (anti-hallucinate preserved).
+        if workload_fault_incident_rollout_eligible(batch):
+            ident = _identity_from_batch(batch)
+            ns_c = str(ident.get("namespace") or "").strip()
+            pod_c = str(ident.get("pod") or "").strip()
+            if ns_c and pod_c and await confirm_workload_unavailable(ns_c, pod_c):
+                critical = True
+                meta["critical_evidence"] = True
+                meta["physical_proof_source"] = "live_workload_unavailable_confirmed"
+                lane = "state"
+                meta["proof_lane"] = "state"
+                meta["proof_lane_source"] = "live_state_confirm"
+                logger.warning(
+                    "event=proof_of_fault_live_state_confirmed trace=%s ns=%s pod=%s",
+                    trace, ns_c, pod_c,
+                )
+        if not critical:
+            return False, ERR_REA_NO_PHYSICAL_PROOF, meta
 
     legacy = not bool(getattr(ctx.settings, "omni_proof_lane_enabled", True))
     if legacy:
@@ -1158,6 +1180,64 @@ async def _emit_suggest_os_runbook(
         return False
 
 
+async def _resolve_rollout_args(
+    ctx: WorkerHandlerContext, batch: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Resolve {namespace, deployment} for a rollout restart.
+
+    Prefer the alert labels (fast, no API call). When the labels lack a
+    deployment/workload — common for KubePodNotReady / KubePodCrashLooping which
+    carry only namespace+pod — fall back to resolving the pod's top controller via
+    OwnerReferences (read-only). This closes F22-residual: the deterministic rollout
+    safety-net previously fired inconsistently because label-only resolution returned
+    None whenever the alert had no deployment label.
+    """
+    direct = rollout_args_from_evidence_batch(batch)
+    if direct:
+        return direct
+    ident = _identity_from_batch(batch)
+    ns = ident.get("namespace") or ""
+    pod = ident.get("pod") or ""
+    if not ns or not pod:
+        return None
+    ctl = await resolve_workload_from_pod(ns, pod)
+    if not ctl:
+        return None
+    _kind, name = ctl
+    if not name:
+        return None
+    return {"namespace": ns, "deployment": name}
+
+
+async def _synthesize_rollout_safety_net_plan(
+    ctx: WorkerHandlerContext, batch: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Build a deterministic k8s_rollout_restart plan for a KNOWN rollout-eligible fault.
+
+    Returns None when the fault is not rollout-eligible or no target can be resolved.
+    The returned plan carries planner_origin="deterministic_safety_net_hoisted" so it
+    flows through every mutate gate (proof-of-fault, INV_*, tier, namespace, kill-switch,
+    snapshot, post-mutate reconcile→rollback) while bypassing only the LLM precondition
+    re-ask gate. It does NOT depend on the flaky agentic planner converging.
+    """
+    if not (
+        workload_fault_incident_rollout_eligible(batch)
+        or workload_cpu_incident_rollout_eligible(batch)
+    ):
+        return None
+    rr = await _resolve_rollout_args(ctx, batch)
+    if not rr:
+        return None
+    return {
+        "tool_name": "k8s_rollout_restart",
+        "args": {"namespace": rr["namespace"], "deployment": rr["deployment"]},
+        "discovery_steps": [],
+        "lane_hint": "state",
+        "reasoning_chain": None,
+        "planner_origin": "deterministic_safety_net_hoisted",
+    }
+
+
 async def _emit_agentic_mutate_if_any(
     ctx: WorkerHandlerContext,
     trace: str,
@@ -1168,6 +1248,7 @@ async def _emit_agentic_mutate_if_any(
     rag_reasoning_hints: str | None = None,
     attempt_count: int = 1,
     playbook: "Any | None" = None,
+    forced_plan: dict[str, Any] | None = None,
 ) -> bool:
     """
     Planner-first mutate emission:
@@ -1220,7 +1301,19 @@ async def _emit_agentic_mutate_if_any(
     )
     initial_symptom = initial_symptom_from_evidence_batch(batch)
     det_plan = None
-    if allow_det:
+    discovery_steps: list[str] = []
+    if forced_plan is not None:
+        # Hoisted deterministic plan (known rollout-eligible fault). Skip the flaky LLM
+        # planner entirely; flow straight into the same mutate gates below. F22-residual.
+        plan = dict(forced_plan)
+        discovery_steps = list(forced_plan.get("discovery_steps") or [])
+        logger.warning(
+            "event=agentic_mutate_forced_plan trace=%s tool=%s origin=%s",
+            trace,
+            str(plan.get("tool_name") or ""),
+            str(plan.get("planner_origin") or ""),
+        )
+    elif allow_det:
         det_plan = deterministic_mutate_plan_from_batch(
             batch,
             default_ns=default_remediation_namespace(ctx.settings),
@@ -1235,8 +1328,8 @@ async def _emit_agentic_mutate_if_any(
         )
         plan = det_plan
         plan["planner_origin"] = "deterministic"
-        discovery_steps: list[str] = list(det_plan.get("discovery_steps") or [])
-    else:
+        discovery_steps = list(det_plan.get("discovery_steps") or [])
+    elif forced_plan is None:
         lane_for_mx, _ls = resolve_proof_lane(batch, rag_match_text=rag_match_text)
         mx = int(getattr(ctx.settings, "autonomous_agentic_max_steps", 5) or 5)
         if lane_for_mx == "state":
@@ -1449,7 +1542,7 @@ async def _emit_agentic_mutate_if_any(
         # pre-mutate snapshot, post-mutate reconcile→rollback). In fail-closed mode the
         # advisory kill-switch still routes it to SUGGEST — it only becomes a real mutate
         # when auto-execute is explicitly enabled.
-        rr_sn = rollout_args_from_evidence_batch(batch)
+        rr_sn = await _resolve_rollout_args(ctx, batch)
         if rr_sn and (
             workload_fault_incident_rollout_eligible(batch)
             or workload_cpu_incident_rollout_eligible(batch)
@@ -2998,6 +3091,26 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
 
             verdict = str(machine.get("verdict") or "").upper()
             if verdict == "ESCALATE" or "ESCALATE" in human.upper():
+                # F22-residual: the SDK-only LLM returned ESCALATE because it could not name a
+                # tool. For a KNOWN rollout-eligible workload fault (NotReady/crashloop/OOM/CPU)
+                # with a resolvable target (alert labels OR owner_reference), synthesize the
+                # rollout deterministically and run it through every mutate gate — do NOT depend
+                # on the flaky agentic planner converging. Hoisted ABOVE partial-identity-suggest
+                # so the full alert→mutate chain closes without an LLM tool name.
+                _forced = await _synthesize_rollout_safety_net_plan(ctx, batch)
+                if _forced is not None:
+                    logger.info(
+                        "event=sdk_miss_hoisted_safety_net trace=%s tool=%s",
+                        trace, str(_forced.get("tool_name") or ""),
+                    )
+                    _hoisted = await _emit_agentic_mutate_if_any(
+                        ctx, trace, batch,
+                        sanitized_text=sanitized_text,
+                        playbook=matched_playbook,
+                        forced_plan=_forced,
+                    )
+                    if _hoisted:
+                        return display_out
                 # Post-parse guardrail: if namespace is known but action.tool is empty, emit a
                 # scoped read-only suggestion so operators get actionable steps rather than a blank escalate.
                 _action_obj = machine.get("action") if isinstance(machine.get("action"), dict) else {}

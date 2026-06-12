@@ -103,6 +103,103 @@ async def _top_controller_from_pod(
     return None
 
 
+async def resolve_workload_from_pod(namespace: str, pod_name: str) -> tuple[str, str] | None:
+    """Resolve a pod to its top controller (kind, name) via OwnerReferences. Read-only.
+
+    Used by the deterministic rollout safety-net when the alert labels lack a
+    deployment/workload (e.g. KubePodNotReady carries only namespace+pod). Returns
+    ``(kind, name)`` (Deployment/StatefulSet/...) or ``None`` on any failure — never raises.
+    """
+    if not namespace or not pod_name:
+        return None
+    try:
+        v1 = client.CoreV1Api()
+        apps = client.AppsV1Api()
+        pod_obj = await v1.read_namespaced_pod(pod_name, namespace)
+    except Exception:
+        return None
+    try:
+        return await _top_controller_from_pod(apps, namespace, pod_obj)
+    except Exception:
+        return None
+
+
+def _pod_ready_false(pod_obj: Any) -> bool:
+    """True when the pod's Ready condition is explicitly False, or a container is in a
+    fault waiting/terminated state (CrashLoopBackOff/Error). Read-only inspection only."""
+    st = getattr(pod_obj, "status", None)
+    if st is None:
+        return False
+    phase = str(getattr(st, "phase", "") or "")
+    if phase in ("Failed", "Unknown"):
+        return True
+    for c in getattr(st, "conditions", None) or []:
+        if getattr(c, "type", None) == "Ready" and getattr(c, "status", None) == "False":
+            return True
+    for cs in getattr(st, "container_statuses", None) or []:
+        if getattr(cs, "ready", None) is False:
+            waiting = getattr(getattr(cs, "state", None), "waiting", None)
+            reason = str(getattr(waiting, "reason", "") or "")
+            if reason and reason not in ("ContainerCreating", "PodInitializing"):
+                return True
+            term = getattr(getattr(cs, "last_state", None), "terminated", None)
+            if term is not None and str(getattr(term, "reason", "") or ""):
+                return True
+    return False
+
+
+async def confirm_workload_unavailable(namespace: str, pod_name: str) -> bool:
+    """Live read-only ground-truth check: is the alert's target genuinely NOT ready?
+
+    Physical-proof source for the deterministic rollout safety-net (KubePodNotReady /
+    workload-unavailable faults carry no sigma/critical evidence). Reads the named pod
+    first; if it is gone, resolves the owning workload and checks its current pods. Returns
+    True only when a real Ready=False / fault state is observed — never trusts the alert
+    claim. Returns False on any error (fail-closed: no proof ⇒ gate keeps blocking).
+    """
+    if not namespace or not pod_name:
+        return False
+    try:
+        v1 = client.CoreV1Api()
+        apps = client.AppsV1Api()
+    except Exception:
+        return False
+    try:
+        pod_obj = await v1.read_namespaced_pod(pod_name, namespace)
+        return _pod_ready_false(pod_obj)
+    except ApiException as exc:
+        if getattr(exc, "status", None) != 404:
+            return False
+    except Exception:
+        return False
+    # Named pod is gone — confirm via the owning workload's live pods (rotated replica).
+    try:
+        ctrl = await resolve_workload_from_pod(namespace, pod_name)
+    except Exception:
+        ctrl = None
+    if ctrl is None:
+        inferred = _infer_workload_name_from_pod_name(pod_name)
+        if not inferred:
+            return False
+        pods = await _try_list_by_deployment_name(v1, apps, namespace, inferred) or []
+    else:
+        try:
+            batch_api = client.BatchV1Api()
+            pods = await _list_pod_names_for_workload(
+                v1, apps, batch_api, namespace, ctrl[0], ctrl[1]
+            )
+        except Exception:
+            pods = []
+    for pname in pods:
+        try:
+            p = await v1.read_namespaced_pod(pname, namespace)
+        except Exception:
+            continue
+        if _pod_ready_false(p):
+            return True
+    return False
+
+
 async def _list_pod_names_for_workload(
     v1: client.CoreV1Api,
     apps: client.AppsV1Api,
