@@ -2607,7 +2607,13 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                             await mark_stage(ctx.redis, trace, "RAG", "skip", detail="sigma_gate_suppressed", lane="resource")
                             await mark_stage(ctx.redis, trace, "LLM", "skip", detail=_sigma_detail, lane="resource")
                             await mark_stage(ctx.redis, trace, "SCHEMA", "skip", detail="no advisory (sigma gate)", lane="resource")
+                            await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no advisory to verify (sigma gate)", lane="resource")
+                            await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="no dispatch (sigma gate)", lane="resource")
+                            await mark_stage(ctx.redis, trace, "CRAT", "skip", detail="no dispatch — nothing to audit (sigma gate)", lane="resource")
                             await mark_stage(ctx.redis, trace, "DISPATCH", "skip", detail="suppressed — no alert sent", lane="resource")
+                            # Terminal stages (HITL/EXECUTOR/FEEDBACK) also do not apply on a
+                            # suppressed path — resolve them so the trace shows 12/12, not "stuck".
+                            await _mark_suggest_only_terminal(ctx, trace, "resource")
                             return ""
                     except Exception as _adv_snap_err:
                         logger.debug("advisory_sigma_gate snap parse error trace=%s err=%s", trace, _adv_snap_err)

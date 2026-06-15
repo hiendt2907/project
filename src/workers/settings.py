@@ -645,6 +645,20 @@ class WorkerSettings(BaseSettings):
         ),
     )
 
+    @field_validator("env_mode", mode="before")
+    @classmethod
+    def _normalize_env_mode(cls, v: object) -> object:
+        # CLAUDE.md / INVARIANTS use OMNI_ENV_MODE=lab; the governance model only
+        # distinguishes prod (strict fail-closed) vs non-prod (high-action by role).
+        # Map the lab alias to dev so OMNI_ENV_MODE=lab does not crash validation.
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s == "lab":
+                return "dev"
+            if s in ("prod", "dev"):
+                return s
+        return v
+
     @field_validator("worker_role", mode="before")
     @classmethod
     def _normalize_worker_role(cls, v: object) -> object:

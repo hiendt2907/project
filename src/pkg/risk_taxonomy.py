@@ -60,7 +60,9 @@ _STATIC_MUTATE: Final = {
     "k8s_scale_deployment": MEDIUM,
     "k8s_patch_resource": MEDIUM,
     "k8s_patch_configmap": MEDIUM,
-    "k8s_apply_rbac_least_privilege": MEDIUM,
+    # RBAC mutation luôn security-sensitive → HIGH (đồng nhất k8s_patch_rbac);
+    # least-privilege apply vẫn thay đổi quyền executor SA → buộc HITL ở auto tier.
+    "k8s_apply_rbac_least_privilege": HIGH,
     # arbitrary execution → fail-closed HIGH
     "execute_shell_command": HIGH,
     "execute_in_sandbox": HIGH,
