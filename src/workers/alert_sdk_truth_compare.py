@@ -186,8 +186,6 @@ def compare_alert_claim_to_sdk_state(
         cpu_vals = [m.group(1) if m else "0"]
 
     cpu_zero = all(_cpu_usage_effectively_zero(c) for c in cpu_vals)
-    if not cpu_zero:
-        return None
 
     alert_hint = ""
     for d in evidence_by_probe.values():
@@ -196,23 +194,43 @@ def compare_alert_claim_to_sdk_state(
             break
     hint_for_mem = alert_hint
     if labels:
-        hint_for_mem = json.dumps({"labels": labels, "annotations": _ann}, ensure_ascii=False)[:1200]
-    alert_mem = bool(re.search(r"\b(memory|oom|rss)\b", hint_for_mem, re.I))
+        # Keep the free-text alert_hint too — labels JSON alone may bury the metric
+        # dimension inside a CamelCase alertname (e.g. PodMemoryWorkingSetVsLimitHigh)
+        # where a strict \bmemory\b boundary would miss it.
+        hint_for_mem = (
+            alert_hint
+            + " "
+            + json.dumps({"labels": labels, "annotations": _ann}, ensure_ascii=False)[:1200]
+        )
+    alert_mem = bool(re.search(r"(memory|oom|rss|workingset|working_set|mem_)", hint_for_mem, re.I))
     mem_low = (
         all(_memory_usage_low_for_mem_alert(m, alert_mem) for m in mem_vals)
         if mem_vals
         else False
     )
-    extra = ""
-    if alert_mem and mem_vals and mem_low:
-        extra = " Live memory from API is also low for this scope."
 
+    # Dimension-aware contrast gate: a MEMORY alert must be contradicted by LOW live
+    # memory — NOT by idle CPU. Suppressing a memory alert purely because CPU is zero
+    # would dismiss a genuine high-memory / OOM-risk pod, since CPU and memory are
+    # orthogonal resources. Only emit the contrast on the dimension the alert claims.
+    if alert_mem:
+        if not (mem_vals and mem_low):
+            return None
+        return (
+            "Alert claims elevated workload memory (working set vs limit); this pipeline's Kubernetes "
+            "state machine (PodMetrics) shows low memory usage for containers in scope. Trust the state "
+            "machine for this snapshot; treat the firing alert as suspect (false alarm / stale series, "
+            "wrong selector, or recording–scrape lag) until verified on Prometheus and the alert rule."
+            + (" Live CPU from API is also negligible for this scope." if cpu_zero else "")
+        )
+
+    if not cpu_zero:
+        return None
     return (
         "Alert claims elevated workload CPU; this pipeline's Kubernetes state machine (PodMetrics) shows "
         "negligible CPU for containers in scope. Trust the state machine for this snapshot; treat the firing alert "
         "as suspect (false alarm / stale series, wrong selector, or recording–scrape lag) until verified on "
         "Prometheus and the alert rule."
-        + extra
     )
 
 
@@ -486,10 +504,14 @@ def build_contrast_diagnosis_for_action(
     dep = str(labels.get("deployment") or labels.get("workload") or "").strip() or "unknown"
     pod = str(labels.get("pod") or "").strip() or "unknown"
     alertname = str(labels.get("alertname") or "").strip() or "unknown"
+    _dim_hint = json.dumps({"labels": labels, "annotations": _ann}, ensure_ascii=False)
+    _is_mem = bool(re.search(r"\b(memory|oom|rss)\b", _dim_hint + " " + alertname, re.I))
+    _metric_vi = "bộ nhớ (memory)" if _is_mem else "CPU"
     head = (
         f"[phạm vi đối chiếu ns={ns} deploy={dep} pod={pod} alertname={alertname}] "
-        f"Tin vào state machine: PodMetrics không đáng kể so với mức CPU mà alert tuyên bố — alert đang kích "
-        f"hoạt bị nghi ngờ (báo động giả / series cũ hoặc lệch) cho tới khi xác minh lại Prometheus/rule."
+        f"Tin vào state machine: PodMetrics cho thấy {_metric_vi} thực tế không đáng kể so với mức "
+        f"mà alert tuyên bố — alert đang kích hoạt bị nghi ngờ (báo động giả / series cũ hoặc lệch) "
+        f"cho tới khi xác minh lại Prometheus/rule."
     )
     tail = contrast_narrative.strip()
     out = f"{head}\n\n{tail}"
