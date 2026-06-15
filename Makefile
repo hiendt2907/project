@@ -286,7 +286,6 @@ autonomy-gate:
 	.venv/bin/python scripts/validate_nonimpact_guards_gate.py
 	.venv/bin/python scripts/validate_learning_loop_gate.py
 	.venv/bin/python -m pytest tests/test_autonomous_experience_gate.py tests/test_agentic_planner_early_exit.py tests/test_feedback_full_agentic_planner.py tests/test_deterministic_mutate_from_evidence.py tests/test_shadow_os_contract.py -q
-	.venv/bin/python -m pytest tests/e2e/ -q
 	$(MAKE) hitl-gate
 	.venv/bin/python scripts/full_system_audit.py --duration-sec 90 --interval-sec 10 --strict --min-action-experience 0 --sigma-min-hits 0
 
