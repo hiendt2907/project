@@ -773,6 +773,33 @@ async def handle_action_feedback_envelope(ctx: WorkerHandlerContext, fields: dic
     stderr = str(body.get("stderr") or "")
     skipped = str(body.get("skipped_reason") or "").strip()
     mutate_args = body.get("mutate_args") if isinstance(body.get("mutate_args"), dict) else {}
+    status_lc = str(body.get("status") or "").strip().lower()
+
+    # F18-followup: an auto-rolled-back action is TERMINAL. Re-evaluating it would let
+    # the analyst re-plan and re-publish EXECUTE_MUTATE on the same trace, looping
+    # snapshot→settle→rollback forever. A rollback means the attempted fix made things
+    # worse, so the trace must stop and a human takes over. Also short-circuit if the
+    # trace was already tombstoned (idempotent against late/duplicate feedback).
+    _already_terminal = False
+    try:
+        _already_terminal = bool(await ctx.redis.get(f"omni:autonomous:terminal:{trace}"))
+    except Exception:
+        _already_terminal = False
+    if status_lc == "rolled_back" or _already_terminal:
+        if not _already_terminal:
+            await emit_terminal_tombstone(
+                ctx,
+                trace_id=trace,
+                reason_code="auto_rollback_terminal",
+                component="autonomous_feedback_loop",
+                detail="action auto-rolled-back — trace terminal, no re-evaluation (F18-followup)",
+                meta={"status": status_lc, "exit_code": exit_code},
+            )
+        logger.info(
+            "[%s] event=feedback_terminal_skip status=%s already_terminal=%s — no re-evaluation",
+            trace, status_lc, _already_terminal,
+        )
+        return
     await emit_transition(
         ctx,
         trace_id=trace,

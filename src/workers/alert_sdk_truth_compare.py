@@ -217,20 +217,21 @@ def compare_alert_claim_to_sdk_state(
         if not (mem_vals and mem_low):
             return None
         return (
-            "Alert claims elevated workload memory (working set vs limit); this pipeline's Kubernetes "
-            "state machine (PodMetrics) shows low memory usage for containers in scope. Trust the state "
-            "machine for this snapshot; treat the firing alert as suspect (false alarm / stale series, "
-            "wrong selector, or recording–scrape lag) until verified on Prometheus and the alert rule."
-            + (" Live CPU from API is also negligible for this scope." if cpu_zero else "")
+            "Alert báo bộ nhớ workload cao (working set vs limit); nhưng state machine Kubernetes "
+            "(PodMetrics) cho thấy bộ nhớ thực tế của các container trong phạm vi đang THẤP. Tin vào "
+            "state machine cho snapshot này; coi alert đang kích hoạt là ĐÁNG NGHI (báo động giả / series "
+            "cũ hoặc lệch, sai selector, hoặc trễ scrape–recording) cho tới khi xác minh lại trên Prometheus "
+            "và rule cảnh báo."
+            + (" CPU thực tế từ API cũng không đáng kể trong phạm vi này." if cpu_zero else "")
         )
 
     if not cpu_zero:
         return None
     return (
-        "Alert claims elevated workload CPU; this pipeline's Kubernetes state machine (PodMetrics) shows "
-        "negligible CPU for containers in scope. Trust the state machine for this snapshot; treat the firing alert "
-        "as suspect (false alarm / stale series, wrong selector, or recording–scrape lag) until verified on "
-        "Prometheus and the alert rule."
+        "Alert báo CPU workload cao; nhưng state machine Kubernetes (PodMetrics) cho thấy CPU thực tế của "
+        "các container trong phạm vi không đáng kể. Tin vào state machine cho snapshot này; coi alert đang "
+        "kích hoạt là ĐÁNG NGHI (báo động giả / series cũ hoặc lệch, sai selector, hoặc trễ scrape–recording) "
+        "cho tới khi xác minh lại trên Prometheus và rule cảnh báo."
     )
 
 

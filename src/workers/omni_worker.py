@@ -201,6 +201,53 @@ def _alert_fingerprint(payload: dict[str, Any]) -> str | None:
         return None
 
 
+_POD_SCOPED_ALERT_RE = re.compile(
+    r"(oom|crashloop|crash_loop|podnotready|pod_not_ready|workingset|working_set|"
+    r"podmemory|podcpu|restart|evicted|imagepull|containercreating)",
+    re.I,
+)
+
+
+def _alert_completeness_flag(payload: dict[str, Any]) -> tuple[str, str] | None:
+    """F1-CP1: surface alerts whose pod identity is INFERRED, not given.
+
+    A pod-scoped alert (OOMKilled / CrashLoop / PodNotReady …) that carries no
+    ``pod`` label forces the pipeline to infer the workload/pod downstream. That
+    inference is the right behaviour (handled by pod-resolution + VERIFY refute),
+    but operators must SEE that the identity was inferred rather than asserted.
+
+    Returns ``(level, detail)`` where level ∈ {"incomplete", "inferred"}, or None
+    when the alert carries an explicit pod (nothing to flag).
+    """
+    try:
+        body = payload.get("data") or {}
+        if isinstance(body, str):
+            body = json.loads(body)
+        alerts = body.get("alerts") or []
+        if not alerts or not isinstance(alerts[0], dict):
+            return None
+        labels = alerts[0].get("labels") or {}
+        if not isinstance(labels, dict):
+            return None
+        if str(labels.get("pod") or "").strip():
+            return None  # explicit pod → complete
+        alertname = str(labels.get("alertname") or "")
+        if not _POD_SCOPED_ALERT_RE.search(alertname):
+            return None  # not a pod-scoped alert → pod label not expected
+        workload = str(
+            labels.get("deployment") or labels.get("workload") or labels.get("statefulset") or ""
+        ).strip()
+        if workload:
+            return ("inferred", f"no pod label — pod inferred from workload={workload}")
+        return (
+            "incomplete",
+            f"no pod/workload label on pod-scoped alert={alertname} — "
+            "identity inferred downstream (verify via VERIFY ground-truth)",
+        )
+    except Exception:
+        return None
+
+
 async def _process_stream_entry(
     ctx: WorkerHandlerContext,
     msg_id: str,
@@ -290,6 +337,29 @@ async def _process_stream_entry(
                         trace, alert_fp, existing_str, dedup_window,
                     )
                     return
+
+        # F1-CP1: flag alerts whose pod identity must be inferred (no pod label).
+        # The pipeline still proceeds (inference + VERIFY refute is the safety net),
+        # but the completeness state is made VISIBLE instead of silent.
+        _completeness = _alert_completeness_flag(payload)
+        if _completeness is not None:
+            _lvl, _det = _completeness
+            try:
+                await ctx.redis.setex(
+                    f"omni:trace:{trace}:alert_completeness", 3600,
+                    json.dumps({"level": _lvl, "detail": _det}),
+                )
+            except Exception:
+                pass
+            await emit_transition(
+                ctx,
+                trace_id=trace,
+                transition=TRANSITION_INGESTED,
+                component="omni_worker_stream_consumer",
+                detail=f"alert_completeness={_lvl}: {_det}",
+                meta={"alert_completeness": _lvl},
+            )
+            logger.info("[%s] event=alert_completeness level=%s detail=%s", trace, _lvl, _det)
 
         # Master Plan V3: omni-alerts → prober only (diagnostic pipeline → evidence topic); reasoning in kafka_evidence_loop.
         if payload.get("chat_id") is not None:

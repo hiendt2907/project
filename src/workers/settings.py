@@ -1091,9 +1091,10 @@ class WorkerSettings(BaseSettings):
         description="Báo cáo Deep Scout; None = không gửi.",
     )
     omni_operator_digest_locale: Literal["en", "vi", "both"] = Field(
-        default="both",
+        default="vi",
         validation_alias=AliasChoices("OMNI_OPERATOR_DIGEST_LOCALE"),
-        description="Contrast digest Telegram/inbound: en | vi | both (deterministic copy).",
+        description="Contrast digest Telegram/inbound: en | vi | both (deterministic copy). "
+        "Default vi — operators are Vietnamese; both/en available via env for debugging.",
     )
     # Postgres removed — Omni RAG is on Redis Stack (HNSW + semantic cache).
     # Keep field as deprecated placeholder for any legacy caller that references it;
