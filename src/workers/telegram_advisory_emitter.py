@@ -17,6 +17,7 @@ from pkg.reasoning.analyst_advisory_schema import (
 )
 from workers.handler_context import WorkerHandlerContext
 from workers.metrics_exporter import inc_telegram_timeout
+from workers.unified_incident_card import AuditMeta, render_audit_footer
 
 logger = logging.getLogger(__name__)
 
@@ -408,10 +409,12 @@ async def render_advisory_to_telegram(
     chat_id: int,
     *,
     lane_label: str | None = None,
+    audit: AuditMeta | None = None,
 ) -> None:
     """Render AnalystAdvisory to Telegram as plain-text Markdown.
 
     lane_label: one of 'resource', 'state', 'app_log', 'siem' — adds lane badge to header.
+    audit: optional decision/CRAT provenance rendered in the shared unified audit footer.
     """
     if not ctx.telegram:
         logger.warning("event=render_advisory_telegram_disabled")
@@ -429,8 +432,8 @@ async def render_advisory_to_telegram(
         _render_escalation(advisory.escalation_reason or ""),
     ]
     message = "\n\n".join([p for p in parts if p])
-    # Footer for Loki cross-check and E2E harness (Telegram Bot API getUpdates assert).
-    message = f"{message}\n\n*TRACE:* `{_short_trace(advisory.trace_id)}`"
+    # Shared unified audit footer (always ends with *TRACE:* for Loki + E2E getUpdates assert).
+    message = f"{message}\n\n{render_audit_footer(advisory.trace_id, audit)}"
 
     if len(message) <= 4000:
         try:

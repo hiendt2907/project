@@ -368,7 +368,7 @@ async def test_siem_lane_telegram_card_has_forecast():
 
     tg_captures = []
     tg = MagicMock()
-    tg.send_message = AsyncMock(side_effect=lambda cid, msg: tg_captures.append(msg))
+    tg.send_message = AsyncMock(side_effect=lambda cid, msg, **kw: tg_captures.append(msg))
 
     settings = _make_settings()
     ctx = SimpleNamespace(settings=settings, telegram=tg)

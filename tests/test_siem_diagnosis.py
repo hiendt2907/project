@@ -260,7 +260,7 @@ def _make_ctx(telegram_captures: list, **overrides):
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
     tg = MagicMock()
-    tg.send_message = AsyncMock(side_effect=lambda cid, txt: telegram_captures.append({"chat_id": cid, "text": txt}))
+    tg.send_message = AsyncMock(side_effect=lambda cid, txt, **kw: telegram_captures.append({"chat_id": cid, "text": txt}))
 
     llm = MagicMock()
     llm.chat = AsyncMock(return_value={"message": {"content": (
@@ -320,8 +320,9 @@ async def test_siem_telegram_has_real_incident_data():
     assert "ddos" in full_text.lower(), f"category missing: {full_text!r}"
     assert "prod-ns" in full_text, f"namespace missing: {full_text!r}"
     assert "10.0.1.5" in full_text, f"affected_ip missing: {full_text!r}"
-    assert "Vấn đề:" in full_text, f"Vấn đề section missing: {full_text!r}"
-    assert "Khuyến nghị:" in full_text, f"Khuyến nghị section missing: {full_text!r}"
+    assert "Chuyện gì đang xảy ra?" in full_text, f"WHAT section missing: {full_text!r}"
+    assert "Cách khắc phục?" in full_text, f"HOW-TO section missing: {full_text!r}"
+    assert "Quyết định & Audit" in full_text, f"audit footer missing: {full_text!r}"
 
 
 @pytest.mark.asyncio

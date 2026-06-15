@@ -119,7 +119,7 @@ async def test_siem_suggest_only_blocks_execute_mutate_and_hitl():
     call_args = tg.send_message.call_args
     assert call_args[0][0] == 9999
     msg = call_args[0][1]
-    assert "cần người xử lý" in msg
+    assert "cần người phê duyệt" in msg
     assert "inc-001" in msg
 
 

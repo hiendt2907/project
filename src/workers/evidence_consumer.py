@@ -109,6 +109,28 @@ from workers.telegram_advisory_emitter import (
     copy_advisory_for_telegram_if_mismatch,
     render_advisory_to_telegram,
 )
+from workers.unified_incident_card import (
+    AuditMeta,
+    UnifiedCard,
+    esc as _uc_esc,
+    render_audit_footer,
+    render_unified_card,
+)
+
+
+def _contrast_audit_footer(trace: str, settings: Any) -> str:
+    """Shared plain-text audit footer for deterministic contrast (false-alarm) digests."""
+    return "\n\n" + render_audit_footer(
+        str(trace),
+        AuditMeta(
+            mode=getattr(settings, "omni_autonomy_tier", None),
+            decision="SUGGEST",
+            origin="deterministic",
+            action="Đã chặn mutate — cảnh báo không khớp trạng thái thực (read-before-mutate)",
+            crat_event="ADVISORY_DISPATCHED",
+        ),
+        markdown=False,
+    )
 from workers import llm_prompts_en as ope
 from workers.metrics_exporter import inc_evidence_llm_contradiction
 from workers.autonomy_contract import (
@@ -525,22 +547,45 @@ async def _notify_siem_telegram(
         advise.append(f"Rà soát: {diagnosis[:400]}")
     advise.append("Omni KHÔNG tự thực thi sự cố SIEM — cần người phê duyệt")
 
-    # Build forecast section for Telegram
+    # Build forecast section for the unified card.
     forecast_items = _siem_forecast_timeline(category, severity)
-    forecast_lines = [f"  +{f['timeframe']}: [{f['severity'].upper()}] {f['prediction']}" for f in forecast_items[:3]]
-    forecast_section = "Dự báo (xấu nhất nếu không xử lý):\n" + "\n".join(forecast_lines)
-
-    card_body = format_operator_triage_card(
-        problem=problem, reason=reason, chain=chain_items, advise=advise,
+    forecast_tuples = tuple(
+        (str(f["timeframe"]), str(f["severity"]), _uc_esc(str(f["prediction"])))
+        for f in forecast_items[:5]
     )
-    msg = (
-        f"[SIEM] Sự cố FinGuard — cần người xử lý\n"
-        f"trace={trace}\n"
-        f"{card_body}\n"
-        f"{forecast_section}"
-    )[:4096]
+
+    # WHERE (workload/ns/tenant/ip) — drop the HITL boilerplate from advise into the audit footer.
+    where_bits = [f"ns={ns}" if ns and ns != "?" else ""]
+    if tenant:
+        where_bits.append(f"tenant={tenant}")
+    if affected_ip:
+        where_bits.append(f"ip={affected_ip}")
+    where_str = " · ".join(b for b in where_bits if b) or "cụm (chưa xác định)"
+    how_to_lines = tuple(
+        _uc_esc(a) for a in advise if not a.startswith("Omni KHÔNG")
+    )
+    verdict = "CONFIRMED" if str(severity).lower() in ("high", "critical") else "INVESTIGATE"
+    card = UnifiedCard(
+        lane="siem",
+        verdict=verdict,
+        title=f"{alert_name} [{severity}] — {category} (incident={incident_id})",
+        trace_id=trace,
+        what=reason,
+        where=where_str,
+        why=tuple(_uc_esc(c) for c in chain_items),
+        how_to=how_to_lines,
+        forecast=forecast_tuples,
+        audit=AuditMeta(
+            mode=getattr(ctx.settings, "omni_autonomy_tier", None),
+            decision="HITL",
+            origin="deterministic_siem",
+            action="Omni KHÔNG tự xử lý sự cố SIEM — cần người phê duyệt",
+            crat_event="SIEM_INCIDENT",
+        ),
+    )
+    msg = render_unified_card(card)[:4096]
     try:
-        await tg.send_message(int(admin_cid), msg)
+        await tg.send_message(int(admin_cid), msg, parse_mode="Markdown")
         logger.info(
             "event=siem_suggest_telegram_sent trace=%s siem_incident=%s",
             trace, siem.get("siem_incident_id", ""),
@@ -2344,7 +2389,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 try:
                     t_msg = build_contrast_operator_telegram_body(
                         by_probe, contrast_st, str(trace), locale=digest_loc
-                    )
+                    )[:3700] + _contrast_audit_footer(trace, ctx.settings)
                     res = await ctx.telegram.send_message(
                         int(admin_cid),
                         t_msg[:3900],
@@ -2362,7 +2407,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             if chat_id is not None:
                 inbound_body = build_contrast_operator_telegram_body(
                     by_probe, contrast_st, str(trace), locale=digest_loc
-                )[:3500]
+                )[:3300] + _contrast_audit_footer(trace, ctx.settings)
                 pld = {
                     "trace_id": trace,
                     "source": "diagnostic_evidence",
@@ -2414,7 +2459,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 try:
                     t_msg = build_contrast_operator_telegram_body(
                         by_probe, os_contrast_st, str(trace), locale=digest_loc
-                    )
+                    )[:3700] + _contrast_audit_footer(trace, ctx.settings)
                     await ctx.telegram.send_message(int(admin_cid), t_msg[:3900], parse_mode=None)
                 except Exception as _te:
                     logger.warning("event=os_contrast_telegram_failed trace=%s err=%r", trace, _te)
@@ -2767,8 +2812,9 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     _ks_status = "ok" if _valid else "fail"
                     await mark_stage(ctx.redis, trace, "KILLSWITCH", _ks_status, detail=_gate_reason or "", lane=_adv_lane or "")
                     # CRAT Fail-Closed Gate: audit write MUST succeed before any Telegram emit.
+                    _audit_blk: dict[str, Any] = {}
                     try:
-                        await write_audit_block(
+                        _audit_blk = await write_audit_block(
                             event_type="ADVISORY_DISPATCHED",
                             trace_id=trace,
                             payload=advisory.model_dump(),
@@ -2797,8 +2843,16 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                             _tg_lane, _ = resolve_proof_lane(batch)
                         except Exception:
                             _tg_lane = ""
+                        _adv_audit = AuditMeta(
+                            mode=getattr(ctx.settings, "omni_autonomy_tier", None),
+                            decision="SUGGEST",
+                            action="Chỉ đề xuất — analyst chỉ đọc, không tự thực thi",
+                            crat_seq=_audit_blk.get("seq") if _audit_blk else None,
+                            crat_signed=bool(_audit_blk.get("signature_hex")) if _audit_blk else False,
+                            crat_event="ADVISORY_DISPATCHED",
+                        )
                         await render_advisory_to_telegram(
-                            ctx, tg_advisory, int(effective_cid), lane_label=_tg_lane
+                            ctx, tg_advisory, int(effective_cid), lane_label=_tg_lane, audit=_adv_audit
                         )
                     elif ctx.telegram:
                         logger.error(
@@ -3222,6 +3276,16 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     reason=_reason,
                     chain=_chain,
                     advise=_advise,
+                ) + "\n\n" + render_audit_footer(
+                    str(trace),
+                    AuditMeta(
+                        mode=getattr(ctx.settings, "omni_autonomy_tier", None),
+                        decision="HITL",
+                        origin="escalation",
+                        action="Chuyển on-call — RAG + LLM không đưa được giả thuyết",
+                        crat_event="ADVISORY_DISPATCHED",
+                    ),
+                    markdown=False,
                 )
                 _SYNTHETIC_ALERTNAMES = {"FullAudit", "ChaosLabAlert", "SIEMUnknown", "GenericAlert"}
                 # SIEM batches originate from external FinGuard system — never suppress, even if
