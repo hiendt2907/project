@@ -6,15 +6,23 @@ Plain-text Markdown V1. Mục tiêu: dễ đọc, dễ hiểu, dễ thao tác, d
 - Advisory card (telegram_advisory_emitter) dùng chung ``render_audit_footer`` cho footer.
 - SIEM card và Contrast card render trọn vẹn qua ``render_unified_card``.
 
-Nhãn section (tiếng Việt) là CANONICAL — mọi lane phải khớp đúng các nhãn này:
-  "Chuyện gì đang xảy ra?", "Ở đâu? (Workload)", "Khi nào?",
-  "Vì sao? (Bước kiểm chứng)", "Cách khắc phục?", "Dự báo tác động".
+Nhãn section (tiếng Việt) là CANONICAL — ngắn gọn, mọi lane phải dùng đúng các hằng số
+``LBL_*`` bên dưới (KHÔNG hard-code chuỗi nhãn ở nơi khác).
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+# Canonical section labels — short, scannable, shared by ALL lanes (advisory + unified).
+LBL_WHAT = "Sự cố"
+LBL_WHERE = "Workload"
+LBL_WHEN = "Thời điểm"
+LBL_WHY = "Kiểm chứng"
+LBL_HOWTO = "Khắc phục"
+LBL_FORECAST = "Dự báo"
+LBL_AUDIT = "Audit"
 
 # Lane badge — single source of truth (advisory emitter re-exports for back-compat).
 LANE_BADGE: dict[str, str] = {
@@ -90,7 +98,7 @@ def render_audit_footer(
     e = esc if markdown else (lambda x: str(x))
     b = (lambda s: f"*{s}*") if markdown else (lambda s: s)
     code = (lambda s: f"`{s}`") if markdown else (lambda s: s)
-    lines: list[str] = [f"🧾 {b('Quyết định & Audit')}"]
+    lines: list[str] = [f"🧾 {b(LBL_AUDIT)}"]
     if audit is not None:
         dm: list[str] = []
         if audit.mode:
@@ -146,17 +154,17 @@ def render_unified_card(card: UnifiedCard) -> str:
     """Render a UnifiedCard to the canonical Telegram Markdown form (single form, all lanes)."""
     parts: list[str] = [_render_header(card)]
     if card.what:
-        parts.append(f"*Chuyện gì đang xảy ra?*\n• {esc(card.what)}")
+        parts.append(f"*{LBL_WHAT}*\n• {esc(card.what)}")
     if card.where:
-        parts.append(f"*Ở đâu? (Workload)*\n• {esc(card.where)}")
+        parts.append(f"*{LBL_WHERE}*\n• {esc(card.where)}")
     if card.when:
-        parts.append(f"*Khi nào?*\n• {esc(card.when)}")
+        parts.append(f"*{LBL_WHEN}*\n• {esc(card.when)}")
     if card.why:
-        parts.append("*Vì sao? (Bước kiểm chứng)*\n" + "\n".join(f"• {w}" for w in card.why))
+        parts.append(f"*{LBL_WHY}*\n" + "\n".join(f"• {w}" for w in card.why))
     if card.how_to:
-        parts.append("*Cách khắc phục?*\n" + "\n".join(f"• {h}" for h in card.how_to))
+        parts.append(f"*{LBL_HOWTO}*\n" + "\n".join(f"• {h}" for h in card.how_to))
     if card.forecast:
-        fl = ["*Dự báo tác động:*"]
+        fl = [f"*{LBL_FORECAST}*"]
         for tf, sev, pred in card.forecast:
             label = (sev or "").upper()
             fl.append(f"• +{tf}: [{label}] {pred}" if pred else f"• +{tf}: [{label}]")

@@ -12,7 +12,7 @@ def test_audit_footer_always_has_trace():
     out = render_audit_footer("trace-abcd1234")
     assert "TRACE:" in out
     assert "#abcd1234" in out
-    assert "Quyết định & Audit" in out
+    assert "Audit" in out
 
 
 def test_audit_footer_renders_decision_mode_crat():
@@ -56,13 +56,13 @@ def test_unified_card_has_all_canonical_sections():
     )
     out = render_unified_card(card)
     assert "[SIEM]" in out
-    assert "Chuyện gì đang xảy ra?" in out
-    assert "Ở đâu? (Workload)" in out
-    assert "Vì sao? (Bước kiểm chứng)" in out
-    assert "Cách khắc phục?" in out
-    assert "Dự báo tác động" in out
+    assert "Sự cố" in out
+    assert "Workload" in out
+    assert "Kiểm chứng" in out
+    assert "Khắc phục" in out
+    assert "Dự báo" in out
     assert "+1h: [CRITICAL]" in out
-    assert "Quyết định & Audit" in out
+    assert "Audit" in out
     assert "#deadbeef" in out
 
 

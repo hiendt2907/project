@@ -320,9 +320,9 @@ async def test_siem_telegram_has_real_incident_data():
     assert "ddos" in full_text.lower(), f"category missing: {full_text!r}"
     assert "prod-ns" in full_text, f"namespace missing: {full_text!r}"
     assert "10.0.1.5" in full_text, f"affected_ip missing: {full_text!r}"
-    assert "Chuyện gì đang xảy ra?" in full_text, f"WHAT section missing: {full_text!r}"
-    assert "Cách khắc phục?" in full_text, f"HOW-TO section missing: {full_text!r}"
-    assert "Quyết định & Audit" in full_text, f"audit footer missing: {full_text!r}"
+    assert "Sự cố" in full_text, f"WHAT section missing: {full_text!r}"
+    assert "Khắc phục" in full_text, f"HOW-TO section missing: {full_text!r}"
+    assert "Audit" in full_text, f"audit footer missing: {full_text!r}"
 
 
 @pytest.mark.asyncio

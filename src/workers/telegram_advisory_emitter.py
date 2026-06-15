@@ -17,7 +17,16 @@ from pkg.reasoning.analyst_advisory_schema import (
 )
 from workers.handler_context import WorkerHandlerContext
 from workers.metrics_exporter import inc_telegram_timeout
-from workers.unified_incident_card import AuditMeta, render_audit_footer
+from workers.unified_incident_card import (
+    LBL_FORECAST,
+    LBL_HOWTO,
+    LBL_WHAT,
+    LBL_WHEN,
+    LBL_WHERE,
+    LBL_WHY,
+    AuditMeta,
+    render_audit_footer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +269,7 @@ def _render_what_happened(advisory: AnalystAdvisory) -> str:
     root_cause = _fix_z_score_root_cause(advisory.root_cause or "")
     confidence = advisory.confidence or "medium"
     lines = [
-        "*Chuyện gì đang xảy ra?*",
+        f"*{LBL_WHAT}*",
         f"• {_e(root_cause)}",
     ]
     if confidence != "medium":
@@ -272,7 +281,7 @@ def _render_who(advisory: AnalystAdvisory) -> str:
     workload = advisory.affected_workload or ""
     if not workload or workload.strip().lower() == "unknown":
         workload = "cụm (chưa xác định workload)"
-    return f"*Ở đâu? (Workload)*\n• {_e(workload)}"
+    return f"*{LBL_WHERE}*\n• {_e(workload)}"
 
 
 def _render_when(advisory: AnalystAdvisory) -> str:
@@ -281,14 +290,14 @@ def _render_when(advisory: AnalystAdvisory) -> str:
         ts_str = ts.strftime("%Y-%m-%d %H:%M:%S UTC") if hasattr(ts, "strftime") else str(ts)
     else:
         ts_str = "chưa rõ thời điểm phát hiện"
-    return f"*Khi nào?*\n• {_e(ts_str)}"
+    return f"*{LBL_WHEN}*\n• {_e(ts_str)}"
 
 
 def _render_why(steps: list[VerificationStep]) -> str:
     if not steps:
         return ""
     shown = sorted(steps, key=lambda x: x.order)[:3]
-    lines = ["*Vì sao? (Bước kiểm chứng)*"]
+    lines = [f"*{LBL_WHY}*"]
     for step in shown:
         badge = _LAYER_BADGE.get(step.layer, step.layer.upper())
         layer_name = _LAYER_NAME.get(step.layer, step.layer)
@@ -308,7 +317,7 @@ def _render_why(steps: list[VerificationStep]) -> str:
 def _render_how_to_fix(steps: list[ProposedRemediationStep]) -> str:
     if not steps:
         return ""
-    lines = ["*Cách khắc phục?*"]
+    lines = [f"*{LBL_HOWTO}*"]
     for step in sorted(steps, key=lambda x: x.order):
         approval = " [CẦN PHÊ DUYỆT]" if step.approval_required else ""
         lines.append(f"• Bước {step.order}:{approval} {_e(step.action)}")
@@ -331,7 +340,7 @@ def _render_forecast_projection(forecast: ForecastTimeline) -> str:
     if _is_heuristic_fallback(forecast) or not forecast.forecasts:
         return ""
     sorted_fc = sorted(forecast.forecasts, key=lambda x: _TIMEFRAME_ORDER.get(x.timeframe, 99))
-    lines = ["*Dự báo tác động (EWMA):*"]
+    lines = [f"*{LBL_FORECAST}*"]
     shown = {fc.timeframe: fc for fc in sorted_fc}
     for tf in ("1h", "3h", "6h", "12h", "24h"):
         fc = shown.get(tf)
