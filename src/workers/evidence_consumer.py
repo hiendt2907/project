@@ -725,6 +725,25 @@ async def _proof_of_fault_gate(
     rag_match_text: str | None = None,
     blind_lane_hint: str | None = None,
 ) -> tuple[bool, str, dict[str, Any]]:
+    # Plan step 6 — meta/self-KPI alerts have no remediable cluster target. If the
+    # ingestion classifier flagged this trace as meta_self, hard-close the gate so
+    # the mutate-planner never anchors a mutation on Omni's own health signal.
+    try:
+        _ac_raw = await ctx.redis.get(f"omni:trace:{trace}:alert_class")
+        if _ac_raw:
+            _ac = json.loads(_ac_raw.decode() if isinstance(_ac_raw, bytes) else _ac_raw)
+            if _ac.get("kind") == "meta_self":
+                logger.info(
+                    "event=proof_of_fault_meta_self_blocked trace=%s — no cluster target", trace
+                )
+                return (
+                    False,
+                    "ERR_META_SELF_NO_TARGET",
+                    {"critical_evidence": False, "alert_class": "meta_self"},
+                )
+    except Exception:
+        logger.debug("event=alert_class_read_skip trace=%s", trace, exc_info=True)
+
     critical = critical_evidence_present(batch)
     snap_raw = await ctx.redis.get(REDIS_KEY_SNAPSHOT)
     snap: dict[str, Any] = {}

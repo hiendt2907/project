@@ -209,9 +209,43 @@ async def recall_playbook_advisory(
     strong = top_score >= _RECALL_STRONG_THRESHOLD
     top_point_id = str(top.id or "")
 
+    # Plan step 4 — code-hard Live > RAG precedence. If the top chunk's
+    # cluster_version disagrees with the live cluster, demote the recall to a
+    # weak hint and force read-only re-verify (DEPRECATED_RISK).
+    deprecated_warning = ""
+    if bool(getattr(ws, "omni_rag_freshness_enabled", False)):
+        from datetime import UTC, datetime
+
+        from rag.rag_freshness import (
+            FRESHNESS_DEPRECATED_RISK,
+            assess_recall_freshness,
+        )
+
+        verdict = assess_recall_freshness(
+            top_p,
+            live_cluster_version=(str(getattr(ws, "omni_cluster_version", "")) or None),
+            now_iso=datetime.now(UTC).isoformat(),
+            max_age_sec=int(getattr(ws, "omni_rag_freshness_max_age_sec", 2_592_000)),
+        )
+        if verdict.label == FRESHNESS_DEPRECATED_RISK:
+            strong = False
+            deprecated_warning = (
+                f"[DEPRECATED_RISK] {verdict.reason} "
+                "Treat this playbook as a hypothesis only; re-verify cluster state read-only "
+                "before acting."
+            )
+            logger.info(
+                "event=recall_deprecated_risk trace=%s point_id=%s reason=%s",
+                trace,
+                top_point_id,
+                verdict.reason,
+            )
+
     advisory_lines = [
         "Verified incident playbooks from memory (advisory — do NOT copy secret values):",
     ]
+    if deprecated_warning:
+        advisory_lines.insert(0, deprecated_warning)
     for pt in filtered_points:
         p = pt.payload or {}
         tool = str(p.get("tool") or p.get("resolution_tool") or "").strip()

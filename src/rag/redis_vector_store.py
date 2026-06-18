@@ -27,6 +27,8 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 logger = logging.getLogger(__name__)
 
+from rag.rag_freshness import stamp_freshness
+
 try:
     from workers.metrics_exporter import inc_rag_empty_result as _inc_rag_empty
 except ImportError:
@@ -320,14 +322,25 @@ class RedisVectorStore:
         before_sleep=_before_retry_log,
     )
     async def upsert(
-        self, collection_name: str, points: list[Any], *, ttl_sec: int | None = None
+        self,
+        collection_name: str,
+        points: list[Any],
+        *,
+        ttl_sec: int | None = None,
+        cluster_version: str | None = None,
     ) -> None:
         """Batch-upsert *points* into *collection_name* using a Redis pipeline.
 
         ``ttl_sec`` caps unbounded rolling-memory collections (e.g.
         ``diagnostic_history``) so the AOF/RDB does not grow without limit.
+
+        ``cluster_version`` stamps each chunk for RAG freshness / DEPRECATED_RISK
+        drift detection (plan step 4). ``ingested_at`` is always stamped (preserved
+        on re-upsert) so recall can age chunks. Both land in the payload AND as
+        dedicated HASH fields for visibility.
         """
         await self._ensure_index(collection_name)
+        now_iso = datetime.now(UTC).isoformat()
         pipe = self._r.pipeline(transaction=False)
         for p in points:
             pid = getattr(p, "id", None) or p["id"]
@@ -341,6 +354,11 @@ class RedisVectorStore:
             if pvec is None:
                 logger.warning("event=redis_upsert_skip_no_vector id=%s", pid)
                 continue
+
+            # Stamp freshness metadata immutably (returns a copy).
+            ppayload = stamp_freshness(
+                ppayload, cluster_version=cluster_version, now_iso=now_iso
+            )
 
             key = f"doc:{collection_name}:{pid}"
             text_content = (
@@ -356,6 +374,8 @@ class RedisVectorStore:
                     "text_content": text_content,
                     "source": str(ppayload.get("source", "")),
                     "doc_type": str(ppayload.get("type", "")),
+                    "ingested_at": str(ppayload.get("ingested_at", now_iso)),
+                    "cluster_version": str(ppayload.get("cluster_version", "")),
                 },
             )
             if ttl_sec and ttl_sec > 0:

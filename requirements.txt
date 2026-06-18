@@ -63,4 +63,5 @@ cryptography>=42.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 fakeredis>=2.23.0
+lupa>=2.0  # fakeredis Lua EVAL support (alert_qos / dlq rollup atomic scripts in tests)
 vulture>=2.11

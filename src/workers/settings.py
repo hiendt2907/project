@@ -1626,6 +1626,77 @@ class WorkerSettings(BaseSettings):
         ),
     )
 
+    # Blast-Radius Diff-Scoring (plan step 3) — code-hard impact-tree gate at executor.
+    omni_blast_radius_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_BLAST_RADIUS_ENABLED"),
+        description="Enable blast-radius impact-tree gate before EXECUTE_MUTATE (lab opt-in).",
+    )
+    omni_blast_max_pods: int = Field(
+        default=10,
+        ge=1,
+        le=10000,
+        validation_alias=AliasChoices("OMNI_BLAST_MAX_PODS"),
+        description="Hard-block a mutate whose impact-tree affects more than this many pods.",
+    )
+    omni_blast_capacity_drop_pct: float = Field(
+        default=20.0,
+        ge=1.0,
+        le=100.0,
+        validation_alias=AliasChoices("OMNI_BLAST_CAPACITY_DROP_PCT"),
+        description="Hard-block a scale-down cutting replica capacity by ≥ this percentage.",
+    )
+
+    # DLQ rollup alerting (plan step 2) — accumulate failures into time-window buckets and
+    # emit ONE Telegram notification per window instead of per-trace (anti alert-fatigue).
+    dlq_rollup_window_sec: int = Field(
+        default=60,
+        ge=5,
+        le=3600,
+        validation_alias=AliasChoices("OMNI_DLQ_ROLLUP_WINDOW_SEC"),
+        description="Time-window (seconds) for DLQ rollup notifications.",
+    )
+
+    # Ingress QoS storm control (plan step 1) — NORMAL-priority alerts are admitted
+    # via an atomic sliding window; CRITICAL/SIEM are never shed. 0 disables shedding.
+    alert_qos_normal_cap: int = Field(
+        default=500,
+        ge=0,
+        le=100000,
+        validation_alias=AliasChoices("OMNI_ALERT_QOS_NORMAL_CAP"),
+        description=(
+            "Max NORMAL-priority alerts admitted per QoS window. Excess is shed (Critical/"
+            "SIEM never shed). Set 0 to disable QoS shedding entirely."
+        ),
+    )
+    alert_qos_window_sec: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+        validation_alias=AliasChoices("OMNI_ALERT_QOS_WINDOW_SEC"),
+        description="Sliding-window length (seconds) for NORMAL-priority alert admission.",
+    )
+
+    # RAG freshness + DEPRECATED_RISK resolution (plan step 4) — recalled chunks carry
+    # cluster_version/ingested_at; on drift vs live cluster they are forced to re-verify.
+    omni_rag_freshness_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_RAG_FRESHNESS_ENABLED"),
+        description="Enable RAG chunk freshness/DEPRECATED_RISK drift gate at recall (lab opt-in).",
+    )
+    omni_rag_freshness_max_age_sec: int = Field(
+        default=2_592_000,  # 30 days
+        ge=3600,
+        le=31_536_000,
+        validation_alias=AliasChoices("OMNI_RAG_FRESHNESS_MAX_AGE_SEC"),
+        description="Age (seconds) beyond which a version-matched chunk is labelled STALE (soft).",
+    )
+    omni_cluster_version: str = Field(
+        default="",
+        validation_alias=AliasChoices("OMNI_CLUSTER_VERSION"),
+        description="Live K8s cluster version stamped onto RAG chunks and compared at recall.",
+    )
+
     # Dynamic LLM context window (S2.1)
     llm_num_ctx: int = Field(
         default=8192,

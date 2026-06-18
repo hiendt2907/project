@@ -71,6 +71,20 @@ data:
   OMNI_HITL_ROUTING_ENABLED: "true"
   # Advisory Mode: autonomous rollout disabled — all actions are suggestions only.
   OMNI_AUTONOMOUS_ROLLOUT_ON_FAULT_INCIDENT: "false"
+  # ── Ingress QoS storm control (plan step 1) ──────────────────────────────────
+  # NORMAL-priority alerts admitted via atomic sliding window; CRITICAL/SIEM never shed.
+  OMNI_ALERT_QOS_NORMAL_CAP: "500"
+  OMNI_ALERT_QOS_WINDOW_SEC: "60"
+  # ── DLQ rollup alerting (plan step 2) — one notification per window, not per-trace ──
+  OMNI_DLQ_ROLLUP_WINDOW_SEC: "60"
+  # ── Blast-Radius impact-tree gate (plan step 3) — code-hard, dry-run-independent ──
+  OMNI_BLAST_RADIUS_ENABLED: "true"
+  OMNI_BLAST_MAX_PODS: "10"
+  OMNI_BLAST_CAPACITY_DROP_PCT: "20"
+  # ── RAG freshness / DEPRECATED_RISK drift gate at recall (plan step 4) ──────
+  OMNI_RAG_FRESHNESS_ENABLED: "true"
+  OMNI_RAG_FRESHNESS_MAX_AGE_SEC: "2592000"
+  OMNI_CLUSTER_VERSION: "orbstack-lab"
   # In-cluster service URLs & worker runtime (non-secret — override per cluster via ConfigMap)
   OMNI_REDIS_URL: "redis://redis:6379/0"
   OMNI_REDIS_CLUSTER: "false"

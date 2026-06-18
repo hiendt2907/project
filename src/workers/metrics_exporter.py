@@ -61,6 +61,7 @@ _telegram_timeout: Any = None
 _kafka_consumer_lag: Any = None
 _dlq_published: Any = None
 _dlq_archived: Any = None
+_alert_qos_shed: Any = None
 _llm_ttft_seconds: Any = None
 _llm_client_completion_seconds: Any = None
 _llm_completion_tokens: Any = None
@@ -102,7 +103,7 @@ def _ensure_metrics() -> None:
     global _proactive_tombstone_no_k8s, _proactive_lease_conflict, _proactive_skip_frozen
     global _wilson_confidence_score, _redis_stream_backlog
     global _proactive_outcome, _proactive_incident_duration, _promql_placeholder_rejected
-    global _evidence_llm_contradiction, _rag_empty_result, _crat_write, _telegram_timeout, _kafka_consumer_lag, _dlq_published, _dlq_archived
+    global _evidence_llm_contradiction, _rag_empty_result, _crat_write, _telegram_timeout, _kafka_consumer_lag, _dlq_published, _dlq_archived, _alert_qos_shed
     global _executor_execute_skipped
     global _llm_ttft_seconds, _llm_client_completion_seconds, _llm_completion_tokens, _llm_prompt_tokens
     global _worker_last_message_age, _health_check_status
@@ -324,6 +325,11 @@ def _ensure_metrics() -> None:
         "omni_dlq_archived_total",
         "DLQ messages consumed and archived by dlq_archiver_loop.",
         ["origin_topic"],
+    )
+    _alert_qos_shed = Counter(
+        "omni_alert_qos_shed_total",
+        "Alerts shed at ingress by QoS sliding-window admission (plan step 1).",
+        ["priority"],
     )
     # LLM client boundary — TTFT / completion wall time / tokens (NOT end-to-end Kafka latency).
     _llm_ttft_seconds = Histogram(
@@ -804,6 +810,11 @@ def inc_dlq_published(topic: str = "omni-dlq") -> None:
 def inc_dlq_archived(origin_topic: str = "unknown") -> None:
     _ensure_metrics()
     _dlq_archived.labels(origin_topic=(origin_topic or "unknown")[:64]).inc()
+
+
+def inc_alert_qos_shed(priority: str = "normal") -> None:
+    _ensure_metrics()
+    _alert_qos_shed.labels(priority=(priority or "normal")[:32]).inc()
 
 
 def observe_llm_client_sli(

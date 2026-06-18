@@ -25,7 +25,7 @@ from workers.baseline_snapshot import baseline_snapshot_loop
 from workers.forecast_autonomous_loop import autonomous_forecast_loop
 from workers.alert_to_event import build_anomaly_event_from_alert_payload
 from workers.autonomous_feedback_loop import kafka_action_feedback_loop
-from workers.dlq_archiver import dlq_archiver_loop
+from workers.dlq_archiver import dlq_archiver_loop, dlq_rollup_flush_loop
 from workers.diagnostic_dispatcher import run_diagnostic_pipeline
 from workers.evidence_consumer import reason_from_diagnostic_evidence
 from workers.handler_context import WorkerHandlerContext
@@ -322,6 +322,56 @@ async def _process_stream_entry(
             component="omni_worker_stream_consumer",
             detail="payload_ready_for_diagnostic",
         )
+        # Ingress QoS storm control (plan step 1): classify priority, drop malformed to DLQ,
+        # shed excess NORMAL-priority load via an atomic sliding window. CRITICAL/SIEM never
+        # shed. This runs BEFORE dedup so a 10k-storm is bounded at the cheapest point.
+        try:
+            from workers.alert_qos import (
+                AdmissionDecision,
+                AlertPriority,
+                admit_alert,
+                classify_alert_priority,
+            )
+
+            _priority = classify_alert_priority(payload)
+            if _priority is AlertPriority.MALFORMED:
+                logger.warning(
+                    "[%s] event=alert_qos_malformed -> dlq source=%s",
+                    trace, payload.get("source"),
+                )
+                try:
+                    await ctx.kafka.send_dict(
+                        ctx.settings.kafka_topic_dlq,
+                        {
+                            "trace_id": trace,
+                            "origin_topic": ctx.settings.kafka_topic_alerts,
+                            "error": "ERR_QOS_MALFORMED_ALERT_NO_IDENTITY",
+                            "data": raw if isinstance(raw, str) else raw.decode("utf-8", "replace"),
+                        },
+                    )
+                except Exception as _e:
+                    logger.warning("[%s] event=alert_qos_dlq_emit_failed err=%s", trace, _e)
+                return
+            _qos_cap = int(getattr(ctx.settings, "alert_qos_normal_cap", 0) or 0)
+            _qos_window = int(getattr(ctx.settings, "alert_qos_window_sec", 60) or 60)
+            _decision = await admit_alert(
+                ctx.redis, _priority, now=time.time(), member=trace,
+                normal_cap=_qos_cap, window_sec=_qos_window,
+            )
+            if _decision is AdmissionDecision.SHED:
+                logger.warning(
+                    "[%s] event=alert_qos_shed priority=%s cap=%d window=%ds",
+                    trace, _priority, _qos_cap, _qos_window,
+                )
+                try:
+                    from workers.metrics_exporter import inc_alert_qos_shed
+                    inc_alert_qos_shed(str(_priority))
+                except Exception:
+                    pass
+                return
+        except Exception as _e:
+            logger.warning("[%s] event=alert_qos_error err=%s — admitting", trace, _e)
+
         # Cross-incident dedup: same (source:alertname:ns:deploy) within window → skip pipeline.
         dedup_window = int(getattr(ctx.settings, "alert_dedup_window_sec", 300) or 0)
         if dedup_window > 0:
@@ -360,6 +410,40 @@ async def _process_stream_entry(
                 meta={"alert_completeness": _lvl},
             )
             logger.info("[%s] event=alert_completeness level=%s detail=%s", trace, _lvl, _det)
+
+        # Plan step 6 — classify the alert envelope. Meta/self-KPI alerts have no
+        # remediable cluster target and must never reach the mutate-planner; store
+        # the verdict so _proof_of_fault_gate can hard-close mutation for them.
+        try:
+            from workers.alert_envelope import ALERT_KIND_META_SELF, classify_alert
+
+            _ac = classify_alert(payload)
+            await ctx.redis.setex(
+                f"omni:trace:{trace}:alert_class",
+                3600,
+                json.dumps(
+                    {
+                        "kind": _ac.kind,
+                        "mutate_eligible": _ac.mutate_eligible,
+                        "missing_fields": _ac.missing_fields,
+                    }
+                ),
+            )
+            if _ac.kind == ALERT_KIND_META_SELF:
+                await emit_transition(
+                    ctx,
+                    trace_id=trace,
+                    transition=TRANSITION_INGESTED,
+                    component="omni_worker_stream_consumer",
+                    detail=f"alert_class=meta_self ({_ac.alertname}) — self-monitoring runbook, no mutate",
+                    meta={"alert_class": _ac.kind, "mutate_eligible": False},
+                )
+                logger.info(
+                    "[%s] event=alert_class kind=meta_self alertname=%s mutate_eligible=false",
+                    trace, _ac.alertname,
+                )
+        except Exception:
+            logger.debug("[%s] alert_class classification skipped", trace, exc_info=True)
 
         # Master Plan V3: omni-alerts → prober only (diagnostic pipeline → evidence topic); reasoning in kafka_evidence_loop.
         if payload.get("chat_id") is not None:
@@ -884,6 +968,7 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
             _run_kpi_collector(ctx, stop), name="kpi_collector",
         ))
         tasks.append(asyncio.create_task(dlq_archiver_loop(ctx, stop), name="dlq_archiver"))
+        tasks.append(asyncio.create_task(dlq_rollup_flush_loop(ctx, stop), name="dlq_rollup_flush"))
         # Autonomy tier (MASTER_PLAN §5/§7): CRAT outbox drainer + readiness publish.
         from workers.tier_loops import (
             crat_outbox_drainer_loop,

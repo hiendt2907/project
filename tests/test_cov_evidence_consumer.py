@@ -358,6 +358,26 @@ class TestProofOfFaultGateResourceLane:
             }
         ]
 
+    async def test_meta_self_alert_hard_closes_gate(self):
+        """Plan step 6: trace flagged meta_self → gate returns ERR_META_SELF_NO_TARGET."""
+        from workers.evidence_consumer import _proof_of_fault_gate
+
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await redis.setex(
+            "omni:trace:t-meta:alert_class",
+            3600,
+            json.dumps({"kind": "meta_self", "mutate_eligible": False}),
+        )
+        ctx = _make_ctx(redis=redis, settings=_make_settings(omni_proof_lane_enabled=True))
+        # Even with critical evidence present, meta_self short-circuits to blocked.
+        with patch("workers.evidence_consumer.critical_evidence_present", return_value=True):
+            ok, code, meta = await _proof_of_fault_gate(
+                ctx, trace="t-meta", batch=await self._base_batch()
+            )
+        assert ok is False
+        assert code == "ERR_META_SELF_NO_TARGET"
+        assert meta.get("alert_class") == "meta_self"
+
     async def test_resource_lane_with_sigma_passes_after_window(self):
         """resource lane + sigma_ok=True + window>=needed → True."""
         from workers.evidence_consumer import _proof_of_fault_gate

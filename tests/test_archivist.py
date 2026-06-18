@@ -211,6 +211,78 @@ class TestRecallPlaybookAdvisory(unittest.IsolatedAsyncioTestCase):
         # Must tell LLM to read values from cluster, not memory
         assert "cluster" in prefix.lower() or "read" in prefix.lower()
 
+    async def test_recall_deprecated_risk_demotes_strong_and_warns(self) -> None:
+        # Plan step 4: live cluster_version disagrees with chunk → DEPRECATED_RISK,
+        # strong recall demoted to weak hint + re-verify warning injected.
+        from workers.archivist import RecallResult, recall_playbook_advisory
+
+        mock_point = MagicMock()
+        mock_point.score = 0.95  # would normally be strong
+        mock_point.payload = {
+            "tool": "k8s_patch_secret",
+            "arg_keys": ["namespace", "name"],
+            "cluster_version": "v1.27.0",  # stale vs live v1.29.4
+            "ingested_at": "2026-06-18T00:00:00+00:00",
+        }
+        mock_result = MagicMock()
+        mock_result.points = [mock_point]
+        mock_vs = MagicMock()
+        mock_vs.similarity_search = AsyncMock(return_value=mock_result)
+
+        ctx = SimpleNamespace(
+            vector_store=mock_vs,
+            llm=MagicMock(),
+            settings=SimpleNamespace(
+                embed_model="nomic-embed-text",
+                omni_rag_freshness_enabled=True,
+                omni_cluster_version="v1.29.4",
+                omni_rag_freshness_max_age_sec=2_592_000,
+            ),
+        )
+
+        result = await recall_playbook_advisory(
+            ctx, query_text="password auth failed", trace="test-deprecated"
+        )
+        assert isinstance(result, RecallResult)
+        assert result.strong is False  # demoted despite 0.95
+        assert "DEPRECATED_RISK" in result.advisory
+        assert "re-verify" in result.advisory.lower()
+
+    async def test_recall_fresh_version_keeps_strong(self) -> None:
+        # Same cluster_version as live → no demotion.
+        from workers.archivist import RecallResult, recall_playbook_advisory
+
+        mock_point = MagicMock()
+        mock_point.score = 0.95
+        mock_point.payload = {
+            "tool": "k8s_patch_secret",
+            "arg_keys": ["namespace", "name"],
+            "cluster_version": "v1.29.4",
+            "ingested_at": "2026-06-18T00:00:00+00:00",
+        }
+        mock_result = MagicMock()
+        mock_result.points = [mock_point]
+        mock_vs = MagicMock()
+        mock_vs.similarity_search = AsyncMock(return_value=mock_result)
+
+        ctx = SimpleNamespace(
+            vector_store=mock_vs,
+            llm=MagicMock(),
+            settings=SimpleNamespace(
+                embed_model="nomic-embed-text",
+                omni_rag_freshness_enabled=True,
+                omni_cluster_version="v1.29.4",
+                omni_rag_freshness_max_age_sec=2_592_000,
+            ),
+        )
+
+        result = await recall_playbook_advisory(
+            ctx, query_text="password auth failed", trace="test-fresh"
+        )
+        assert isinstance(result, RecallResult)
+        assert result.strong is True
+        assert "DEPRECATED_RISK" not in result.advisory
+
     async def test_recall_returns_none_when_no_hits(self) -> None:
         from workers.archivist import recall_playbook_advisory
 

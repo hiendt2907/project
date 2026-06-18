@@ -11,6 +11,7 @@ from pkg.executor.mutate_governance import (
     MUTATING_POLICY_GUARD_TOOLS as _MUTATING_POLICY_GUARD_TOOLS,
     governance_check_executor_mutate,
 )
+from pkg.executor.blast_radius import BLAST_SCORED_TOOLS as _BLAST_SCORED_TOOLS
 from pkg.reasoning.reason_codes import ERR_GOV_UNAUTHORIZED_MUTATION
 from workers.k8s_tools import deployment_evidence_snapshot, execute_rollout_restart_from_pending
 from workers.rollback_executor import capture_pre_mutate_snapshot, snapshot_required
@@ -137,6 +138,35 @@ async def run_execute_mutate_tool(
     )
     if not gov_ok:
         return gov_msg, infer_exit_code_from_tool_output(gov_msg)
+
+    # Blast-Radius Diff-Scoring + Impact-Tree (plan step 3). Code-hard safety net that a
+    # green dry-run cannot wave through: scores pods destroyed/restarted via the K8s
+    # dependency graph + GC cascade. Opt-in (lab env), guarded so a read failure never
+    # blocks a legit small mutate.
+    if bool(getattr(ws, "omni_blast_radius_enabled", False)) and reg_name in _BLAST_SCORED_TOOLS:
+        try:
+            from pkg.executor.blast_radius import K8sBlastReader, assess_blast_radius
+
+            try:
+                _reader = K8sBlastReader()
+            except Exception as _re:
+                _reader = None
+                logger.warning("[%s] blast_radius reader unavailable: %s", trace_id, _re)
+            if _reader is not None:
+                _verdict = await assess_blast_radius(
+                    _reader, tool=reg_name, args=args or {},
+                    max_pods=int(getattr(ws, "omni_blast_max_pods", 10) or 10),
+                    capacity_drop_pct=float(getattr(ws, "omni_blast_capacity_drop_pct", 20.0) or 20.0),
+                )
+                if _verdict.hard_block:
+                    logger.error(
+                        "[%s] event=blast_radius_hard_block tool=%s affected=%d reasons=%s",
+                        trace_id, reg_name, _verdict.affected_pods, "; ".join(_verdict.reasons),
+                    )
+                    msg = _verdict.deny_message()
+                    return msg, infer_exit_code_from_tool_output(msg)
+        except Exception as _be:
+            logger.warning("[%s] blast_radius assess error (allowing): %s", trace_id, _be)
 
     # S1.2: Capture pre-mutate snapshot for rollback if tool modifies state.
     if bool(getattr(ws, "omni_auto_rollback_enabled", True)) and snapshot_required(reg_name):
