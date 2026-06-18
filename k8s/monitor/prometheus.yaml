@@ -547,6 +547,204 @@ data:
             annotations:
               summary: "chaos-victim pod in fault state (chaos engineering)"
               description: "Pod {{ $labels.pod }} in {{ $labels.namespace }} waiting: reason={{ $labels.reason }} container={{ $labels.container }}. Organic chaos test — Omni Analyst ReAct loop expected."
+      # ── Worker self-monitoring (health server :8090 → metrics_exporter) ──
+      # Migrated from k8s/monitor/prometheus-rules-omni-health.yaml (PrometheusRule
+      # CRD) — this lab runs plain Prometheus (configmap rule_files), no operator,
+      # so the CRD was never reconciled. Keep the groups here to actually load them.
+      - name: omni.worker.health
+        interval: 30s
+        rules:
+          - alert: OmniWorkerStalled
+            expr: omni_worker_last_message_age_seconds > 600
+            for: 2m
+            labels:
+              severity: critical
+              team: omni-sre
+            annotations:
+              summary: "Omni worker stalled — no messages for 10+ minutes"
+              description: "Worker has not processed any message for {{ $value | humanizeDuration }}. Check Kafka consumer group, pod logs, and circuit breaker status."
+          - alert: OmniWorkerHealthDegraded
+            expr: min by (check_name) (omni_health_check_status) < 0.6
+            for: 5m
+            labels:
+              severity: warning
+              team: omni-sre
+            annotations:
+              summary: "Omni worker health check degraded: {{ $labels.check_name }}"
+              description: "Health check {{ $labels.check_name }} has been degraded for 5+ minutes. Current value={{ $value }}."
+          - alert: OmniWorkerHealthUnhealthy
+            expr: min by (check_name) (omni_health_check_status) == 0
+            for: 2m
+            labels:
+              severity: critical
+              team: omni-sre
+            annotations:
+              summary: "Omni worker health check FAILED: {{ $labels.check_name }}"
+              description: "Health check {{ $labels.check_name }} is reporting UNHEALTHY for 2+ minutes."
+          - alert: OmniRedisConnectionLost
+            expr: omni_health_check_status{check_name="redis_ping"} == 0
+            for: 2m
+            labels:
+              severity: critical
+              team: omni-sre
+            annotations:
+              summary: "Omni worker cannot reach Redis"
+              description: "Redis ping health check failing for 2+ minutes. Advisory pipeline ops will fail."
+          - alert: OmniLLMSustainedDown
+            expr: omni_llm_up == 0
+            for: 10m
+            labels:
+              severity: critical
+              team: omni-sre
+            annotations:
+              summary: "Ollama LLM has been unreachable for 10+ minutes"
+              description: "omni_llm_up=0 sustained. Advisory generation is blocked."
+      - name: omni.kpi
+        interval: 60s
+        rules:
+          - alert: OmniAdvisoryAcceptanceRateLow
+            expr: omni_kpi_advisory_acceptance_rate < 0.5
+            for: 30m
+            labels:
+              severity: warning
+              team: omni-sre
+            annotations:
+              summary: "Advisory acceptance rate below 50% in last 24h"
+              description: "Acceptance rate={{ $value | humanizePercentage }}."
+          - alert: OmniFalsePositiveRateHigh
+            expr: omni_kpi_false_positive_rate > 0.3
+            for: 30m
+            labels:
+              severity: warning
+              team: omni-sre
+            annotations:
+              summary: "False positive rate exceeds 30%"
+              description: "False positive rate={{ $value | humanizePercentage }}."
+          - alert: OmniMTTDHigh
+            expr: histogram_quantile(0.95, rate(omni_kpi_mttd_seconds_bucket[1h])) > 300
+            for: 15m
+            labels:
+              severity: warning
+              team: omni-sre
+            annotations:
+              summary: "P95 Mean Time To Detect exceeds 5 minutes"
+              description: "P95 MTTD={{ $value | humanizeDuration }}."
+      - name: omni.executor.mutate
+        interval: 60s
+        rules:
+          - alert: OmniExecutorMutateSkippedBurst
+            expr: sum(rate(omni_executor_execute_skipped_total[15m])) > 0.2
+            for: 20m
+            labels:
+              severity: warning
+              team: omni-sre
+            annotations:
+              summary: "Executor mutate skips elevated (shadow / kill-switch / rate limit)"
+              description: "Sustained execute_skipped rate: shadow OS, auto-execute off, or rate limiting. Inspect reason label."
+      # ── Pipeline + SLO (migrated from prometheus-rules-omni-pipeline.yaml CRD) ──
+      - name: omni.pipeline
+        interval: 30s
+        rules:
+          - alert: OmniAnalystProcessingLatencyHigh
+            expr: histogram_quantile(0.95, sum(rate(omni_evidence_processing_duration_seconds_bucket[5m])) by (le)) > 30
+            for: 5m
+            labels:
+              severity: warning
+              team: omni-sre
+            annotations:
+              summary: "Analyst evidence processing p95 latency > 30s"
+              description: "p95 processing latency is {{ $value | humanizeDuration }}."
+          - alert: OmniEvidenceStaleness
+            expr: (time() - omni_evidence_last_received_timestamp_seconds) > 3600
+            for: 10m
+            labels:
+              severity: warning
+              team: omni-sre
+            annotations:
+              summary: "No fresh evidence received in > 1h"
+              description: "Last evidence received {{ $value | humanizeDuration }} ago."
+          - alert: OmniPlaybookStateTTLExpiry
+            expr: omni_playbook_state_age_seconds{state="PENDING_APPROVAL"} > 7200
+            for: 5m
+            labels:
+              severity: warning
+              team: omni-sre
+            annotations:
+              summary: "Playbook stuck in PENDING_APPROVAL > 2h"
+              description: "Playbook {{ $labels.playbook_id }} pending approval for {{ $value | humanizeDuration }}."
+          - alert: OmniKafkaProducerSendTimeout
+            expr: increase(omni_kafka_producer_send_timeout_total[5m]) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: omni-sre
+            annotations:
+              summary: "Kafka producer send timeouts detected"
+              description: "{{ $value }} send timeout(s) in the last 5 minutes. Component: {{ $labels.component }}."
+      - name: omni.slo
+        interval: 60s
+        rules:
+          - record: omni:slo:mttd_p95_seconds
+            expr: histogram_quantile(0.95, rate(omni_kpi_mttd_seconds_bucket[1h])) or omni_kpi_mttd_seconds
+            labels:
+              slo: mttd
+          - record: omni:slo:mttr_p95_seconds
+            expr: histogram_quantile(0.95, rate(omni_kpi_mttr_seconds_bucket[1h])) or omni_kpi_mttr_seconds
+            labels:
+              slo: mttr
+          - record: omni:slo:false_positive_rate
+            expr: omni_kpi_false_positive_rate
+            labels:
+              slo: false_positive
+          - record: omni:slo:advisory_acceptance_rate
+            expr: omni_kpi_advisory_acceptance_rate
+            labels:
+              slo: acceptance
+          - alert: OmniMTTDBreached
+            expr: omni:slo:mttd_p95_seconds{lane!="SIEM_SECURITY"} > 120
+            for: 5m
+            labels:
+              severity: warning
+              team: sre
+            annotations:
+              summary: "MTTD SLO breach on {{ $labels.lane }}"
+              description: "P95 MTTD is {{ $value | humanizeDuration }} (SLO: 2m)"
+          - alert: OmniSIEMMTTDBreached
+            expr: omni:slo:mttd_p95_seconds{lane="SIEM_SECURITY"} > 300
+            for: 5m
+            labels:
+              severity: warning
+              team: soc
+            annotations:
+              summary: "SIEM MTTD SLO breach"
+              description: "SIEM P95 MTTD is {{ $value | humanizeDuration }} (SLO: 5m)"
+          - alert: OmniMTTRBreached
+            expr: omni:slo:mttr_p95_seconds > 900
+            for: 10m
+            labels:
+              severity: warning
+              team: sre
+            annotations:
+              summary: "MTTR SLO breach — {{ $labels.lane }}"
+              description: "P95 MTTR is {{ $value | humanizeDuration }} (SLO: 15m for auto-remediation)"
+          - alert: OmniFalsePositiveRateTooHigh
+            expr: omni:slo:false_positive_rate > 0.10
+            for: 15m
+            labels:
+              severity: warning
+              team: sre
+            annotations:
+              summary: "False positive rate exceeded 10% threshold"
+              description: "Current FP rate: {{ $value | humanizePercentage }}"
+          - alert: OmniAdvisoryAcceptanceLow
+            expr: omni:slo:advisory_acceptance_rate < 0.85
+            for: 15m
+            labels:
+              severity: warning
+              team: sre
+            annotations:
+              summary: "Advisory acceptance rate below 85%"
+              description: "Current rate: {{ $value | humanizePercentage }}"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

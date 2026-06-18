@@ -70,6 +70,12 @@ spec:
           env:
             - name: OMNI_WORKER_ROLE
               value: "full"
+            - name: OMNI_OTEL_TRACING_ENABLED
+              value: "true"
+            - name: OMNI_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://tempo.monitor.svc.cluster.local:4317"
+            - name: OMNI_OTEL_SERVICE_NAME
+              value: "omni-fullstack"
             - name: OMNI_EXECUTOR_FORCE_NSENTER
               value: "true"
             - name: OMNI_AUDIT_PRIVATE_KEY_PATH

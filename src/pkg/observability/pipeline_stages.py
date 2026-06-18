@@ -14,6 +14,8 @@ import logging
 import time
 from typing import Any
 
+from pkg.observability.otel_stage_span import emit_stage_span
+
 log = logging.getLogger(__name__)
 
 PIPELINE_STAGES: list[str] = [
@@ -145,6 +147,13 @@ async def mark_stage(
         _level = "error" if status == "fail" else ("warn" if status == "skip" else "info")
         _logline = f"stage {stage} → {status}" + (f": {detail}" if detail else "")
         await append_trace_log(redis, trace_id, stage, _logline, level=_level)
+
+        # Mirror the stage transition into OpenTelemetry → Tempo, grouped under a
+        # trace whose id is derived from trace_id (no-op if OTEL disabled/absent).
+        try:
+            emit_stage_span(trace_id, stage, status, detail=detail, lane=lane)
+        except Exception:  # noqa: BLE001 — telemetry never breaks stage tracking
+            pass
     except Exception as exc:
         log.warning(
             "pipeline_stages: redis error stage=%s trace=%s status=%s err=%s",
