@@ -10,11 +10,17 @@ import uuid
 from typing import Any
 
 import redis.asyncio as aioredis
-from redis.commands.search.field import NumericField, VectorField
+from redis.commands.search.field import NumericField, TagField, VectorField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 
-from rag.redis_vector_store import EMBED_DIM, QueryResponse
+from rag.redis_vector_store import (
+    DEFAULT_TENANT_ID,
+    EMBED_DIM,
+    QueryResponse,
+    _ft_escape,
+    validate_tenant_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +44,22 @@ class SemanticCache:
         if self._ready:
             return
         try:
-            await self._r.ft(_SEMCACHE_IDX).info()
-            self._ready = True
-            return
+            info = await self._r.ft(_SEMCACHE_IDX).info()
+            attrs = info.get("attributes") if isinstance(info, dict) else None
+            has_tenant_field = bool(attrs) and any("tenant_id" in str(a) for a in attrs)
+            if has_tenant_field:
+                self._ready = True
+                return
         except Exception:
-            pass
+            pass  # index missing entirely — fall through to create_index below
+        else:
+            # Legacy index predates per-tenant isolation. Entries are TTL'd cache
+            # data (no durability requirement) — drop and recreate with the
+            # tenant_id tag field instead of migrating individual docs.
+            try:
+                await self._r.ft(_SEMCACHE_IDX).dropindex()
+            except Exception as e:
+                logger.warning("event=semcache_legacy_index_drop_failed err=%s", e)
         try:
             await self._r.ft(_SEMCACHE_IDX).create_index(
                 [
@@ -60,6 +77,7 @@ class SemanticCache:
                         as_name="embedding",
                     ),
                     NumericField("$.ts", as_name="ts", sortable=True),
+                    TagField("$.tenant_id", as_name="tenant_id"),
                 ],
                 definition=IndexDefinition(
                     prefix=[_SEMCACHE_PREFIX], index_type=IndexType.JSON
@@ -74,13 +92,15 @@ class SemanticCache:
         vec: list[float],
         *,
         threshold: float = 0.95,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> QueryResponse | None:
         if not self._ready:
             await self.ensure_ready()
         try:
+            tid = _ft_escape(validate_tenant_id(tenant_id))
             vec_bytes = struct.pack(f"{EMBED_DIM}f", *vec)
             q = (
-                Query("*=>[KNN 1 @embedding $vec AS __score]")
+                Query(f"(@tenant_id:{{{tid}}})=>[KNN 1 @embedding $vec AS __score]")
                 .sort_by("__score", asc=True)
                 .return_fields("result_json", "__score")
                 .paging(0, 1)
@@ -110,9 +130,11 @@ class SemanticCache:
         result: QueryResponse,
         *,
         ttl_sec: int | None = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> None:
         if not self._ready:
             await self.ensure_ready()
+        tid = validate_tenant_id(tenant_id)
         ttl = ttl_sec if ttl_sec is not None else self._default_ttl
         try:
             key = f"{_SEMCACHE_PREFIX}{uuid.uuid4()}"
@@ -120,6 +142,7 @@ class SemanticCache:
                 "embedding": list(vec),
                 "result_json": result.model_dump_json(),
                 "ts": time.time(),
+                "tenant_id": tid,
             }
             await self._r.json().set(key, "$", doc)
             await self._r.expire(key, ttl)

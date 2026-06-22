@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from rag.pgvector_store import COLLECTION_ACTION_EXPERIENCE
+from rag.redis_vector_store import DEFAULT_TENANT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -131,12 +132,17 @@ async def recall_playbook_advisory(
     *,
     query_text: str,
     trace: str,
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> RecallResult | None:
     """Query COLLECTION_ACTION_EXPERIENCE for similar past incidents.
 
     Returns a RecallResult (advisory + strength flag) when similarity >= threshold,
     or None when no relevant prior playbook exists.
     The advisory text contains arg KEYS only — no secret values.
+
+    ``tenant_id`` isolates the search to one customer's own remediation
+    history (onboarding-ops-agent plan, step 1) — defaults to ``"default"``
+    for the lab cluster's own self-operation experience.
     """
     vs = getattr(ctx, "vector_store", None)
     llm = getattr(ctx, "llm", None)
@@ -153,6 +159,7 @@ async def recall_playbook_advisory(
             embed_model=embed_model,
             limit=_RECALL_TOP_K,
             score_threshold=_RECALL_SCORE_THRESHOLD,
+            tenant_id=tenant_id,
         )
     except Exception as e:
         logger.debug("event=archivist_recall_skip trace=%s err=%s", trace, e)

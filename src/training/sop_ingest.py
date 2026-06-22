@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-from rag.redis_vector_store import RedisVectorStore, PostgresRAGSettings
+from rag.redis_vector_store import DEFAULT_TENANT_ID, RedisVectorStore, PostgresRAGSettings
 from rag.pgvector_store import (
     EMBED_DIM,
     PointStruct,
@@ -68,6 +68,7 @@ async def run_ingest(
     max_points: int | None = None,
     limit: int | None = None,
     dry_run: bool = False,
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> int:
     cap = min(
         max_points if max_points is not None else settings.max_sop_contexts,
@@ -105,10 +106,10 @@ async def run_ingest(
             if dry_run:
                 buf = []
                 return
-            await vector_store.upsert(collection_name=SOP_COLLECTION, points=buf)
+            await vector_store.upsert(collection_name=SOP_COLLECTION, points=buf, tenant_id=tenant_id)
             done += len(buf)
             if done == len(entries) or (log_every > 0 and done % log_every == 0):
-                logger.info("sop_ingest upserted total=%s / %s", done, len(entries))
+                logger.info("sop_ingest upserted total=%s / %s tenant_id=%s", done, len(entries), tenant_id)
             buf = []
 
         for i in range(0, len(entries), embed_batch):
@@ -156,6 +157,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--limit", type=int, default=None, help="Chỉ ingest N điểm đầu (test)")
     p.add_argument("--max", type=int, default=None, help="Override cap (≤ OMNI_MAX_SOP_CONTEXTS)")
     p.add_argument("--dry-run", action="store_true", help="Không ghi Postgres RAG")
+    p.add_argument("--tenant-id", default=DEFAULT_TENANT_ID, help="Tenant isolation key (default: 'default')")
     p.add_argument("-v", action="store_true", dest="verbose", help="DEBUG log")
     return p.parse_args(argv)
 
@@ -177,6 +179,7 @@ async def _amain(argv: list[str] | None) -> int:
         max_points=args.max,
         limit=args.limit,
         dry_run=args.dry_run,
+        tenant_id=args.tenant_id,
     )
     return 0
 

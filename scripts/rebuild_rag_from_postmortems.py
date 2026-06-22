@@ -1,12 +1,13 @@
 """Rebuild RAG SOP entries from real incident post-mortems (plan step 5).
 
-Reads docs/post-mortems/*.md, parses each into an ``omni:rag:sop`` entry
-(alert_context + remediation tool + arg KEYS only — never arg values), and
-ingests via the same hash key the playbook matcher reads.
+Reads docs/post-mortems/*.md, parses each into an ``omni:rag:sop:{tenant_id}``
+entry (alert_context + remediation tool + arg KEYS only — never arg values).
+This hash is a data-at-rest ledger (audit/training-data source) — it is not
+read by the live recall path (see ``src/workers/archivist.py``).
 
 Low-signal stubs (alert=unknown AND no namespace/workload) are skipped, and the
-count of skipped files is logged — no silent truncation. ``omni:rag:sop`` is a
-plain Redis hash lookup so this runs without Ollama embeddings.
+count of skipped files is logged — no silent truncation. ``omni:rag:sop:{tenant_id}``
+is a plain Redis hash lookup so this runs without Ollama embeddings.
 
 Usage:
     PYTHONPATH=src .venv/bin/python scripts/rebuild_rag_from_postmortems.py \
@@ -26,9 +27,14 @@ import re
 from pathlib import Path
 from typing import Any
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from rag.redis_vector_store import DEFAULT_TENANT_ID, validate_tenant_id  # noqa: E402
+
 logger = logging.getLogger("rebuild_rag_from_postmortems")
 
-REDIS_SOP_KEY = "omni:rag:sop"
+REDIS_SOP_KEY_FMT = "omni:rag:sop:{tenant_id}"
 
 _FIELD_RE = {
     "alertname": re.compile(r"\*\*Alert:\*\*\s*`([^`]*)`"),
@@ -124,7 +130,9 @@ def build_entries(pm_dir: Path) -> tuple[list[dict[str, Any]], int]:
     return entries, skipped
 
 
-async def run(pm_dir: Path, redis_url: str, *, dry_run: bool) -> int:
+async def run(
+    pm_dir: Path, redis_url: str, *, dry_run: bool, tenant_id: str = DEFAULT_TENANT_ID
+) -> int:
     entries, skipped = build_entries(pm_dir)
     logger.info(
         "parsed post-mortems: signal_entries=%d skipped_low_signal=%d", len(entries), skipped
@@ -136,6 +144,7 @@ async def run(pm_dir: Path, redis_url: str, *, dry_run: bool) -> int:
 
     import redis.asyncio as aioredis
 
+    sop_key = REDIS_SOP_KEY_FMT.format(tenant_id=validate_tenant_id(tenant_id))
     r = aioredis.from_url(redis_url, decode_responses=True)
     try:
         await r.ping()
@@ -144,18 +153,19 @@ async def run(pm_dir: Path, redis_url: str, *, dry_run: bool) -> int:
         return 1
     pipe = r.pipeline(transaction=False)
     for e in entries:
-        pipe.hset(REDIS_SOP_KEY, e["alert_id"], json.dumps(e, ensure_ascii=False))
+        pipe.hset(sop_key, e["alert_id"], json.dumps(e, ensure_ascii=False))
     await pipe.execute()
-    hlen = await r.hlen(REDIS_SOP_KEY)
-    logger.info("rebuild complete: ingested=%d redis_hlen=%d", len(entries), hlen)
+    hlen = await r.hlen(sop_key)
+    logger.info("rebuild complete: tenant_id=%s ingested=%d redis_hlen=%d", tenant_id, len(entries), hlen)
     await r.aclose()
     return 0
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Rebuild omni:rag:sop from post-mortems")
+    p = argparse.ArgumentParser(description="Rebuild omni:rag:sop:{tenant_id} from post-mortems")
     p.add_argument("--dir", default="docs/post-mortems")
     p.add_argument("--redis-url", default=os.environ.get("OMNI_REDIS_URL", "redis://localhost:16379/0"))
+    p.add_argument("--tenant-id", default=DEFAULT_TENANT_ID, help="Tenant isolation key (default: 'default')")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args(argv)
 
@@ -163,7 +173,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = _parse_args(None)
-    rc = asyncio.run(run(Path(args.dir), args.redis_url, dry_run=args.dry_run))
+    rc = asyncio.run(run(Path(args.dir), args.redis_url, dry_run=args.dry_run, tenant_id=args.tenant_id))
     raise SystemExit(rc)
 
 

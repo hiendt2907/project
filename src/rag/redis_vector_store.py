@@ -75,6 +75,30 @@ def _ft_escape(text: str) -> str:
     return _FT_SPECIAL.sub(r"\\\1", text or "")
 
 
+DEFAULT_TENANT_ID = "default"
+_TENANT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def validate_tenant_id(tenant_id: str) -> str:
+    """Validate *tenant_id* against the allowed charset; raise on bad input."""
+    if not _TENANT_ID_RE.match(tenant_id or ""):
+        raise ValueError(f"invalid tenant_id: {tenant_id!r}")
+    return tenant_id
+
+
+def scoped_collection_name(collection_name: str, tenant_id: str = DEFAULT_TENANT_ID) -> str:
+    """Return the tenant-scoped collection/index name.
+
+    The default tenant keeps the legacy unscoped name so existing lab data
+    (HNSW indexes already populated) stays reachable without a migration.
+    Any other tenant gets its own isolated index: ``f"{collection_name}:{tenant_id}"``.
+    """
+    tid = validate_tenant_id(tenant_id)
+    if tid == DEFAULT_TENANT_ID:
+        return collection_name
+    return f"{collection_name}:{tid}"
+
+
 def _make_index_fields() -> list:
     return [
         VectorField(
@@ -301,14 +325,16 @@ class RedisVectorStore:
             await self._ensure_index(col)
         self._initialized = True
 
-    async def ensure_partition_for_collection(self, collection_name: str) -> None:
+    async def ensure_partition_for_collection(
+        self, collection_name: str, tenant_id: str = DEFAULT_TENANT_ID
+    ) -> None:
         """Create FT index for a dynamic collection name.
 
         Validates the name with the same regex used in pgvector_store.py.
         """
         if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]{0,62}$", str(collection_name)):
             raise ValueError(f"invalid collection_name: {collection_name!r}")
-        await self._ensure_index(collection_name)
+        await self._ensure_index(scoped_collection_name(collection_name, tenant_id))
 
     # ------------------------------------------------------------------
     # Write
@@ -328,6 +354,7 @@ class RedisVectorStore:
         *,
         ttl_sec: int | None = None,
         cluster_version: str | None = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> None:
         """Batch-upsert *points* into *collection_name* using a Redis pipeline.
 
@@ -338,7 +365,11 @@ class RedisVectorStore:
         drift detection (plan step 4). ``ingested_at`` is always stamped (preserved
         on re-upsert) so recall can age chunks. Both land in the payload AND as
         dedicated HASH fields for visibility.
+
+        ``tenant_id`` isolates the underlying HNSW index per tenant — see
+        ``scoped_collection_name()``.
         """
+        collection_name = scoped_collection_name(collection_name, tenant_id)
         await self._ensure_index(collection_name)
         now_iso = datetime.now(UTC).isoformat()
         pipe = self._r.pipeline(transaction=False)
@@ -405,8 +436,10 @@ class RedisVectorStore:
         score_threshold: float | None = None,
         with_payload: bool = True,
         payload_filters: dict[str, str] | None = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> QueryResponse:
         """Pure KNN search using HNSW index."""
+        collection_name = scoped_collection_name(collection_name, tenant_id)
         await self._ensure_index(collection_name)
         lim = max(1, int(limit))
         vec_bytes = struct.pack(f"{EMBED_DIM}f", *query)
@@ -463,8 +496,10 @@ class RedisVectorStore:
         collection_name: str,
         query_text: str,
         limit: int = 12,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> QueryResponse:
         """FT search on text_content field (BM25 via RedisSearch)."""
+        collection_name = scoped_collection_name(collection_name, tenant_id)
         qt = (query_text or "").strip()
         if len(qt) < 2:
             return QueryResponse(points=[])
@@ -521,6 +556,7 @@ class RedisVectorStore:
         score_threshold: float | None = None,
         query_max_chars: int = 8000,
         payload_filters: dict[str, str] | None = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> QueryResponse:
         """Embed *query* then cosine-search on *collection_id*."""
         if llm is None:
@@ -541,6 +577,7 @@ class RedisVectorStore:
                 score_threshold=score_threshold,
                 with_payload=True,
                 payload_filters=payload_filters,
+                tenant_id=tenant_id,
             )
         except Exception as e:
             logger.warning("event=rag_redis_query_failed err=%s", e)
@@ -554,6 +591,7 @@ class RedisVectorStore:
         limit: int = 8,
         score_threshold: float | None = None,
         payload_filters: dict[str, str] | None = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> QueryResponse:
         """Cosine-search with a pre-computed embedding (skips re-embedding the query)."""
         try:
@@ -564,6 +602,7 @@ class RedisVectorStore:
                 score_threshold=score_threshold,
                 with_payload=True,
                 payload_filters=payload_filters,
+                tenant_id=tenant_id,
             )
         except Exception as e:
             logger.warning("event=rag_redis_query_failed err=%s", e)
@@ -610,6 +649,7 @@ class RedisVectorStore:
         query_max_chars: int = 8000,
         payload_filters: dict[str, str] | None = None,
         hybrid_vector_weight: float = 0.65,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ) -> QueryResponse:
         """Native Redis hybrid search (pre-filter text + KNN) with RRF app-layer fallback."""
         if llm is None:
@@ -622,7 +662,8 @@ class RedisVectorStore:
             keep_alive=keep_alive,
             query_max_chars=int(query_max_chars),
         )
-        await self._ensure_index(collection_id)
+        scoped_collection_id = scoped_collection_name(collection_id, tenant_id)
+        await self._ensure_index(scoped_collection_id)
         vec_bytes = struct.pack(f"{EMBED_DIM}f", *vector)
         safe_text = _ft_escape((query or "")[:500])
         lim = max(1, int(limit))
@@ -639,7 +680,7 @@ class RedisVectorStore:
                     .paging(0, lim)
                     .dialect(2)
                 )
-                results = await self._r.ft(f"idx:{collection_id}").search(
+                results = await self._r.ft(f"idx:{scoped_collection_id}").search(
                     q, query_params={"vec": vec_bytes}
                 )
                 pts = _docs_to_points(results.docs, score_threshold)
@@ -658,6 +699,7 @@ class RedisVectorStore:
                 score_threshold=None,
                 with_payload=True,
                 payload_filters=payload_filters,
+                tenant_id=tenant_id,
             )
         except Exception as exc:
             logger.warning("event=rag_redis_query_failed err=%s", exc)
@@ -667,6 +709,7 @@ class RedisVectorStore:
             collection_id,
             (query or "")[: int(query_max_chars)],
             limit=max(12, lim * 3),
+            tenant_id=tenant_id,
         )
         merged = self._rrf_merge_points(
             list(dense_resp.points or []),

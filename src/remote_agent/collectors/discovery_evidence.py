@@ -1,0 +1,172 @@
+"""Onboarding discovery probes — process_list/port_scan/service_topology/doc-snapshot.
+
+INVARIANT INV_NO_DATA_EXFIL: only names/ports/paths/metadata collected here;
+the doc-snapshot probe reads small text files verbatim (README/OpenAPI/sample
+config/sample log) for the onboarding worker to summarize server-side — this
+agent never runs an LLM locally (it is a sensor, not an analyst).
+
+Each probe stamps evidence_source="DiscoveryEvidence" so evidence_consumer.py
+routes it straight to the onboarding pipeline without touching K8s-specific
+diagnostic logic.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from pathlib import Path
+from typing import Any
+
+from remote_agent.evidence import build_envelope
+
+logger = logging.getLogger(__name__)
+
+_DOC_CANDIDATES = (
+    "README.md", "README", "readme.md",
+    "openapi.json", "openapi.yaml", "swagger.json",
+)
+_DOC_MAX_BYTES = 8000
+
+
+async def _run(cmd: list[str], timeout: float = 10.0) -> tuple[str, int]:
+    """Run read-only subprocess. Returns (stdout, returncode). Never raises."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return out.decode(errors="replace"), proc.returncode or 0
+    except asyncio.TimeoutError:
+        return "", 1
+    except Exception:
+        return "", 1
+
+
+async def collect_process_list(hostname: str) -> dict[str, Any] | None:
+    """Running process names + counts (no command-line args, no env)."""
+    out, rc = await _run(["ps", "-eo", "comm"], timeout=8.0)
+    if rc != 0 or not out.strip():
+        return None
+    counts: dict[str, int] = {}
+    for line in out.splitlines()[1:]:
+        name = line.strip()
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+    processes = [{"name": n, "count": c} for n, c in sorted(counts.items(), key=lambda kv: -kv[1])][:100]
+    return build_envelope(
+        probe="process_list",
+        lane="SYS_RESOURCE",
+        result="PASSED",
+        extracted_fact={"discovery_data": {"processes": processes}},
+        symptom_group="onboarding_discovery",
+        namespace=hostname,
+        evidence_source="DiscoveryEvidence",
+    )
+
+
+async def collect_port_scan(hostname: str) -> dict[str, Any] | None:
+    """Listening TCP ports + owning process name (no payload inspection)."""
+    out, rc = await _run(["ss", "-tlnp"], timeout=8.0)
+    if rc != 0:
+        out, rc = await _run(["netstat", "-tlnp"], timeout=8.0)
+    if rc != 0 or not out.strip():
+        return None
+    ports: list[dict[str, Any]] = []
+    for line in out.splitlines():
+        if "LISTEN" not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        local = parts[3]
+        port = local.rsplit(":", 1)[-1] if ":" in local else ""
+        service = ""
+        if len(parts) >= 6:
+            m = re.search(r'"([^"]+)"', parts[-1])
+            if m:
+                service = m.group(1)
+        if port and port.isdigit():
+            ports.append({"port": int(port), "service": service})
+    return build_envelope(
+        probe="port_scan",
+        lane="SYS_RESOURCE",
+        result="PASSED",
+        extracted_fact={"discovery_data": {"listening_ports": ports[:50]}},
+        symptom_group="onboarding_discovery",
+        namespace=hostname,
+        evidence_source="DiscoveryEvidence",
+    )
+
+
+async def collect_service_topology(hostname: str) -> dict[str, Any] | None:
+    """Running systemd services + their state — coarse topology, no config content."""
+    out, rc = await _run(
+        ["systemctl", "list-units", "--type=service", "--state=running",
+         "--no-legend", "--no-pager", "--plain"],
+        timeout=10.0,
+    )
+    if rc != 0 or not out.strip():
+        return None
+    services: list[dict[str, str]] = []
+    for line in out.splitlines():
+        parts = line.split(None, 4)
+        if not parts:
+            continue
+        services.append({
+            "name": parts[0].removesuffix(".service"),
+            "status": "running",
+            "description": parts[4].strip()[:120] if len(parts) > 4 else "",
+        })
+    return build_envelope(
+        probe="service_topology",
+        lane="SYS_RESOURCE",
+        result="PASSED",
+        extracted_fact={"discovery_data": {"services": services[:200]}},
+        symptom_group="onboarding_discovery",
+        namespace=hostname,
+        evidence_source="DiscoveryEvidence",
+    )
+
+
+async def collect_doc_snapshot(hostname: str, search_dirs: list[str]) -> dict[str, Any] | None:
+    """Read small onboarding documents verbatim (README/OpenAPI/sample config).
+
+    Raw content only — no parsing, no LLM call. The onboarding worker
+    (analyst-side) is responsible for any summarization.
+    """
+    found: list[dict[str, Any]] = []
+    seen_inodes: set[tuple[int, int]] = set()
+    for d in search_dirs:
+        base = Path(d)
+        if not base.is_dir():
+            continue
+        for name in _DOC_CANDIDATES:
+            path = base / name
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                resolved_base = base.resolve()
+                if not path.resolve().is_relative_to(resolved_base):
+                    continue
+                st = path.stat()
+                inode_key = (st.st_dev, st.st_ino)
+                if inode_key in seen_inodes:
+                    continue
+                seen_inodes.add(inode_key)
+                content = path.read_text(errors="replace")[:_DOC_MAX_BYTES]
+                found.append({"path": str(path), "content": content})
+            except Exception as exc:
+                logger.debug("[collector.discovery] doc read failed path=%s err=%s", path, exc)
+    if not found:
+        return None
+    return build_envelope(
+        probe="doc_snapshot",
+        lane="SYS_RESOURCE",
+        result="PASSED",
+        extracted_fact={"discovery_data": {"documents": found[:20]}},
+        symptom_group="onboarding_discovery",
+        namespace=hostname,
+        evidence_source="DiscoveryEvidence",
+    )

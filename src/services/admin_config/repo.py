@@ -73,6 +73,32 @@ class AdminConfigRepo:
             return None
         return json.loads(row["flag_value"])
 
+    async def get_tenant_readiness(self, tenant_id: str = "default") -> dict[str, Any] | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT endpoint_mapped_pct, business_flow_confirmed_pct, "
+                "open_questions_over_threshold, readiness_flag, updated_at "
+                "FROM omni_admin.tenant_readiness_state WHERE tenant_id = $1",
+                tenant_id,
+            )
+        if row is None:
+            return None
+        return {
+            "endpoint_mapped_pct": float(row["endpoint_mapped_pct"]) if row["endpoint_mapped_pct"] is not None else None,
+            "business_flow_confirmed_pct": float(row["business_flow_confirmed_pct"]) if row["business_flow_confirmed_pct"] is not None else None,
+            "open_questions_over_threshold": int(row["open_questions_over_threshold"]),
+            "readiness_flag": bool(row["readiness_flag"]),
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
+
+    async def get_tenant_telegram_chat_id(self, tenant_id: str = "default") -> int | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT telegram_chat_id FROM omni_admin.tenant WHERE tenant_id = $1",
+                tenant_id,
+            )
+        return int(row["telegram_chat_id"]) if row and row["telegram_chat_id"] is not None else None
+
     async def get_risk_class_override(self, tool_name: str, tenant_id: str = "default") -> str | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -298,6 +324,74 @@ class AdminConfigRepo:
             self._redis, cache.cache_key_risk_class(tenant_id, tool_name)
         )
         return {"tool_name": tool_name, "version": new_version, "dedup_key": dedup_key}
+
+    async def set_tenant_readiness(
+        self,
+        *,
+        tenant_id: str,
+        endpoint_mapped_pct: float,
+        business_flow_confirmed_pct: float,
+        open_questions_over_threshold: int,
+        readiness_flag: bool,
+    ) -> dict[str, Any]:
+        """Upsert readiness checklist (step-3 onboarding-ops-agent plan).
+
+        Recomputed periodically by the onboarding worker — not a discrete admin
+        action, so no config_change_log/crat_outbox entry here (step-4 task-4
+        owns the CRAT event TENANT_READINESS_GATE_OPENED on the false→true edge).
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO omni_admin.tenant_readiness_state "
+                "(tenant_id, endpoint_mapped_pct, business_flow_confirmed_pct, "
+                "open_questions_over_threshold, readiness_flag) VALUES ($1,$2,$3,$4,$5) "
+                "ON CONFLICT (tenant_id) DO UPDATE SET "
+                "endpoint_mapped_pct=EXCLUDED.endpoint_mapped_pct, "
+                "business_flow_confirmed_pct=EXCLUDED.business_flow_confirmed_pct, "
+                "open_questions_over_threshold=EXCLUDED.open_questions_over_threshold, "
+                "readiness_flag=EXCLUDED.readiness_flag, updated_at=now()",
+                tenant_id,
+                endpoint_mapped_pct,
+                business_flow_confirmed_pct,
+                open_questions_over_threshold,
+                readiness_flag,
+            )
+        await cache.write_through_cache(
+            self._redis, cache.cache_key_readiness(tenant_id), "true" if readiness_flag else "false", ttl=60,
+        )
+        return {
+            "tenant_id": tenant_id,
+            "endpoint_mapped_pct": endpoint_mapped_pct,
+            "business_flow_confirmed_pct": business_flow_confirmed_pct,
+            "open_questions_over_threshold": open_questions_over_threshold,
+            "readiness_flag": readiness_flag,
+        }
+
+    async def set_tenant_telegram_chat_id(
+        self, *, tenant_id: str, chat_id: int, actor: str,
+    ) -> dict[str, Any]:
+        """Set/đổi chat_id Telegram của 1 tenant (cho ask-loop A5) — audited write."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM omni_admin.tenant WHERE tenant_id = $1", tenant_id,
+                )
+                if not exists:
+                    raise ValueError(f"tenant {tenant_id!r} không tồn tại")
+                await conn.execute(
+                    "UPDATE omni_admin.tenant SET telegram_chat_id=$2 WHERE tenant_id=$1",
+                    tenant_id, chat_id,
+                )
+                await self._log_and_enqueue(
+                    conn, tenant_id=tenant_id, entity="tenant_telegram_chat_id",
+                    entity_key=tenant_id, action="update", old_value={},
+                    new_value={"chat_id": chat_id}, actor=actor,
+                    event_type=CRAT_EVENT_CONFIG_CHANGED,
+                    dedup_key=f"tenant:{tenant_id}:telegram_chat_id:{chat_id}:{_now_token()}",
+                    payload={"entity": "tenant_telegram_chat_id", "tenant_id": tenant_id,
+                             "chat_id": chat_id, "actor": actor},
+                )
+        return {"tenant_id": tenant_id, "telegram_chat_id": chat_id}
 
     async def record_hitl_decision(
         self,

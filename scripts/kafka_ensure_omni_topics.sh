@@ -33,6 +33,7 @@ TOPICS=(
   "omni-tool-audit"
   "omni-hitl-pending"
   "omni-hitl-decisions"
+  "omni-discovery-evidence"
 )
 
 for t in "${TOPICS[@]}"; do

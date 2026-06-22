@@ -106,10 +106,12 @@ async def triage_cluster(ctx: Any, cluster: LogCluster) -> TriageResult:
     """
     symptom_text = _build_symptom_text(cluster)
 
+    tenant_id = str(cluster.representative.get("tenant_id") or "default")
     recall = await recall_playbook_advisory(
         ctx,
         query_text=symptom_text,
         trace=cluster.fingerprint,
+        tenant_id=tenant_id,
     )
 
     if recall is not None and recall.top_score >= _RECALL_TRIAGE_THRESHOLD:

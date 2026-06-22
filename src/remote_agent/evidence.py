@@ -17,6 +17,7 @@ def build_envelope(
     symptom_group: str = "",
     namespace: str = "",
     trace_id: str | None = None,
+    evidence_source: str = "RemoteAgent",
 ) -> dict[str, Any]:
     """Build a DiagnosticEvidence envelope ready to POST to /webhook/agent/evidence.
 
@@ -41,4 +42,5 @@ def build_envelope(
         "stream_tags": [lane],
         "namespace": namespace,
         "ts": str(int(time.time())),
+        "evidence_source": evidence_source,
     }

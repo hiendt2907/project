@@ -1,0 +1,112 @@
+# Onboarding worker — OMNI_WORKER_ROLE=onboarding (agent/plans/PLAN_onboarding_ops_agent.md step-3).
+# Deliberately NOT folded into omni-fullstack: independent process, own consumer group
+# on omni-discovery-evidence, own readiness checklist + ask-loop. Read-only — no K8s API
+# access needed (no probes/mutate), so no ServiceAccount/RBAC and no privileged context.
+#
+# Prerequisites:
+#   make docker-worker   # same image as omni-fullstack (shared workers/ + pkg/onboarding/)
+#
+# Rollback: scale to 0 — does not touch any other lane's pipeline.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-onboarding
+  namespace: multi-agent
+  labels:
+    app: omni-onboarding
+    app.kubernetes.io/name: omni-onboarding
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/criticality: "P2"
+    omni.io/env: lab
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: omni-onboarding
+  template:
+    metadata:
+      labels:
+        app: omni-onboarding
+        app.kubernetes.io/name: omni-onboarding
+        app.kubernetes.io/part-of: omni-platform
+        omni.io/managed: "true"
+        omni.io/criticality: "P2"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: omni-onboarding
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            - name: health
+              containerPort: 8090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: omni-worker-config
+          env:
+            - name: OMNI_WORKER_ROLE
+              value: "onboarding"
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: bot-token
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: telegram-bot
+                  key: chat-id
+            - name: OMNI_ADMIN_PG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: omni-pg-secret
+                  key: OMNI_ADMIN_PG_DSN
+          securityContext:
+            privileged: false
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8090
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 5

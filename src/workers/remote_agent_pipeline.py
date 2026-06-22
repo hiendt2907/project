@@ -51,6 +51,53 @@ def _track_bg_task(task: asyncio.Task) -> None:
 _NOTIFY_TIERS = frozenset({"critical", "high"})
 _RESEARCH_ROUTES = frozenset({"UNKNOWN_RESEARCH"})
 
+_DISCOVERY_EVIDENCE_TOPIC_DEFAULT = "omni-discovery-evidence"
+
+
+async def handle_discovery_evidence(
+    ctx: WorkerHandlerContext,
+    ev_doc: dict[str, Any],
+    trace: str,
+) -> str:
+    """Validate + forward onboarding discovery evidence (process_list/port_scan/
+    service_topology/doc-snapshot probes) to the onboarding worker via Kafka.
+
+    Stub for step-2 of the onboarding-ops-agent plan: no diagnosis/clustering
+    here, this is NOT an alert — the onboarding worker (step-3) consumes
+    ``omni-discovery-evidence`` to build per-tenant documentation + Mermaid
+    diagrams. tenant_id comes from the agent's own config (threaded through
+    coerce_evidence_dict), never inferred by an LLM.
+    """
+    tenant_id = str(ev_doc.get("tenant_id") or "default")
+    probe = str(ev_doc.get("probe") or "unknown")
+    lane = "ONBOARDING_DISCOVERY"
+
+    kafka = getattr(ctx, "kafka", None)
+    if kafka is None:
+        logger.warning("[RAP] discovery_evidence dropped trace=%s — no kafka bus", trace)
+        await mark_stage(ctx.redis, trace, "DISPATCH", "fail", detail="no_kafka_bus", lane=lane)
+        return ""
+
+    topic = getattr(ctx.settings, "kafka_topic_discovery_evidence", _DISCOVERY_EVIDENCE_TOPIC_DEFAULT)
+    await mark_stage(ctx.redis, trace, "EVIDENCE", "ok", detail=f"probe={probe} tenant={tenant_id}", lane=lane)
+    try:
+        await kafka.send_dict(
+            topic,
+            {"data": json.dumps(ev_doc, ensure_ascii=False)},
+            key=trace.encode("utf-8", errors="ignore"),
+        )
+    except Exception as exc:
+        logger.warning("[RAP] discovery_evidence kafka send failed trace=%s err=%s", trace, exc)
+        await mark_stage(ctx.redis, trace, "DISPATCH", "fail", detail=f"kafka_send_failed: {exc}", lane=lane)
+        return ""
+
+    await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail=f"forwarded topic={topic}", lane=lane)
+    logger.info(
+        "[RAP] discovery_evidence forwarded trace=%s tenant=%s probe=%s topic=%s",
+        trace, tenant_id, probe, topic,
+    )
+    return ""
+
 
 async def handle_remote_agent_evidence(
     ctx: WorkerHandlerContext,

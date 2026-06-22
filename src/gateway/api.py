@@ -356,6 +356,7 @@ from gateway.routes.agent_commands import router as _agent_commands_router  # no
 from gateway.routes.trace import router as _trace_router  # noqa: E402
 from gateway.routes.simulate import router as _simulate_router  # noqa: E402
 from gateway.routes.kb import router as _kb_router  # noqa: E402
+from gateway.routes.onboarding import router as _onboarding_router  # noqa: E402
 
 app.include_router(_kpi_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_playbooks_router, dependencies=[_Depends(_require_api_key)])
@@ -368,6 +369,7 @@ app.include_router(_agent_commands_router, dependencies=[_Depends(_require_api_k
 app.include_router(_trace_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_simulate_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_kb_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_onboarding_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_agent_push_router)  # agent_push has its own auth — no gateway API key guard
 
 

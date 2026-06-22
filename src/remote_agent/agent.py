@@ -44,6 +44,12 @@ async def run_agent() -> None:
     from remote_agent.collectors.database import collect_mysql_health, collect_proxysql_stats
     from remote_agent.collectors.services import collect_haproxy_stats, collect_systemd_units
     from remote_agent.collectors.storage import collect_disk_usage, collect_nfs_health
+    from remote_agent.collectors.discovery_evidence import (
+        collect_doc_snapshot,
+        collect_port_scan,
+        collect_process_list,
+        collect_service_topology,
+    )
 
     cfg = AgentSettings()
     cfg.validate()
@@ -104,6 +110,7 @@ async def run_agent() -> None:
         api_key=cfg.api_key,
         agent_id=cfg.agent_id,
         hostname=cfg.hostname,
+        tenant_id=cfg.tenant_id,
     )
 
     logger.info(
@@ -123,7 +130,7 @@ async def run_agent() -> None:
 
     # Initial registration + profile upload
     thresholds = await emitter.register(
-        capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace, tenant_id=cfg.tenant_id
+        capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace
     )
     if profile:
         await emitter.upload_profile(profile)
@@ -136,7 +143,7 @@ async def run_agent() -> None:
         # Re-register every _REGISTER_INTERVAL seconds (must be < gateway TTL 120s)
         if time.monotonic() - last_register_ts >= _REGISTER_INTERVAL:
             new_thresholds = await emitter.register(
-                capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace, tenant_id=cfg.tenant_id
+                capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace
             )
             if new_thresholds is not None:
                 thresholds = new_thresholds
@@ -209,6 +216,17 @@ async def run_agent() -> None:
             nfs_ev = await collect_nfs_health(cfg.hostname)
             if nfs_ev:
                 evidence.append(nfs_ev)
+
+        # Lane 7: Onboarding discovery (opt-in via OMNI_REMOTE_DISCOVERY_ENABLED)
+        if cfg.discovery_enabled:
+            for disc_ev in (
+                await collect_process_list(cfg.hostname),
+                await collect_port_scan(cfg.hostname),
+                await collect_service_topology(cfg.hostname),
+                await collect_doc_snapshot(cfg.hostname, cfg.doc_search_dirs),
+            ):
+                if disc_ev:
+                    evidence.append(disc_ev)
 
         if evidence:
             await emitter.emit(evidence)

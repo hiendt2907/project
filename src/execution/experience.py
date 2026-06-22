@@ -11,10 +11,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from rag.pgvector_store import (
-    COLLECTION_ACTION_EXPERIENCE, 
-    EMBED_DIM, 
+    COLLECTION_ACTION_EXPERIENCE,
+    EMBED_DIM,
     PointStruct
 )
+from rag.redis_vector_store import DEFAULT_TENANT_ID
 from execution.memory_normalize import (
     canonical_symptom_text,
     extract_workload_fingerprint,
@@ -118,6 +119,7 @@ async def upsert_action_experience(
     vector: list[float],
     payload: dict[str, Any],
     point_id: str | None = None,
+    tenant_id: str | None = None,
 ) -> str:
     # Schema initialized via schema.sql
     if len(vector) != EMBED_DIM:
@@ -131,9 +133,13 @@ async def upsert_action_experience(
                 payload.get("trace_id", "") + ":" + payload.get("run_id", "") + ":" + lesson[:200],
             )
         )
+    # tenant_id isolates this remediation history per customer (onboarding-ops-agent
+    # plan, step 1); falls back to the payload's own field, then the lab default.
+    tid = tenant_id or str(payload.get("tenant_id") or DEFAULT_TENANT_ID)
     await vector_store.upsert(
         collection_name=COLLECTION_ACTION_EXPERIENCE,
         points=[PointStruct(id=pid, vector=vector, payload=payload)],
+        tenant_id=tid,
     )
     return pid
 

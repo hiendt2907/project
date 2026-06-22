@@ -23,6 +23,7 @@ COPY src/pkg/autonomy/ /app/src/pkg/autonomy/
 COPY src/pkg/reasoning/ /app/src/pkg/reasoning/
 COPY src/pkg/rag/ /app/src/pkg/rag/
 COPY src/pkg/observability/ /app/src/pkg/observability/
+COPY src/pkg/onboarding/ /app/src/pkg/onboarding/
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1

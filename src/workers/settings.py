@@ -116,6 +116,11 @@ class WorkerSettings(BaseSettings):
         default="omni-diagnostic-evidence",
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_DIAGNOSTIC_EVIDENCE", "OMNI_DIAGNOSTIC_EVIDENCE_STREAM"),
     )
+    kafka_topic_discovery_evidence: str = Field(
+        default="omni-discovery-evidence",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_DISCOVERY_EVIDENCE"),
+        description="Onboarding worker input: process_list/port_scan/service_topology/doc-snapshot probes.",
+    )
     kafka_topic_siem_chains: str = Field(
         default="omni-siem-chains",
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_SIEM_CHAINS"),
@@ -577,6 +582,7 @@ class WorkerSettings(BaseSettings):
         "kafka_topic_audit_proactive",
         "kafka_topic_audit_agent",
         "kafka_topic_diagnostic_evidence",
+        "kafka_topic_discovery_evidence",
         "kafka_topic_tool_audit",
         "kafka_topic_actions",
         "kafka_topic_action_feedback",
@@ -594,6 +600,7 @@ class WorkerSettings(BaseSettings):
             "kafka_topic_audit_proactive": "omni-audit-proactive",
             "kafka_topic_audit_agent": "omni-audit-agent",
             "kafka_topic_diagnostic_evidence": "omni-diagnostic-evidence",
+            "kafka_topic_discovery_evidence": "omni-discovery-evidence",
             "kafka_topic_tool_audit": "omni-tool-audit",
             "kafka_topic_actions": "omni-actions",
             "kafka_topic_action_feedback": "omni-action-feedback",
@@ -632,16 +639,22 @@ class WorkerSettings(BaseSettings):
         description="Kafka group for svc-executor — consumes omni-actions only.",
     )
     consumer_name_executor: str = Field(default="omni-executor-1")
+    consumer_group_onboarding: str = Field(
+        default="omni-onboarding-discovery",
+        description="Kafka group for onboarding role — consumes omni-discovery-evidence only.",
+    )
+    consumer_name_onboarding: str = Field(default="omni-onboarding-1")
     env_mode: Literal["prod", "dev"] = Field(
         default="prod",
         validation_alias=AliasChoices("OMNI_ENV_MODE"),
         description="Environment governance mode: prod=strict fail-closed, dev=high-action by role.",
     )
-    worker_role: Literal["full", "prober", "analyst", "core", "executor"] = Field(
+    worker_role: Literal["full", "prober", "analyst", "core", "executor", "onboarding"] = Field(
         default="full",
         description=(
             "Master Plan V3 process split: prober=omni-alerts+diagnostic; analyst=evidence only; "
-            "core=periodic/proactive without Kafka ingress; executor=omni-actions mutations; full=legacy single process."
+            "core=periodic/proactive without Kafka ingress; executor=omni-actions mutations; "
+            "onboarding=omni-discovery-evidence accumulate+mermaid+ask-loop; full=legacy single process."
         ),
     )
 
@@ -664,7 +677,7 @@ class WorkerSettings(BaseSettings):
     def _normalize_worker_role(cls, v: object) -> object:
         if isinstance(v, str):
             s = v.strip().lower()
-            if s in ("full", "prober", "analyst", "core", "executor"):
+            if s in ("full", "prober", "analyst", "core", "executor", "onboarding"):
                 return s
         return v
 

@@ -762,6 +762,76 @@ async def kafka_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) ->
             await consumer.stop()
 
 
+async def kafka_discovery_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+    """Onboarding role: consume ``omni-discovery-evidence`` → accumulate per-tenant doc.
+
+    Envelope shape produced by ``handle_discovery_evidence``: ``{"data": json_str(ev_doc)}``
+    — same wrapping as ``kafka_evidence_loop``, so reuse ``decode_kafka_value_to_fields``.
+    """
+    from aiokafka import AIOKafkaConsumer
+    from aiokafka.errors import KafkaConnectionError, UnknownTopicOrPartitionError
+
+    from workers.onboarding_pipeline import accumulate_discovery_evidence
+
+    ws = ctx.settings
+    await ctx.scout_ready.wait()
+    _TRANSIENT_ERRORS = (KafkaConnectionError, UnknownTopicOrPartitionError, ConnectionError)
+    _connect_backoff = 1
+
+    while not stop.is_set():
+        consumer = AIOKafkaConsumer(
+            ws.kafka_topic_discovery_evidence,
+            bootstrap_servers=ws.kafka_bootstrap_servers,
+            group_id=ws.consumer_group_onboarding,
+            enable_auto_commit=False,
+            auto_offset_reset="earliest",
+            client_id=ws.consumer_name_onboarding,
+        )
+        try:
+            await consumer.start()
+            _connect_backoff = 1  # reset on successful connect
+        except _TRANSIENT_ERRORS as e:
+            logger.warning("kafka_discovery_evidence_loop connect_failed err=%s backoff_s=%d", e, _connect_backoff)
+            await asyncio.sleep(_connect_backoff)
+            _connect_backoff = min(_connect_backoff * 2, 30)
+            continue
+        try:
+            async for msg in consumer:
+                if stop.is_set():
+                    break
+                attempt = 0
+                max_poison_retries = 3
+                while attempt <= max_poison_retries:
+                    try:
+                        fields = decode_kafka_value_to_fields(msg.value, msg.headers)
+                        ev_doc = json.loads(fields.get("data") or "{}")
+                        await accumulate_discovery_evidence(ctx, ev_doc)
+                        await consumer.commit()
+                        _hc_record_msg()
+                        _report_kafka_lag(consumer, msg, ws.consumer_group_onboarding)
+                        break
+                    except Exception as e:
+                        attempt += 1
+                        await ctx.ledger.record_exception(
+                            e, phase="4", component="kafka_discovery_evidence_loop", swallow_errors=True
+                        )
+                        logger.exception("kafka_discovery_evidence_loop message error: %s", e)
+                        if attempt > max_poison_retries:
+                            logger.error(
+                                "event=discovery_evidence_poison_ack partition=%s offset=%s attempts=%s",
+                                msg.partition,
+                                msg.offset,
+                                attempt,
+                            )
+                            await consumer.commit()
+                            break
+                        await asyncio.sleep(0.5)
+        except _TRANSIENT_ERRORS as e:
+            logger.warning("kafka_discovery_evidence_loop connection_lost err=%s reconnecting", e)
+        finally:
+            await consumer.stop()
+
+
 async def kafka_siem_chains_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
     """Analyst path: consume ``omni-siem-chains`` correlation chains from brain-go.
 
@@ -997,6 +1067,10 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
             tasks.append(asyncio.create_task(kafka_proactive_incidents_loop(ctx, stop), name="kafka_proactive_incidents"))
         tasks.append(asyncio.create_task(_temporal_prediction_loop(ctx, stop), name="temporal_prediction"))
         tasks.append(asyncio.create_task(_sigma_calibration_loop(ctx, stop), name="sigma_calibration"))
+    if role == "onboarding":
+        # Onboarding pipeline (agent/plans/PLAN_onboarding_ops_agent.md step-3) — deliberately
+        # NOT folded into role=full's dispatch; runs as its own independent worker process.
+        tasks.append(asyncio.create_task(kafka_discovery_evidence_loop(ctx, stop), name="kafka_discovery_evidence_loop"))
     return tasks
 
 
@@ -1033,8 +1107,9 @@ async def run_worker() -> None:
     ctx = await build_context()
     logger.info("omni_worker starting worker_role=%s", ctx.settings.worker_role)
     # Admin config store (Postgres omni_admin) — analyst/full chạy CRAT outbox drainer
-    # + tier readiness. Offline khi DSN rỗng (fail-safe, không chặn worker).
-    if ctx.settings.worker_role in ("full", "analyst") and (ctx.settings.admin_pg_dsn or "").strip():
+    # + tier readiness; onboarding cần admin_repo cho readiness checklist + chat_id lookup
+    # (step-3 plan). Offline khi DSN rỗng (fail-safe, không chặn worker).
+    if ctx.settings.worker_role in ("full", "analyst", "onboarding") and (ctx.settings.admin_pg_dsn or "").strip():
         try:
             from services.admin_config import AdminConfigRepo, create_admin_pool, run_migrations
 

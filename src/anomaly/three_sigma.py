@@ -4,6 +4,14 @@ S3.2 additions:
   - Per-workload threshold/window from Redis key omni:sigma:config:{ns}:{dep}
   - Maintenance window suppression via omni:maint:{ns}:{dep}
   - observe_adaptive() method for workload-specific anomaly detection
+
+Tenant-isolation audit (onboarding-ops-agent plan, step 1): ``{namespace}``/
+``{deployment}`` here refer to the in-cluster K8s namespace Omni itself
+monitors (Lane-1 resource baseline on the lab cluster) — not a customer
+tenant boundary, so no ``tenant_id`` belongs in this key. Customer-host
+baselines are a separate module (``anomaly/remote_host_baseline.py``,
+key ``3sigma:remote:{tenant_id}:{host}:{cpu|mem|disk}``) which is already
+tenant-scoped.
 """
 
 from __future__ import annotations

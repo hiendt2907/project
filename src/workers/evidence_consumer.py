@@ -101,7 +101,7 @@ from workers.telegram_escalation import (
     format_operator_triage_card,
 )
 from workers.request_trace import pop_trace_id, push_trace_id
-from workers.remote_agent_pipeline import handle_remote_agent_evidence
+from workers.remote_agent_pipeline import handle_discovery_evidence, handle_remote_agent_evidence
 from workers.pipeline_stages import mark_stage
 from workers.telegram_outbound import send_telegram_out_for_inbound
 from workers.telegram_advisory_emitter import (
@@ -221,6 +221,19 @@ def _symptom_group_from_batch(batch: list[dict[str, Any]]) -> str:
 def _is_siem_batch(batch: list[dict[str, Any]]) -> bool:
     """True when the evidence batch originates from a FinGuard/SIEM source."""
     return bool(_siem_alert_labels(batch))
+
+
+def _tenant_id_from_batch(batch: list[dict[str, Any]]) -> str:
+    """First non-empty ``tenant_id`` in the batch, else the lab default.
+
+    ``tenant_id`` is threaded by the agent's own config (never LLM-inferred) —
+    see ``coerce_evidence_dict`` — onboarding-ops-agent plan, step 1.
+    """
+    for b in batch or ():
+        tid = str(b.get("tenant_id") or "").strip()
+        if tid:
+            return tid
+    return "default"
 
 
 _SIEM_CATEGORY_STEPS: dict[str, list[str]] = {
@@ -1400,7 +1413,7 @@ async def _emit_agentic_mutate_if_any(
             mx = max(mx, 8)
         # Recall similar verified playbooks from pgvector (advisory only; no secret values injected).
         recall_result = await recall_playbook_advisory(
-            ctx, query_text=sanitized_text, trace=trace
+            ctx, query_text=sanitized_text, trace=trace, tenant_id=_tenant_id_from_batch(batch)
         )
         # Pipeline stage: RAG — mark as skip if strong hit (LLM would be bypassed), else ok.
         if recall_result and recall_result.top_score is not None and recall_result.top_score >= 0.75:
@@ -2258,6 +2271,17 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         try:
             ctx.inbound_trace_id = trace
             return await handle_remote_agent_evidence(ctx, ev_doc, trace)
+        finally:
+            pop_trace_id(tok)
+
+    # Onboarding discovery evidence (process_list/port_scan/service_topology/doc
+    # snapshot probes) — NOT a diagnostic alert, never touches K8s-specific
+    # diagnosis logic below. Validated + forwarded to the onboarding worker.
+    if ev_doc.get("evidence_source") == "DiscoveryEvidence":
+        tok = push_trace_id(trace)
+        try:
+            ctx.inbound_trace_id = trace
+            return await handle_discovery_evidence(ctx, ev_doc, trace)
         finally:
             pop_trace_id(tok)
 

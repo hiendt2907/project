@@ -47,7 +47,9 @@ async def _with_retry(client: Any, url: str, payload: dict) -> dict | None:
 
 
 class OmniEmitter:
-    def __init__(self, gateway_url: str, api_key: str, agent_id: str, hostname: str) -> None:
+    def __init__(
+        self, gateway_url: str, api_key: str, agent_id: str, hostname: str, tenant_id: str = "default"
+    ) -> None:
         self._base = gateway_url
         self._headers = {
             "Authorization": f"Bearer {api_key}",
@@ -55,9 +57,10 @@ class OmniEmitter:
         }
         self._agent_id = agent_id
         self._hostname = hostname
+        self._tenant_id = tenant_id
 
     async def register(
-        self, capabilities: list[str], version: str = "1.0.0", k8s_namespace: str = "", tenant_id: str = "default"
+        self, capabilities: list[str], version: str = "1.0.0", k8s_namespace: str = ""
     ) -> dict[str, float] | None:
         """Register/heartbeat with the gateway.
 
@@ -72,7 +75,7 @@ class OmniEmitter:
             "capabilities": capabilities,
             "platform": "linux",
             "k8s_namespace": k8s_namespace,
-            "tenant_id": tenant_id,
+            "tenant_id": self._tenant_id,
         }
         async with _make_client(self._headers, self._base) as client:
             result = await _with_retry(client, "/webhook/agent/register", payload)
@@ -90,6 +93,7 @@ class OmniEmitter:
         payload = {
             "agent_id": self._agent_id,
             "hostname": self._hostname,
+            "tenant_id": self._tenant_id,
             "evidence": evidence_list,
         }
         async with _make_client(self._headers, self._base) as client:

@@ -26,6 +26,7 @@ class DiagnosticEvidenceDict(TypedDict, total=False):
     canonical_query_snippet: str
     evidence_source: str
     clinical_priority_note: str
+    tenant_id: str
 
 
 class OmniActionKafkaBody(TypedDict):
@@ -64,6 +65,7 @@ def coerce_evidence_dict(obj: Any) -> DiagnosticEvidenceDict:
         "canonical_query_snippet",
         "evidence_source",
         "clinical_priority_note",
+        "tenant_id",
     ):
         v = obj.get(k)
         if v is not None:

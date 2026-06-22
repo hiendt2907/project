@@ -49,7 +49,7 @@ class AgentRegisterRequest(BaseModel):
     capabilities: list[str] = Field(default_factory=list)  # ["metrics", "logs", "k8s"]
     platform: str = Field(default="linux", max_length=64)
     k8s_namespace: str = Field(default="", max_length=256)
-    tenant_id: str = Field(default="default", max_length=128)
+    tenant_id: str = Field(default="default", pattern=r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 class EvidenceItem(BaseModel):
@@ -68,11 +68,17 @@ class EvidenceItem(BaseModel):
     stream_tags: list[str] = Field(default_factory=list)
     namespace: str = Field(default="", max_length=256)
     ts: str = Field(default="")
+    # Set by the agent per-probe (e.g. "DiscoveryEvidence" for onboarding probes).
+    # Falls back to "RemoteAgent" — never trust this for tenant scoping.
+    evidence_source: str = Field(default="RemoteAgent", max_length=64)
 
 
 class AgentEvidenceRequest(BaseModel):
     agent_id: str = Field(min_length=1, max_length=128)
     hostname: str = Field(min_length=1, max_length=256)
+    # Tenant comes from the agent's own config (OMNI_AGENT_TENANT_ID), not from
+    # any LLM inference downstream — this is the source of truth for isolation.
+    tenant_id: str = Field(default="default", pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     evidence: list[EvidenceItem] = Field(max_length=_MAX_EVIDENCE_BATCH)
 
 
@@ -324,7 +330,8 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
                 "stream_tags": item.stream_tags or [item.lane],
                 "namespace": item.namespace or body.hostname,
                 "ts": item.ts or now_ts,
-                "evidence_source": "RemoteAgent",
+                "evidence_source": item.evidence_source or "RemoteAgent",
+                "tenant_id": body.tenant_id,
                 "canonical_query_snippet": json.dumps({
                     "labels": {
                         "agent_id": body.agent_id,

@@ -29,6 +29,10 @@ def cache_key_risk_class(tenant_id: str, tool_name: str) -> str:
     return f"omni:cfg:risk:{tenant_id}:{tool_name}"
 
 
+def cache_key_readiness(tenant_id: str) -> str:
+    return f"omni:cfg:readiness:{tenant_id}"
+
+
 async def write_through_cache(redis: Any, key: str, value: str, *, ttl: int = CACHE_TTL_SEC) -> None:
     """Set cache key. Redis fail → log + nuốt (không phá luồng; Postgres là sự thật)."""
     if redis is None:
