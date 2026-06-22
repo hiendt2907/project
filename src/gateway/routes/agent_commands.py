@@ -27,6 +27,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, require_agent_tenant
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhook/agent", tags=["agent-commands"])
@@ -66,18 +68,22 @@ def _validate_update_url(url: str) -> tuple[bool, str]:
         return False, f"url_parse_error: {exc}"
     return True, ""
 
+# Must stay identical to remote_agent.command_executor.COMMAND_WHITELIST
+# (the metadata-only set). Cannot import it directly — Dockerfile.gateway
+# does not COPY src/remote_agent/. Any command here that is also in the
+# agent's _CONTENT_READ_BLOCKED set would always be rejected agent-side
+# anyway, so it must not appear here either (drift = misleading, not unsafe).
 _COMMAND_WHITELIST = frozenset({
-    "cat", "head", "tail", "stat", "ls", "find", "du", "df",
-    "wc", "grep", "awk", "cut", "sort", "uniq",
+    "stat", "ls", "find", "du", "df",
     "ps", "pgrep", "top", "free", "vmstat", "iostat", "sar",
     "uptime", "uname", "id", "who", "last", "w",
     "ss", "netstat", "ip", "ping",
     "systemctl", "journalctl",
     "lsblk", "blkid",
-    "mysql", "mysqladmin",
-    "nc", "dmesg", "lsof",
+    "mysqladmin",
+    "dmesg", "lsof",
     "dpkg", "rpm",
-    "file", "md5sum", "sha256sum",
+    "file",
 })
 
 
@@ -145,6 +151,7 @@ async def poll_commands(agent_id: str, request: Request) -> JSONResponse:
     if not _AGENT_ID_RE.fullmatch(agent_id):
         raise HTTPException(status_code=422, detail="Invalid agent_id")
     redis = _get_redis(request)
+    await require_agent_tenant(redis, agent_id, get_tenant_ctx(request))
     queue_key = f"{_CMD_QUEUE_PREFIX}{agent_id}"
 
     commands: list[dict] = []
@@ -166,6 +173,7 @@ async def receive_command_result(
 ) -> JSONResponse:
     """Agent POSTs command execution results. Stored for diagnosis loop to read."""
     redis = _get_redis(request)
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
     stored = 0
     for result in body.results:
         key = f"{_CMD_RESULT_PREFIX}{result.cmd_id}"
@@ -194,6 +202,7 @@ async def receive_command_result(
 async def store_agent_profile(body: VMProfileRequest, request: Request) -> JSONResponse:
     """Agent POSTs VM discovery profile. Stored in Redis for analyst use."""
     redis = _get_redis(request)
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
     profile = body.model_dump()
     profile["stored_at"] = int(time.time())
     key = f"{_PROFILE_KEY_PREFIX}{body.agent_id}"
@@ -209,6 +218,7 @@ async def store_agent_profile(body: VMProfileRequest, request: Request) -> JSONR
 async def enqueue_commands(body: EnqueueCommandsRequest, request: Request) -> JSONResponse:
     """Omni analyst enqueues diagnostic commands for agent to execute (whitelist enforced)."""
     redis = _get_redis(request)
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
     queue_key = f"{_CMD_QUEUE_PREFIX}{body.agent_id}"
 
     depth = await redis.llen(queue_key)
@@ -255,7 +265,13 @@ async def enqueue_agent_update(body: UpdateAgentRequest, request: Request) -> JS
 
     Gateway validates download_url against OMNI_AGENT_UPDATE_ALLOWED_HOSTS before enqueuing.
     Agent will download, verify sha256, backup, replace, and restart via systemctl.
+
+    RCE-equivalent surface (fleet-wide remote code execution if abused) —
+    restricted to admin keys regardless of tenant ownership of the agent_id.
     """
+    if not is_admin_ctx(get_tenant_ctx(request)):
+        raise HTTPException(status_code=403, detail="admin key required for agent updates")
+
     redis = _get_redis(request)
 
     ok, reason = _validate_update_url(body.download_url)
@@ -293,8 +309,12 @@ async def enqueue_agent_update(body: UpdateAgentRequest, request: Request) -> JS
 
 @router.get("/versions")
 async def list_agent_versions(request: Request) -> JSONResponse:
-    """Return all registered agents with their current version and last_seen timestamp."""
+    """Return registered agents with their current version and last_seen timestamp.
+
+    Non-admin callers only see agents registered under their own tenant.
+    """
     redis = _get_redis(request)
+    ctx = get_tenant_ctx(request)
     try:
         keys = await redis.keys(f"{_REGISTRY_PREFIX}*")
     except Exception as exc:
@@ -309,6 +329,8 @@ async def list_agent_versions(request: Request) -> JSONResponse:
         try:
             rec = json.loads(raw)
         except Exception:
+            continue
+        if not is_admin_ctx(ctx) and rec.get("tenant_id") != ctx.tenant_id:
             continue
         age_s = now - int(rec.get("last_seen", 0))
         agents.append({

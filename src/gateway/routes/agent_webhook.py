@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, require_agent_tenant
 from pkg.reasoning.domain_signals import assess_domain_severity, detect_domain
 from pkg.reasoning.evidence_fingerprint import fingerprint_evidence
 from pkg.reasoning.sanitize import sanitize_evidence_field
@@ -222,6 +223,12 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
     redis = _get_redis(request)
     now = int(time.time())
 
+    # A non-admin caller (tenant API key) can only register agents under their
+    # own tenant — self-declared body.tenant_id is ignored for them.
+    ctx = get_tenant_ctx(request)
+    await require_agent_tenant(redis, body.agent_id, ctx)
+    tenant_id = body.tenant_id if is_admin_ctx(ctx) else ctx.tenant_id
+
     record: dict[str, Any] = {
         "agent_id": body.agent_id,
         "hostname": body.hostname,
@@ -229,6 +236,7 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
         "capabilities": body.capabilities,
         "platform": body.platform,
         "k8s_namespace": body.k8s_namespace,
+        "tenant_id": tenant_id,
         "registered_at": now,
         "last_seen": now,
         "type": "remote",
@@ -242,7 +250,7 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
     # hosts. Always returns a safe-default bundle on cache miss.
     from services.admin_config.agent_thresholds import resolve_agent_thresholds
 
-    thresholds = await resolve_agent_thresholds(redis, body.tenant_id)
+    thresholds = await resolve_agent_thresholds(redis, tenant_id)
 
     logger.info(
         "[AGENT-REGISTER] agent_id=%s hostname=%s caps=%s",
@@ -269,6 +277,12 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
     redis = _get_redis(request)
     kafka = _get_kafka(request)
     topic = _get_evidence_topic(request)
+
+    # A non-admin caller (tenant API key) can only push evidence under their
+    # own tenant — self-declared body.tenant_id is ignored for them.
+    ctx = get_tenant_ctx(request)
+    await require_agent_tenant(redis, body.agent_id, ctx)
+    tenant_id = body.tenant_id if is_admin_ctx(ctx) else ctx.tenant_id
 
     # Circuit breaker check
     cb = await redis.get("omni:circuit_breaker:active")
@@ -331,7 +345,7 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
                 "namespace": item.namespace or body.hostname,
                 "ts": item.ts or now_ts,
                 "evidence_source": item.evidence_source or "RemoteAgent",
-                "tenant_id": body.tenant_id,
+                "tenant_id": tenant_id,
                 "canonical_query_snippet": json.dumps({
                     "labels": {
                         "agent_id": body.agent_id,

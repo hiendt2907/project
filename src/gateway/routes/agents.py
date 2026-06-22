@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, resolve_scope
+from gateway.tenant_context import get_tenant_ctx, require_agent_tenant, resolve_scope
 
 _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 _TENANT_ID_PATTERN = r"^[a-zA-Z0-9_-]+$"
@@ -230,20 +230,7 @@ async def deregister_remote_agent(agent_id: str, request: Request) -> JSONRespon
     if not _AGENT_ID_RE.fullmatch(agent_id):
         raise HTTPException(status_code=422, detail="Invalid agent_id")
     redis = _get_redis(request)
-    ctx = get_tenant_ctx(request)
-
-    # Write guard: non-admin tenants can only delete their own agents
-    if ctx is not None and not ctx.is_admin:
-        raw = await redis.get(f"{_REMOTE_PREFIX}{agent_id}")
-        if raw:
-            try:
-                rec = json.loads(raw)
-                if rec.get("tenant_id") != ctx.tenant_id:
-                    raise HTTPException(status_code=403, detail="tenant mismatch")
-            except HTTPException:
-                raise
-            except Exception:
-                pass
+    await require_agent_tenant(redis, agent_id, get_tenant_ctx(request))
 
     keys_to_delete = [
         f"{_REMOTE_PREFIX}{agent_id}",
