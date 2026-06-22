@@ -426,6 +426,7 @@ async def _process_stream_entry(
                         "kind": _ac.kind,
                         "mutate_eligible": _ac.mutate_eligible,
                         "missing_fields": _ac.missing_fields,
+                        "alertname": _ac.alertname,
                     }
                 ),
             )

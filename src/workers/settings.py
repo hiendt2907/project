@@ -1027,6 +1027,11 @@ class WorkerSettings(BaseSettings):
         description="Rỗng = dùng model_reasoning_engine.",
     )
     autonomous_fix_cooldown_sec: int = Field(default=600, ge=60, le=86400)
+    meta_self_alert_cooldown_sec: int = Field(
+        default=1800, ge=60, le=86400,
+        description="Dedup window cho self-monitoring/KPI alert (OmniAdvisoryAcceptanceRateLow,...): "
+        "1 escalation mỗi cooldown, không lặp lại RAG/LLM/DLQ mỗi tick re-fire.",
+    )
     autonomous_react_enabled: bool = Field(
         default=True,
         description="True: multi-turn ReAct (Thought/Observation); False: legacy one-shot decider.",

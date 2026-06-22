@@ -102,6 +102,7 @@ from workers.telegram_escalation import (
 )
 from workers.request_trace import pop_trace_id, push_trace_id
 from workers.remote_agent_pipeline import handle_discovery_evidence, handle_remote_agent_evidence
+from workers.alert_envelope import ALERT_KIND_META_SELF
 from workers.pipeline_stages import mark_stage
 from workers.telegram_outbound import send_telegram_out_for_inbound
 from workers.telegram_advisory_emitter import (
@@ -2212,6 +2213,65 @@ async def _crat_for_deterministic_advisory(
     return True
 
 
+async def _handle_meta_self_alert(ctx: WorkerHandlerContext, *, trace: str) -> str | None:
+    """Short-circuit self-monitoring/KPI alerts (OmniAdvisoryAcceptanceRateLow, ...).
+
+    These have no remediable cluster target (alert_envelope.classify_alert already
+    blocks mutation for them). Without this short-circuit every re-fire of the same
+    underlying KPI alert was burning a full RAG+LLM cycle, escalating to Telegram,
+    and dead-ending as a fresh DLQ tombstone every ~5min — none of it actionable.
+    Returns a display string if this trace was handled here, else None to fall
+    through to the normal diagnosis flow.
+    """
+    try:
+        raw = await ctx.redis.get(f"omni:trace:{trace}:alert_class")
+        if not raw:
+            return None
+        ac = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+    except Exception:
+        return None
+    if ac.get("kind") != ALERT_KIND_META_SELF:
+        return None
+
+    alertname = str(ac.get("alertname") or "unknown")
+    cooldown_sec = int(getattr(ctx.settings, "meta_self_alert_cooldown_sec", 1800) or 1800)
+    ck = f"omni:meta_self:cooldown:{alertname}"
+    if await ctx.redis.get(ck):
+        await mark_stage(ctx.redis, trace, "RAG", "skip", detail="meta_self — deduped, no RAG", lane="")
+        await mark_stage(ctx.redis, trace, "LLM", "skip", detail="meta_self — deduped, no LLM", lane="")
+        await mark_stage(
+            ctx.redis, trace, "DISPATCH", "skip",
+            detail=f"meta_self alert {alertname} suppressed — cooldown active", lane="",
+        )
+        await _mark_suggest_only_terminal(ctx, trace, "")
+        logger.info("event=meta_self_alert_deduped trace=%s alertname=%s", trace, alertname)
+        return "[META_SELF DEDUPED] self-monitoring alert suppressed within cooldown window"
+
+    diagnosis = (
+        f"Cảnh báo nội bộ Omni (self-monitoring/KPI): {alertname}. "
+        "Không có cluster target để mutate — đây là tín hiệu sức khoẻ của chính Omni, "
+        "không phải lỗi workload khách hàng. Xem dashboard /kpi để xác minh số liệu thật "
+        "(VD: acceptance_rate có thể =0% do thiếu mẫu/cold-start, không hẳn là regressions)."
+    )
+    if not await _crat_for_deterministic_advisory(
+        ctx, trace=trace, lane="", source="META_SELF_DETERMINISTIC", diagnosis=diagnosis,
+    ):
+        return "[ADVISORY MODE FAIL_CLOSED] meta_self audit_chain_write_failed — dispatch aborted"
+    await _emit_suggest_remediation(
+        ctx,
+        trace=trace,
+        diagnosis=diagnosis,
+        confidence=1.0,
+        source="META_SELF_DETERMINISTIC",
+        suggested_tool="inspect_kpi_dashboard",
+        audit=False,  # CRAT written by _crat_for_deterministic_advisory above
+    )
+    await _mark_suggest_only_terminal(ctx, trace, "")
+    await ctx.redis.setex(ck, cooldown_sec, "1")
+    logger.info("event=meta_self_alert_dispatched trace=%s alertname=%s cooldown=%ds", trace, alertname, cooldown_sec)
+    return "[META_SELF] self-monitoring advisory dispatched (deterministic, no LLM)"
+
+
 async def _mark_suggest_only_terminal(ctx: WorkerHandlerContext, trace: str, lane: str) -> None:
     """Resolve the terminal stages for a suggest-only advisory: there is no HITL
     approval, executor mutation, or feedback loop on this path, so mark them skip
@@ -2347,6 +2407,10 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             detail="evidence_batch_ready",
             meta={"batch_size": len(batch)},
         )
+
+        _meta_self_out = await _handle_meta_self_alert(ctx, trace=trace)
+        if _meta_self_out is not None:
+            return _meta_self_out
 
         try:
             from pkg.trace_orchestrator import (
