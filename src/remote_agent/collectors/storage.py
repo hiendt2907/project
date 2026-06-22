@@ -127,7 +127,9 @@ async def collect_disk_usage(hostname: str) -> dict[str, Any] | None:
         "disk_warn_count": len(warn_partitions),
     }
 
-    result = "FAILED" if anomalies else ("WARN" if warnings else "PASSED")
+    # Gateway EvidenceItem.result only accepts PASSED|FAILED|INCONCLUSIVE|SKIPPED —
+    # "WARN" is not a member, so a warn-tier disk usage emits INCONCLUSIVE instead.
+    result = "FAILED" if anomalies else ("INCONCLUSIVE" if warnings else "PASSED")
     parts_summary = ", ".join(anomalies[:5]) if anomalies else (", ".join(warnings[:3]) if warnings else "all partitions OK")
     hint = f"[{hostname}] disk: {parts_summary}"
 
