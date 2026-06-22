@@ -1,0 +1,13 @@
+{
+  "id": "case_011",
+  "description": "SIEM DDoS — volumetric attack from multiple IPs, critical severity",
+  "lane": "SIEM_SECURITY",
+  "evidence_text": "SIEM incident detected: category=ddos severity=critical. Source IPs: 203.0.113.1, 203.0.113.2, 203.0.113.50 (50+ unique attackers). Target: namespace=multi-agent service=api-gateway. Packet rate: 2.5M pps (1400% above baseline). HTTP request rate: 80,000 req/min (1200% above p95). SYN flood detected: 98% of inbound packets are SYN with no ACK. Nginx returning 503 to 95% of requests. Upstream pods overloaded, CPU at 100%. BGP community blackhole not yet triggered.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["DDoS", "volumetric"],
+    "should_not_contain": ["ConfigMap", "OOMKilled", "certificate", "database"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": true
+  }
+}

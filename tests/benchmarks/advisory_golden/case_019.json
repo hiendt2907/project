@@ -1,0 +1,13 @@
+{
+  "id": "case_019",
+  "description": "Rate limiting recovery — 429 surge followed by natural recovery, no action needed",
+  "lane": "APP_HTTP",
+  "evidence_text": "HTTP rate limiting event in namespace multi-agent, service api-gateway. Event timeline:\n\nT+0m: 429 rate started — 60% of requests returning 429 (rate limit headers: X-RateLimit-Remaining: 0, Retry-After: 30).\nT+5m: Peak 429 rate: 78% of requests (2,300 req/min hitting rate limit).\nT+8m: 429 rate declining — 45% of requests rate-limited.\nT+12m: 429 rate 20% — clients backing off.\nT+15m (now): 429 rate 5% — near baseline. p95 latency returning to 95ms (from peak 850ms). Upstream error rate back to <1%.\n\nAnalysis: A burst of API requests from client IP block 10.0.0.0/24 (internal analytics job) triggered rate limits. The rate limiter is functioning correctly. No server errors (5xx). No OOM. No pod restarts. The analytics job completed and traffic naturally subsided. Rate limiting is working as designed.",
+  "expected": {
+    "verdict": "NORMAL",
+    "root_cause_contains": ["rate", "429"],
+    "should_not_contain": ["DDoS", "malware", "OOMKilled", "ConfigMap", "audit chain"],
+    "min_verification_steps": 1,
+    "remediation_approval_required": false
+  }
+}

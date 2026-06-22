@@ -1,0 +1,13 @@
+{
+  "id": "case_017",
+  "description": "CRAT integrity failure — audit chain gap detected, non-consecutive seq numbers",
+  "lane": "SYS_HARD_FAIL",
+  "evidence_text": "CRAT (Cryptographic Regulatory Audit Trail) integrity violation detected. Redis key 'audit_chain:head_hash' present but chain validation failed. Sequential audit blocks found: seq 1040, 1041, 1042, then jumps to seq 1048 — blocks 1043-1047 are MISSING. Hash chain broken: block 1048's prev_hash does not match hash of block 1042 (expected: sha256:a3f9e2c1..., got: sha256:7b4d8e21...). This indicates either: (a) tampering with the audit trail, (b) a crash during chain write that lost 5 blocks, or (c) a Redis persistence gap (AOF not flushed). Ed25519 signature on block 1048 is INVALID — the signing key may have been compromised or the block content was altered. Regulatory compliance (SOX §404, PCI-DSS v4.0) requires all gaps to be investigated and reported within 24h. Omni pipeline halted pending audit_chain_integrity review.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["audit", "chain"],
+    "should_not_contain": ["DDoS", "OOMKilled", "CPU throttling", "ConfigMap", "batch_job"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": true
+  }
+}

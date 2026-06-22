@@ -1,0 +1,14 @@
+{
+  "id": "case_022",
+  "description": "Multi-tier: CPU saturation -> request latency -> HTTP 504 timeout",
+  "lane": "SYS_RESOURCE",
+  "evidence_text": "Workload checkout in namespace multi-agent: resource probe shows z_cpu=4.6 sustained for 10 minutes, node load average 14 on 4 cores. app_log: checkout p99 latency climbed to 9s and the load balancer is returning HTTP 504 gateway timeout at 12% of requests. Pod checkout-6c is Running, no crash. The CPU saturation at the resource tier propagates into request timeouts observed at the app_log tier.",
+  "expected": {
+    "verdict": "URGENT",
+    "root_cause_contains": ["CPU", "timeout"],
+    "should_not_contain": ["OOMKilled", "ConfigMap", "disk full"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": false,
+    "expect_impact_chain": true
+  }
+}

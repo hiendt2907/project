@@ -1,0 +1,13 @@
+{
+  "id": "case_015",
+  "description": "Multi-lane concurrent — resource anomaly and HTTP 5xx surge at same time",
+  "lane": "SYS_RESOURCE",
+  "evidence_text": "Concurrent multi-lane incident in namespace multi-agent:\n\nLane 1 (RESOURCE): z_cpu=4.8 on api-gateway-7d9c4 pod. CPU at 98%. Memory z_mem=3.6. Baseline breach for 8 minutes. Pod not OOMKilled yet but trending.\n\nLane 3 (HTTP): Access logs show 78% of requests returning 503 over last 5 minutes (4,200 of 5,400 requests failed). Nginx upstream errors: 'upstream timed out (110: Connection timed out) while reading response header from upstream'. p95 latency jumped from 120ms to 4,200ms.\n\nRoot cause hypothesis: the API gateway pod is CPU-starved due to an inefficient query pattern introduced in the latest deployment (deployed 45m ago). High CPU causes request processing to slow, causing upstream timeouts from nginx, causing 503s. This is a cascading failure affecting both resource and HTTP lanes simultaneously.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["cpu", "503"],
+    "should_not_contain": ["DDoS", "ConfigMap", "certificate", "malware"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": true
+  }
+}

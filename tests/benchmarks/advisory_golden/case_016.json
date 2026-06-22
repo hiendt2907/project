@@ -1,0 +1,13 @@
+{
+  "id": "case_016",
+  "description": "HITL required — data exfiltration detected, CRAT approval gate mandatory",
+  "lane": "SIEM_SECURITY",
+  "evidence_text": "SIEM incident detected: category=data_exfil severity=critical. Pod omni-analyst-5b7d4 in namespace multi-agent is exfiltrating data. Outbound transfer: 45GB in last 2 hours to external IP 185.220.101.5 (known Tor exit node). Transfer rate: 6.25 MB/s sustained. Protocol: HTTPS (port 443). Data pattern matches Redis DUMP files (binary format detected by DPI). Process: python3 with args '/app/src/workers/redis_client.py --export /tmp/dump.rdb'. S3-compatible upload detected to external bucket. Affected keys include: 'omni:kpi:*', 'audit_chain:*', 'omni:baseline_snapshot'. PII and audit chain data may be compromised. CRAT audit trail shows gap in chain at seq 1042-1047 (possible tampering). This incident requires human authorization before any containment action to avoid evidence destruction.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["exfil", "data"],
+    "should_not_contain": ["CPU spike", "OOMKilled", "ConfigMap", "batch_job"],
+    "min_verification_steps": 3,
+    "remediation_approval_required": true
+  }
+}

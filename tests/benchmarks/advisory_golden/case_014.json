@@ -1,0 +1,13 @@
+{
+  "id": "case_014",
+  "description": "False positive pattern — CPU spike from scheduled batch job, not a real anomaly",
+  "lane": "SYS_RESOURCE",
+  "evidence_text": "Alert: HighCPUUsage on pod data-pipeline-batch-7d4b9 in namespace multi-agent. CPU at 85% for 10 minutes. z_cpu=3.2 (slight sigma breach). However: kubectl describe shows this is a CronJob pod named 'data-pipeline-batch' that runs every day at 02:00 UTC. Current time is 02:08 UTC. Previous 7 CronJob runs all show identical CPU pattern at the same time. No errors in pod logs. No 5xx from any downstream services. Memory is stable at 40% of limit. Other pods in namespace are healthy. The CronJob is a scheduled ETL batch_job that processes 500K records daily — CPU spike is expected behavior.",
+  "expected": {
+    "verdict": "NORMAL",
+    "root_cause_contains": ["batch", "CronJob"],
+    "should_not_contain": ["malware", "attack", "DDoS", "OOMKilled", "ConfigMap missing"],
+    "min_verification_steps": 1,
+    "remediation_approval_required": false
+  }
+}

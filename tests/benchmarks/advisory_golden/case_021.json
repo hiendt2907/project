@@ -1,0 +1,14 @@
+{
+  "id": "case_021",
+  "description": "Multi-tier: host disk full -> Postgres WAL fsync fails -> API HTTP 500",
+  "lane": "SYS_HARD_FAIL",
+  "evidence_text": "Node node-3 in namespace multi-agent: disk_usage probe reports /var/lib partition at 98% (df -hT, inode 41%). db_health probe: Postgres on postgres-0 write latency p99=18s with repeated 'could not fsync WAL' errors in journalctl. app_log: api-gateway HTTP 500 rate at 27% over the last 3 minutes, all on POST/write paths; GET paths still 200. This is a cross-tier cascade from host storage through the database to the API.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["disk", "500"],
+    "should_not_contain": ["DDoS", "malware", "certificate"],
+    "min_verification_steps": 3,
+    "remediation_approval_required": true,
+    "expect_impact_chain": true
+  }
+}

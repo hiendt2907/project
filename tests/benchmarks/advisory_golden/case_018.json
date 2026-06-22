@@ -1,0 +1,13 @@
+{
+  "id": "case_018",
+  "description": "LLM timeout fallback — Ollama unreachable, system falls back gracefully",
+  "lane": "SYS_HARD_FAIL",
+  "evidence_text": "Omni worker self-monitoring alert: omni_llm_up=0 sustained for 12 minutes. Health check 'llm_up' is DEGRADED. Ollama endpoint http://ollama.multi-agent.svc:11434/health is returning connection timeout. Last successful LLM call: 12 minutes ago. Fast-path RAG is still operational (omni_fastpath_hits_total increasing). 3 evidence batches are queued in the slow-path (pending LLM analysis). Evidence includes: one CrashLoopBackOff alert (severity=warning), one CPU anomaly (z_cpu=2.1, below 3-sigma), one Kafka lag alert (lag=50, below threshold). No critical incidents detected by fast-path rules. System is in graceful degradation mode — fast-path SOP matches are being dispatched, LLM-dependent slow-path is paused. Ollama pod status: CrashLoopBackOff (GPU memory exhausted).",
+  "expected": {
+    "verdict": "INVESTIGATE",
+    "root_cause_contains": ["LLM", "Ollama"],
+    "should_not_contain": ["DDoS", "data exfil", "malware", "audit chain gap"],
+    "min_verification_steps": 1,
+    "remediation_approval_required": false
+  }
+}

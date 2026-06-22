@@ -1,0 +1,13 @@
+{
+  "id": "case_020",
+  "description": "Auth failure cluster — distributed 401/403 surge from multiple IPs, credential stuffing",
+  "lane": "APP_HTTP",
+  "evidence_text": "Auth failure surge detected in namespace multi-agent, service api-gateway. Business error class: auth_failure (401/403). Access log analysis over last 10 minutes:\n\nTotal requests: 8,400. 401 responses: 5,040 (60%). 403 responses: 1,260 (15%). Total auth failures: 6,300 (75% of all traffic).\n\nDistribution: Failures from 340 unique source IPs across 12 countries. Top IPs: 203.0.113.10 (180 fails), 198.51.100.20 (165 fails), 192.0.2.55 (158 fails). Endpoint targeted: POST /api/v1/auth/login. Request rate: 840 req/min (14x normal). User-Agent diversity: 15 distinct user agents (not a single bot). Credential format: all requests contain valid email format with rotating passwords (credential stuffing pattern). Internal auth service reports: 6,250 failed authentication attempts against 3,100 unique email addresses. Account lockout triggered on 47 accounts.",
+  "expected": {
+    "verdict": "URGENT",
+    "root_cause_contains": ["auth", "401"],
+    "should_not_contain": ["OOMKilled", "ConfigMap", "DDoS volumetric", "malware lateral movement", "audit chain"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": true
+  }
+}

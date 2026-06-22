@@ -1,0 +1,13 @@
+{
+  "id": "case_013",
+  "description": "Safe auto-restart — pod OOMKilled 3 times with stable spec, no broken config",
+  "lane": "SYS_HARD_FAIL",
+  "evidence_text": "Pod redis-cache-5d7b9-abc12 in namespace multi-agent has been OOMKilled 3 times in the last 30 minutes. Exit code 137 each time. kubectl describe pod shows: Last State: OOMKilled. Memory limit: 512Mi. Current RSS at time of kill: 510-511Mi (hitting limit). ConfigMap 'redis-config' exists and is healthy. Deployment spec is valid — no missing refs. Node has 8Gi free (not node-level pressure). Historical pattern: pod runs ~15 minutes then OOMKills. No CrashLoopBackOff yet (restart count=3, back-off not triggered). Redis maxmemory=400mb is set, but application is allocating buffers above it. Recommendation: increase memory limit to 1Gi and add resource monitoring.",
+  "expected": {
+    "verdict": "URGENT",
+    "root_cause_contains": ["OOMKilled", "memory"],
+    "should_not_contain": ["ConfigMap missing", "network partition", "certificate", "DDoS"],
+    "min_verification_steps": 2,
+    "remediation_approval_required": false
+  }
+}

@@ -1,0 +1,331 @@
+{
+  "model": "qwen2.5:7b",
+  "timestamp": "2026-05-14T10:32:24Z",
+  "pass_threshold": 70.0,
+  "passed": 19,
+  "total": 20,
+  "pass_rate": 0.95,
+  "avg_score": 84.3,
+  "results": [
+    {
+      "case_id": "case_001",
+      "description": "nginx missing ConfigMap \u2014 INV_NO_RESTART_ON_BROKEN_SPEC",
+      "elapsed_s": 20.41,
+      "score": 100.0,
+      "pass": true,
+      "verdict_got": "CRITICAL",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_002",
+      "description": "Redis OOM \u2014 memory exhausted, eviction active",
+      "elapsed_s": 29.21,
+      "score": 100.0,
+      "pass": true,
+      "verdict_got": "URGENT",
+      "verdict_expected": "URGENT",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_003",
+      "description": "Kafka consumer lag spike \u2014 analyst behind > 1000 messages",
+      "elapsed_s": 29.75,
+      "score": 100.0,
+      "pass": true,
+      "verdict_got": "URGENT",
+      "verdict_expected": "URGENT",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_004",
+      "description": "5xx surge \u2014 HTTP 502 from upstream gateway",
+      "elapsed_s": 30.07,
+      "score": 70.0,
+      "pass": true,
+      "verdict_got": "URGENT",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 0.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_005",
+      "description": "SIEM DDoS detection \u2014 high rate from single IP",
+      "elapsed_s": 60.95,
+      "score": 70.0,
+      "pass": true,
+      "verdict_got": "URGENT",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 0.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_006",
+      "description": "CPU throttling normal \u2014 z_cpu=1.2 below threshold",
+      "elapsed_s": 30.56,
+      "score": 83.3,
+      "pass": true,
+      "verdict_got": "NORMAL",
+      "verdict_expected": "NORMAL",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 13.3,
+        "remediation": 5.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_007",
+      "description": "Deployment rollout stuck \u2014 ImagePullBackOff",
+      "elapsed_s": 52.71,
+      "score": 70.0,
+      "pass": true,
+      "verdict_got": "INVESTIGATE",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 0.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_008",
+      "description": "Auth failure surge \u2014 401/403 spike from API clients",
+      "elapsed_s": 62.58,
+      "score": 60.0,
+      "pass": false,
+      "verdict_got": "INVESTIGATE",
+      "verdict_expected": "URGENT",
+      "breakdown": {
+        "verdict": 0.0,
+        "root_cause_keywords": 10.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_009",
+      "description": "LLM Ollama down \u2014 all advisory generation blocked",
+      "elapsed_s": 59.55,
+      "score": 90.0,
+      "pass": true,
+      "verdict_got": "CRITICAL",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 10.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_010",
+      "description": "CRAT chain integrity failure \u2014 audit trail broken",
+      "elapsed_s": 61.45,
+      "score": 83.3,
+      "pass": true,
+      "verdict_got": "CRITICAL",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 10.0,
+        "no_hallucination": 13.3,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_011",
+      "description": "SIEM DDoS \u2014 volumetric attack from multiple IPs, critical severity",
+      "elapsed_s": 65.3,
+      "score": 90.0,
+      "pass": true,
+      "verdict_got": "CRITICAL",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 10.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_012",
+      "description": "SIEM malware detection \u2014 lateral movement with C2 beacon",
+      "elapsed_s": 39.28,
+      "score": 90.0,
+      "pass": true,
+      "verdict_got": "CRITICAL",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 10.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_013",
+      "description": "Safe auto-restart \u2014 pod OOMKilled 3 times with stable spec, no broken config",
+      "elapsed_s": 34.23,
+      "score": 100.0,
+      "pass": true,
+      "verdict_got": "URGENT",
+      "verdict_expected": "URGENT",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_014",
+      "description": "False positive pattern \u2014 CPU spike from scheduled batch job, not a real anomaly",
+      "elapsed_s": 24.99,
+      "score": 86.0,
+      "pass": true,
+      "verdict_got": "NORMAL",
+      "verdict_expected": "NORMAL",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 16.0,
+        "remediation": 5.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_015",
+      "description": "Multi-lane concurrent \u2014 resource anomaly and HTTP 5xx surge at same time",
+      "elapsed_s": 28.66,
+      "score": 70.0,
+      "pass": true,
+      "verdict_got": "URGENT",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 0.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_016",
+      "description": "HITL required \u2014 data exfiltration detected, CRAT approval gate mandatory",
+      "elapsed_s": 34.36,
+      "score": 95.0,
+      "pass": true,
+      "verdict_got": "CRITICAL",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 15.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_017",
+      "description": "CRAT integrity failure \u2014 audit chain gap detected, non-consecutive seq numbers",
+      "elapsed_s": 29.05,
+      "score": 96.0,
+      "pass": true,
+      "verdict_got": "CRITICAL",
+      "verdict_expected": "CRITICAL",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 16.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_018",
+      "description": "LLM timeout fallback \u2014 Ollama unreachable, system falls back gracefully",
+      "elapsed_s": 29.2,
+      "score": 70.0,
+      "pass": true,
+      "verdict_got": "URGENT",
+      "verdict_expected": "INVESTIGATE",
+      "breakdown": {
+        "verdict": 0.0,
+        "root_cause_keywords": 20.0,
+        "no_hallucination": 20.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_019",
+      "description": "Rate limiting recovery \u2014 429 surge followed by natural recovery, no action needed",
+      "elapsed_s": 23.35,
+      "score": 76.0,
+      "pass": true,
+      "verdict_got": "NORMAL",
+      "verdict_expected": "NORMAL",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 10.0,
+        "no_hallucination": 16.0,
+        "remediation": 5.0,
+        "verification_steps": 15.0
+      }
+    },
+    {
+      "case_id": "case_020",
+      "description": "Auth failure cluster \u2014 distributed 401/403 surge from multiple IPs, credential stuffing",
+      "elapsed_s": 28.92,
+      "score": 86.0,
+      "pass": true,
+      "verdict_got": "URGENT",
+      "verdict_expected": "URGENT",
+      "breakdown": {
+        "verdict": 30.0,
+        "root_cause_keywords": 10.0,
+        "no_hallucination": 16.0,
+        "remediation": 15.0,
+        "verification_steps": 15.0
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "case_023",
+  "description": "Multi-tier: memory leak -> OOMKilled -> 503 service unavailable",
+  "lane": "SYS_RESOURCE",
+  "evidence_text": "Workload reporting in namespace multi-agent: resource probe z_mem=5.1 with RSS growing linearly +120MB/h over 6h. state probe: pod reporting-7f9 was OOMKilled 4 times (restartCount=4, exit code 137) and is now in CrashLoopBackOff. app_log: the reporting endpoint returns HTTP 503 service unavailable during restart windows. Memory leak at the resource tier drives OOMKill at the state tier, surfacing as 503 at the app tier.",
+  "expected": {
+    "verdict": "CRITICAL",
+    "root_cause_contains": ["memory", "OOM"],
+    "should_not_contain": ["DDoS", "certificate", "network partition"],
+    "min_verification_steps": 3,
+    "remediation_approval_required": false,
+    "expect_impact_chain": true
+  }
+}
