@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import platform as _sys_platform
 import socket
 from typing import Any
 
@@ -73,7 +74,7 @@ class OmniEmitter:
             "hostname": self._hostname,
             "version": version,
             "capabilities": capabilities,
-            "platform": "linux",
+            "platform": _sys_platform.system().lower(),
             "k8s_namespace": k8s_namespace,
             "tenant_id": self._tenant_id,
         }
