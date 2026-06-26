@@ -69,6 +69,7 @@ REDIS_URL = os.getenv("OMNI_REDIS_URL", "redis://redis:6379/0")
 KAFKA_BOOTSTRAP = os.getenv("OMNI_KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 KAFKA_TOPIC_ALERTS = _kafka_topic_from_env()
 KAFKA_TOPIC_EVIDENCE = (os.getenv("OMNI_KAFKA_TOPIC_DIAGNOSTIC_EVIDENCE") or "omni-diagnostic-evidence").strip()
+KAFKA_TOPIC_KNOWLEDGE_EVIDENCE = (os.getenv("OMNI_KAFKA_TOPIC_KNOWLEDGE_EVIDENCE") or "omni-knowledge-evidence").strip()
 RATE_LIMIT_TPS = int(os.getenv("OMNI_GATEWAY_RATE_LIMIT_TPS", "1000"))
 CB_KEY = "omni:circuit_breaker:active"
 SILENCE_CHAOS_LAB = os.getenv("OMNI_GATEWAY_SILENCE_CHAOS_LAB", "false").strip().lower() in (
@@ -307,6 +308,7 @@ async def lifespan(app: FastAPI):
     app.state.redis = _redis
     app.state.kafka = _kafka
     app.state.kafka_topic_evidence = KAFKA_TOPIC_EVIDENCE
+    app.state.kafka_topic_knowledge_evidence = KAFKA_TOPIC_KNOWLEDGE_EVIDENCE
     app.state.kafka_topic_alerts = KAFKA_TOPIC_ALERTS
     # Admin config store (Postgres omni_admin) — source-of-truth cho tier/runtime/risk.
     # Gateway KHÔNG import workers (bất biến) — đọc DSN trực tiếp từ env.

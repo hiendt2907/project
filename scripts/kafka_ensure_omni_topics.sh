@@ -34,6 +34,7 @@ TOPICS=(
   "omni-hitl-pending"
   "omni-hitl-decisions"
   "omni-discovery-evidence"
+  "omni-knowledge-evidence"
 )
 
 for t in "${TOPICS[@]}"; do
@@ -42,6 +43,18 @@ for t in "${TOPICS[@]}"; do
     /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BOOTSTRAP" \
     --create --if-not-exists --topic "$t" --partitions 1 --replication-factor 1
 done
+
+# Knowledge evidence: 7-day retention (background metric/log samples — longer than alerts).
+echo "Enforcing omni-knowledge-evidence config: retention.ms=604800000 (7d), partitions=3"
+"${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
+  /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BOOTSTRAP" \
+  --create --if-not-exists --topic "omni-knowledge-evidence" \
+  --partitions 3 --replication-factor 1
+"${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \
+  /opt/kafka/bin/kafka-configs.sh --bootstrap-server "$BOOTSTRAP" \
+  --alter --entity-type topics --entity-name omni-knowledge-evidence \
+  --add-config "cleanup.policy=delete,retention.ms=604800000"
+echo "  [OK] omni-knowledge-evidence retention=7d partitions=3"
 
 # DLQ: 7-day retention, delete policy (not compacted — replay not needed, just inspection).
 echo "Enforcing omni-dlq config: retention.ms=604800000 (7d), cleanup.policy=delete"

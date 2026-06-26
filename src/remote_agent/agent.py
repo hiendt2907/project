@@ -123,6 +123,7 @@ async def run_agent() -> None:
     )
 
     import time
+    from remote_agent.evidence import build_envelope as _build_envelope  # noqa: F401 – signal_type helper
 
     # Anomaly thresholds pushed by Omni (omni_admin runtime flags). None until
     # the first successful register; collectors fall back to safe defaults.
@@ -137,7 +138,7 @@ async def run_agent() -> None:
     last_register_ts = time.monotonic()
     last_discovery_ts = time.monotonic()
 
-    _DISCOVERY_INTERVAL = 86400  # re-scan every 24h
+    _DISCOVERY_INTERVAL = 3600  # re-scan every 1h for change detection
 
     while True:
         # Re-register every _REGISTER_INTERVAL seconds (must be < gateway TTL 120s)
@@ -149,7 +150,7 @@ async def run_agent() -> None:
                 thresholds = new_thresholds
             last_register_ts = time.monotonic()
 
-        # Re-run VM discovery every 24h to pick up newly installed services
+        # Re-run VM discovery every 1h — triggers change detection on Omni side
         if time.monotonic() - last_discovery_ts >= _DISCOVERY_INTERVAL:
             try:
                 profile = await run_vm_discovery(cfg.agent_id, cfg.hostname)

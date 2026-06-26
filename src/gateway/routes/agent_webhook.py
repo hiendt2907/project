@@ -40,6 +40,16 @@ _DEDUP_WINDOW_S = 300               # 5-min dedup window
 _DEDUP_PASS_COUNT = 3               # allow first N occurrences; after that, skip Kafka
 _STORM_THRESHOLD = 20               # >20 same fingerprint → log storm
 
+# Clean (PASSED) probe checks never enter the diagnostic pipeline — there is
+# nothing to diagnose. They land in a per-agent "last check" side-channel
+# instead, so the agent's health is still inspectable without spamming the
+# Kafka diagnostic-evidence topic / Active Traces dashboard with no-op traces.
+_CHECKS_PREFIX = "omni:remote_agent:checks:"   # HASH: field=probe, value=JSON last-clean-check
+_CHECKS_TTL = 600
+# remote_system_metrics is a continuous data feed (3-sigma baseline input),
+# not a pass/fail probe — it must always reach the pipeline regardless of result.
+_ALWAYS_PIPELINE_PROBES = {"remote_system_metrics"}
+
 
 # ─── Models ──────────────────────────────────────────────────────────────────
 
@@ -72,6 +82,9 @@ class EvidenceItem(BaseModel):
     # Set by the agent per-probe (e.g. "DiscoveryEvidence" for onboarding probes).
     # Falls back to "RemoteAgent" — never trust this for tenant scoping.
     evidence_source: str = Field(default="RemoteAgent", max_length=64)
+    # Signal routing: ANOMALY → omni-diagnostic-evidence; others → omni-knowledge-evidence.
+    # INV_KNOWLEDGE_NOT_ALERT: non-ANOMALY signals MUST NOT enter the diagnostic pipeline.
+    signal_type: str = Field(default="ANOMALY", max_length=32)
 
 
 class AgentEvidenceRequest(BaseModel):
@@ -101,6 +114,10 @@ def _get_kafka(request: Request) -> Any:
 
 def _get_evidence_topic(request: Request) -> str:
     return getattr(request.app.state, "kafka_topic_evidence", "omni-diagnostic-evidence")
+
+
+def _get_knowledge_topic(request: Request) -> str:
+    return getattr(request.app.state, "kafka_topic_knowledge_evidence", "omni-knowledge-evidence")
 
 
 # ─── GIGO helpers ────────────────────────────────────────────────────────────
@@ -156,6 +173,32 @@ async def _check_rate_limit(redis: Any, agent_id: str, item: EvidenceItem) -> bo
         return False
 
     return True
+
+
+def _is_clean_check(item: EvidenceItem) -> bool:
+    """True when this item is a routine PASSED probe result — no diagnostic value.
+
+    Excludes continuous data feeds (_ALWAYS_PIPELINE_PROBES) and out-of-band
+    uploads (e.g. discovery/profile data tagged with a non-default
+    evidence_source) — those aren't "checked, clean" results, just data.
+    """
+    return (
+        item.result == "PASSED"
+        and item.probe not in _ALWAYS_PIPELINE_PROBES
+        and item.evidence_source == "RemoteAgent"
+    )
+
+
+async def _store_clean_check(redis: Any, agent_id: str, hostname: str, item: EvidenceItem, ts: str) -> None:
+    key = f"{_CHECKS_PREFIX}{agent_id}"
+    entry = {
+        "ts": item.ts or ts,
+        "result": item.result,
+        "alert_hint": item.alert_hint[:300],
+        "namespace": item.namespace or hostname,
+    }
+    await redis.hset(key, item.probe, json.dumps(entry))
+    await redis.expire(key, _CHECKS_TTL)
 
 
 async def _check_dedup(redis: Any, agent_id: str, fp: str) -> tuple[int, bool]:
@@ -277,6 +320,7 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
     redis = _get_redis(request)
     kafka = _get_kafka(request)
     topic = _get_evidence_topic(request)
+    knowledge_topic = _get_knowledge_topic(request)
 
     # A non-admin caller (tenant API key) can only push evidence under their
     # own tenant — self-declared body.tenant_id is ignored for them.
@@ -293,6 +337,7 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
     enqueued = 0
     hard_blocked = 0
     dedup_skipped = 0
+    clean_skipped = 0
 
     for item in body.evidence:
         # ── Hard block (GIGO) ───────────────────────────────────────────────
@@ -301,6 +346,16 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
             hard_blocked += 1
             logger.debug("[AGENT-EVIDENCE] hard_block agent=%s probe=%s reason=%s",
                          body.agent_id, item.probe, reason)
+            continue
+
+        # ── Clean check (PASSED, no diagnostic value) ────────────────────────
+        # Routine "checked, clean" probe results never reach the diagnostic
+        # pipeline — there is nothing to diagnose. They land in a per-agent
+        # side-channel instead, so a trace/Active-Traces entry is only ever
+        # created for something actually worth looking at.
+        if _is_clean_check(item):
+            clean_skipped += 1
+            await _store_clean_check(redis, body.agent_id, body.hostname, item, now_ts)
             continue
 
         # ── Rate limit ──────────────────────────────────────────────────────
@@ -355,6 +410,7 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
                 }),
                 "_fingerprint": fp,
                 "_dedup_count": dedup_count,
+                "signal_type": item.signal_type,
                 **quality_meta,
             }
 
@@ -362,7 +418,9 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
                 {"data": json.dumps(envelope, ensure_ascii=False)},
                 ensure_ascii=False,
             ).encode("utf-8")
-            await kafka.send_and_wait(topic, value=payload)
+            # INV_KNOWLEDGE_NOT_ALERT: route non-ANOMALY signals to knowledge topic.
+            dest_topic = topic if item.signal_type == "ANOMALY" else knowledge_topic
+            await kafka.send_and_wait(dest_topic, value=payload)
             enqueued += 1
 
     # Update last_seen in registry
@@ -409,12 +467,13 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
         logger.warning("[AGENT-EVIDENCE] side-channel storage failed: %s", exc)
 
     logger.info(
-        "[AGENT-EVIDENCE] agent_id=%s hostname=%s enqueued=%d blocked=%d dedup_skip=%d topic=%s",
+        "[AGENT-EVIDENCE] agent_id=%s hostname=%s enqueued=%d blocked=%d dedup_skip=%d clean_skip=%d topic=%s",
         body.agent_id,
         body.hostname,
         enqueued,
         hard_blocked,
         dedup_skipped,
+        clean_skipped,
         topic,
     )
     return JSONResponse(content={
@@ -423,4 +482,5 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
         "enqueued": enqueued,
         "hard_blocked": hard_blocked,
         "dedup_skipped": dedup_skipped,
+        "clean_skipped": clean_skipped,
     })

@@ -89,6 +89,7 @@ data:
   OMNI_REDIS_URL: "redis://redis:6379/0"
   OMNI_REDIS_CLUSTER: "false"
   OMNI_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  OMNI_KAFKA_TOPIC_KNOWLEDGE_EVIDENCE: "omni-knowledge-evidence"
   OMNI_ENV_MODE: "prod"
   # OrbStack chaos-victim inject: password sourced from Secret omni-chaos-lab (see omni-chaos-secret.yaml).
   OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX_ENABLED: "true"
@@ -105,7 +106,7 @@ data:
   VLLM_BASE_URL: "http://host.orb.internal:11434/v1"
   VLLM_EMBED_URL: "http://host.orb.internal:11434/v1"
   VLLM_MODEL: "qwen2.5-coder:7b"
-  OMNI_LLM_NUM_PARALLEL: "2"
+  OMNI_LLM_NUM_PARALLEL: "4"
   OMNI_TELEGRAM_ENABLED: "true"
   # E2E harness: Bot API getUpdates must not compete with in-cluster long-poll.
   OMNI_TELEGRAM_POLLING_ENABLED: "false"

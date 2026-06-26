@@ -833,6 +833,74 @@ async def kafka_discovery_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio
             await consumer.stop()
 
 
+async def kafka_knowledge_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
+    """Consume ``omni-knowledge-evidence`` — METRIC_SAMPLE/LOG_SAMPLE/DISCOVERY/CHANGE_DETECTED.
+
+    INV_KNOWLEDGE_NOT_ALERT: không RAG, không LLM, không emit alert.
+    """
+    from aiokafka import AIOKafkaConsumer
+    from aiokafka.errors import KafkaConnectionError, UnknownTopicOrPartitionError
+
+    from workers.knowledge_pipeline import handle_knowledge_evidence
+
+    ws = ctx.settings
+    await ctx.scout_ready.wait()
+    _TRANSIENT_ERRORS = (KafkaConnectionError, UnknownTopicOrPartitionError, ConnectionError)
+    _connect_backoff = 1
+
+    while not stop.is_set():
+        consumer = AIOKafkaConsumer(
+            ws.kafka_topic_knowledge_evidence,
+            bootstrap_servers=ws.kafka_bootstrap_servers,
+            group_id=ws.consumer_group_knowledge,
+            enable_auto_commit=False,
+            auto_offset_reset="earliest",
+            client_id=ws.consumer_name_knowledge,
+        )
+        try:
+            await consumer.start()
+            _connect_backoff = 1
+        except _TRANSIENT_ERRORS as e:
+            logger.warning("kafka_knowledge_evidence_loop connect_failed err=%s backoff_s=%d", e, _connect_backoff)
+            await asyncio.sleep(_connect_backoff)
+            _connect_backoff = min(_connect_backoff * 2, 30)
+            continue
+        try:
+            async for msg in consumer:
+                if stop.is_set():
+                    break
+                attempt = 0
+                max_poison_retries = 3
+                while attempt <= max_poison_retries:
+                    try:
+                        fields = decode_kafka_value_to_fields(msg.value, msg.headers)
+                        ev_doc = json.loads(fields.get("data") or "{}")
+                        await handle_knowledge_evidence(ctx, ev_doc)
+                        await consumer.commit()
+                        _report_kafka_lag(consumer, msg, ws.consumer_group_knowledge)
+                        break
+                    except Exception as e:
+                        attempt += 1
+                        await ctx.ledger.record_exception(
+                            e, phase="K", component="kafka_knowledge_evidence_loop", swallow_errors=True
+                        )
+                        logger.exception("kafka_knowledge_evidence_loop message error: %s", e)
+                        if attempt > max_poison_retries:
+                            logger.error(
+                                "event=knowledge_evidence_poison_ack partition=%s offset=%s attempts=%s",
+                                msg.partition,
+                                msg.offset,
+                                attempt,
+                            )
+                            await consumer.commit()
+                            break
+                        await asyncio.sleep(0.5)
+        except _TRANSIENT_ERRORS as e:
+            logger.warning("kafka_knowledge_evidence_loop connection_lost err=%s reconnecting", e)
+        finally:
+            await consumer.stop()
+
+
 async def kafka_siem_chains_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
     """Analyst path: consume ``omni-siem-chains`` correlation chains from brain-go.
 
@@ -906,6 +974,12 @@ async def telegram_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
             if await _handle_hitl_callback(ctx, u):
                 continue
             if await _handle_telegram_fallback_callback(ctx, u):
+                continue
+            from workers.change_approval_handler import handle_change_approval_callback
+            if await handle_change_approval_callback(ctx, u):
+                continue
+            from workers.knowledge_pipeline import handle_telegram_doc_upload
+            if await handle_telegram_doc_upload(ctx, u):
                 continue
             s = summarize_message_update(u)
             if not s or not s.text:
@@ -1053,6 +1127,7 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
             tasks.append(asyncio.create_task(
                 kafka_siem_chains_loop(ctx, stop), name="kafka_siem_chains_loop",
             ))
+        tasks.append(asyncio.create_task(kafka_knowledge_evidence_loop(ctx, stop), name="kafka_knowledge_evidence_loop"))
     if role in ("full", "core"):
         tasks.extend(
             [

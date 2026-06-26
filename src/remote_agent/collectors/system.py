@@ -71,6 +71,8 @@ async def collect_system_metrics(
             alert_hint=hint,
             symptom_group="workload_resource",
             namespace=hostname,
+            # METRIC_SAMPLE feeds 3σ baseline; only a breach is ANOMALY.
+            signal_type="ANOMALY" if anomaly else "METRIC_SAMPLE",
         )
     except Exception as exc:
         logger.error("[collector.system] error: %s", exc)

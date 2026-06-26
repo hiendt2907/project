@@ -121,6 +121,11 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_DISCOVERY_EVIDENCE"),
         description="Onboarding worker input: process_list/port_scan/service_topology/doc-snapshot probes.",
     )
+    kafka_topic_knowledge_evidence: str = Field(
+        default="omni-knowledge-evidence",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_KNOWLEDGE_EVIDENCE"),
+        description="Knowledge worker input: METRIC_SAMPLE/LOG_SAMPLE/DISCOVERY/CHANGE_DETECTED from remote agents.",
+    )
     kafka_topic_siem_chains: str = Field(
         default="omni-siem-chains",
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_SIEM_CHAINS"),
@@ -644,6 +649,11 @@ class WorkerSettings(BaseSettings):
         description="Kafka group for onboarding role — consumes omni-discovery-evidence only.",
     )
     consumer_name_onboarding: str = Field(default="omni-onboarding-1")
+    consumer_group_knowledge: str = Field(
+        default="omni-knowledge-worker",
+        description="Kafka group for knowledge worker — consumes omni-knowledge-evidence (METRIC_SAMPLE/LOG_SAMPLE/DISCOVERY/CHANGE_DETECTED).",
+    )
+    consumer_name_knowledge: str = Field(default="omni-knowledge-1")
     env_mode: Literal["prod", "dev"] = Field(
         default="prod",
         validation_alias=AliasChoices("OMNI_ENV_MODE"),

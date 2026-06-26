@@ -63,6 +63,7 @@ async def collect_process_list(hostname: str) -> dict[str, Any] | None:
         symptom_group="onboarding_discovery",
         namespace=hostname,
         evidence_source="DiscoveryEvidence",
+        signal_type="DISCOVERY",
     )
 
 
@@ -97,6 +98,7 @@ async def collect_port_scan(hostname: str) -> dict[str, Any] | None:
         symptom_group="onboarding_discovery",
         namespace=hostname,
         evidence_source="DiscoveryEvidence",
+        signal_type="DISCOVERY",
     )
 
 
@@ -127,6 +129,7 @@ async def collect_service_topology(hostname: str) -> dict[str, Any] | None:
         symptom_group="onboarding_discovery",
         namespace=hostname,
         evidence_source="DiscoveryEvidence",
+        signal_type="DISCOVERY",
     )
 
 
@@ -169,4 +172,5 @@ async def collect_doc_snapshot(hostname: str, search_dirs: list[str]) -> dict[st
         symptom_group="onboarding_discovery",
         namespace=hostname,
         evidence_source="DiscoveryEvidence",
+        signal_type="DISCOVERY",
     )

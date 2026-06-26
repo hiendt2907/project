@@ -1,4 +1,4 @@
-"""VM auto-discovery — collects service topology on agent install and every 24h.
+"""VM auto-discovery — collects service topology on agent install and every 1h.
 
 INVARIANT INV_NO_DATA_EXFIL: Only paths/names/stats collected, never file content.
 All subprocess calls are read-only and time-bounded.
@@ -6,6 +6,7 @@ All subprocess calls are read-only and time-bounded.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import platform
 import re
@@ -219,3 +220,110 @@ def derive_enabled_collectors(profile: dict[str, Any]) -> dict[str, bool]:
         "storage_enabled": True,
         "k8s_enabled": _has_service("kubelet") or _has_pkg("kubernetes"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Discovery snapshot — lưu trữ và diff topology để phát hiện thay đổi
+# ---------------------------------------------------------------------------
+_SNAPSHOT_KEY_PREFIX = "omni:knowledge:discovery_snapshot:"
+_SNAPSHOT_TTL = 7 * 86400  # 7 ngày
+
+
+def _snapshot_key(tenant_id: str, agent_id: str) -> str:
+    return f"{_SNAPSHOT_KEY_PREFIX}{tenant_id}:{agent_id}"
+
+
+async def save_discovery_snapshot(
+    redis: Any,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    snapshot: dict[str, Any],
+) -> None:
+    """Lưu snapshot topology vào Redis để so sánh lần sau."""
+    if redis is None:
+        return
+    try:
+        await redis.set(_snapshot_key(tenant_id, agent_id), json.dumps(snapshot), ex=_SNAPSHOT_TTL)
+    except Exception as exc:
+        logger.warning("discovery: save_snapshot failed agent=%s err=%r", agent_id, exc)
+
+
+async def load_discovery_snapshot(
+    redis: Any,
+    *,
+    tenant_id: str,
+    agent_id: str,
+) -> dict[str, Any] | None:
+    """Load snapshot trước đó. Trả None nếu chưa có."""
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(_snapshot_key(tenant_id, agent_id))
+        if raw is None:
+            return None
+        return json.loads(raw)
+    except Exception as exc:
+        logger.warning("discovery: load_snapshot failed agent=%s err=%r", agent_id, exc)
+        return None
+
+
+def diff_discovery(
+    old: dict[str, Any],
+    new: dict[str, Any],
+) -> list[dict[str, str]]:
+    """So sánh 2 snapshot topology. Trả list change records.
+
+    Mỗi record: {change_type, entity_type, entity_name, old_value, new_value}.
+    Chỉ diff services và network_listeners (thay đổi có ý nghĩa vận hành).
+    """
+    changes: list[dict[str, str]] = []
+
+    old_services = {s["name"] for s in old.get("services", []) if s.get("name")}
+    new_services = {s["name"] for s in new.get("services", []) if s.get("name")}
+
+    for svc in new_services - old_services:
+        changes.append({
+            "change_type": "SERVICE_ADDED",
+            "entity_type": "service",
+            "entity_name": svc,
+            "old_value": "",
+            "new_value": svc,
+        })
+    for svc in old_services - new_services:
+        changes.append({
+            "change_type": "SERVICE_REMOVED",
+            "entity_type": "service",
+            "entity_name": svc,
+            "old_value": svc,
+            "new_value": "",
+        })
+
+    def _listener_set(snap: dict[str, Any]) -> set[str]:
+        return {
+            f"{l.get('proto','tcp')}:{l.get('port','')}"
+            for l in snap.get("network_listeners", [])
+            if l.get("port")
+        }
+
+    old_listeners = _listener_set(old)
+    new_listeners = _listener_set(new)
+
+    for lsn in new_listeners - old_listeners:
+        changes.append({
+            "change_type": "PORT_OPENED",
+            "entity_type": "network_listener",
+            "entity_name": lsn,
+            "old_value": "",
+            "new_value": lsn,
+        })
+    for lsn in old_listeners - new_listeners:
+        changes.append({
+            "change_type": "PORT_CLOSED",
+            "entity_type": "network_listener",
+            "entity_name": lsn,
+            "old_value": lsn,
+            "new_value": "",
+        })
+
+    return changes

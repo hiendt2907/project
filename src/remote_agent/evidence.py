@@ -18,6 +18,7 @@ def build_envelope(
     namespace: str = "",
     trace_id: str | None = None,
     evidence_source: str = "RemoteAgent",
+    signal_type: str = "ANOMALY",
 ) -> dict[str, Any]:
     """Build a DiagnosticEvidence envelope ready to POST to /webhook/agent/evidence.
 
@@ -43,4 +44,5 @@ def build_envelope(
         "namespace": namespace,
         "ts": str(int(time.time())),
         "evidence_source": evidence_source,
+        "signal_type": signal_type,
     }
