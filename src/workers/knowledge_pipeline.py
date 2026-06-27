@@ -142,6 +142,29 @@ async def _handle_discovery(
                 tenant_id, hostname, exc,
             )
 
+    # Forward to omni-discovery-evidence so onboarding worker accumulates facts
+    kafka = getattr(ctx, "kafka", None)
+    if kafka is not None:
+        try:
+            discovery_topic = getattr(
+                ctx.settings, "kafka_topic_discovery_evidence", "omni-discovery-evidence"
+            )
+            trace = str(ev_doc.get("trace_id") or agent_id)
+            await kafka.send_dict(
+                discovery_topic,
+                {"data": json.dumps(ev_doc, ensure_ascii=False)},
+                key=trace.encode("utf-8", errors="ignore"),
+            )
+            logger.info(
+                "knowledge_pipeline: discovery forwarded tenant=%s probe=%s topic=%s",
+                tenant_id, probe, discovery_topic,
+            )
+        except Exception as exc:
+            logger.warning(
+                "knowledge_pipeline: discovery forward err tenant=%s probe=%s err=%s",
+                tenant_id, probe, exc,
+            )
+
     logger.debug("knowledge_pipeline: discovery probe=%s agent=%s", probe, agent_id)
 
 

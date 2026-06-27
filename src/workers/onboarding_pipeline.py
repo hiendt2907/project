@@ -26,6 +26,11 @@ async def accumulate_discovery_evidence(ctx: WorkerHandlerContext, ev_doc: dict[
     probe = str(ev_doc.get("probe") or "unknown")
     trace = str(ev_doc.get("trace_id") or "")
     fact = ev_doc.get("extracted_fact") or {}
+    if isinstance(fact, str):
+        try:
+            fact = json.loads(fact)
+        except Exception:
+            fact = {}
     discovery_data = fact.get("discovery_data") if isinstance(fact, dict) else None
     if not isinstance(discovery_data, dict):
         logger.warning("onboarding_pipeline: empty discovery_data probe=%s tenant=%s", probe, tenant_id)
