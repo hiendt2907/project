@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { Sidebar } from "@/components/sidebar";
-import { Radio, AlertTriangle } from "lucide-react";
+import { Radio, AlertTriangle, Trash2 } from "lucide-react";
 import { LANE_BORDER, LANE_DOT } from "@/components/shared/lane-tokens";
 import type { RecentTrace } from "@/app/api/trace/recent/route";
 import {
@@ -40,7 +40,7 @@ function useRecentTraces(liveSeq: number, connected: boolean) {
     return () => clearInterval(t);
   }, [fetch_, liveSeq, connected]);
 
-  return { traces, source };
+  return { traces, source, refresh: fetch_ };
 }
 
 function TraceListItem({
@@ -83,12 +83,38 @@ function TraceListItem({
 // Page
 // ─────────────────────────────────────────────────────────────────────────────
 
+function usePurgeTraces(onPurged: () => void) {
+  const [purging, setPurging] = useState(false);
+
+  const purge = useCallback(async () => {
+    if (purging) return;
+    if (!window.confirm("Purge all active traces? This clears the pipeline dashboard view.")) {
+      return;
+    }
+    setPurging(true);
+    try {
+      await fetch("/api/trace/purge", { method: "POST" });
+      onPurged();
+    } catch {
+      // best-effort — the list will simply refresh on the next poll/SSE tick
+    } finally {
+      setPurging(false);
+    }
+  }, [purging, onPurged]);
+
+  return { purge, purging };
+}
+
 export default function PipelinePage() {
   const [now, setNow] = useState(() => Date.now());
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
 
   const { connected, eventSeq, lastTraceId } = useTraceEventStream();
-  const { traces, source: listSource } = useRecentTraces(eventSeq, connected);
+  const { traces, source: listSource, refresh: refreshTraces } = useRecentTraces(eventSeq, connected);
+  const { purge, purging } = usePurgeTraces(() => {
+    setSelectedTraceId(null);
+    refreshTraces();
+  });
   const pipelineSeq = lastTraceId === selectedTraceId ? eventSeq : 0;
   const { pipeline, loading } = usePipelineTrace(selectedTraceId, pipelineSeq, connected);
 
@@ -129,8 +155,17 @@ export default function PipelinePage() {
 
           {/* LEFT: Incident list */}
           <aside className="w-56 shrink-0 flex flex-col border-r border-zinc-800 overflow-y-auto">
-            <div className="px-3 py-2 border-b border-zinc-800/60">
+            <div className="px-3 py-2 border-b border-zinc-800/60 flex items-center justify-between">
               <span className="text-[8px] uppercase tracking-widest text-zinc-600">Active Traces</span>
+              <button
+                onClick={purge}
+                disabled={purging || traces.length === 0}
+                title="Purge all active traces"
+                className="flex items-center gap-1 text-[8px] uppercase tracking-wider text-zinc-600 hover:text-red-400 disabled:opacity-30 disabled:hover:text-zinc-600 transition-colors"
+              >
+                <Trash2 size={10} />
+                {purging ? "purging…" : "purge"}
+              </button>
             </div>
             {traces.length === 0 ? (
               <div className="flex flex-col items-center justify-center flex-1 gap-2 text-zinc-700 px-4 text-center">

@@ -412,6 +412,31 @@ async def trace_pipeline(trace_id: str, request: Request) -> JSONResponse:
     )
 
 
+@router.post("/purge")
+async def trace_purge(request: Request) -> JSONResponse:
+    """Clear all Active Trace dashboard state — self-service purge so an operator
+    doesn't have to ask engineering to clear Redis by hand.
+
+    Deletes the omni:trace:events stream (source for /recent) plus every
+    omni:trace:stages:*, omni:trace:logs:*, omni:trace:advisory:* key. Evidence
+    cluster dedup state (omni:evcluster:*) is left untouched on purpose — wiping
+    the dashboard view must not erase incident memory used for repeat suppression.
+    """
+    redis = _get_redis(request)
+    deleted = 0
+    try:
+        deleted += await redis.delete(_EVENTS_STREAM)
+        for prefix in (_STAGES_KEY_PREFIX, _LOGS_KEY_PREFIX, _ADVISORY_KEY_PREFIX):
+            keys = [key async for key in redis.scan_iter(match=f"{prefix}*", count=500)]
+            if keys:
+                deleted += await redis.delete(*keys)
+    except Exception as exc:
+        log.error("[trace/purge] redis error: %s", exc)
+        raise HTTPException(status_code=503, detail="redis error") from exc
+    log.info("[trace/purge] cleared active traces, keys_deleted=%d", deleted)
+    return JSONResponse({"purged": True, "keys_deleted": deleted})
+
+
 def _build_pending_stages(started_at: float) -> list[dict[str, Any]]:
     return [
         {"stage": s, "status": "pending", "ts": 0, "detail": "", "elapsed_ms": 0}

@@ -185,3 +185,55 @@ class TestTracePipelineRoute:
 
         body = resp.json()
         assert body["verdict"] == "SUGGEST_REMEDIATION"
+
+
+# ── /trace/purge route ────────────────────────────────────────────────────────
+
+class TestTracePurgeRoute:
+    async def test_purge_clears_stages_logs_advisory_and_event_stream(self) -> None:
+        redis = FakeRedis(decode_responses=True)
+        await mark_stage(redis, "trace-purge-1", "EVIDENCE", "ok", detail="x")
+        await mark_stage(redis, "trace-purge-2", "SCHEMA", "ok", detail="verdict=foo")
+        await redis.rpush("omni:trace:logs:trace-purge-1", json.dumps({"line": "hi"}))
+        await redis.set("omni:trace:advisory:trace-purge-1", json.dumps({"advisory": {}}))
+
+        app = _make_app(redis)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post("/trace/purge")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["purged"] is True
+        assert body["keys_deleted"] > 0
+
+        assert await redis.exists("omni:trace:stages:trace-purge-1") == 0
+        assert await redis.exists("omni:trace:stages:trace-purge-2") == 0
+        assert await redis.exists("omni:trace:logs:trace-purge-1") == 0
+        assert await redis.exists("omni:trace:advisory:trace-purge-1") == 0
+        assert await redis.exists("omni:trace:events") == 0
+
+    async def test_purge_leaves_evidence_cluster_dedup_state_untouched(self) -> None:
+        redis = FakeRedis(decode_responses=True)
+        await redis.set("omni:evcluster:seen:somefp", json.dumps({"total_count": 5}))
+        await mark_stage(redis, "trace-purge-3", "EVIDENCE", "ok", detail="x")
+
+        app = _make_app(redis)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post("/trace/purge")
+
+        assert resp.status_code == 200
+        assert await redis.exists("omni:evcluster:seen:somefp") == 1
+
+    async def test_purge_redis_none_returns_503(self) -> None:
+        app = _make_app(redis=None)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post("/trace/purge")
+        assert resp.status_code == 503
+
+    async def test_purge_with_no_traces_returns_zero_deleted(self) -> None:
+        redis = FakeRedis(decode_responses=True)
+        app = _make_app(redis)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post("/trace/purge")
+        assert resp.status_code == 200
+        assert resp.json()["keys_deleted"] == 0

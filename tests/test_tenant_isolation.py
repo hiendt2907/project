@@ -513,7 +513,7 @@ class TestAgentWebhookTenantIsolation:
             resp = await c.post("/webhook/agent/evidence", json={
                 "agent_id": "ag-1", "hostname": "h1", "tenant_id": "spoofed-tenant",
                 "evidence": [{
-                    "trace_id": "t1", "probe": "p", "result": "PASSED",
+                    "trace_id": "t1", "probe": "p", "result": "FAILED",
                     "extracted_fact": {"x": 1}, "lane": "SYS_RESOURCE",
                 }],
             })

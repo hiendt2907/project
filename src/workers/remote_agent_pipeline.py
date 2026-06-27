@@ -23,7 +23,7 @@ from pkg.reasoning.evidence_fingerprint import fingerprint_evidence
 from workers.handler_context import WorkerHandlerContext
 from workers.remote_advisor import analyze_cluster
 from workers.remote_diagnostic_archiver import write_lessons
-from workers.remote_triage import triage_cluster
+from workers.remote_triage import quick_urgency_no_rag, triage_cluster
 from workers.telegram_advisory_emitter import render_advisory_to_telegram
 from workers.remote_diagnosis_emitter import emit_diagnosis_to_telegram
 from workers.pipeline_stages import mark_stage
@@ -52,6 +52,41 @@ _NOTIFY_TIERS = frozenset({"critical", "high"})
 _RESEARCH_ROUTES = frozenset({"UNKNOWN_RESEARCH"})
 
 _DISCOVERY_EVIDENCE_TOPIC_DEFAULT = "omni-discovery-evidence"
+
+# Side-channel for healthy remote_system_metrics heartbeat samples — kept out of
+# Active Traces (no mark_stage), readable via GET /agents/remote/{agent_id}/baseline.
+_BASELINE_OK_PREFIX = "omni:remote_agent:baseline_ok:"
+_BASELINE_OK_TTL_SEC = 600
+
+# Side-channel for "all logs clean" heartbeat samples from remote_log_errors probe.
+_LOG_BASELINE_PREFIX = "omni:remote_agent:log_baseline:"
+_LOG_BASELINE_TTL_SEC = 300
+
+
+async def _store_healthy_baseline_sample(
+    redis: Any, agent_id: str, fact: dict[str, Any], zscores: dict[str, float]
+) -> None:
+    try:
+        import time
+
+        snapshot = {"ts": int(time.time()), "fact": fact, **zscores}
+        await redis.set(
+            f"{_BASELINE_OK_PREFIX}{agent_id}", json.dumps(snapshot), ex=_BASELINE_OK_TTL_SEC
+        )
+    except Exception as exc:  # noqa: BLE001 — side-channel write is best-effort
+        logger.warning("[RAP] store_healthy_baseline_sample failed agent=%s err=%r", agent_id, exc)
+
+
+async def _store_log_baseline_sample(redis: Any, agent_id: str, extracted: dict[str, Any]) -> None:
+    try:
+        import time
+
+        snapshot = {"ts": int(time.time()), "fact": extracted}
+        await redis.set(
+            f"{_LOG_BASELINE_PREFIX}{agent_id}", json.dumps(snapshot), ex=_LOG_BASELINE_TTL_SEC
+        )
+    except Exception as exc:  # noqa: BLE001 — side-channel write is best-effort
+        logger.warning("[RAP] store_log_baseline_sample failed agent=%s err=%r", agent_id, exc)
 
 
 async def handle_discovery_evidence(
@@ -129,6 +164,8 @@ async def handle_remote_agent_evidence(
     # blind to them. Feed agent-reported cpu/mem/disk into a per-host rolling
     # baseline and stamp z-scores onto the evidence so the resource lane gets a
     # real "normal for THIS host" signal instead of a static threshold.
+    result = str(ev_doc.get("result") or "PASSED")
+    zscores: dict[str, float] = {}
     if probe == "remote_system_metrics":
         try:
             from anomaly.remote_host_baseline import update_remote_host_baseline
@@ -145,8 +182,24 @@ async def handle_remote_agent_evidence(
         except Exception as exc:  # noqa: BLE001 — baseline is best-effort
             logger.warning("[RAP] remote_host_baseline failed trace=%s err=%r", trace, exc)
 
+        # Heartbeat sample (threshold not breached, no 3σ baseline breach) carries
+        # no diagnosis signal — feeding it through cluster/triage/mark_stage just
+        # spams Active Traces with one "healthy" entry per host per collect cycle.
+        # Park it in a side-channel snapshot instead; only a real breach proceeds
+        # into the pipeline below.
+        is_anomalous = result == "FAILED" or any(abs(v) > 3.0 for v in zscores.values())
+        if not is_anomalous:
+            await _store_healthy_baseline_sample(ctx.redis, agent_id, extracted, zscores)
+            return ""
+
+    # ── Container log PASSED (no surge) — park in side-channel, skip pipeline ──
+    # A clean log scan has no diagnosis signal; feeding it through cluster/triage
+    # just floods Active Traces with one "healthy" entry per host per collect cycle.
+    if probe == "remote_log_errors" and result == "PASSED":
+        await _store_log_baseline_sample(ctx.redis, agent_id, extracted)
+        return ""
+
     # ── Stage 2: Cluster ──────────────────────────────────────────────────
-    result = str(ev_doc.get("result") or "PASSED")
     fp = fingerprint_evidence({"probe": probe, "result": result, "alert_hint": alert_hint, "raw": raw})
     domain = detect_domain(probe, alert_hint, raw, lane, labels=labels)
 
@@ -157,17 +210,42 @@ async def handle_remote_agent_evidence(
         await mark_stage(ctx.redis, trace, "EVIDENCE", "fail", detail=f"cluster_upsert_failed: {exc}", lane=lane)
         return ""
 
+    # ── Repeat-cluster fast-path — skip RAG triage for non-urgent repeats ───
+    # An ongoing condition that fired last cycle (is_new=False) only needs a
+    # cheap urgency re-assessment; if urgency hasn't escalated to notify tier
+    # we exit here without a RAG round-trip or an Active Trace entry.
+    # Critical/high signals still proceed to full triage so escalation is
+    # detected and RAG playbook lookup runs.
+    if not cluster.is_new:
+        fast_urgency = quick_urgency_no_rag(cluster)
+        if fast_urgency not in _NOTIFY_TIERS:
+            logger.debug(
+                "[RAP] repeat_suppressed_fast fp=%s domain=%s urgency=%s count=%d",
+                fp, domain, fast_urgency, cluster.count,
+            )
+            return f"remote_agent:repeat_suppressed:{fast_urgency}"
+
     logger.info(
         "[RAP] cluster fp=%s domain=%s count=%d is_new=%s is_storm=%s",
         fp, domain, cluster.count, cluster.is_new, cluster.is_storm,
     )
+
+    # ── Stage 3: Triage ───────────────────────────────────────────────────
+    triage = await triage_cluster(ctx, cluster)
+
+    # Safety net: repeat cluster whose fast-path estimated high/critical but
+    # RAG triage downgraded it (e.g. known-normal pattern) — no Active Trace.
+    if not cluster.is_new and triage.urgency not in _NOTIFY_TIERS:
+        logger.debug(
+            "[RAP] repeat_cluster_suppressed fp=%s count=%d urgency=%s route=%s — no new trace",
+            fp, cluster.count, triage.urgency, triage.route,
+        )
+        return f"remote_agent:{triage.route}:repeat_suppressed"
+
     await mark_stage(
         ctx.redis, trace, "EVIDENCE", "ok",
         detail=f"remote agent={agent_id} domain={domain} probe={probe}", lane=lane,
     )
-
-    # ── Stage 3: Triage ───────────────────────────────────────────────────
-    triage = await triage_cluster(ctx, cluster)
 
     logger.info(
         "[RAP] triage fp=%s route=%s urgency=%s",

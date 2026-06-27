@@ -21,6 +21,8 @@ _REMOTE_PREFIX = "omni:remote_agent:registry:"
 _EPS_PREFIX = "omni:remote_agent:eps:"
 _METRICS_PREFIX = "omni:remote_agent:metrics:"
 _LOGS_PREFIX = "omni:remote_agent:logs:"
+_CHECKS_PREFIX = "omni:remote_agent:checks:"
+_BASELINE_OK_PREFIX = "omni:remote_agent:baseline_ok:"
 _STALE_SEC = 90
 _REMOTE_STALE_SEC = 120
 _EPS_WINDOW_MS = 60_000
@@ -224,6 +226,61 @@ async def remote_agent_logs(agent_id: str, request: Request, n: int = 50) -> JSO
     })
 
 
+@router.get("/remote/{agent_id}/checks")
+async def remote_agent_checks(agent_id: str, request: Request) -> JSONResponse:
+    """Last clean (PASSED) check per probe — the side-channel for results that
+    never reach the diagnostic pipeline, so agent health stays inspectable."""
+    if not _AGENT_ID_RE.fullmatch(agent_id):
+        raise HTTPException(status_code=422, detail="Invalid agent_id")
+    redis = _get_redis(request)
+    checks_key = f"{_CHECKS_PREFIX}{agent_id}"
+
+    try:
+        raw_checks = await redis.hgetall(checks_key)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Redis error: {e}") from e
+
+    checks: dict[str, dict] = {}
+    for probe, raw in (raw_checks or {}).items():
+        try:
+            checks[probe] = json.loads(raw)
+        except Exception:
+            pass
+
+    return JSONResponse(content={
+        "agent_id": agent_id,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "checks": checks,
+    })
+
+
+@router.get("/remote/{agent_id}/baseline")
+async def remote_agent_baseline(agent_id: str, request: Request) -> JSONResponse:
+    """Latest healthy `remote_system_metrics` sample (3σ baseline z-scores) — the
+    side-channel for heartbeat data that worker/remote_agent_pipeline diverts
+    away from Active Traces because it carries no diagnosis signal."""
+    if not _AGENT_ID_RE.fullmatch(agent_id):
+        raise HTTPException(status_code=422, detail="Invalid agent_id")
+    redis = _get_redis(request)
+    baseline_key = f"{_BASELINE_OK_PREFIX}{agent_id}"
+
+    try:
+        raw_baseline = await redis.get(baseline_key)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Redis error: {e}") from e
+
+    try:
+        baseline = json.loads(raw_baseline) if raw_baseline else None
+    except Exception:
+        baseline = None
+
+    return JSONResponse(content={
+        "agent_id": agent_id,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "baseline": baseline,
+    })
+
+
 @router.delete("/remote/{agent_id}")
 async def deregister_remote_agent(agent_id: str, request: Request) -> JSONResponse:
     """Force-deregister a remote agent — removes all Redis keys for this agent."""
@@ -237,6 +294,8 @@ async def deregister_remote_agent(agent_id: str, request: Request) -> JSONRespon
         f"{_METRICS_PREFIX}{agent_id}",
         f"{_EPS_PREFIX}{agent_id}",
         f"{_LOGS_PREFIX}{agent_id}",
+        f"{_CHECKS_PREFIX}{agent_id}",
+        f"{_BASELINE_OK_PREFIX}{agent_id}",
     ]
     deleted = 0
     for k in keys_to_delete:

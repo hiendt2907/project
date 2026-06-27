@@ -180,7 +180,8 @@ class TestLogCollector:
             results = await collect_log_errors([fname], "host-1")
             assert len(results) == 1
             assert results[0]["result"] == "FAILED"
-            assert results[0]["extracted_fact"]["error_count"] >= _ERROR_THRESHOLD
+            assert results[0]["extracted_fact"]["failed_file_count"] == 1
+            assert results[0]["extracted_fact"]["failed_files"][0]["error_count"] >= _ERROR_THRESHOLD
         finally:
             os.unlink(fname)
 

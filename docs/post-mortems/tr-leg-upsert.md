@@ -1,6 +1,6 @@
 # Incident Post-Mortem — tr-leg-upsert
 
-**Date:** 2026-06-22T03:55:21Z
+**Date:** 2026-06-26T23:42:56Z
 **Outcome:** VERIFIED_SUCCESS
 
 ## Summary

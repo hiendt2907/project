@@ -8,7 +8,7 @@
 
 | Lane | Signal | Key file |
 |---|---|---|
-| 1 SYS_RESOURCE | 3σ z-score CPU/mem | `anomaly/three_sigma.py`, `baseline_snapshot.py` |
+| 1 SYS_RESOURCE | 3σ z-score CPU/mem | `anomaly/three_sigma.py` (in-cluster), `anomaly/remote_host_baseline.py` (remote-host) |
 | 2 SYS_HARD_FAIL | OS state machine + LLM | `os_state_validator.py`, `AnalystAdvisory` schema |
 | 3 APP_HTTP | HTTP status classes (5xx/429/401) | `log_surge_probe.py` |
 | 4 SIEM_SECURITY | FinGuard incidents, kill-chain | `siem_reasoning.py`, `_siem_diagnosis_from_batch()` |
@@ -18,9 +18,9 @@
 
 ## KNOWLEDGE PIPELINE (2026-06-27, commit c4635ab)
 
-`INV_KNOWLEDGE_NOT_ALERT`: non-ANOMALY signals KHÔNG vào `omni-diagnostic-evidence`.
-- `signal_type` trong `build_envelope()`: ANOMALY → `omni-diagnostic-evidence`; METRIC_SAMPLE/LOG_SAMPLE/DISCOVERY → `omni-knowledge-evidence`
-- `src/workers/knowledge_pipeline.py`: dispatcher không RAG/LLM; rolling log LPUSH+LTRIM 500/24h; change detection diff → Telegram approve/reject
+`INV_KNOWLEDGE_NOT_ALERT`: non-ANOMALY signals KHÔNG vào `omni-diagnostic-evidence`. Routing ở gateway (`agent_webhook.py`), không phải worker.
+- `signal_type` trong `build_envelope()` (default=ANOMALY): ANOMALY → `omni-diagnostic-evidence`; METRIC_SAMPLE/LOG_SAMPLE/DISCOVERY → `omni-knowledge-evidence`
+- ANOMALY (RemoteAgent) vẫn qua RAG+LLM đầy đủ: `remote_agent_pipeline.py` Stage2-6 (cluster→triage RAG→research LLM→learn→notify); chỉ healthy/PASSED rẽ Redis side-channel (`omni:remote_agent:baseline_ok:` TTL 600s), bỏ qua pipeline. "No RAG/LLM" chỉ đúng cho `knowledge_pipeline.py` dispatcher (non-ANOMALY); rolling log LPUSH+LTRIM 500/24h; change detection diff → Telegram approve/reject
 - `src/anomaly/remote_host_baseline.py`: `ConfidenceLevel` (STATIC_GUARD 0-24 / LEARNING 25-49 / ASSISTED 50-74 / AUTONOMOUS 75-100); `add_confidence(delta)`, `decay_confidence(-5/day)`; key `omni:3sigma:confidence:{tenant}:{host}` TTL=30d
 - `src/remote_agent/discovery.py`: `save/load_discovery_snapshot()`, `diff_discovery()` (SERVICE_ADDED/REMOVED, PORT_OPENED/CLOSED); agent re-discovery mỗi 1h
 - `src/services/knowledge/document_store.py`: `ingest_customer_knowledge()` — metadata only (INV_DATA_RESIDENCY); +20 confidence per doc
@@ -28,7 +28,7 @@
 
 ## PIPELINE
 
-Remote agents → `omni-knowledge-evidence` → knowledge_pipeline (no RAG/LLM)
+Remote agents (non-ANOMALY) → `omni-knowledge-evidence` → knowledge_pipeline (no RAG/LLM)
 Alert sources → `omni-diagnostic-evidence` → analyst (RAG → LLM → AnalystAdvisory → CRAT [FAIL-CLOSED] → SUGGEST/EXECUTE/HITL)
 `omni-actions` → executor → `omni-action-feedback` → re-evaluation
 
@@ -42,6 +42,7 @@ Alert sources → `omni-diagnostic-evidence` → analyst (RAG → LLM → Analys
 | `core` | deep_scout, forecast, baseline_snapshot, proactive |
 | `executor` | kafka_actions_loop |
 | `gateway` | FastAPI HTTP → kafka omni-alerts (separate image) |
+| `onboarding` | discovery-evidence worker (pod `omni-onboarding`, riêng `omni-fullstack`) |
 
 ## INVARIANTS (vi phạm = bug)
 
@@ -53,8 +54,7 @@ Alert sources → `omni-diagnostic-evidence` → analyst (RAG → LLM → Analys
 - `kafka_evidence_loop` dùng `auto_offset_reset="earliest"` — KHÔNG đổi thành `latest`.
 - `omni-audit-chain` topic cần message key (compact policy).
 - `INV_NO_RESTART_ON_BROKEN_SPEC` · `INV_READ_BEFORE_MUTATE` · `INV_NAMESPACE_ISOLATION` · `ERR_REA_NO_PHYSICAL_PROOF` · `ERR_GOV_UNAUTHORIZED_MUTATION`
-- `INV_KNOWLEDGE_NOT_ALERT`: non-ANOMALY signals KHÔNG vào omni-diagnostic-evidence.
-- `INV_DATA_RESIDENCY`: tài liệu khách hàng chỉ lưu metadata trên Omni (file_id + summary ≤2000 chars).
+- `INV_KNOWLEDGE_NOT_ALERT` (xem KNOWLEDGE PIPELINE) · `INV_DATA_RESIDENCY`: tài liệu khách hàng chỉ lưu metadata trên Omni (file_id + summary ≤2000 chars).
 - RBAC: `omni-worker` SA không có Secrets. Executor: NEVER cluster-admin.
 - `OMNI_LLM_NUM_CTX` default 8192. Dùng `build_llm_options(ctx)` — không inline getattr.
 - Autonomy tier: `resolve_tier` ưu tiên Redis cache `omni:cfg:tier:{tenant}` > PG > env. Đổi env phải DEL cache.

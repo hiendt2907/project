@@ -144,12 +144,13 @@ class TestHardBlock:
             _evidence(result="SKIPPED", trace_id="t2"),                           # blocked
             _evidence(result="PASSED", alert_hint="", raw="", extracted_fact={}, trace_id="t3"),  # blocked
             _evidence(
+                probe="remote_system_metrics",
                 result="PASSED",
                 extracted_fact={"cpu_pct": 10.0, "mem_pct": 30.0},
                 alert_hint="",
                 raw="",
                 trace_id="t4",
-            ),  # baseline — passes
+            ),  # baseline metrics — exempt from clean-check filter, still enqueued
         ])
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.post("/webhook/agent/evidence", json=body)
@@ -284,6 +285,82 @@ class TestDeduplication:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 await c.post("/webhook/agent/evidence", json=body)
         assert len(kafka.messages) == 4  # all different probes, all pass
+
+
+# ── Clean (PASSED) check side-channel ────────────────────────────────────────
+
+class TestCleanCheckSideChannel:
+    @pytest.mark.asyncio
+    async def test_passed_probe_diverted_from_kafka(self):
+        redis = FakeRedis(decode_responses=True)
+        kafka = _KafkaCapture()
+        app = _make_app(redis, kafka)
+        body = _batch_request([_evidence(
+            probe="remote_disk_usage",
+            result="PASSED",
+            alert_hint="disk usage 41% — checked, clean",
+            raw="/dev/sda1 41% used",
+        )])
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post("/webhook/agent/evidence", json=body)
+        data = resp.json()
+        assert data["enqueued"] == 0
+        assert data["clean_skipped"] == 1
+        assert len(kafka.messages) == 0
+
+    @pytest.mark.asyncio
+    async def test_passed_probe_stored_in_checks_side_channel(self):
+        redis = FakeRedis(decode_responses=True)
+        kafka = _KafkaCapture()
+        app = _make_app(redis, kafka)
+        body = _batch_request([_evidence(
+            probe="remote_disk_usage",
+            result="PASSED",
+            alert_hint="disk usage 41% — checked, clean",
+            raw="/dev/sda1 41% used",
+        )], agent_id="agent-clean-1")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            await c.post("/webhook/agent/evidence", json=body)
+        stored = await redis.hget("omni:remote_agent:checks:agent-clean-1", "remote_disk_usage")
+        assert stored is not None
+        entry = json.loads(stored)
+        assert entry["result"] == "PASSED"
+
+    @pytest.mark.asyncio
+    async def test_failed_probe_still_enqueued_not_diverted(self):
+        redis = FakeRedis(decode_responses=True)
+        kafka = _KafkaCapture()
+        app = _make_app(redis, kafka)
+        body = _batch_request([_evidence(
+            probe="remote_disk_usage",
+            result="FAILED",
+            alert_hint="disk usage 96% — critical",
+            raw="/dev/sda1 96% used",
+        )])
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post("/webhook/agent/evidence", json=body)
+        data = resp.json()
+        assert data["enqueued"] == 1
+        assert data["clean_skipped"] == 0
+
+    @pytest.mark.asyncio
+    async def test_passed_system_metrics_exempt_from_diversion(self):
+        """remote_system_metrics is a continuous baseline feed — must always reach Kafka."""
+        redis = FakeRedis(decode_responses=True)
+        kafka = _KafkaCapture()
+        app = _make_app(redis, kafka)
+        body = _batch_request([_evidence(
+            probe="remote_system_metrics",
+            result="PASSED",
+            alert_hint="",
+            raw="",
+            extracted_fact={"cpu_pct": 12.3, "mem_pct": 45.2},
+        )])
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post("/webhook/agent/evidence", json=body)
+        data = resp.json()
+        assert data["enqueued"] == 1
+        assert data["clean_skipped"] == 0
 
 
 # ── Redis unavailable ─────────────────────────────────────────────────────────

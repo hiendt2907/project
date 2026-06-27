@@ -35,9 +35,9 @@ API_KEY = _CONFIG["api_key"]
 SSH_KEY = os.path.expanduser("~/Downloads/loyalty-uat-ssh-key.pem")
 
 FLEET: list[dict[str, Any]] = [
-    {"host": "10.210.14.86",  "agent_id": "loyalty-uat",   "ssh_user": "root"},
-    {"host": "10.210.14.174", "agent_id": "uat-proxysql",  "ssh_user": "root"},
-    {"host": "10.210.14.248", "agent_id": "uat-proxysql2", "ssh_user": "root"},
+    {"host": "10.210.14.86",  "agent_id": "loyalty_zabbix-uat",    "ssh_user": "root"},
+    {"host": "10.210.14.174", "agent_id": "loyalty_uat-proxysql",  "ssh_user": "root"},
+    {"host": "10.210.14.248", "agent_id": "loyalty_uat-proxysql2", "ssh_user": "root"},
 ]
 
 EXPECTED_VERSION = "1.1.2"

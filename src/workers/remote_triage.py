@@ -135,3 +135,12 @@ async def triage_cluster(ctx: Any, cluster: LogCluster) -> TriageResult:
         cluster.fingerprint, route, urgency,
     )
     return TriageResult(route=route, cluster=cluster, urgency=urgency, recall=None)
+
+
+def quick_urgency_no_rag(cluster: LogCluster) -> str:
+    """Fast urgency assessment without a RAG lookup.
+
+    Used to gate repeat-cluster suppression BEFORE calling triage_cluster,
+    avoiding a RAG round-trip for each collection cycle of an ongoing condition.
+    """
+    return _assess_urgency(cluster)
