@@ -118,10 +118,17 @@ async def map_system_graph_demo() -> None:
         "hostname": "web-01",
         "services": [{"name": "nginx", "status": "running"}, {"name": "redis", "status": "running"}],
         "listeners": [{"port": 80, "service": "nginx"}, {"port": 6379, "service": "redis"}],
+        # Knowledge Graph đa-loại: hạ tầng + mạng + dữ liệu + sở hữu trong MỘT đồ thị.
         "relationships": [
             {"source": "nginx", "relation": "proxies_to", "target": "payment-api", "evidence": "nginx.upstream"},
-            {"source": "payment-api", "relation": "depends_on", "target": "redis", "evidence": "env.REDIS_HOST"},
-            {"source": "payment-api", "relation": "depends_on", "target": "postgres", "evidence": "env.DB_HOST"},
+            {"source_type": "service", "source": "payment-api", "relation": "runs_on",
+             "target_type": "host", "target": "web-01", "evidence": "agent.host"},
+            {"source_type": "service", "source": "payment-api", "relation": "reads",
+             "target_type": "database", "target": "postgres", "evidence": "env.DB_HOST"},
+            {"source_type": "service", "source": "payment-api", "relation": "depends_on",
+             "target": "redis", "evidence": "env.REDIS_HOST"},
+            {"source_type": "team", "source": "payments", "relation": "owns",
+             "target_type": "service", "target": "payment-api", "evidence": "codeowners"},
         ],
     }
     ctx = UnderstandingContext(
@@ -132,14 +139,16 @@ async def map_system_graph_demo() -> None:
         model=SystemModel(scope="acme/web-01"),
     )
     await map_system_graph(ctx)
-    print("\n=== map_system_graph (Discovery → Fact → System Graph) ===")
+    print("\n=== map_system_graph (Discovery → Fact → Knowledge Graph) ===")
     for line in ctx.trace:
         print("  " + line)
     print("  GRAPH edges:")
     for e in ctx.model.edges:
         print(f"    {e.subject} --{e.predicate}--> {e.obj}")
+    print(f"  PROJECTION ownership: {[e.triple for e in ctx.model.project('owns')]}")
+    print(f"  PROJECTION data-access: {[e.triple for e in ctx.model.project('reads', 'writes')]}")
     for t in sorted(ctx.model.unknown_edge_targets):
-        print(f"  ⚠️ UNKNOWN EDGE TARGET (chưa quan sát): {t} → hạt giống câu hỏi kiến trúc")
+        print(f"  ⚠️ UNKNOWN NODE (chưa quan sát): {t} → hạt giống câu hỏi kiến trúc")
 
 
 async def inspect_host_demo() -> None:

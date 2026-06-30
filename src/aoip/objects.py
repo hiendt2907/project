@@ -33,11 +33,24 @@ TERMINAL_ACTION_STATES = frozenset(
 )
 
 
-# ── Relational predicate vocabulary (graph edges = Fact quan hệ) ──────────────
-# Edge KHÔNG phải noun mới: là Fact có predicate quan hệ (subject→obj). Tập đóng
-# để SystemModel phân biệt "thuộc tính" (exposes_port/runs_service) với "quan hệ".
+# ── Knowledge-Graph edge vocabulary (edge = Fact quan hệ) ─────────────────────
+# Edge KHÔNG phải noun mới: là Fact có predicate quan hệ (subject→obj). Tập đóng,
+# chuẩn hóa cho TOÀN BỘ tri thức tenant (không riêng dependency của service):
+# hạ tầng, mạng, sở hữu, dữ liệu, nghiệp vụ, bảo mật, quan sát. API/Network/
+# Ownership/Business graph chỉ là projection của cùng KG này (lọc theo predicate).
 RELATIONAL_PREDICATES = frozenset(
-    {"proxies_to", "depends_on", "connects_to", "routes_to"}
+    {
+        # hạ tầng / vị trí
+        "runs_on", "hosts", "depends_on", "connects_to", "routes_to",
+        # mạng / luồng request
+        "proxies_to", "calls", "emits", "consumes",
+        # truy cập dữ liệu
+        "reads", "writes",
+        # sở hữu / nghiệp vụ
+        "owns", "serves",
+        # bảo mật / quan sát
+        "protected_by", "observed_from",
+    }
 )
 
 

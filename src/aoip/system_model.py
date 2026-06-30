@@ -54,23 +54,49 @@ class SystemModel:
         """Node trỏ tới ``node`` (in-edge): ai phụ thuộc vào nó."""
         return tuple(e.subject for e in self.edges if e.obj == node)
 
+    def project(self, *predicates: str) -> tuple[Fact, ...]:
+        """Projection của KG: chỉ edge có predicate cho trước.
+
+        Đây là cách API/Network/Ownership/Business graph ra đời — không phải đồ
+        thị riêng, mà là lát cắt của cùng một Knowledge Graph.
+        """
+        wanted = frozenset(predicates)
+        return tuple(e for e in self.edges if e.predicate in wanted)
+
+    def nodes_of_type(self, prefix: str) -> frozenset[str]:
+        """Mọi node thuộc một loại (theo tiền tố) xuất hiện trong graph."""
+        scheme = f"{prefix}:"
+        nodes: set[str] = set()
+        for e in self.edges:
+            for n in (e.subject, e.obj):
+                if n.startswith(scheme):
+                    nodes.add(n)
+        return frozenset(nodes)
+
     @property
-    def _observed_service_nodes(self) -> frozenset[str]:
-        """Service đã QUAN SÁT chạy thật (từ Fact runs_service) ở dạng node 'svc:'."""
-        return frozenset(f"svc:{f.obj}" for f in self.facts if f.predicate == "runs_service")
+    def known_nodes(self) -> frozenset[str]:
+        """Node ĐÃ QUAN SÁT được (mọi loại), không chỉ suy từ edge.
+
+        Bằng chứng quan sát = là subject của một Fact THUỘC TÍNH (predicate phi
+        quan hệ, vd exposes_port/runs_service trên host); cộng service quan sát
+        chạy thật (obj của runs_service → node 'svc:'). Việc một node chỉ xuất
+        hiện làm đầu/đuôi của EDGE không chứng minh nó tồn tại.
+        """
+        attr_subjects = {
+            f.subject for f in self.facts if f.predicate not in RELATIONAL_PREDICATES
+        }
+        observed_services = {
+            f"svc:{f.obj}" for f in self.facts if f.predicate == "runs_service"
+        }
+        return frozenset(attr_subjects | observed_services)
 
     @property
     def unknown_edge_targets(self) -> frozenset[str]:
-        """Edge trỏ tới service CHƯA quan sát được → câu hỏi kiến trúc (Interview sau).
+        """Edge trỏ tới node CHƯA quan sát được → câu hỏi kiến trúc (Interview sau).
 
-        Never assume: AI biết "payment depends_on analytics" nhưng chưa từng thấy
-        'analytics' chạy → đánh dấu Unknown, KHÔNG bịa nó tồn tại.
+        Never assume: AI biết "payment reads db:orders" nhưng chưa từng thấy
+        db:orders → đánh dấu Unknown, KHÔNG bịa nó tồn tại. Tổng quát mọi loại node.
         """
-        # "Đã biết" = service quan sát chạy thật (runs_service). Việc một node xuất
-        # hiện làm SUBJECT của edge KHÔNG chứng minh nó tồn tại (vẫn có thể là suy
-        # diễn từ config) → không tính là observed.
-        observed = self._observed_service_nodes
         targets = {e.obj for e in self.edges}
-        return frozenset(
-            t for t in targets if t not in observed and not t.startswith("host:")
-        )
+        known = self.known_nodes
+        return frozenset(t for t in targets if t not in known)
