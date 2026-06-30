@@ -104,6 +104,42 @@ async def main() -> None:
     await understand_demo()
     await understand_real_profile_demo()
     await inspect_host_demo()
+    await map_system_graph_demo()
+
+
+async def map_system_graph_demo() -> None:
+    """Discovery → Fact → System Graph: AI dựng topology + tự thấy Unknown Edge."""
+    from aoip.capabilities.map_system_graph import map_system_graph
+    from aoip.discovery_backend import VMProfileDiscoveryBackend
+    from aoip.system_model import SystemModel
+    from aoip.understanding import UnderstandingContext
+
+    profile = {
+        "hostname": "web-01",
+        "services": [{"name": "nginx", "status": "running"}, {"name": "redis", "status": "running"}],
+        "listeners": [{"port": 80, "service": "nginx"}, {"port": 6379, "service": "redis"}],
+        "relationships": [
+            {"source": "nginx", "relation": "proxies_to", "target": "payment-api", "evidence": "nginx.upstream"},
+            {"source": "payment-api", "relation": "depends_on", "target": "redis", "evidence": "env.REDIS_HOST"},
+            {"source": "payment-api", "relation": "depends_on", "target": "postgres", "evidence": "env.DB_HOST"},
+        ],
+    }
+    ctx = UnderstandingContext(
+        host="web-01",
+        scope="acme/web-01",
+        backend=VMProfileDiscoveryBackend(profile),
+        capability=CapabilityState(capability_id="map_system_graph", scope="acme/web-01"),
+        model=SystemModel(scope="acme/web-01"),
+    )
+    await map_system_graph(ctx)
+    print("\n=== map_system_graph (Discovery → Fact → System Graph) ===")
+    for line in ctx.trace:
+        print("  " + line)
+    print("  GRAPH edges:")
+    for e in ctx.model.edges:
+        print(f"    {e.subject} --{e.predicate}--> {e.obj}")
+    for t in sorted(ctx.model.unknown_edge_targets):
+        print(f"  ⚠️ UNKNOWN EDGE TARGET (chưa quan sát): {t} → hạt giống câu hỏi kiến trúc")
 
 
 async def inspect_host_demo() -> None:

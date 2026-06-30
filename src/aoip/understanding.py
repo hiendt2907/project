@@ -17,6 +17,7 @@ from aoip.capability import CapabilityState, assess_knowledge
 from aoip.discovery_backend import HostDiscoveryBackend
 from aoip.objects import Communication, Fact, Finding, Hypothesis, Observation
 from aoip.service_knowledge import expected_ports
+from aoip.system_graph import infer_edges
 from aoip.system_model import SystemModel
 
 
@@ -91,6 +92,18 @@ async def verify_services(ctx: UnderstandingContext) -> None:
         )
         confirmed += 1
     ctx.log("Verify", f"{confirmed} service(s) verified → Fact")
+
+
+async def infer_topology(ctx: UnderstandingContext) -> None:
+    """Suy ra edge quan hệ (proxies_to/depends_on/connects_to) từ hint cấu trúc.
+
+    Edge = Fact quan hệ → đưa vào ctx.facts để model_host gấp chung. Đây là bước
+    AI bắt đầu hiểu "hệ thống nối với nhau thế nào", không chỉ liệt kê service.
+    """
+    obs = ctx.observations[-1]
+    edges = infer_edges(obs.data.get("relationships", []), default_evidence=obs.source)
+    ctx.facts.extend(edges)
+    ctx.log("Hypothesize", f"{len(edges)} topology edge(s) inferred")
 
 
 async def model_host(ctx: UnderstandingContext) -> None:
@@ -205,6 +218,23 @@ async def assess_expectations(ctx: UnderstandingContext) -> None:
         "Assess",
         f"expectation coverage={coverage:.2f} → K={ctx.capability.dimensions['K']} "
         f"score={ctx.capability.score:.4f} maturity={ctx.capability.maturity.value}",
+    )
+
+
+async def assess_graph(ctx: UnderstandingContext) -> None:
+    """Đóng vòng theo độ phân giải của graph: edge nối tới node đã biết / tổng edge.
+
+    Unknown Edge (trỏ tới service chưa quan sát) kéo coverage xuống → AI tự biết
+    bức tranh còn lỗ hổng kiến trúc, là nơi câu hỏi thông minh sẽ nhắm vào.
+    """
+    total = len(ctx.model.edges)
+    unknown = len(ctx.model.unknown_edge_targets)
+    coverage = 1.0 if total == 0 else max(0.0, (total - unknown) / total)
+    ctx.capability = assess_knowledge(ctx.capability, coverage)
+    ctx.log(
+        "Assess",
+        f"graph edges={total} unknown_targets={unknown} coverage={coverage:.2f} "
+        f"→ K={ctx.capability.dimensions['K']} maturity={ctx.capability.maturity.value}",
     )
 
 

@@ -33,6 +33,14 @@ TERMINAL_ACTION_STATES = frozenset(
 )
 
 
+# ── Relational predicate vocabulary (graph edges = Fact quan hệ) ──────────────
+# Edge KHÔNG phải noun mới: là Fact có predicate quan hệ (subject→obj). Tập đóng
+# để SystemModel phân biệt "thuộc tính" (exposes_port/runs_service) với "quan hệ".
+RELATIONAL_PREDICATES = frozenset(
+    {"proxies_to", "depends_on", "connects_to", "routes_to"}
+)
+
+
 # ── Runtime objects (immutable) ──────────────────────────────────────────────
 @dataclass(frozen=True)
 class Observation:

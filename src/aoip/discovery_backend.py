@@ -105,7 +105,12 @@ class VMProfileDiscoveryBackend:
         return {"services": services, "unknowns": unknowns}
 
     async def discover(self, host: str) -> dict:
-        return {"host": host, **self._inventory()}
+        # ``relationships`` (hint topology, metadata) đi kèm để builder suy ra edge.
+        return {
+            "host": host,
+            "relationships": self._profile.get("relationships", []),
+            **self._inventory(),
+        }
 
     async def probe_port(self, host: str, port: int) -> bool:
         return any(lsn.get("port") == port for lsn in self._listeners())
