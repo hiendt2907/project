@@ -7,8 +7,8 @@ chữa-triệu-chứng lặp vô hạn. Engine sinh tin cậy bằng cách LOẠ
 
 QUAN TRỌNG (giữ lõi tổng quát): engine này KHÔNG biết domain. Nó chỉ biết
 ``Hypothesis`` (có predicted_evidence) + một ``probe`` trả về "evidence có mặt
-không". Tầng domain sinh candidate ở module riêng (``sre_diagnosis.py``) —
-một discipline cụ thể chỉ là plugin trên runtime tổng quát này.
+không". Tầng domain sinh candidate ở module riêng (``capability_diagnosis.py`` +
+``failure_modes.py``) — một discipline cụ thể chỉ là plugin trên runtime tổng quát.
 
 Diagnosis Confidence: cô lập đúng MỘT nguyên nhân → cao; nhiều cái sống → mơ hồ →
 thấp; không cái nào sống → unknown → rất thấp (chặn hành động mù).

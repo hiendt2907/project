@@ -54,30 +54,10 @@ async def test_async_probe_supported():
     assert {f.claim for f in result.findings} == {"process_dead"}
 
 
-async def test_sre_planner_is_domain_separate_from_core():
-    # Core diagnosis KHÔNG nhúng tên domain (redis/cpu/disk...). Domain ở sre_diagnosis.
+async def test_core_engine_is_domain_agnostic():
+    # Core diagnosis KHÔNG nhúng tên domain (service-specific hay command cụ thể).
+    # Tri thức domain nằm ở capability_diagnosis/failure_modes (tách hẳn).
     import aoip.diagnosis as core
     src = open(core.__file__).read().lower()
     for domain_word in ("redis", "systemctl", "dmesg", "oom", "disk_full", "df ", "restart"):
         assert domain_word not in src
-
-
-def test_sre_candidates_have_real_probes_and_evidence():
-    from aoip.sre_diagnosis import sre_root_cause_candidates
-
-    class FakeTransport:
-        target = "h"
-        async def run(self, argv, *, timeout=15.0):
-            joined = " ".join(argv)
-            if "is-active" in joined:
-                return ("inactive\n", 0)   # process dead
-            return ("", 0)
-
-    cands = sre_root_cause_candidates("svc:redis", "h", FakeTransport(), port=6379)
-    claims = {h.claim for h, _ in cands}
-    # ít nhất các nhánh production hay gặp.
-    assert any("process" in c for c in claims)
-    assert any("disk" in c for c in claims)
-    assert any("oom" in c.lower() for c in claims)
-    assert any("network" in c for c in claims)
-    assert all(h.predicted_evidence for h, _ in cands)  # mỗi giả thuyết có evidence dự đoán

@@ -68,9 +68,9 @@ async def run() -> None:
             print(f"  {'⚠️' if f.verdict else '✓'} FINDING: {f.claim}")
 
         # ── Diagnosis Engine: nhiều giả thuyết root-cause + falsification (THẬT) ──
+        from aoip.capability_diagnosis import capability_root_cause_candidates
         from aoip.diagnosis import diagnose
-        from aoip.sre_diagnosis import sre_root_cause_candidates
-        cands = sre_root_cause_candidates(
+        cands = capability_root_cause_candidates(
             "svc:cust-db", "cust-db", backend._t, port=6379, service="redis-server")
         diag = await diagnose(cands)
         ctx.diagnosis_confidence = diag.confidence
