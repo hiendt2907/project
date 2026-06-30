@@ -44,23 +44,51 @@ class AgentStatus:
 
 
 class RemoteAgent:
-    def __init__(self, *, transport, tenant: str, omni) -> None:
+    """Worker mỏng: cầm transport (chạm host) + OmniClient (nói chuyện Control Plane).
+
+    KHÔNG biết Control Plane là in-process hay HTTP — chỉ thấy interface OmniClient.
+    Heartbeat đếm cục bộ (không reach vào backend) → abstraction sạch.
+    """
+
+    def __init__(self, *, transport, tenant: str, omni,
+                 version: str = "1.0.0", capabilities: list[str] | None = None) -> None:
         self.transport = transport
-        self.omni = omni
+        self.omni = omni  # OmniClient
         self.identity: AgentIdentity = derive_identity(transport, tenant)
+        self._version = version
+        self._capabilities = capabilities or ["discovery", "understand_host"]
         self._registered = False
+        self._heartbeats = 0
+        self._active_cmd_id: str | None = None
 
     async def register(self) -> None:
-        self.omni.register_agent(
-            self.identity.agent_id, host=self.identity.host, tenant=self.identity.tenant
+        await self.omni.register(
+            self.identity, version=self._version,
+            capabilities=self._capabilities, platform="linux",
         )
         self._registered = True
 
     async def heartbeat(self) -> None:
-        self.omni.receive_heartbeat(self.identity.agent_id)
+        await self.omni.heartbeat(self.identity)
+        self._heartbeats += 1
 
     async def pull_mission(self) -> str | None:
-        return self.omni.next_mission(self.identity.agent_id)
+        missions = await self.omni.fetch_missions(self.identity.agent_id)
+        if not missions:
+            return None
+        self._active_cmd_id = missions[0]["cmd_id"]
+        return missions[0]["goal"]
+
+    async def report_result(self, *, rc: int = 0, stdout: str = "") -> None:
+        await self.omni.submit_result(
+            self.identity.agent_id, cmd_id=self._active_cmd_id or "", rc=rc, stdout=stdout
+        )
+
+    async def report_evidence(self, items: list[dict]) -> None:
+        await self.omni.submit_evidence(
+            self.identity.agent_id, hostname=self.identity.host,
+            tenant=self.identity.tenant, items=items,
+        )
 
     def status(
         self,
@@ -70,14 +98,13 @@ class RemoteAgent:
         capability_k: float = 0.0,
         next_mission: str | None = None,
     ) -> AgentStatus:
-        rec = self.omni.agent_record(self.identity.agent_id) if self._registered else {}
         return AgentStatus(
             agent_id=self.identity.agent_id,
             host=self.identity.host,
             tenant=self.identity.tenant,
             installed=True,
             registered=self._registered,
-            heartbeats=rec.get("heartbeats", 0),
+            heartbeats=self._heartbeats,
             knowledge_coverage=knowledge_coverage,
             questions_outstanding=questions_outstanding,
             capability_k=capability_k,

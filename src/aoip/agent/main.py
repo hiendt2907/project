@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 
+from aoip.agent.omni_client import HTTPOmniClient, InProcessOmniClient
 from aoip.agent.runtime import RemoteAgent
 from aoip.capabilities.missions import understand_host_mission
 from aoip.capability import CapabilityState
@@ -52,18 +53,27 @@ async def _run_mission(agent: RemoteAgent, goal: str):
 
 
 async def run(args) -> None:
-    omni = Omni()  # control plane (in-process bootstrap)
     transport = _build_transport(args)
-    agent = RemoteAgent(transport=transport, tenant=args.tenant, omni=omni)
+
+    # OmniClient: HTTP tới gateway THẬT nếu có --omni-url; ngược lại in-process sim.
+    sim: Omni | None = None
+    if args.omni_url:
+        omni_client = HTTPOmniClient(args.omni_url, api_key=args.api_key)
+    else:
+        sim = Omni()
+        omni_client = InProcessOmniClient(sim)
+
+    agent = RemoteAgent(transport=transport, tenant=args.tenant, omni=omni_client)
 
     print(f"[bootstrap] identity = {agent.identity.agent_id} host={agent.identity.host}")
     await agent.register()
     await agent.heartbeat()
     print("[bootstrap] registered + heartbeat sent")
 
-    # Omni cấp mission đầu tiên cho host mới (Day-1: hiểu host).
-    omni.assign_mission(agent.identity.agent_id, goal="understand_host")
-    goal = await agent.pull_mission()
+    # Mission đầu tiên (Day-1: hiểu host). Sim tự cấp; HTTP chờ Omni enqueue.
+    if sim is not None:
+        sim.assign_mission(agent.identity.agent_id, goal="understand_host")
+    goal = await agent.pull_mission() or "understand_host"
     print(f"[mission] pulled: {goal}")
 
     mission, ctx = await _run_mission(agent, goal)
@@ -91,6 +101,8 @@ def main() -> None:
     p.add_argument("--host", default=None, help="nhãn host cho LocalTransport")
     p.add_argument("--ssh", default=None, help="user@host chạy qua SSH")
     p.add_argument("--lab-orb", default=None, help="tên VM OrbStack (LAB ONLY)")
+    p.add_argument("--omni-url", default=None, help="URL gateway Omni THẬT (vd http://omni:8090)")
+    p.add_argument("--api-key", default=None, help="tenant API key (Bearer) cho Omni")
     asyncio.run(run(p.parse_args()))
 
 

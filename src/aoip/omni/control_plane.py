@@ -1,10 +1,12 @@
-"""Omni Control Plane — não của hệ thống (EPIC 2, khởi đầu).
+"""Omni stub — SIM/TEST backend, KHÔNG phải Control Plane production.
 
-Reviewer: "Remote Agent chỉ là worker. Não nằm ở Omni." Omni KHÔNG phải dashboard;
-nó là Mission Scheduler + Capability Manager + Registry + Communication Hub. Bản
-khởi đầu này giữ in-process (registry + mission queue per agent) để đóng vòng
-Register→Heartbeat→Assign→Pull thật; backend bền vững (PG/Redis/Kafka đã có trong
-codebase Omni) sẽ wire khi deployment thật yêu cầu — runtime ép, không suy diễn.
+ĐỌC KỸ (ownership): Control Plane THẬT của Omni đã tồn tại ở
+``src/gateway/routes/agent_webhook.py`` + ``agent_commands.py`` (register, commands
+queue, evidence — backed Redis/Kafka). File này KHÔNG phải source-of-truth; nó chỉ
+là backend in-process để ``InProcessOmniClient`` chạy bootstrap/test offline mà
+không cần gateway. Production: agent dùng ``HTTPOmniClient`` trỏ gateway thật.
+
+Giữ tối thiểu: registry + mission queue + result/evidence sink để đóng vòng test.
 """
 from __future__ import annotations
 
@@ -15,6 +17,8 @@ class Omni:
     def __init__(self) -> None:
         self._agents: dict[str, dict] = {}
         self._missions: dict[str, deque[str]] = {}
+        self.results: list[dict] = []
+        self.evidence: list[dict] = []
 
     # ── Registry ─────────────────────────────────────────────────────────────
     def register_agent(self, agent_id: str, *, host: str, tenant: str) -> None:
@@ -41,3 +45,10 @@ class Omni:
     def next_mission(self, agent_id: str) -> str | None:
         queue = self._missions.get(agent_id)
         return queue.popleft() if queue else None
+
+    # ── Result / evidence sink (đối chiếu trong test) ────────────────────────
+    def record_result(self, agent_id: str, *, cmd_id: str, rc: int, stdout: str) -> None:
+        self.results.append({"agent_id": agent_id, "cmd_id": cmd_id, "rc": rc, "stdout": stdout})
+
+    def record_evidence(self, agent_id: str, *, items: list[dict]) -> None:
+        self.evidence.append({"agent_id": agent_id, "items": items})
