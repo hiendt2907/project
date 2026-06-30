@@ -105,6 +105,79 @@ async def main() -> None:
     await understand_real_profile_demo()
     await inspect_host_demo()
     await map_system_graph_demo()
+    await mission_demo()
+
+
+async def mission_demo() -> None:
+    """PIVOT: runtime chạy theo MISSION — capability = composition tự điều phối.
+
+    Không còn run_discovery()/run_completion()/run_reasoning() rời rạc; chỉ khai
+    báo Mission 'understand host/tenant', runtime tự compose. KPI = Mission
+    Completion (% hiểu), đơn vị giá trị khách hàng thấy.
+    """
+    from aoip.capabilities.missions import understand_host_mission
+    from aoip.discovery_backend import VMProfileDiscoveryBackend
+    from aoip.evidence import (
+        EvidenceCompletionEngine,
+        InferenceResolver,
+        RuntimeResolver,
+    )
+    from aoip.system_model import SystemModel
+    from aoip.understanding import UnderstandingContext
+
+    def _ctx(profile: dict, host: str) -> UnderstandingContext:
+        return UnderstandingContext(
+            host=host,
+            scope=f"acme/{host}",
+            backend=VMProfileDiscoveryBackend(profile),
+            capability=CapabilityState(capability_id="understand_host", scope=f"acme/{host}"),
+            model=SystemModel(scope=f"acme/{host}"),
+        )
+
+    web = _ctx({
+        "hostname": "web-01",
+        "services": [{"name": "nginx", "status": "running"}, {"name": "redis", "status": "running"}],
+        "listeners": [{"port": 80, "service": "nginx"}, {"port": 6379, "service": "redis"}],
+        "relationships": [
+            {"source": "nginx", "relation": "proxies_to", "target": "payment-api"},
+            {"source": "payment-api", "relation": "reads", "target_type": "database", "target": "orders"},
+        ],
+    }, "web-01")
+    db = _ctx({
+        "hostname": "db-01",
+        "services": [{"name": "redis", "status": "running"}],
+        "listeners": [{"port": 6379, "service": "redis"}],
+        "relationships": [{"source": "redis", "relation": "depends_on", "target": "mystery-svc"}],
+    }, "db-01")
+
+    # web-01: runtime tìm được mọi gap; db-01: 'mystery-svc' không nguồn nào giải.
+    # Engine factory chọn prober theo host đang chạy (cờ trên context).
+    def _engine_factory_for(ctx) -> EvidenceCompletionEngine:
+        prober = (lambda n: "host:elsewhere") if ctx.host == "web-01" else (lambda n: None)
+        return EvidenceCompletionEngine([InferenceResolver(), RuntimeResolver(prober=prober)])
+
+    # Per-host engine khác nhau → chạy host mission riêng rồi gộp tenant thủ công
+    # (understand_tenant_mission dùng cho engine đồng nhất; ở đây minh hoạ KPI/host).
+    web_m = await understand_host_mission(web, engine=_engine_factory_for(web),
+                                          parent_mission_id="understand_tenant:acme")
+    db_m = await understand_host_mission(db, engine=_engine_factory_for(db),
+                                         parent_mission_id="understand_tenant:acme")
+    from aoip.mission import Mission, MissionState, aggregate_completion
+    subs = [web_m, db_m]
+    completion = aggregate_completion(subs)
+    state = MissionState.COMPLETED if all(s.state is MissionState.COMPLETED for s in subs) else MissionState.BLOCKED
+    tenant = (Mission(mission_id="understand_tenant:acme", goal="understand_tenant", scope="acme")
+              .to(MissionState.PLANNED).to(MissionState.ASSIGNED).to(MissionState.IN_PROGRESS)
+              .to(state, completion=completion))
+
+    print("\n=== MISSION RUNTIME (capability = self-composed mission) ===")
+    for m in subs:
+        print(f"  Mission {m.goal} [{m.scope}] → {m.state.value} "
+              f"completion={m.completion:.0%}  DoD✗={list(m.dod_failed)}")
+    for c in db.communications:
+        print(f"    ❓ (db-01 còn hỏi): {c.question}")
+    print(f"  TENANT Mission Completion: {tenant.state.value} → {tenant.completion:.0%} "
+          f"(KPI khách hàng thấy: 'AI hiểu tenant acme {tenant.completion:.0%}')")
 
 
 async def map_system_graph_demo() -> None:
