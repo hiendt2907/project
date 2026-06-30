@@ -148,7 +148,33 @@ async def map_system_graph_demo() -> None:
     print(f"  PROJECTION ownership: {[e.triple for e in ctx.model.project('owns')]}")
     print(f"  PROJECTION data-access: {[e.triple for e in ctx.model.project('reads', 'writes')]}")
     for t in sorted(ctx.model.unknown_edge_targets):
-        print(f"  ⚠️ UNKNOWN NODE (chưa quan sát): {t} → hạt giống câu hỏi kiến trúc")
+        print(f"  ⚠️ UNKNOWN NODE (chưa quan sát): {t} → đưa vào Evidence Completion")
+
+    # ── Slice 4: Evidence Completion — exhaust suy luận TRƯỚC khi hỏi người ──
+    from aoip.evidence import (
+        DocumentResolver,
+        EvidenceCompletionEngine,
+        InferenceResolver,
+        PeerHostResolver,
+        RuntimeResolver,
+        complete_evidence,
+    )
+
+    engine = EvidenceCompletionEngine([
+        InferenceResolver(),
+        # runtime "tìm thấy" postgres ở host khác (vd DNS/k8s lookup).
+        RuntimeResolver(prober=lambda n: "host:db-02" if n == "db:postgres" else None),
+        DocumentResolver(index={}),
+        PeerHostResolver(registry={}),
+    ])
+    report = await complete_evidence(ctx, engine)
+    print("\n=== Evidence Completion (INV_INFER_BEFORE_ASK) ===")
+    print(f"  KPI: {report.resolved_count}/{report.total_gaps} tự giải, "
+          f"{report.asked_count} câu hỏi (rate={report.inference_rate:.2f})")
+    for node, method in report.resolved.items():
+        print(f"  ✅ RESOLVED {node} bằng [{method}] — không cần hỏi người")
+    for c in ctx.communications:
+        print(f"  ❓ INTERVIEW (đã exhaust): {c.question}")
 
 
 async def inspect_host_demo() -> None:
