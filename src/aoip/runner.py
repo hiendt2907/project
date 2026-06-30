@@ -28,6 +28,65 @@ async def run_once(capability_state: CapabilityState, *, fail: bool = False) -> 
     return ctx
 
 
+async def understand_demo() -> None:
+    from aoip.capabilities.understand_host import understand_host
+    from aoip.discovery_backend import MockHostDiscoveryBackend
+    from aoip.system_model import SystemModel
+    from aoip.understanding import UnderstandingContext
+
+    ctx = UnderstandingContext(
+        host="web-01",
+        scope="payment/web-01",
+        backend=MockHostDiscoveryBackend(),
+        capability=CapabilityState(capability_id="understand_host", scope="payment/web-01"),
+        model=SystemModel(scope="payment/web-01"),
+    )
+    await understand_host(ctx)
+    print("\n=== understand_host (Day-1: Observe→Map→Ask, mock backend) ===")
+    for line in ctx.trace:
+        print("  " + line)
+    print(f"  SystemModel facts: {[f.triple for f in ctx.model.facts]}")
+    for c in ctx.communications:
+        print(f"  ❓ INTERVIEW: {c.question}")
+
+
+async def understand_real_profile_demo() -> None:
+    """Cùng pipeline understand_host, nhưng nuốt VMProfile shape THẬT (discovery)."""
+    from aoip.capabilities.understand_host import understand_host
+    from aoip.discovery_backend import VMProfileDiscoveryBackend
+    from aoip.system_model import SystemModel
+    from aoip.understanding import UnderstandingContext
+
+    profile = {
+        "hostname": "db-01",
+        "role": "database_server",
+        "services": [
+            {"name": "mariadb", "status": "running"},
+            {"name": "nginx", "status": "running"},
+            {"name": "cron", "status": "running"},
+        ],
+        "listeners": [
+            {"port": 3306, "service": "mariadbd"},
+            {"port": 80, "service": "nginx"},
+            {"port": 9999, "service": ""},
+        ],
+    }
+    ctx = UnderstandingContext(
+        host="db-01",
+        scope="acme/db-01",
+        backend=VMProfileDiscoveryBackend(profile),
+        capability=CapabilityState(capability_id="understand_host", scope="acme/db-01"),
+        model=SystemModel(scope="acme/db-01"),
+    )
+    await understand_host(ctx)
+    print("\n=== understand_host (REAL VMProfile → SystemModel + Interview) ===")
+    for line in ctx.trace:
+        print("  " + line)
+    print(f"  SystemModel facts: {[f.triple for f in ctx.model.facts]}")
+    for c in ctx.communications:
+        print(f"  ❓ INTERVIEW: {c.question}")
+
+
 async def main() -> None:
     cap = CapabilityState(capability_id="restart_deployment", scope="payment/web")
     print(f"START  score={cap.score:.4f} E={cap.dimensions['E']} maturity={cap.maturity.value}")
@@ -42,6 +101,8 @@ async def main() -> None:
             f"score={cap.score:.4f} maturity={cap.maturity.value}"
         )
     print(f"\nEND    score={cap.score:.4f} maturity={cap.maturity.value}")
+    await understand_demo()
+    await understand_real_profile_demo()
 
 
 if __name__ == "__main__":

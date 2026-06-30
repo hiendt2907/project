@@ -74,6 +74,42 @@ class Decision:
 
 
 @dataclass(frozen=True)
+class Fact:
+    """Tri thức ĐÃ VERIFY (Knowledge §Q1): bitemporal + provenance + confidence.
+
+    Là đỉnh của vòng tiến hóa Observation→Hypothesis→Fact (Cognitive Model). Chỉ
+    hypothesis đã được Verify mới trở thành Fact. Bất biến; supersede bằng Fact mới.
+    """
+
+    subject: str  # entity, vd "host:web-01"
+    predicate: str  # quan hệ, vd "exposes_port" / "runs_service"
+    obj: str  # giá trị, vd "6379" / "redis"
+    confidence: float
+    provenance: tuple[str, ...]  # observation sources (Provenance chain)
+    observation_time: float = field(default_factory=_now)
+    verified_time: float = field(default_factory=_now)
+
+    @property
+    def triple(self) -> tuple[str, str, str]:
+        return (self.subject, self.predicate, self.obj)
+
+
+@dataclass(frozen=True)
+class Communication:
+    """Communication node (Knowledge/Org Model): runtime hỏi người khi gặp Unknown.
+
+    Hiện thực CRITICAL RULE của MASTER_PLAN: "Never assume" — thay vì hallucinate,
+    sinh câu hỏi có cấu trúc cho con người (INV_HUMAN_ACCOUNTABILITY).
+    """
+
+    question: str
+    scope: str
+    blocking_unknown: str  # điều runtime KHÔNG xác định được
+    options: tuple[str, ...] = ()
+    ts: float = field(default_factory=_now)
+
+
+@dataclass(frozen=True)
 class Action:
     """implements đúng 1 Decision; recoverable. Chuyển state bằng replace()."""
 
