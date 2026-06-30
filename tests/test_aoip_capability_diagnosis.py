@@ -81,11 +81,29 @@ def test_unseen_service_still_diagnosable_via_port():
 
 
 def test_modes_unioned_across_tags_no_duplicates():
-    # redis = cache + session_store; mode trùng (process_down/network) chỉ xuất hiện 1 lần.
+    # GUARD dedup: redis = cache + session_store; cả hai cùng có process_down,
+    # network_unreachable. Failure mode TRÙNG chỉ được sinh 1 candidate (1 probe) —
+    # nếu không coverage/confidence sẽ bị đếm hai lần và sai.
+    from aoip.capability_catalog import classify_capability_tags, failure_modes_for
     cands = capability_root_cause_candidates("svc:redis", "h", FakeTransport(),
                                              service="redis", port=6379)
     modes = [h.claim.split(": ", 1)[1] for h, _ in cands]
     assert len(modes) == len(set(modes))  # khử trùng union
+    # số candidate đúng bằng kích thước HỢP các tag (không nhân đôi).
+    union = set()
+    for t in classify_capability_tags("redis", port=6379):
+        union |= set(failure_modes_for(t.tag))
+    assert len(cands) == len(union)
+
+
+async def test_dedup_keeps_coverage_correct():
+    # GUARD: tổng (findings+rejected+untested) == số mode DUY NHẤT, không phình do trùng tag.
+    from aoip.diagnosis import diagnose
+    cands = capability_root_cause_candidates("svc:redis", "h", FakeTransport(active="active"),
+                                             service="redis", port=6379)
+    result = await diagnose(cands)
+    total = len(result.findings) + len(result.rejected) + len(result.untested)
+    assert total == len(cands) == len({h.claim for h, _ in cands})
 
 
 async def test_candidate_probe_runs_three_valued_falsification():

@@ -13,6 +13,10 @@ Hardening cho production (3 điểm cốt lõi):
   3. Confidence dựa trên POSITIVE evidence + COVERAGE (đã kiểm được bao nhiêu),
      KHÔNG chỉ đếm survivor.
 
+GIÁ TRỊ CONFIDENCE LÀ DIAGNOSIS SCORE NỘI BỘ — KHÔNG phải xác suất đã calibrate.
+0.787 nghĩa là "điểm tin nội bộ", KHÔNG đọc thành "78,7% khả năng đúng nguyên
+nhân". Calibration thành xác suất thật cần dữ liệu lịch sử (outcome thực) — chưa có.
+
 Core KHÔNG biết domain: chỉ ``Hypothesis`` + ``probe``. Domain ở capability_*.
 """
 from __future__ import annotations
@@ -47,7 +51,8 @@ class DiagnosisResult:
     findings: tuple[Finding, ...]          # confirmed (PRESENT) — có thể nhiều (đồng thời)
     rejected: tuple[str, ...]              # ABSENT (counter-evidence thật)
     untested: tuple[tuple[str, str], ...]  # (claim, reason) — UNAVAILABLE, KHÔNG bác bỏ
-    confidence: float                      # Diagnosis Confidence (evidence × coverage)
+    confidence: float                      # diagnosis SCORE nội bộ (evidence × coverage),
+    #                                        KHÔNG phải xác suất đã calibrate
 
     @property
     def top(self) -> Finding | None:

@@ -93,6 +93,15 @@ async def test_async_probe_supported():
     assert {f.claim for f in result.findings} == {"process_down"}
 
 
+def test_confidence_is_internal_score_not_calibrated_probability():
+    # GUARD: confidence phải được mô tả là SCORE nội bộ, KHÔNG phải xác suất calibrate.
+    # Tránh ai đó diễn giải 0.787 thành "78,7% khả năng đúng" khi chưa có dữ liệu lịch sử.
+    import aoip.diagnosis as core
+    src = open(core.__file__).read().lower()
+    assert "score" in src
+    assert "calibrate" in src and "xác suất" in src
+
+
 def test_core_engine_is_domain_agnostic():
     import aoip.diagnosis as core
     src = open(core.__file__).read().lower()
