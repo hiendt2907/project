@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from aoip.capability import CapabilityState, assess_knowledge
 from aoip.discovery_backend import HostDiscoveryBackend
-from aoip.objects import Communication, Fact, Finding, Hypothesis, Observation
+from aoip.objects import Action, Communication, Decision, Fact, Finding, Hypothesis, Observation
 from aoip.service_knowledge import expected_ports
 from aoip.system_graph import infer_edges
 from aoip.system_model import SystemModel
@@ -35,6 +35,11 @@ class UnderstandingContext:
     facts: list[Fact] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     communications: list[Communication] = field(default_factory=list)
+    # Decision layer (Operate): phương án + quyết định phục hồi (chưa execute).
+    decisions: list[Decision] = field(default_factory=list)
+    actions: list[Action] = field(default_factory=list)
+    recovery_confidence: float | None = None
+    requires_approval: bool = False
     trace: list[str] = field(default_factory=list)
 
     def log(self, verb: str, detail: str) -> None:

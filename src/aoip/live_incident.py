@@ -66,8 +66,19 @@ async def run() -> None:
             print("  " + line)
         for f in ctx.findings:
             print(f"  {'⚠️' if f.verdict else '✓'} FINDING: {f.claim}")
-        for h in ctx.hypotheses:
-            print(f"  🛠️  RECOMMEND: {h.claim}")
+
+        # ── Decision layer: Incident → Candidate Actions → Decision (chưa execute) ──
+        from aoip.decision import decide_recovery, generate_candidates
+        print("\n  CANDIDATE ACTIONS (phương án phục hồi):")
+        for c in generate_candidates("svc:cust-db"):
+            mark = "✦" if c.resolves else "·"
+            print(f"    {mark} {c.action.plan}  [risk={c.risk} conf={c.confidence}]")
+        decision = decide_recovery(ctx, failed_node="svc:cust-db")
+        chosen = ctx.actions[0]
+        print(f"\n  🧭 DECISION: {decision.goal}")
+        print(f"     chọn → {chosen.action.decision_goal if hasattr(chosen,'action') else chosen.decision_goal}: {chosen.plan}")
+        print(f"     confidence={ctx.recovery_confidence}  state={chosen.state.value} "
+              f"(chờ human approval — fail-closed, KHÔNG tự execute)")
     finally:
         print("\n[recover] khởi động lại redis-server (cleanup)...")
         await _orb("cust-db", "sudo", "systemctl", "start", "redis-server")
