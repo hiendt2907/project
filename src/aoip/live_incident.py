@@ -67,13 +67,28 @@ async def run() -> None:
         for f in ctx.findings:
             print(f"  {'⚠️' if f.verdict else '✓'} FINDING: {f.claim}")
 
+        # ── Diagnosis Engine: nhiều giả thuyết root-cause + falsification (THẬT) ──
+        from aoip.diagnosis import diagnose
+        from aoip.sre_diagnosis import sre_root_cause_candidates
+        cands = sre_root_cause_candidates(
+            "svc:cust-db", "cust-db", backend._t, port=6379, service="redis-server")
+        diag = await diagnose(cands)
+        ctx.diagnosis_confidence = diag.confidence
+        print("\n  DIAGNOSIS (multi-hypothesis + falsification):")
+        for f in diag.findings:
+            print(f"    ✓ ROOT CAUSE: {f.claim}  (conf={f.confidence})")
+        for r in diag.rejected:
+            print(f"    ✗ bác bỏ: {r}")
+        print(f"    → Diagnosis Confidence = {diag.confidence}")
+
         # ── Decision layer: Incident → Candidate Actions → Decision (chưa execute) ──
         from aoip.decision import decide_recovery, generate_candidates
         print("\n  CANDIDATE ACTIONS (phương án phục hồi):")
         for c in generate_candidates("svc:cust-db"):
             mark = "✦" if c.resolves else "·"
             print(f"    {mark} {c.action.plan}  [risk={c.risk} conf={c.confidence}]")
-        decision = decide_recovery(ctx, failed_node="svc:cust-db")
+        decision = decide_recovery(ctx, failed_node="svc:cust-db",
+                                   diagnosis_confidence=ctx.diagnosis_confidence or 1.0)
         chosen = ctx.actions[0]
         print(f"\n  🧭 DECISION: {decision.goal}")
         print(f"     chọn → {chosen.action.decision_goal if hasattr(chosen,'action') else chosen.decision_goal}: {chosen.plan}")

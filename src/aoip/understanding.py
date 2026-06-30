@@ -38,6 +38,7 @@ class UnderstandingContext:
     # Decision layer (Operate): phương án + quyết định phục hồi (chưa execute).
     decisions: list[Decision] = field(default_factory=list)
     actions: list[Action] = field(default_factory=list)
+    diagnosis_confidence: float | None = None
     recovery_confidence: float | None = None
     requires_approval: bool = False
     trace: list[str] = field(default_factory=list)

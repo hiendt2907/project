@@ -72,6 +72,18 @@ def test_decision_is_fail_closed_requires_approval():
     assert ctx.requires_approval is True
 
 
+def test_decision_confidence_depends_on_diagnosis_confidence():
+    # Chẩn đoán mơ hồ (0.35) → dù restart điểm cao, recovery_confidence bị kéo thấp.
+    ctx = _ctx_with_incident()
+    decide_recovery(ctx, failed_node="svc:cust-db", diagnosis_confidence=0.35)
+    assert ctx.recovery_confidence < 0.35  # 0.6 × 0.35 ≈ 0.21 — không được "restart mù"
+
+    # Chẩn đoán chắc chắn (0.9) → recovery_confidence cao.
+    ctx2 = _ctx_with_incident()
+    decide_recovery(ctx2, failed_node="svc:cust-db", diagnosis_confidence=0.9)
+    assert ctx2.recovery_confidence > ctx.recovery_confidence
+
+
 def test_no_resolving_action_when_only_safe_options(monkeypatch):
     # Nếu không có phương án nào "resolves" → chọn escalate (an toàn), confidence thấp.
     import aoip.decision as dmod

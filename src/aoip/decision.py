@@ -58,12 +58,16 @@ def generate_candidates(failed_node: str) -> list[ScoredAction]:
     return cands
 
 
-def decide_recovery(ctx, *, failed_node: str) -> Decision:
+def decide_recovery(ctx, *, failed_node: str, diagnosis_confidence: float = 1.0) -> Decision:
     """Chọn phương án phục hồi từ Finding sự cố → Decision (KHÔNG execute).
 
     Ưu tiên: phương án GIẢI QUYẾT có rủi ro nhỏ nhất (INV_SMALL_BLAST_RADIUS); nếu
     không có → escalate an toàn. Decision được 'justified' nhưng chưa 'issued' —
     mutation chờ human approval (fail-closed).
+
+    Decision Confidence PHỤ THUỘC Diagnosis Confidence: chẩn đoán mơ hồ → dù phương
+    án có điểm cao cũng KHÔNG được tự tin (chống "restart mù"). recovery_confidence
+    = action_confidence × diagnosis_confidence.
     """
     candidates = generate_candidates(failed_node)
 
@@ -76,13 +80,15 @@ def decide_recovery(ctx, *, failed_node: str) -> Decision:
     consumed = tuple(f.claim for f in ctx.findings if f.verdict)
     decision = Decision(goal=f"restore_service:{failed_node}", scope=ctx.scope, consumes=consumed)
 
+    recovery_confidence = round(chosen.confidence * diagnosis_confidence, 3)
     ctx.decisions.append(decision)
     ctx.actions.append(chosen.action)  # PLANNED — chưa enact
-    ctx.recovery_confidence = chosen.confidence
+    ctx.recovery_confidence = recovery_confidence
     ctx.requires_approval = True  # mọi mutation cần human (INV_HUMAN_ACCOUNTABILITY)
     ctx.log(
         "Decide",
         f"{len(candidates)} phương án → chọn '{chosen.action.decision_goal}' "
-        f"(risk={chosen.risk} confidence={chosen.confidence}); chờ approval (fail-closed)",
+        f"(risk={chosen.risk} action_conf={chosen.confidence} × diag_conf="
+        f"{diagnosis_confidence} → recovery_conf={recovery_confidence}); chờ approval (fail-closed)",
     )
     return decision
