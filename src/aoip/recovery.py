@@ -109,11 +109,19 @@ class RecoveryGate:
 
 @dataclass(frozen=True)
 class Approval:
-    """Phê duyệt người tường minh cho ĐÚNG một Action scope (HITL)."""
+    """Phê duyệt người, RÀNG BUỘC tenant + scope + Decision + Action + hạn (HITL).
+
+    Living Operations Runtime: approval không được "chung chung". Nó chỉ hợp lệ cho
+    ĐÚNG (tenant, action_scope, decision_goal) và HẾT HẠN sau expires_at — quá hạn /
+    sai tenant / sai scope / sai decision → ZERO mutation. Mặc định backward-compatible
+    cho call cũ (tenant/decision rỗng = bỏ qua ràng buộc đó, expires_at=∞)."""
 
     approved: bool
     approver: str
     action_scope: str
+    tenant: str = ""
+    decision_goal: str = ""
+    expires_at: float = float("inf")
 
 
 @dataclass(frozen=True)
@@ -127,6 +135,7 @@ class RecoveryRequest:
     risk: float
     diagnosed_at: float
     dependents: tuple[str, ...] = ()
+    tenant: str = "default"
 
 
 @dataclass(frozen=True)
@@ -172,6 +181,13 @@ def _gate_checks(ctx, req: RecoveryRequest, gate: RecoveryGate, approval: Approv
          f"diagnosis stale ({age:.0f}s > {gate.max_diagnosis_age_s:.0f}s)"),
         ("explicit_approval", approval.approved and approval.action_scope == req.action.scope,
          "thiếu approval tường minh cho đúng action scope"),
+        ("approval_not_expired", now <= approval.expires_at,
+         f"approval hết hạn (now {now:.0f} > expires_at {approval.expires_at:.0f})"),
+        ("approval_tenant_bound", not approval.tenant or approval.tenant == req.tenant,
+         f"approval sai tenant ({approval.tenant!r} ≠ {req.tenant!r})"),
+        ("approval_decision_bound",
+         not approval.decision_goal or approval.decision_goal == req.action.decision_goal,
+         f"approval sai decision ({approval.decision_goal!r} ≠ {req.action.decision_goal!r})"),
         ("action_approved_state", req.action.state == ActionState.APPROVED,
          f"action state {req.action.state.value} ≠ approved"),
         ("capability_authorized",
