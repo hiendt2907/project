@@ -54,6 +54,24 @@ class SystemModel:
         """Node trỏ tới ``node`` (in-edge): ai phụ thuộc vào nó."""
         return tuple(e.subject for e in self.edges if e.obj == node)
 
+    def blast_radius(self, node: str) -> tuple[str, ...]:
+        """Đóng bao bắc cầu của dependents: node hỏng → ai bị ảnh hưởng.
+
+        Đây là reasoning sự cố thuần GRAPH (không LLM): BFS ngược theo edge phụ
+        thuộc. Trả các node bị ảnh hưởng (không gồm chính node), ổn định thứ tự.
+        """
+        affected: list[str] = []
+        seen = {node}
+        queue = [node]
+        while queue:
+            current = queue.pop(0)
+            for dep in self.dependents_of(current):
+                if dep not in seen:
+                    seen.add(dep)
+                    affected.append(dep)
+                    queue.append(dep)
+        return tuple(affected)
+
     def project(self, *predicates: str) -> tuple[Fact, ...]:
         """Projection của KG: chỉ edge có predicate cho trước.
 
