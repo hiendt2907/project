@@ -14,11 +14,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from aoip.diagnosis import Candidate
+from aoip.diagnosis import Candidate, ProbeOutcome
 from aoip.objects import Hypothesis
 
-# Builder: (host, transport, params) → probe async trả True nếu evidence CÓ MẶT.
+P, A, U = ProbeOutcome.PRESENT, ProbeOutcome.ABSENT, ProbeOutcome.UNAVAILABLE
+
+# Builder: (host, transport, params) → probe async trả ProbeOutcome 3 trạng thái.
+# PRESENT = evidence của failure mode CÓ MẶT; ABSENT = đã kiểm, không có;
+# UNAVAILABLE = KHÔNG kiểm được (thiếu substrate/quyền/timeout) — KHÔNG counter-evidence.
 ProbeBuilder = Callable[[str, object, dict], Callable]
+_UNAVAIL = "__UNAVAILABLE__"  # sentinel substrate không hỗ trợ (vd thiếu journalctl)
 
 
 @dataclass(frozen=True)
@@ -43,8 +48,15 @@ def _process_down(host, transport, params):
     svc = params.get("service", "")
 
     async def probe():
+        if not svc:
+            return U  # không biết unit → không kiểm được (không phải "khỏe")
         out, _ = await transport.run(["systemctl", "is-active", svc])
-        return out.strip().lower() in ("inactive", "failed", "deactivating")
+        state = out.strip().lower()
+        if state in ("inactive", "failed", "deactivating"):
+            return P
+        if state == "active":
+            return A
+        return U  # rỗng/unknown/activating: thiếu systemd hoặc unit lạ → không kết luận
     return probe
 
 
@@ -54,17 +66,24 @@ def _oom_killed(host, transport, params):
     async def probe():
         out, _ = await transport.run(
             ["bash", "-c",
+             f"command -v journalctl >/dev/null 2>&1 || {{ echo {_UNAVAIL}; exit 0; }}; "
              f"journalctl -k --since '-10 min' 2>/dev/null | "
              f"grep -i 'out of memory\\|killed process.*{svc}' | tail -1"])
-        return bool(out.strip())
+        text = out.strip()
+        if _UNAVAIL in text:
+            return U  # không có journalctl → không kiểm được OOM
+        return P if text else A
     return probe
 
 
 def _disk_full(host, transport, params):
     async def probe():
         out, _ = await transport.run(["df", "--output=pcent", "/"])
-        return any(t.strip().rstrip("%").isdigit() and int(t.strip().rstrip("%")) >= 95
-                   for t in out.split())
+        pcts = [int(t.strip().rstrip("%")) for t in out.split()
+                if t.strip().rstrip("%").isdigit()]
+        if not pcts:
+            return U  # df không chạy được/định dạng lạ
+        return P if any(p >= 95 for p in pcts) else A
     return probe
 
 
@@ -74,14 +93,18 @@ def _network_unreachable(host, transport, params):
 
     async def probe():
         if port is None:
-            return False
+            return U  # không có cổng để kiểm → không áp dụng
         active, _ = await transport.run(["systemctl", "is-active", svc])
         if active.strip().lower() != "active":
-            return False  # tiến trình chết → là ProcessDown, không phải network
+            return U  # tiến trình không active → thuộc ProcessDown, network không kiểm được
         out, _ = await transport.run(
             ["bash", "-c",
              f'timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/{port}" && echo OPEN || echo CLOSED'])
-        return "CLOSED" in out
+        if "CLOSED" in out:
+            return P
+        if "OPEN" in out:
+            return A
+        return U
     return probe
 
 
@@ -91,8 +114,8 @@ def _cpu_starvation(host, transport, params):
         try:
             load1 = float(out.split()[0])
         except (ValueError, IndexError):
-            return False
-        return load1 >= 32.0  # tải rất cao (ngưỡng bảo thủ, tránh false positive)
+            return U  # không đọc được /proc/loadavg → không kiểm được
+        return P if load1 >= 32.0 else A  # ngưỡng bảo thủ, tránh false positive
     return probe
 
 

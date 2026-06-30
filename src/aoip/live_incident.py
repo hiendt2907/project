@@ -68,17 +68,24 @@ async def run() -> None:
             print(f"  {'⚠️' if f.verdict else '✓'} FINDING: {f.claim}")
 
         # ── Diagnosis Engine: nhiều giả thuyết root-cause + falsification (THẬT) ──
+        from aoip.capability_catalog import classify_capability_tags
         from aoip.capability_diagnosis import capability_root_cause_candidates
         from aoip.diagnosis import diagnose
+        tags = classify_capability_tags("redis-server", port=6379)
+        print("\n  CAPABILITY TAGS (giả thuyết năng lực, KHÔNG phải Fact):")
+        for t in tags:
+            print(f"    • {t.tag}  conf={t.confidence} ({t.provenance})")
         cands = capability_root_cause_candidates(
             "svc:cust-db", "cust-db", backend._t, port=6379, service="redis-server")
         diag = await diagnose(cands)
         ctx.diagnosis_confidence = diag.confidence
-        print("\n  DIAGNOSIS (multi-hypothesis + falsification):")
+        print("\n  DIAGNOSIS (multi-hypothesis + 3-valued falsification):")
         for f in diag.findings:
             print(f"    ✓ ROOT CAUSE: {f.claim}  (conf={f.confidence})")
         for r in diag.rejected:
-            print(f"    ✗ bác bỏ: {r}")
+            print(f"    ✗ bác bỏ (ABSENT): {r}")
+        for claim, reason in diag.untested:
+            print(f"    ? chưa kiểm (UNAVAILABLE, KHÔNG counter-evidence): {claim}")
         print(f"    → Diagnosis Confidence = {diag.confidence}")
 
         # ── Decision layer: Incident → Candidate Actions → Decision (chưa execute) ──

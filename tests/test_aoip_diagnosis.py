@@ -1,16 +1,19 @@
-"""Tests EPIC Operate (Diagnosis Engine) — multi-hypothesis + falsification.
+"""Tests Diagnosis Engine (core) — three-valued probe + coverage-aware confidence.
 
-Reviewer: "timeout" KHÔNG mặc định "DOWN". Agent sinh NHIỀU giả thuyết root-cause,
-VERIFY từng cái bằng bác bỏ (INV_FALSIFICATION_FIRST: predicted_evidence vắng →
-loại). Diagnosis Confidence quyết định Decision Confidence. Core engine domain-
-AGNOSTIC (chỉ biết Hypothesis + probe); domain SRE planner sinh candidate.
+Hardening (review production): probe trả PRESENT/ABSENT/UNAVAILABLE. UNAVAILABLE
+(không kiểm được: thiếu quyền/không systemd/timeout) KHÔNG phải counter-evidence —
+giả thuyết thành UNTESTED, không bị bác bỏ. Confidence dựa trên positive evidence
++ COVERAGE (đã kiểm bao nhiêu), không chỉ "còn 1 survivor". Nhiều nguyên nhân có
+thể đồng thời. Core domain-AGNOSTIC.
 """
 from __future__ import annotations
 
 import pytest
 
-from aoip.diagnosis import diagnose
+from aoip.diagnosis import ProbeOutcome, diagnose
 from aoip.objects import Hypothesis
+
+P, A, U = ProbeOutcome.PRESENT, ProbeOutcome.ABSENT, ProbeOutcome.UNAVAILABLE
 
 
 def _h(claim: str, prior: float = 0.4) -> Hypothesis:
@@ -18,46 +21,80 @@ def _h(claim: str, prior: float = 0.4) -> Hypothesis:
                       prior=prior, origin="DIAGNOSIS")
 
 
-async def test_single_surviving_hypothesis_high_confidence():
-    # Chỉ 'process_dead' có evidence → sống; còn lại bị bác bỏ.
-    cands = [
-        (_h("process_dead"), lambda: True),
-        (_h("disk_full"), lambda: False),
-        (_h("oom_kill"), lambda: False),
-        (_h("network_partition"), lambda: False),
-    ]
-    result = await diagnose(cands)
-    confirmed = {f.claim for f in result.findings}
-    assert confirmed == {"process_dead"}
-    assert set(result.rejected) == {"disk_full", "oom_kill", "network_partition"}
-    assert result.confidence >= 0.8  # cô lập được đúng 1 nguyên nhân → tự tin
+async def test_present_absent_unavailable_classified():
+    result = await diagnose([
+        (_h("process_down"), lambda: P),
+        (_h("disk_full"), lambda: A),
+        (_h("oom_kill"), lambda: U),
+    ])
+    assert {f.claim for f in result.findings} == {"process_down"}
+    assert set(result.rejected) == {"disk_full"}
+    assert [c for c, _ in result.untested] == ["oom_kill"]
 
 
-async def test_ambiguous_when_multiple_survive_lower_confidence():
-    cands = [(_h("disk_full"), lambda: True), (_h("oom_kill"), lambda: True)]
-    result = await diagnose(cands)
-    assert len(result.findings) == 2
-    assert result.confidence < 0.7  # mơ hồ → kém tự tin
+async def test_full_coverage_single_cause_high_confidence():
+    result = await diagnose([
+        (_h("process_down"), lambda: P),
+        (_h("disk_full"), lambda: A),
+        (_h("oom_kill"), lambda: A),
+        (_h("network"), lambda: A),
+    ])
+    assert result.confidence >= 0.8  # 1 nguyên nhân, kiểm hết → tự tin
 
 
-async def test_no_hypothesis_survives_unknown_low_confidence():
-    cands = [(_h("process_dead"), lambda: False), (_h("disk_full"), lambda: False)]
-    result = await diagnose(cands)
+async def test_unavailable_is_not_counter_evidence_and_lowers_confidence():
+    # Chỉ 1 probe chạy được (present), 3 cái UNAVAILABLE → coverage thấp → confidence thấp,
+    # dù "chỉ còn 1 survivor". Bác bỏ KHÔNG xảy ra với cái không kiểm được.
+    low = await diagnose([
+        (_h("process_down"), lambda: P),
+        (_h("disk_full"), lambda: U),
+        (_h("oom_kill"), lambda: U),
+        (_h("network"), lambda: U),
+    ])
+    assert {f.claim for f in low.findings} == {"process_down"}
+    assert low.rejected == ()                 # UNAVAILABLE không phải counter-evidence
+    assert len(low.untested) == 3
+    full = await diagnose([
+        (_h("process_down"), lambda: P),
+        (_h("disk_full"), lambda: A),
+        (_h("oom_kill"), lambda: A),
+        (_h("network"), lambda: A),
+    ])
+    assert low.confidence < full.confidence   # coverage thấp → kém tự tin hơn
+
+
+async def test_multiple_simultaneous_causes_allowed_but_ambiguous():
+    result = await diagnose([
+        (_h("disk_full"), lambda: P),
+        (_h("process_down"), lambda: P),   # disk full → process crash: cùng xảy ra
+    ])
+    assert len(result.findings) == 2          # giữ cả hai (contributing causes)
+    assert result.confidence < 0.8            # mơ hồ về root cause đơn
+
+
+async def test_no_cause_found_low_confidence():
+    result = await diagnose([(_h("process_down"), lambda: A), (_h("disk_full"), lambda: A)])
     assert result.findings == ()
-    assert result.confidence <= 0.2  # không biết → KHÔNG được hành động tự tin
+    assert result.confidence <= 0.2
+
+
+async def test_all_unavailable_means_unknown_not_healthy():
+    # Không kiểm được gì → KHÔNG kết luận khỏe, KHÔNG kết luận sự cố.
+    result = await diagnose([(_h("process_down"), lambda: U), (_h("disk_full"), lambda: U)])
+    assert result.findings == () and result.rejected == ()
+    assert len(result.untested) == 2
+    assert result.confidence <= 0.2
 
 
 async def test_async_probe_supported():
     async def aprobe():
-        return True
-    result = await diagnose([(_h("process_dead"), aprobe)])
-    assert {f.claim for f in result.findings} == {"process_dead"}
+        return P
+    result = await diagnose([(_h("process_down"), aprobe)])
+    assert {f.claim for f in result.findings} == {"process_down"}
 
 
-async def test_core_engine_is_domain_agnostic():
-    # Core diagnosis KHÔNG nhúng tên domain (service-specific hay command cụ thể).
-    # Tri thức domain nằm ở capability_diagnosis/failure_modes (tách hẳn).
+def test_core_engine_is_domain_agnostic():
     import aoip.diagnosis as core
     src = open(core.__file__).read().lower()
-    for domain_word in ("redis", "systemctl", "dmesg", "oom", "disk_full", "df ", "restart"):
-        assert domain_word not in src
+    for w in ("redis", "systemctl", "dmesg", "disk_full", "df ", "restart", "cache"):
+        assert w not in src

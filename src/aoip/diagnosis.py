@@ -1,27 +1,36 @@
-"""Diagnosis Engine (core) — multi-hypothesis + falsification, domain-AGNOSTIC.
+"""Diagnosis Engine (core) — multi-hypothesis falsification, domain-AGNOSTIC.
 
-Vì sao tồn tại: một triệu chứng (vd "timeout") KHÔNG đồng nghĩa một nguyên nhân.
-Recovery chỉ đáng tin khi Diagnosis đáng tin — nếu không sẽ rơi vào anti-pattern
-chữa-triệu-chứng lặp vô hạn. Engine sinh tin cậy bằng cách LOẠI giả thuyết
-(INV_FALSIFICATION_FIRST): predicted_evidence vắng → bác bỏ; còn lại → Finding.
+Vì sao tồn tại: một triệu chứng KHÔNG đồng nghĩa một nguyên nhân. Recovery chỉ
+đáng tin khi Diagnosis đáng tin (chống anti-pattern chữa-triệu-chứng lặp vô hạn).
 
-QUAN TRỌNG (giữ lõi tổng quát): engine này KHÔNG biết domain. Nó chỉ biết
-``Hypothesis`` (có predicted_evidence) + một ``probe`` trả về "evidence có mặt
-không". Tầng domain sinh candidate ở module riêng (``capability_diagnosis.py`` +
-``failure_modes.py``) — một discipline cụ thể chỉ là plugin trên runtime tổng quát.
+Hardening cho production (3 điểm cốt lõi):
+  1. Probe BA TRẠNG THÁI: PRESENT / ABSENT / UNAVAILABLE. UNAVAILABLE (không kiểm
+     được: thiếu quyền, không phải substrate phù hợp, timeout) KHÔNG phải
+     counter-evidence — giả thuyết thành UNTESTED, KHÔNG bị bác bỏ.
+  2. Nhiều nguyên nhân có thể ĐỒNG THỜI (disk full → process crash). Giữ cả
+     confirmed lẫn untested; bác bỏ cái khác KHÔNG chứng minh cái còn lại là root
+     (catalog có thể chưa đầy đủ).
+  3. Confidence dựa trên POSITIVE evidence + COVERAGE (đã kiểm được bao nhiêu),
+     KHÔNG chỉ đếm survivor.
 
-Diagnosis Confidence: cô lập đúng MỘT nguyên nhân → cao; nhiều cái sống → mơ hồ →
-thấp; không cái nào sống → unknown → rất thấp (chặn hành động mù).
+Core KHÔNG biết domain: chỉ ``Hypothesis`` + ``probe``. Domain ở capability_*.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Awaitable, Callable
 
 from aoip.objects import Finding, Hypothesis
 
-# Probe domain-cung-cấp: trả True nếu predicted_evidence của giả thuyết CÓ MẶT.
-Probe = Callable[[], "bool | Awaitable[bool]"]
+
+class ProbeOutcome(str, Enum):
+    PRESENT = "present"          # evidence của giả thuyết CÓ MẶT
+    ABSENT = "absent"            # đã kiểm, KHÔNG có (counter-evidence)
+    UNAVAILABLE = "unavailable"  # KHÔNG kiểm được (không áp dụng/thiếu quyền/lỗi)
+
+
+Probe = Callable[[], "ProbeOutcome | Awaitable[ProbeOutcome]"]
 Candidate = tuple[Hypothesis, Probe]
 
 
@@ -33,40 +42,55 @@ async def _maybe_await(value):
 
 @dataclass(frozen=True)
 class DiagnosisResult:
-    """Derived (không persist): nguyên nhân sống sót + bị bác bỏ + độ tự tin."""
+    """Derived (không persist): nguyên nhân + bị bác bỏ + chưa kiểm được + tự tin."""
 
-    findings: tuple[Finding, ...]   # giả thuyết được chứng thực (root cause khả dĩ)
-    rejected: tuple[str, ...]       # claim bị bác bỏ (predicted_evidence vắng)
-    confidence: float               # Diagnosis Confidence
+    findings: tuple[Finding, ...]          # confirmed (PRESENT) — có thể nhiều (đồng thời)
+    rejected: tuple[str, ...]              # ABSENT (counter-evidence thật)
+    untested: tuple[tuple[str, str], ...]  # (claim, reason) — UNAVAILABLE, KHÔNG bác bỏ
+    confidence: float                      # Diagnosis Confidence (evidence × coverage)
 
     @property
     def top(self) -> Finding | None:
         return max(self.findings, key=lambda f: f.confidence) if self.findings else None
 
 
-def _confidence(confirmed: list[Finding]) -> float:
+def _confidence(confirmed: list[Finding], coverage: float) -> float:
+    """Tự tin = sức mạnh evidence dương × độ phủ kiểm tra, giảm nếu mơ hồ nhiều nguyên nhân.
+
+    coverage thấp (nhiều UNAVAILABLE) → kém tự tin dù 'còn 1 survivor': bác bỏ/không-
+    kiểm cái khác KHÔNG chứng minh cái còn lại (catalog có thể thiếu).
+    """
     if not confirmed:
-        return 0.1                          # không biết → không được hành động tự tin
-    if len(confirmed) == 1:
-        return round(min(0.95, confirmed[0].confidence), 3)
-    return 0.5                              # nhiều nguyên nhân sống → mơ hồ
+        return 0.1
+    base = max(f.confidence for f in confirmed)
+    cov_factor = 0.5 + 0.5 * coverage
+    conf = base * cov_factor
+    if len(confirmed) > 1:
+        conf *= 0.8  # nhiều nguyên nhân sống → mơ hồ về root đơn
+    return round(conf, 3)
 
 
 async def diagnose(candidates: list[Candidate]) -> DiagnosisResult:
-    """Chạy falsification trên từng giả thuyết → Finding sống sót + Diagnosis Confidence."""
+    """Chạy probe từng giả thuyết; phân loại 3 trạng thái → DiagnosisResult."""
     confirmed: list[Finding] = []
     rejected: list[str] = []
+    untested: list[tuple[str, str]] = []
+
     for hyp, probe in candidates:
-        present = await _maybe_await(probe())
-        if present:
+        outcome = await _maybe_await(probe())
+        if outcome is ProbeOutcome.PRESENT:
             confirmed.append(Finding(
-                claim=hyp.claim,
-                references=(hyp.origin,),
-                verdict=True,
-                confidence=round(min(0.95, hyp.prior + 0.45), 3),
+                claim=hyp.claim, references=(hyp.origin,), verdict=True,
+                confidence=round(min(0.9, hyp.prior + 0.45), 3),
             ))
-        else:
-            rejected.append(hyp.claim)   # predicted_evidence vắng → loại
+        elif outcome is ProbeOutcome.ABSENT:
+            rejected.append(hyp.claim)
+        else:  # UNAVAILABLE
+            untested.append((hyp.claim, "probe unavailable (substrate/permission/timeout)"))
+
+    tested = len(confirmed) + len(rejected)
+    coverage = (tested / len(candidates)) if candidates else 0.0
     return DiagnosisResult(
-        findings=tuple(confirmed), rejected=tuple(rejected), confidence=_confidence(confirmed),
+        findings=tuple(confirmed), rejected=tuple(rejected),
+        untested=tuple(untested), confidence=_confidence(confirmed, coverage),
     )
