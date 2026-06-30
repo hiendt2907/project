@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 
 from aoip.capability import CapabilityState, assess_knowledge
 from aoip.discovery_backend import HostDiscoveryBackend
-from aoip.objects import Communication, Fact, Hypothesis, Observation
+from aoip.objects import Communication, Fact, Finding, Hypothesis, Observation
+from aoip.service_knowledge import expected_ports
 from aoip.system_model import SystemModel
 
 
@@ -31,6 +32,7 @@ class UnderstandingContext:
     observations: list[Observation] = field(default_factory=list)
     hypotheses: list[Hypothesis] = field(default_factory=list)
     facts: list[Fact] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
     communications: list[Communication] = field(default_factory=list)
     trace: list[str] = field(default_factory=list)
 
@@ -110,6 +112,100 @@ async def interview(ctx: UnderstandingContext) -> None:
         )
     if ctx.communications:
         ctx.log("Escalate", f"{len(ctx.communications)} câu hỏi cho người (interview)")
+
+
+# ── Reasoning loop: Observe → Expectation → Probe → Compare → Finding ────────
+# Expectation = Hypothesis (predicted_evidence); Compare = Finding. KHÔNG noun mới.
+
+async def expect_services(ctx: UnderstandingContext) -> None:
+    """Mỗi service quan sát → Expectation từ tri thức tiên nghiệm (Senior prior).
+
+    "Thấy nginx → kỳ vọng 80/443." Expectation chính là Hypothesis với
+    predicted_evidence là tập cổng kỳ vọng. Service chưa có tri thức → bỏ qua
+    (KHÔNG kỳ vọng giả → không Finding bịa).
+    """
+    obs = ctx.observations[-1]
+    for svc in obs.data.get("services", []):
+        name = svc.get("name", "")
+        ports = expected_ports(name)
+        if not ports:
+            continue
+        ctx.hypotheses.append(
+            Hypothesis(
+                claim=f"{name} should expose ports {list(ports)}",
+                predicted_evidence=tuple(f"probe_port {p} == open" for p in ports),
+                prior=0.8,
+                origin="EXPERIENCE",
+            )
+        )
+    ctx.log("Hypothesize", f"{len(ctx.hypotheses)} expectation(s) from prior knowledge")
+
+
+async def compare_expectations(ctx: UnderstandingContext) -> None:
+    """Probe từng cổng kỳ vọng, so sánh thực-tế-vs-kỳ-vọng → Finding.
+
+    MET (cổng mở đúng kỳ vọng) → Finding verdict True + Fact (đã verify).
+    UNMET (kỳ vọng mà không mở) → Finding verdict False + Communication (hỏi
+    người: hỏng hay cấu hình khác?). Never assume: UNMET KHÔNG sinh Fact.
+    """
+    obs = ctx.observations[-1]
+    src = obs.source
+    for svc in obs.data.get("services", []):
+        name = svc.get("name", "")
+        for port in expected_ports(name):
+            reachable = await ctx.backend.probe_port(ctx.host, port)
+            if reachable:
+                ctx.findings.append(
+                    Finding(
+                        claim=f"{name} exposes expected port {port}",
+                        references=(src,),
+                        verdict=True,
+                        confidence=0.95,
+                    )
+                )
+                ctx.facts.append(
+                    Fact(
+                        subject=f"host:{ctx.host}",
+                        predicate="exposes_port",
+                        obj=str(port),
+                        confidence=0.95,
+                        provenance=(src, "agent.probe_port"),
+                    )
+                )
+            else:
+                ctx.findings.append(
+                    Finding(
+                        claim=f"{name} EXPECTED port {port} but it is not listening",
+                        references=(src,),
+                        verdict=False,
+                        confidence=0.7,
+                    )
+                )
+                ctx.communications.append(
+                    Communication(
+                        question=(
+                            f"{name} trên {ctx.host} thường mở cổng {port} nhưng tôi "
+                            f"không thấy listen. Service lỗi, hay bạn cấu hình khác?"
+                        ),
+                        scope=ctx.scope,
+                        blocking_unknown=f"missing_port:{name}:{port}",
+                    )
+                )
+    met = sum(1 for f in ctx.findings if f.verdict)
+    ctx.log("Verify", f"compare: {met}/{len(ctx.findings)} expectation(s) MET → Finding")
+
+
+async def assess_expectations(ctx: UnderstandingContext) -> None:
+    """Đóng vòng theo tỉ lệ kỳ vọng được đáp ứng (met / total) → K↑."""
+    total = len(ctx.findings)
+    met = sum(1 for f in ctx.findings if f.verdict)
+    coverage = 1.0 if total == 0 else met / total
+    ctx.capability = assess_knowledge(ctx.capability, coverage)
+    ctx.log(
+        "Assess",
+        f"expectation coverage={coverage:.2f} → K={ctx.capability.dimensions['K']} "
+        f"score={ctx.capability.score:.4f} maturity={ctx.capability.maturity.value}",
+    )
 
 
 async def assess_understanding(ctx: UnderstandingContext) -> None:
