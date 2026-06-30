@@ -58,3 +58,14 @@ def assess(state: CapabilityState, outcome: bool) -> CapabilityState:
     success_rate = sum(1 for o in evidence if o) / len(evidence)
     dims = {**state.dimensions, "E": round(success_rate, 4)}
     return replace(state, dimensions=dims, evidence=evidence)
+
+
+def assess_knowledge(state: CapabilityState, coverage: float) -> CapabilityState:
+    """Cập nhật chiều K (Knowledge) từ coverage = facts/(facts+unknowns).
+
+    Vòng phản hồi của capability hiểu-biết (understand_host): càng map được nhiều,
+    càng ít Unknown → K↑ → score (=Π) ↑. Mỗi lần khám phá là một evidence.
+    """
+    evidence = state.evidence + (coverage >= 1.0,)
+    dims = {**state.dimensions, "K": round(max(0.0, min(1.0, coverage)), 4)}
+    return replace(state, dimensions=dims, evidence=evidence)

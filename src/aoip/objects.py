@@ -33,6 +33,27 @@ TERMINAL_ACTION_STATES = frozenset(
 )
 
 
+# ── Knowledge-Graph edge vocabulary (edge = Fact quan hệ) ─────────────────────
+# Edge KHÔNG phải noun mới: là Fact có predicate quan hệ (subject→obj). Tập đóng,
+# chuẩn hóa cho TOÀN BỘ tri thức tenant (không riêng dependency của service):
+# hạ tầng, mạng, sở hữu, dữ liệu, nghiệp vụ, bảo mật, quan sát. API/Network/
+# Ownership/Business graph chỉ là projection của cùng KG này (lọc theo predicate).
+RELATIONAL_PREDICATES = frozenset(
+    {
+        # hạ tầng / vị trí
+        "runs_on", "hosts", "depends_on", "connects_to", "routes_to",
+        # mạng / luồng request
+        "proxies_to", "calls", "emits", "consumes",
+        # truy cập dữ liệu
+        "reads", "writes",
+        # sở hữu / nghiệp vụ
+        "owns", "serves",
+        # bảo mật / quan sát
+        "protected_by", "observed_from",
+    }
+)
+
+
 # ── Runtime objects (immutable) ──────────────────────────────────────────────
 @dataclass(frozen=True)
 class Observation:
@@ -71,6 +92,42 @@ class Decision:
     goal: str
     scope: str
     consumes: tuple[str, ...]  # finding claims (explainability)
+
+
+@dataclass(frozen=True)
+class Fact:
+    """Tri thức ĐÃ VERIFY (Knowledge §Q1): bitemporal + provenance + confidence.
+
+    Là đỉnh của vòng tiến hóa Observation→Hypothesis→Fact (Cognitive Model). Chỉ
+    hypothesis đã được Verify mới trở thành Fact. Bất biến; supersede bằng Fact mới.
+    """
+
+    subject: str  # entity, vd "host:web-01"
+    predicate: str  # quan hệ, vd "exposes_port" / "runs_service"
+    obj: str  # giá trị, vd "6379" / "redis"
+    confidence: float
+    provenance: tuple[str, ...]  # observation sources (Provenance chain)
+    observation_time: float = field(default_factory=_now)
+    verified_time: float = field(default_factory=_now)
+
+    @property
+    def triple(self) -> tuple[str, str, str]:
+        return (self.subject, self.predicate, self.obj)
+
+
+@dataclass(frozen=True)
+class Communication:
+    """Communication node (Knowledge/Org Model): runtime hỏi người khi gặp Unknown.
+
+    Hiện thực CRITICAL RULE của MASTER_PLAN: "Never assume" — thay vì hallucinate,
+    sinh câu hỏi có cấu trúc cho con người (INV_HUMAN_ACCOUNTABILITY).
+    """
+
+    question: str
+    scope: str
+    blocking_unknown: str  # điều runtime KHÔNG xác định được
+    options: tuple[str, ...] = ()
+    ts: float = field(default_factory=_now)
 
 
 @dataclass(frozen=True)

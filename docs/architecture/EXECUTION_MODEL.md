@@ -1,7 +1,15 @@
 # Execution Model — Tập động từ tối thiểu (GĐ3)
 
-> **Status**: DESIGN ONLY — không code. **Mới mở (GĐ3 — Behavior phase).**
-> **Created**: 2026-06-29
+> **Status**: DESIGN (verbs) — IMPLEMENTED as composition trong `src/aoip/` (Controlled Recovery v1).
+> **Created**: 2026-06-29 · **Implemented**: 2026-06-30
+> **IMPLEMENTATION (Controlled Recovery v1):** các động từ này được hiện thực như
+> COMPOSITION, KHÔNG verb mới: Validate/Plan = `recovery.py::plan_recovery` + gate-checks;
+> Execute = `execute_recovery` (smallest reversible action qua operator (failure_mode,
+> substrate)); Observe/Verify = health + dependents probe; Escalate/Abort = nhánh
+> fail-closed. Execute CHỈ nhận Action `approved` (HITL); `OMNI_AUTO_EXECUTE_ENABLED=false`
+> fail-closed. AUDIT_EVERYTHING = `audit.py::FileAuditLog` hash-chain. Rollback đối xứng
+> cho `systemctl restart` KHÔNG khả dụng → escalate (doc đã lường: rollback không nhất
+> thiết đối xứng). Tài liệu giữ nguyên vai trò khóa-động-từ; impl tuân thủ, không mở rộng.
 > **Phạm vi đã KHÓA** (`INV_LAYER_BOUNDARY`): Execution chỉ trả lời **một câu** —
 > *"Cho một Decision đã hợp lệ, làm thế nào biến thành Action AN TOÀN & PHỤC HỒI được?"*
 > Execution **đọc** `META_MODEL` (object) + `SEMANTIC_RULES` (relation + Appendix A lifecycle) + `FRAMEWORK_LAWS` (law). KHÔNG định nghĩa object/lifecycle/relation/noun.

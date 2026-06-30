@@ -46,7 +46,7 @@ Không phải mọi INV_* ngang nhau. Mỗi luật mang **strength** quyết đ�
 |---|---|---|---|
 | **CONSTITUTIONAL** | chỉ khi đổi Vision | ✗ KHÔNG | `INV_NO_NEW_NOUNS`, `INV_LIFECYCLE_BEFORE_ALGORITHM`, `INV_CAPABILITY_IS_PRODUCT`, `INV_LAYER_BOUNDARY`, `INV_HUMAN_ACCOUNTABILITY`, `INV_FAIL_CLOSED`, `INV_DATA_RESIDENCY` |
 | **ARCHITECTURAL** | qua architecture amendment (RFC) | ✗ (chỉ amendment) | `INV_SINGLE_SOURCE_OF_TRUTH`, `INV_DERIVED_NEVER_PERSIST`, `INV_DECISION_ACTION_SEPARATION`, `INV_AUDIT_EVERYTHING`, `INV_PROMOTION_GATED` |
-| **BEHAVIORAL** | tinh chỉnh theo domain/discipline | ✓ CÓ (override có kiểm soát) | `INV_SMALL_BLAST_RADIUS`, `INV_FALSIFICATION_FIRST`, `INV_LLM_NOT_FIRST`, `INV_CULTURE_NOT_POLICY` |
+| **BEHAVIORAL** | tinh chỉnh theo domain/discipline | ✓ CÓ (override có kiểm soát) | `INV_SMALL_BLAST_RADIUS`, `INV_FALSIFICATION_FIRST`, `INV_LLM_NOT_FIRST`, `INV_INFER_BEFORE_ASK`, `INV_CULTURE_NOT_POLICY` |
 
 > **Mỗi mục luật ở §1–§6 dưới đây ngầm mang strength** (residency/accountability/fail-closed = Constitutional; one-source/derived/decision-action = Architectural; culture/blast-radius/falsification = Behavioral). Khi cần, ghi `[C]/[A]/[B]` cạnh ID.
 
@@ -180,6 +180,7 @@ THUA   =  phải thêm nhiều object/primitive/law chỉ để tăng một chú
 | **INV_FALSIFICATION_FIRST** | Loại giả thuyết bằng bác bỏ (predicted_evidence vắng), không chỉ xác nhận. | Cognitive Q2 |
 | **INV_EXPLAINABILITY** | Mọi quyết định/hành động truy được nguồn (provenance → evidence). Không "LLM quyết". | Culture, Knowledge §5 |
 | **INV_NEVER_HIDE_UNCERTAINTY** | Luôn phơi bày độ bất định; "tôi có thể sai" first-class. | Culture, Cognitive Q5 |
+| **INV_INFER_BEFORE_ASK** | **Never ask what can be inferred.** Một khoảng trống tri thức (Unknown) chỉ được chuyển thành câu hỏi cho người SAU KHI đã exhaust thang bằng chứng: (1) suy luận từ Fact/graph đã có → (2) xác minh runtime → (3) tài liệu → (4) host/agent khác. Chỉ Unknown KHÔNG nguồn nào chứng minh mới thành Communication. KPI = tối thiểu hóa số câu hỏi, không phải tối đa hóa. | Cognitive, Knowledge §5; Evidence Completion Engine *(codebase)* |
 | **INV_SMALL_BLAST_RADIUS** | Khi nhiều cách hợp lệ, chọn cách rủi ro/blast nhỏ nhất đủ giải quyết. | Culture |
 | **INV_RECOVERABLE_ACTION** | Action phải an toàn & phục hồi được (rollback/compensation/idempotency); không đảo ngược → cần ngưỡng cao + human. | Execution (⬜) |
 
