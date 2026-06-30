@@ -16,7 +16,8 @@ from aoip.capabilities.missions import understand_host_mission
 from aoip.capability import CapabilityState
 from aoip.evidence import EvidenceCompletionEngine, InferenceResolver, RuntimeResolver
 from aoip.mission import Mission, MissionState, aggregate_completion
-from aoip.orb_backend import OrbVMDiscoveryBackend
+from aoip.remote_linux_backend import RemoteLinuxBackend
+from aoip.transport import OrbTransport
 from aoip.system_model import SystemModel
 from aoip.understanding import UnderstandingContext
 
@@ -42,7 +43,7 @@ async def _understand_vm(vm: str, prober) -> tuple[Mission, UnderstandingContext
     ctx = UnderstandingContext(
         host=vm,
         scope=f"acme/{vm}",
-        backend=OrbVMDiscoveryBackend(vm),
+        backend=RemoteLinuxBackend(OrbTransport(vm)),  # OrbStack = LAB transport, không phải kiến trúc
         capability=CapabilityState(capability_id="understand_host", scope=f"acme/{vm}"),
         model=SystemModel(scope=f"acme/{vm}"),
     )
