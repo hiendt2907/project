@@ -3,6 +3,31 @@
 Tất cả thay đổi đáng kể của AOIP runtime (`src/aoip/`) được ghi ở đây.
 Định dạng theo Keep a Changelog; phiên bản theo SemVer.
 
+## [Unreleased] — Living Operations Runtime — Step 3: Durable Command Delivery
+
+### Added — Durable delivery / acknowledgement / agent resume
+- **P0 FIX — GET = PEEK, không POP.** Kênh command cũ (`gateway/routes/agent_commands.py`)
+  dùng `RPOP` cho GET → command biến mất ngay khi fetch, trước bất kỳ terminal ack nào →
+  agent crash sau fetch = mất lệnh. Kênh mutating recovery mới KHÔNG bao giờ pop khi fetch.
+- **Durable delivery state machine** (`aoip/agent/delivery.py` + gateway twin
+  `gateway/routes/agent_runtime.py`, prefix `/webhook/agent/rt`):
+  `QUEUED → DELIVERED → ACCEPTED → RUNNING → RECONCILING → COMPLETED|FAILED|ESCALATED|EXPIRED`.
+  Record mang identity + correlation bất biến (command/tenant/agent/mission/incident/decision/
+  action/canonical_scope/payload_hash + created_at/expires_at/delivery_count/last_delivered_at/
+  terminal_at). Redis: `omni:cmd:rec:{tenant}:{cid}` + ready-ZSET `omni:cmd:ready:{tenant}:{agent}`.
+  Redelivery đến khi terminal ack durable; terminal ack idempotent (duplicate → zero re-mutation).
+- **Agent durable local inbox** (`aoip/agent/inbox.py`): persist RECEIVED (fsync + atomic
+  rename) TRƯỚC execute; local lifecycle `RECEIVED→ACCEPTED→RUNNING→OUTCOME_RECORDED→REPORTED→
+  ACKED`. Resume sau restart/reboot: OUTCOME_RECORDED → re-report (KHÔNG re-mutate); RUNNING →
+  reconcile (KHÔNG blind retry). Chỉ archive khi có terminal ack.
+- **Delivery loop + daemon** (`aoip/agent/delivery_loop.py`, `aoip/agent/daemon.py`): register→
+  heartbeat→resume→pull→persist→execute→report→sleep→repeat. systemd unit
+  `deploy/systemd/aoip-agent.service` (StateDirectory giữ inbox qua reboot, SIGTERM sạch).
+  `HTTPOmniClient` thêm poll_runtime/accept/progress/report_terminal.
+- **Proof**: 25 unit/integration tests (`test_aoip_delivery`, `test_aoip_delivery_loop`,
+  `test_aoip_agent_daemon`, `test_gateway_agent_runtime` qua ASGI thật) phủ 8 case DoD.
+  Harness hạ tầng thật: `scripts/prove_durable_delivery.py` (Gateway/Redis K8s + VM systemd).
+
 ## [0.1.0] — 2026-06-30 — "Controlled Recovery"
 
 First controlled-recovery release. AOIP runtime (Autonomous SRE) đi từ Discovery →

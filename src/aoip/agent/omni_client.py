@@ -112,5 +112,33 @@ class HTTPOmniClient:
             "evidence": items,
         })
 
+    # ── Durable mutating-command delivery (Living Ops Runtime, /rt) ────────────
+    async def poll_runtime(self, agent_id: str) -> list[dict]:
+        """PEEK durable command channel (mutating). GET không pop — redelivery đến khi ack."""
+        resp = await self._client.get(f"/webhook/agent/rt/commands/{agent_id}")
+        resp.raise_for_status()
+        return resp.json().get("commands", [])
+
+    async def accept(self, agent_id: str, tenant_id: str, command_id: str) -> None:
+        await self._post_rt("/commands/accept",
+                            {"agent_id": agent_id, "tenant_id": tenant_id, "command_id": command_id})
+
+    async def progress(self, agent_id: str, tenant_id: str, command_id: str, phase: str) -> None:
+        await self._post_rt("/commands/progress",
+                            {"agent_id": agent_id, "tenant_id": tenant_id,
+                             "command_id": command_id, "phase": phase})
+
+    async def report_terminal(self, agent_id: str, tenant_id: str, command_id: str,
+                              state: str, outcome: dict) -> dict:
+        """Report terminal outcome; trả Gateway terminal acknowledgement ({acknowledged: bool})."""
+        return await self._post_rt("/commands/terminal",
+                                   {"agent_id": agent_id, "tenant_id": tenant_id,
+                                    "command_id": command_id, "state": state, "outcome": outcome})
+
+    async def _post_rt(self, path: str, payload: dict) -> dict:
+        resp = await self._client.post(f"/webhook/agent/rt{path}", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
     async def aclose(self) -> None:
         await self._client.aclose()

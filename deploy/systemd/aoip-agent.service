@@ -1,0 +1,36 @@
+[Unit]
+Description=AOIP durable SRE agent (Living Operations Runtime)
+Documentation=file:///opt/aoip/docs/plans/living-operations-hardening.md
+After=network-online.target
+Wants=network-online.target
+# Khởi động lại sau reboot/crash — resume() đọc inbox durable đầu mỗi lần chạy.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Durable inbox nằm ở StateDirectory (systemd tạo /var/lib/aoip, 0700, giữ qua reboot).
+StateDirectory=aoip
+StateDirectoryMode=0700
+Environment=AOIP_INBOX=/var/lib/aoip/inbox
+# Bí mật lấy từ file (không hardcode trong unit).
+EnvironmentFile=/etc/aoip/agent.env
+ExecStart=/opt/aoip/.venv/bin/python -m aoip.agent.daemon \
+    --agent-id ${AOIP_AGENT_ID} \
+    --tenant ${AOIP_TENANT} \
+    --gateway ${AOIP_GATEWAY_URL} \
+    --api-key ${AOIP_API_KEY} \
+    --inbox ${AOIP_INBOX} \
+    --interval 15
+Restart=always
+RestartSec=5
+# Bền qua SIGTERM: daemon bắt SIGTERM, dừng vòng sạch, aclose client.
+TimeoutStopSec=30
+KillSignal=SIGTERM
+WorkingDirectory=/opt/aoip
+# Hardening cơ bản (agent chỉ đọc host + mutate qua capability có kiểm soát).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aoip
+
+[Install]
+WantedBy=multi-user.target
