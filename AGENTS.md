@@ -1,19 +1,8 @@
-# CLAUDE.md
+# AGENTS.md
 
 > **TRƯỚC MỌI TASK: đọc `MEMORY.md` + `docs/CODEBASE.md`.** Bản đồ nhanh ở memory `project_architecture_map`; chi tiết file-level ở `docs/CODEBASE.md`.
 
 **Omni** — async-first multi-agent SRE automation for K8s. Ollama diagnoses via 4 evidence lanes; split Kafka pipeline executes remediation.
-
-## Context Hygiene
-
-- Mỗi session chỉ có một deliverable chính.
-- Repository là source of truth; conversation history không phải source of truth.
-- Sau mỗi checkpoint quan trọng, cập nhật `docs/handoffs/CURRENT_SESSION.md`.
-- Báo cáo checkpoint tối đa 20 dòng: result, changed files, verification, blocker, next step.
-- Không lặp lại toàn bộ lịch sử dự án.
-- Khảo sát rộng phải dùng subagent và chỉ trả kết luận ngắn.
-- Trước khi chuyển milestone hoặc `/clear`: cập nhật handoff và engineering artifacts bị ảnh hưởng (dùng `/prepare-clear`).
-- Session mới phải kiểm tra Git state và handoff trước khi tiếp tục. Session hooks tự nạp ngữ cảnh; chi tiết ở `docs/engineering/claude-session-automation.md`.
 
 ## DIAGNOSTIC FLOWS
 
