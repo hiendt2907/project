@@ -1,0 +1,24 @@
+# Seed portal identity THẬT vào Postgres omni_admin (+ mirror Redis). Idempotent.
+# Chạy sau khi provider/tenant portal đã Running:
+#   kubectl apply -f k8s/jobs/aoip-seed-identity.yaml
+#   kubectl -n multi-agent wait --for=condition=complete job/aoip-seed-identity --timeout=120s
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aoip-seed-identity
+  namespace: multi-agent
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "aoip.console.seed_identity"]
+          env:
+            - {name: OMNI_REDIS_URL, value: "redis://redis:6379/0"}
+            - name: OMNI_ADMIN_PG_DSN
+              valueFrom: {secretKeyRef: {name: omni-pg-secret, key: OMNI_ADMIN_PG_DSN}}

@@ -15,6 +15,11 @@ leak_report_history.json
 # audit cleanup 2026-06-03
 chaos_drill_results_*.json
 dist/
+
+# Node / Next.js build + deps (portal UIs)
+node_modules/
+.next/
+*.tsbuildinfo
 .DS_Store
 .coverage
 
@@ -22,3 +27,13 @@ dist/
 .claude/worktrees/
 .reports/
 omni-remote-agent/agent
+
+# Claude session automation state (metadata only; keep .gitkeep)
+.claude/state/*.json
+.claude/state/*.tmp
+.claude/state/.*.tmp
+!.claude/state/.gitkeep
+
+# Playwright test artifacts
+test-results/
+playwright-report/

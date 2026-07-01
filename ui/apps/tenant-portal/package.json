@@ -1,0 +1,26 @@
+{
+  "name": "@aoip/tenant-portal",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3002",
+    "build": "next build",
+    "start": "next start -p 3002"
+  },
+  "dependencies": {
+    "@aoip/api-client": "*",
+    "@aoip/auth-client": "*",
+    "@aoip/observability": "*",
+    "@aoip/shared-types": "*",
+    "@aoip/ui-kit": "*",
+    "next": "15.5.4",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^5"
+  }
+}

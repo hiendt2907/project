@@ -1,0 +1,84 @@
+# AOIP Next.js portals (production shells) — RIÊNG mỗi app: image, deploy, CSP, env.
+# Browser → Next web (origin portal); Next proxy /auth + /api → FastAPI API service nội bộ
+# (aoip-provider-portal:8081 / aoip-tenant-portal:8082). Backend vẫn là auth authority.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aoip-provider-web
+  namespace: multi-agent
+  labels: {app: aoip-provider-web}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: aoip-provider-web}}
+  template:
+    metadata: {labels: {app: aoip-provider-web}}
+    spec:
+      containers:
+        - name: web
+          image: aoip-provider-web:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 3001}]
+          env:
+            - {name: HOSTNAME, value: "0.0.0.0"}
+            - {name: PORT, value: "3001"}
+            - {name: AOIP_BACKEND_URL, value: "http://aoip-provider-portal:8081"}
+          readinessProbe:
+            httpGet: {path: /, port: 3001}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: 3001}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket: {port: 3001}
+            failureThreshold: 30
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata: {name: aoip-provider-web, namespace: multi-agent}
+spec:
+  selector: {app: aoip-provider-web}
+  ports: [{name: http, port: 3001, targetPort: 3001}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aoip-tenant-web
+  namespace: multi-agent
+  labels: {app: aoip-tenant-web}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: aoip-tenant-web}}
+  template:
+    metadata: {labels: {app: aoip-tenant-web}}
+    spec:
+      containers:
+        - name: web
+          image: aoip-tenant-web:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 3002}]
+          env:
+            - {name: HOSTNAME, value: "0.0.0.0"}
+            - {name: PORT, value: "3002"}
+            - {name: AOIP_BACKEND_URL, value: "http://aoip-tenant-portal:8082"}
+          readinessProbe:
+            httpGet: {path: /, port: 3002}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: 3002}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket: {port: 3002}
+            failureThreshold: 30
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata: {name: aoip-tenant-web, namespace: multi-agent}
+spec:
+  selector: {app: aoip-tenant-web}
+  ports: [{name: http, port: 3002, targetPort: 3002}]

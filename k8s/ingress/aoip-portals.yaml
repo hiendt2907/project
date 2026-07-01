@@ -1,0 +1,72 @@
+# AOIP portals + Dex — Traefik ingress. Thêm hosts vào /etc/hosts (→127.0.0.1):
+#   provider.ai-agent.local  tenant.ai-agent.local  dex.ai-agent.local
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aoip-provider-portal
+  namespace: multi-agent
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: provider.ai-agent.local
+      http:
+        paths:
+          # Same-origin: auth + API tới FastAPI backend (đặt cookie trực tiếp). UI tới Next.
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-portal, port: {number: 8081}}
+          - path: /api/provider/v1
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-portal, port: {number: 8081}}
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-web, port: {number: 3001}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aoip-tenant-portal
+  namespace: multi-agent
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: tenant.ai-agent.local
+      http:
+        paths:
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service: {name: aoip-tenant-portal, port: {number: 8082}}
+          - path: /api/tenant/v1
+            pathType: Prefix
+            backend:
+              service: {name: aoip-tenant-portal, port: {number: 8082}}
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: aoip-tenant-web, port: {number: 3002}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aoip-dex
+  namespace: multi-agent
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: dex.ai-agent.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: aoip-dex, port: {number: 5556}}

@@ -1,0 +1,66 @@
+/* Design system dùng chung — presentation only. Accent do từng portal set qua
+   data-kind trên <body> (không hard-code màu theo portal ở component). */
+:root {
+  --bg: #0b0f14;
+  --surface: #11161d;
+  --line: #1e2733;
+  --text: #cdd9e5;
+  --muted: #7d8ea3;
+  --accent: #8899aa;
+}
+* { box-sizing: border-box; }
+body {
+  font: 14px/1.55 ui-monospace, SFMono-Regular, monospace;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+body[data-kind="provider"] { --accent: #f0b429; }
+body[data-kind="tenant"] { --accent: #6cb6ff; }
+
+.aoip-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; background: var(--surface);
+  border-bottom: 2px solid var(--accent);
+}
+.aoip-header h1 { font-size: 15px; margin: 0; color: var(--accent); letter-spacing: .02em; }
+.aoip-main { max-width: 880px; margin: 0 auto; padding: 28px 20px; }
+.aoip-nav { display: flex; gap: 16px; }
+.aoip-nav a { color: var(--muted); text-decoration: none; }
+.aoip-nav a:hover, .aoip-nav a[aria-current="page"] { color: var(--accent); }
+.aoip-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+.aoip-card.err { color: #ff7b72; border-color: #ff7b72; }
+.aoip-k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+.aoip-v { font-size: 15px; margin-bottom: 14px; word-break: break-all; }
+.aoip-chip { display: inline-block; background: #0e1620; border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px; margin: 0 6px 6px 0; color: var(--accent); }
+.aoip-state { padding: 24px; text-align: center; color: var(--muted); }
+.aoip-center { text-align: center; }
+.aoip-muted { color: var(--muted); font-size: 12px; }
+.aoip-btn { font: inherit; cursor: pointer; display: inline-block; text-decoration: none; border: 1px solid var(--accent); background: transparent; color: var(--accent); border-radius: 8px; padding: 9px 18px; }
+.aoip-btn:hover { background: var(--accent); color: #0b0f14; }
+.aoip-account { color: var(--muted); text-decoration: none; }
+.aoip-account:hover { color: var(--accent); }
+
+/* ── AppShell: header + sidebar + content ─────────────────────────────────── */
+.aoip-shell { min-height: 100vh; }
+.aoip-body { display: flex; align-items: stretch; }
+.aoip-side { width: 232px; flex: 0 0 232px; background: var(--surface); border-right: 1px solid var(--line); padding: 16px 0; }
+.aoip-side ul { list-style: none; margin: 0; padding: 0; }
+.aoip-side-link { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 20px; color: var(--muted); text-decoration: none; border-left: 2px solid transparent; }
+.aoip-side-link:hover { color: var(--text); }
+.aoip-side-link.active { color: var(--accent); border-left-color: var(--accent); background: #0e1620; }
+.aoip-side-link.soon { color: #55677a; }
+.aoip-soon-tag { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #55677a; border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; }
+.aoip-content { flex: 1 1 auto; max-width: 1040px; margin: 0 auto; padding: 24px 28px; }
+
+/* ── Overview stats ───────────────────────────────────────────────────────── */
+.aoip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.aoip-stat { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.aoip-stat-v { font-size: 26px; font-weight: 600; color: var(--text); margin-top: 4px; }
+.aoip-unavail { display: inline-block; font-size: 12px; color: #8a6d3b; border: 1px dashed #8a6d3b; border-radius: 6px; padding: 2px 8px; }
+.aoip-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.aoip-row:last-child { border-bottom: none; }
+.aoip-dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; margin-right: 8px; }
+.aoip-dot.ok { background: #3fb950; }
+.aoip-dot.down { background: #ff7b72; }
+.aoip-dot.unavailable { background: #8a6d3b; }
