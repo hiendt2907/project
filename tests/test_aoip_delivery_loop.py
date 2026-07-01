@@ -5,6 +5,8 @@ và agent restart. Client giả mô phỏng terminal-ack + outage.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from aoip.agent.delivery_loop import DeliveryLoop
@@ -126,3 +128,87 @@ async def test_resume_running_without_outcome_reconciles(tmp_path):
     assert await loop.resume() == 1
     assert reconciled == ["cmd-1"]                    # reconcile, KHÔNG blind re-execute
     assert box.pending() == []
+
+
+# ── Visibility heartbeat during long-running execution ──────────────────────
+
+class HeartbeatFakeClient(FakeClient):
+    """FakeClient + heartbeat_visibility, đếm số lần gọi và có thể mô phỏng ownership_lost."""
+
+    def __init__(self, commands, *, gateway_up=True, heartbeat_ok=True):
+        super().__init__(commands, gateway_up=gateway_up)
+        self.heartbeat_ok = heartbeat_ok
+        self.heartbeat_calls = 0
+
+    async def heartbeat_visibility(self, agent_id, tenant_id, command_id, *,
+                                   delivery_attempt, fencing_token):
+        self.heartbeat_calls += 1
+        return self.heartbeat_ok
+
+
+async def test_heartbeat_fires_during_long_running_executor(tmp_path):
+    box = LocalInbox(str(tmp_path))
+
+    async def slow_executor(payload):
+        await asyncio.sleep(0.1)
+        return "COMPLETED", {"rc": 0}
+
+    client = HeartbeatFakeClient([_cmd()])
+    loop = DeliveryLoop(agent_id=AGENT, client=client, inbox=box, executor=slow_executor,
+                        heartbeat_interval_s=0.02)
+    assert await loop.tick() == 1
+    assert client.heartbeat_calls >= 2          # renewal chạy nhiều lần trong lúc executor chạy
+    assert box.pending() == []                  # vẫn archived bình thường sau khi xong
+
+
+async def test_client_without_heartbeat_support_skips_coordinator_silently(tmp_path):
+    """Client cũ (không có heartbeat_visibility) — coordinator bị bỏ qua, KHÔNG lỗi."""
+    box = LocalInbox(str(tmp_path))
+
+    async def executor(payload):
+        return "COMPLETED", {"rc": 0}
+
+    client = FakeClient([_cmd()])  # KHÔNG có heartbeat_visibility
+    loop = DeliveryLoop(agent_id=AGENT, client=client, inbox=box, executor=executor,
+                        heartbeat_interval_s=0.01)
+    assert await loop.tick() == 1
+    assert box.pending() == []
+
+
+async def test_no_orphan_asyncio_task_after_tick_with_heartbeat(tmp_path):
+    box = LocalInbox(str(tmp_path))
+
+    async def executor(payload):
+        await asyncio.sleep(0.05)
+        return "COMPLETED", {"rc": 0}
+
+    client = HeartbeatFakeClient([_cmd()])
+    loop = DeliveryLoop(agent_id=AGENT, client=client, inbox=box, executor=executor,
+                        heartbeat_interval_s=0.01)
+    before = {t for t in asyncio.all_tasks() if not t.done()}
+    await loop.tick()
+    await asyncio.sleep(0)  # để event loop dọn task đã cancel
+    after = {t for t in asyncio.all_tasks() if not t.done()} - before
+    assert after == set()
+
+
+async def test_report_terminal_conflict_keeps_local_outcome_no_archive(tmp_path):
+    """Gateway 409 (stale attempt sau redelivery) trên report_terminal → GIỮ outcome cục bộ,
+    KHÔNG archive, KHÔNG crash — chờ resume/tick sau tự reconcile."""
+    box = LocalInbox(str(tmp_path))
+
+    class ConflictClient(HeartbeatFakeClient):
+        async def report_terminal(self, agent_id, tenant_id, command_id, state, outcome, **k):
+            self.terminal_calls += 1
+            return {"acknowledged": False, "conflict": True, "error": "stale_delivery_attempt"}
+
+    async def executor(payload):
+        return "COMPLETED", {"rc": 0}
+
+    client = ConflictClient([_cmd()])
+    loop = DeliveryLoop(agent_id=AGENT, client=client, inbox=box, executor=executor)
+    await loop.tick()
+    assert client.terminal_calls == 1
+    entry = box.get("cmd-1")
+    assert entry is not None                     # KHÔNG archive
+    assert entry.local_state == L_OUTCOME_RECORDED  # outcome vẫn giữ, sẵn sàng re-report

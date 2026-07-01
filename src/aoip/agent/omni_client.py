@@ -138,13 +138,40 @@ class HTTPOmniClient:
         """Report terminal outcome; trả Gateway terminal acknowledgement ({acknowledged: bool}).
 
         ``delivery_attempt``/``fencing_token`` PHẢI khớp delivery attempt hiện tại của record ở
-        Gateway — sai (stale sau redelivery) → Gateway trả 409 domain reason, KHÔNG mutation.
+        Gateway — sai (stale sau redelivery, vd đã bị redeliver trong lúc mutation chạy lâu) →
+        Gateway trả 409. KHÔNG raise ở đây: trả ``{"acknowledged": False, "conflict": True,
+        "error": ...}`` để caller (``DeliveryLoop``) GIỮ outcome cục bộ + log, KHÔNG tự kết luận
+        mutation thất bại và KHÔNG archive local inbox (retry re-report ở lần resume sau).
         """
-        return await self._post_rt("/commands/terminal",
-                                   {"agent_id": agent_id, "tenant_id": tenant_id,
-                                    "command_id": command_id, "state": state, "outcome": outcome,
-                                    "delivery_attempt": delivery_attempt,
-                                    "fencing_token": fencing_token})
+        resp = await self._client.post(
+            f"{self._BASE}/rt/commands/terminal",
+            json={"agent_id": agent_id, "tenant_id": tenant_id, "command_id": command_id,
+                 "state": state, "outcome": outcome, "delivery_attempt": delivery_attempt,
+                 "fencing_token": fencing_token})
+        if resp.status_code == 409:
+            body = resp.json()
+            return {"acknowledged": False, "conflict": True, "error": body.get("error", "conflict")}
+        resp.raise_for_status()
+        return resp.json()
+
+    async def heartbeat_visibility(self, agent_id: str, tenant_id: str, command_id: str, *,
+                                   delivery_attempt: int, fencing_token: str) -> bool:
+        """Gia hạn Gateway delivery visibility trong lúc RUNNING/RECONCILING.
+
+        Trả True nếu gia hạn thành công. Trả False (KHÔNG raise) nếu Gateway từ chối vì
+        ownership/fencing (409 — stale attempt, token sai, terminal, expired, not_running):
+        đây là "ownership_lost" thật, không phải lỗi mạng thoáng qua. Lỗi mạng/HTTP khác
+        (5xx, timeout) VẪN raise — caller (renewal coordinator) coi đó là lỗi tạm thời,
+        retry ở lần sau, KHÔNG kết luận mất ownership.
+        """
+        resp = await self._client.post(
+            f"{self._BASE}/rt/commands/heartbeat",
+            json={"agent_id": agent_id, "tenant_id": tenant_id, "command_id": command_id,
+                 "delivery_attempt": delivery_attempt, "fencing_token": fencing_token})
+        if resp.status_code == 409:
+            return False
+        resp.raise_for_status()
+        return True
 
     async def _post_rt(self, path: str, payload: dict) -> dict:
         resp = await self._client.post(f"/webhook/agent/rt{path}", json=payload)

@@ -8,12 +8,36 @@ lease tự hết hạn → scope giải phóng (không kẹt vĩnh viễn).
 
 Idempotency dedup theo THỜI GIAN (retry/restart); Lease dedup theo KHÔNG GIAN (đồng
 thời nhiều agent). Hai cơ chế bù nhau. KHÔNG noun ontology mới — đây là khóa vận hành.
+
+``renew``/``release`` là compare-and-expire / compare-and-delete ATOMIC (Lua, một round-
+trip) — KHÔNG phải GET rồi SET/DEL rời. Race cũ: giữa GET (đọc holder) và SET/DEL (ghi),
+lease có thể hết hạn và bị agent khác acquire; caller cũ (đọc thấy token mình lúc GET)
+vẫn ghi/xoá đè lên lease của agent MỚI. Lua script loại race này vì Redis chạy Lua
+single-threaded — so sánh + ghi trong CÙNG MỘT operation, không ai chen giữa được.
 """
 from __future__ import annotations
 
 import hashlib
 
 _DEFAULT_TTL_S = 120
+
+# KEYS[1]=lease_key ARGV[1]=token ARGV[2]=ttl_s
+_RENEW_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[2]))
+  return 1
+end
+return 0
+"""
+
+# KEYS[1]=lease_key ARGV[1]=token
+_RELEASE_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+return 0
+"""
 
 
 def _token(scope: str, holder: str) -> str:
@@ -40,18 +64,22 @@ class ExecutionLease:
         raw = await self._r.get(scope if scope.startswith("lease:") else lease_key(scope))
         return raw if isinstance(raw, str) or raw is None else raw.decode()
 
+    async def renew(self, scope: str, *, token: str, ttl_s: int = _DEFAULT_TTL_S) -> bool:
+        """Gia hạn lease ATOMIC nếu ``token`` còn khớp holder hiện tại (compare-and-expire).
+
+        KHÔNG cho owner mới bị owner cũ renew đè: nếu lease đã hết hạn và agent khác đã
+        acquire, GET trong script thấy token KHÁC → trả 0 (ownership_lost), KHÔNG ghi gì.
+        Monotonic: TTL luôn được set lại từ ``ttl_s`` (không bao giờ làm deadline lùi vì
+        script chỉ SET khi renew thành công, không có nhánh giảm TTL).
+        """
+        ok = await self._r.eval(_RENEW_SCRIPT, 1, lease_key(scope), token, ttl_s)
+        return bool(ok)
+
     async def refresh(self, scope: str, *, token: str, ttl_s: int = _DEFAULT_TTL_S) -> bool:
-        """Gia hạn lease NẾU mình còn là holder (long mission). Không cướp của ai."""
-        cur = await self.holder_token(scope)
-        if cur != token:
-            return False
-        await self._r.set(lease_key(scope), token, ex=ttl_s)
-        return True
+        """DEPRECATED alias cho ``renew`` — giữ lại tương thích ngược, KHÔNG dùng mới."""
+        return await self.renew(scope, token=token, ttl_s=ttl_s)
 
     async def release(self, scope: str, *, token: str) -> bool:
-        """Chỉ holder hợp lệ mới release (compare-and-delete). Tránh xoá lease người khác."""
-        cur = await self.holder_token(scope)
-        if cur != token:
-            return False
-        await self._r.delete(lease_key(scope))
-        return True
+        """Chỉ holder hợp lệ mới release, ATOMIC (compare-and-delete)."""
+        ok = await self._r.eval(_RELEASE_SCRIPT, 1, lease_key(scope), token)
+        return bool(ok)

@@ -197,6 +197,80 @@ async def test_two_agents_only_lease_holder_executes(tmp_path):
     assert "lease" in out.reason.lower()
 
 
+# ── Lease renewal: long-running mutation safety ──────────────────────────────
+
+async def test_long_running_execution_renews_lease_no_redelivery(tmp_path, monkeypatch):
+    """Transport chậm hơn lease TTL gốc; renewal (interval nhỏ) giữ lease sống suốt."""
+    import asyncio
+
+    class SlowSystemd(FakeSystemd):
+        async def run(self, argv, *, timeout=15.0):
+            if "restart" in " ".join(argv):
+                await asyncio.sleep(0.2)
+            return await super().run(argv, timeout=timeout)
+
+    r = _redis()
+    t = SlowSystemd(state="inactive")
+    req = _req()
+    out = await run_guarded_recovery(
+        FakeCtx(), req=req, transport=t, audit_log=_log(tmp_path), gate=_gate(),
+        approval=_approval(req), env_auto_execute=False, now=NOW, redis=r, holder="agent-1",
+        lease_ttl_s=1, lease_renewal_interval_s=0.02)  # TTL gốc (1s) < thời gian chạy (0.2s+overhead)
+    assert out.status == "recovered"
+    assert t.restarts == 1
+
+
+async def test_ownership_lost_during_mutation_becomes_escalated_not_completed(tmp_path):
+    """Lease bị agent khác giành TRONG LÚC mutation chạy → KHÔNG tự nhận COMPLETED."""
+    import asyncio
+
+    r = _redis()
+    lease = ExecutionLease(r)
+
+    class HijackingSystemd(FakeSystemd):
+        async def run(self, argv, *, timeout=15.0):
+            if "restart" in " ".join(argv):
+                # mô phỏng lease hết hạn + agent khác giành được NGAY khi renew sắp chạy
+                await r.set("lease:svc:db", "other-agent-token", ex=120)
+                await asyncio.sleep(0.05)
+            return await super().run(argv, timeout=timeout)
+
+    t = HijackingSystemd(state="inactive")
+    req = _req()
+    out = await run_guarded_recovery(
+        FakeCtx(), req=req, transport=t, audit_log=_log(tmp_path), gate=_gate(),
+        approval=_approval(req), env_auto_execute=False, now=NOW, redis=r, holder="agent-1",
+        lease_ttl_s=120, lease_renewal_interval_s=0.01)
+    assert out.status == "escalated"
+    assert "ownership_lost_during_mutation_ambiguous" in out.reason
+    # KHÔNG ghi đè lease của agent khác khi release (release chỉ xoá nếu token khớp)
+    assert await lease.holder_token("svc:db") == "other-agent-token"
+
+
+async def test_ownership_lost_but_already_healthy_stays_completed_no_action(tmp_path):
+    """Mất ownership nhưng KHÔNG có mutation thật (đã healthy từ trước) → an toàn COMPLETED."""
+    import asyncio
+
+    r = _redis()
+
+    class HijackAfterHealthyCheck(FakeSystemd):
+        async def run(self, argv, *, timeout=15.0):
+            cmd = " ".join(argv)
+            if "is-active" in cmd:
+                await r.set("lease:svc:db", "other-agent-token", ex=120)
+                await asyncio.sleep(0.05)
+            return await super().run(argv, timeout=timeout)
+
+    t = HijackAfterHealthyCheck(state="active")  # đã healthy → execute_recovery abort, KHÔNG mutate
+    req = _req()
+    out = await run_guarded_recovery(
+        FakeCtx(), req=req, transport=t, audit_log=_log(tmp_path), gate=_gate(),
+        approval=_approval(req), env_auto_execute=False, now=NOW, redis=r, holder="agent-1",
+        lease_ttl_s=120, lease_renewal_interval_s=0.01)
+    assert t.restarts == 0  # KHÔNG mutation nào từng chạy
+    assert out.status != "escalated"  # mất ownership vô hại vì không có side effect để bảo vệ
+
+
 # ── (mạng) Network errors never trigger blind mutation ───────────────────────
 class FlakyAgent:
     def __init__(self, fail_io=True):

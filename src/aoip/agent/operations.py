@@ -29,6 +29,7 @@ from aoip.agent.idempotency import (
     idempotency_key,
 )
 from aoip.agent.lease import ExecutionLease
+from aoip.agent.renewal import run_with_renewal
 from aoip.objects import ActionState, Finding
 from aoip.recovery import (
     Approval,
@@ -51,6 +52,7 @@ async def run_guarded_recovery(
     ctx, *, req: RecoveryRequest, transport, audit_log: audit.FileAuditLog,
     gate, approval, env_auto_execute: bool, now: float, redis, holder: str,
     probe_dependent: Callable[[str], Awaitable[bool]] | None = None, lease_ttl_s: int = 120,
+    lease_renewal_interval_s: float | None = None,
 ) -> RecoveryOutcome:
     """execute_recovery + idempotency + lease. Đảm bảo: chạy đúng 1 lần, 1 writer.
 
@@ -61,6 +63,15 @@ async def run_guarded_recovery(
          Crash giữa chừng (claim cũ, holder đã mất vì ta giành được lease) → để
          execute_recovery REVALIDATE current-state: service đã healthy → abort (đã
          khôi phục); còn hỏng → chạy lại an toàn (mutation chưa hiệu lực).
+
+    Lease renewal (long-running safety): ``execute_recovery`` chạy song song với một
+    coordinator renew lease mỗi ``lease_renewal_interval_s`` (mặc định ``lease_ttl_s/4``
+    — safety margin ≥4x). Nếu renew thất bại (``ownership_lost``: token không còn khớp
+    holder — TTL đã hết VÀ agent khác đã acquire), mutation KHÔNG bị huỷ giữa chừng (side
+    effect có thể đã xảy ra, huỷ mù không an toàn hơn) nhưng kết quả "recovered" KHÔNG
+    còn đáng tin (agent khác có thể ĐANG mutate cùng scope) → escalate cho người xử lý
+    thay vì tự nhận COMPLETED. "aborted" (chưa mutate, vd đã healthy/gate chặn) không bị
+    ảnh hưởng vì không có side effect nào bị đe doạ bởi mất ownership.
     """
     ledger = IdempotencyLedger(redis)
     lease = ExecutionLease(redis)
@@ -68,6 +79,7 @@ async def run_guarded_recovery(
     target = req.failed_node          # lease khóa theo TARGET scope (mutating target)
     scope = req.action.scope          # idempotency/audit theo action scope
     trace = scope
+    renewal_interval = lease_renewal_interval_s or max(lease_ttl_s / 4, 1.0)
 
     # ── A. LEASE: chỉ single-writer hợp lệ trên TARGET mới đi tiếp ────────────
     token = await lease.acquire(target, holder=holder, ttl_s=lease_ttl_s)
@@ -96,10 +108,26 @@ async def run_guarded_recovery(
         await ledger._r.set(key, '{"status": "%s", "holder": "%s"}' % (STATUS_CLAIMED, holder),
                             ex=900)
 
-        outcome = await execute_recovery(
-            ctx, req=req, transport=transport, audit_log=audit_log, gate=gate,
-            approval=approval, env_auto_execute=env_auto_execute, now=now,
-            probe_dependent=probe_dependent)
+        async def _renew() -> bool:
+            return await lease.renew(target, token=token, ttl_s=lease_ttl_s)
+
+        renewal = await run_with_renewal(
+            execute_recovery(ctx, req=req, transport=transport, audit_log=audit_log, gate=gate,
+                             approval=approval, env_auto_execute=env_auto_execute, now=now,
+                             probe_dependent=probe_dependent),
+            renew_fn=_renew, interval_s=renewal_interval, label="execution_lease")
+        outcome = renewal.result
+
+        if renewal.ownership_lost and outcome.status == "recovered":
+            audit_log.append(audit.EV_RECOVERY_OWNERSHIP_LOST,
+                             {"target": target, "scope": scope, "holder": holder},
+                             trace_id=trace)
+            outcome = RecoveryOutcome(
+                action=outcome.action.at(ActionState.FAILED, verified=False),
+                status="escalated",
+                reason=("ownership_lost_during_mutation_ambiguous: lease hết hạn giữa mutation, "
+                        "agent khác có thể đã/đang mutate cùng scope — cần xác minh thủ công"),
+                evidence=outcome.evidence)
 
         # Record terminal CHỈ khi đã thực sự qua gate và chạy (recovered/escalated).
         # aborted (gate chặn / service healthy) → nhả claim để lần hợp lệ sau thử lại.

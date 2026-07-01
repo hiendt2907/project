@@ -29,6 +29,7 @@ EV_RECOVERY_VERIFICATION_FAILED = "RECOVERY_VERIFICATION_FAILED"
 EV_RECOVERY_ESCALATED = "RECOVERY_ESCALATED"
 EV_RECOVERY_RECONCILED = "RECOVERY_RECONCILED"  # idempotent: đã chạy trước, zero mutation mới
 EV_RECOVERY_LEASE_DENIED = "RECOVERY_LEASE_DENIED"  # scope bị agent khác giữ
+EV_RECOVERY_OWNERSHIP_LOST = "RECOVERY_OWNERSHIP_LOST"  # lease mất trong lúc mutation → ambiguous
 
 
 def _payload_hash(payload: dict) -> str:

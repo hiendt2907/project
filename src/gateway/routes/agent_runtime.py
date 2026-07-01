@@ -40,6 +40,19 @@ accept. Đây là delivery ownership fencing — KHÔNG phải execution idempot
 Effectively-once, KHÔNG phải exactly-once tuyệt đối: hai delivery attempt liên tiếp cho cùng
 command_id vẫn là CÙNG command identity; agent-side idempotency ledger là lớp chặn re-mutation
 cuối cùng nếu attempt N+1 vẫn map về cùng execution key.
+
+## Visibility heartbeat (long-running execution safety)
+
+``visibility_deadline`` (60s mặc định) là RIÊNG BIỆT với execution lease TTL phía agent
+(``aoip.agent.lease``, 120s mặc định) — hai timer độc lập. Một mutation chạy lâu hơn 60s mà
+KHÔNG gia hạn visibility sẽ bị Gateway coi là "quá hạn xem thấy" và redeliver (attempt mới,
+token mới) NGAY CẢ KHI agent vẫn đang chạy attempt cũ bình thường.
+
+``POST /commands/heartbeat`` cho phép agent gia hạn ``visibility_deadline`` ĐỊNH KỲ trong lúc
+RUNNING/RECONCILING — KHÔNG đổi ``delivery_attempt``, KHÔNG cấp ``fencing_token`` mới (đây là
+gia hạn, không phải claim lại). Guard giống accept/progress: agent_id/attempt/token/version
+phải khớp; chỉ hợp lệ khi state hiện tại là RUNNING hoặc RECONCILING (không heartbeat được
+DELIVERED/ACCEPTED chưa vào RUNNING, và tuyệt đối không heartbeat được TERMINAL/EXPIRED).
 """
 from __future__ import annotations
 
@@ -351,6 +364,55 @@ async def progress_command(body: AckProgress, request: Request) -> JSONResponse:
     if rec is None:
         raise HTTPException(status_code=404, detail="command not found")
     return JSONResponse(content={"command_id": body.command_id, "state": rec["state"]})
+
+
+@router.post("/commands/heartbeat")
+async def heartbeat_command(body: AckDelivered, request: Request) -> JSONResponse:
+    """Gia hạn ``visibility_deadline`` trong lúc RUNNING/RECONCILING — KHÔNG đổi
+    ``delivery_attempt``, KHÔNG cấp ``fencing_token`` mới, KHÔNG revive terminal/expired."""
+    redis = _get_redis(request)
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
+    tenant = _tenant_of(request, body.tenant_id)
+    raw = await redis.get(_rec_key(tenant, body.command_id))
+    if raw is None:
+        raise HTTPException(status_code=404, detail="command not found")
+    rec = json.loads(raw)
+    now = int(time.time())
+    if rec["state"] in TERMINAL:
+        logger.info("agent_runtime.visibility_heartbeat_failed command_id=%s reason=terminal",
+                   body.command_id)
+        return JSONResponse(status_code=409, content={
+            "command_id": body.command_id, "error": "terminal_no_heartbeat"})
+    if rec.get("expires_at") and now >= rec["expires_at"]:
+        rec.update(state=ST_EXPIRED, terminal_at=now, outcome={"reason": "expired_before_terminal"})
+        rec["record_version"] = rec.get("record_version", 0) + 1
+        await redis.set(_rec_key(tenant, body.command_id), json.dumps(rec), ex=_TTL_TERMINAL_S)
+        await redis.zrem(_ready_key(tenant, body.agent_id), body.command_id)
+        logger.info("agent_runtime.visibility_heartbeat_failed command_id=%s reason=expired",
+                   body.command_id)
+        return JSONResponse(status_code=409, content={
+            "command_id": body.command_id, "error": "expired"})
+    try:
+        _check_fencing(rec, agent_id=body.agent_id, delivery_attempt=body.delivery_attempt,
+                       fencing_token=body.fencing_token, expected_version=body.expected_version)
+    except _OwnershipConflict as exc:
+        logger.info("agent_runtime.visibility_heartbeat_failed command_id=%s reason=%s",
+                   body.command_id, exc.reason)
+        return _conflict_response(body.command_id, exc)
+    if rec["state"] not in _PROGRESS:
+        logger.info("agent_runtime.visibility_heartbeat_failed command_id=%s reason=not_running "
+                   "state=%s", body.command_id, rec["state"])
+        return JSONResponse(status_code=409, content={
+            "command_id": body.command_id, "error": "not_running", "state": rec["state"]})
+    new_deadline = now + _VISIBILITY_S
+    rec["visibility_deadline"] = new_deadline
+    rec["record_version"] = rec.get("record_version", 0) + 1
+    await redis.set(_rec_key(tenant, body.command_id), json.dumps(rec), ex=_TTL_ACTIVE_S)
+    await redis.zadd(_ready_key(tenant, body.agent_id), {body.command_id: new_deadline})
+    logger.info("agent_runtime.delivery_visibility_extended command_id=%s deadline=%s",
+               body.command_id, new_deadline)
+    return JSONResponse(content={"command_id": body.command_id, "visibility_deadline": new_deadline,
+                                 "record_version": rec["record_version"]})
 
 
 @router.post("/commands/terminal")
