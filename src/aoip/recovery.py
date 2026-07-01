@@ -122,6 +122,28 @@ class Approval:
     tenant: str = ""
     decision_goal: str = ""
     expires_at: float = float("inf")
+    action_id: str = ""            # ràng buộc đúng Action cụ thể (immutable identity)
+    canonical_scope: str = ""      # ràng buộc đúng target đã canonical (tenant-embedded)
+    issued_at: float = 0.0         # thời điểm phát hành (approval không được "từ tương lai")
+
+    @classmethod
+    def issue(cls, *, approver: str, tenant: str, canonical_scope: str, decision_goal: str,
+              action_id: str, action_scope: str, issued_at: float, expires_at: float) -> "Approval":
+        """Production path: fail-closed. Thiếu bất kỳ binding nào → raise (KHÔNG tạo được).
+
+        Approval hợp lệ PHẢI ràng buộc: approver, tenant, canonical scope, Decision, Action,
+        thời điểm phát hành, hạn. Không default rỗng, không hạn vô cực trên production.
+        """
+        missing = [n for n, v in (("approver", approver), ("tenant", tenant),
+                                  ("canonical_scope", canonical_scope), ("decision_goal", decision_goal),
+                                  ("action_id", action_id), ("action_scope", action_scope)) if not v]
+        if missing:
+            raise ValueError(f"bounded approval thiếu binding: {missing}")
+        if not (issued_at < expires_at < float("inf")):
+            raise ValueError("approval phải có issued_at < expires_at hữu hạn")
+        return cls(approved=True, approver=approver, action_scope=action_scope, tenant=tenant,
+                   decision_goal=decision_goal, expires_at=expires_at, action_id=action_id,
+                   canonical_scope=canonical_scope, issued_at=issued_at)
 
 
 @dataclass(frozen=True)

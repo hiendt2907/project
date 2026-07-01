@@ -23,9 +23,32 @@ _TTL_TERMINAL_S = 604800  # record terminal giữ 7 ngày để dedup giao trùn
 
 def idempotency_key(*, tenant: str, scope: str, decision_goal: str,
                     failure_mode: str, unit: str) -> str:
-    """Key tất định cho một ý định mutation. Cùng intent → cùng key → chạy 1 lần."""
+    """LEGACY (tests only): key theo intent. Không phân biệt 2 incident cùng plan.
+
+    Không dùng trên production path — thay bằng ``command_identity`` (immutable IDs).
+    """
     raw = f"{tenant}|{scope}|{decision_goal}|{failure_mode}|{unit}"
     return "idem:" + hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+def command_identity(corr, *, payload_hash: str) -> str:
+    """Identity BẤT BIẾN từ ID giao/vận hành: tenant+mission+incident+decision+action+
+    command + hash payload canonical (#4).
+
+    Vì sao: hai incident KHÁC NHAU có cùng failure_mode + cùng recovery plan KHÔNG được
+    trùng key (nếu trùng, incident thứ hai bị nuốt as duplicate → mất mutation cần thiết).
+    Immutable delivery IDs đảm bảo mỗi lần giao thật là một identity riêng; redelivery của
+    ĐÚNG lệnh đó (cùng command_id + payload) mới trùng key → dedup đúng.
+    """
+    raw = "|".join([corr.tenant, corr.mission_id, corr.incident_id, corr.decision_id,
+                    corr.action_id, corr.command_id, payload_hash])
+    return "idem:" + hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+def payload_hash(*, unit: str, verb: str, port, failure_mode: str, substrate: str) -> str:
+    """Hash canonical payload mutation — đổi 1 tham số = đổi identity."""
+    raw = f"{unit}|{verb}|{port}|{failure_mode}|{substrate}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 class IdempotencyLedger:
