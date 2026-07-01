@@ -9,23 +9,29 @@ report → sleep → repeat. Chống mất command qua process restart + machine
   boot: OUTCOME_RECORDED → re-report; RUNNING → reconcile; RECEIVED → tick xử lý lại.
 - Gateway giữ record durable + redelivery đến khi terminal ack (GET=peek).
 
-Executor mutation thật là ``operations.build_recovery_executor`` (nối ``run_guarded_recovery``
-— lease + IdempotencyLedger + current-state revalidation, KHÔNG bypass). ``run_daemon`` dùng
-executor này làm default KHI được tiêm đủ dependency (``redis``/``transport``/``audit_log``/
-``gate``); nếu KHÔNG (vd unit test không cần mutation thật, hoặc CLI chưa wiring dependency —
-xem gap ở cuối module), rơi về ``_noop_executor`` — DEV/TEST-ONLY, KHÔNG phải production path
-mặc định khi đã có đủ dependency.
+Runtime mode (``aoip.agent.runtime_config``): CLI/systemd entrypoint ``main()`` chọn RÕ qua
+``AOIP_AGENT_MODE`` — ``observe_only`` (mặc định, KHÔNG mutation, executor báo ESCALATED cho
+mọi mutating command) hoặc ``mutation_enabled`` (build đầy đủ redis/audit_log/gate/transport →
+``operations.build_recovery_executor``, nối ``run_guarded_recovery`` — lease + IdempotencyLedger
++ current-state revalidation, KHÔNG bypass). ``mutation_enabled`` thiếu/lỗi dependency bắt buộc
+làm startup FAIL (raise, exit non-zero) — KHÔNG bao giờ tự rơi về no-op ngầm.
+
+``run_daemon()`` giữ ``_noop_executor`` làm fallback CHỈ khi gọi trực tiếp (test/dev) không
+tiêm ``executor`` và cũng không tiêm đủ ``redis``/``transport``/``audit_log``/``gate`` — path
+này không dùng bởi CLI/production kể từ khi ``main()`` luôn tiêm executor tường minh qua mode.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import signal
 
 from aoip.agent.delivery_loop import DeliveryLoop
 from aoip.agent.inbox import LocalInbox
 from aoip.agent.omni_client import HTTPOmniClient
 from aoip.agent.operations import build_recovery_executor
+from aoip.agent.runtime_config import MODE_OBSERVE_ONLY, build_agent_runtime
 
 _DEFAULT_INBOX = "/var/lib/aoip/inbox"
 _DEFAULT_INTERVAL_S = 15
@@ -100,6 +106,10 @@ async def run_daemon(*, agent_id: str, tenant: str, gateway: str, api_key: str,
 
 
 def main() -> None:
+    """Production/CLI entrypoint. Runtime mode PHẢI được chọn RÕ qua ``AOIP_AGENT_MODE``
+    (``observe_only`` | ``mutation_enabled``) — mặc định ``observe_only`` (fail-safe: KHÔNG
+    mutation nếu operator chưa chủ ý bật). ``mutation_enabled`` thiếu/lỗi dependency
+    (redis/audit_log/gate) làm tiến trình thoát non-zero, KHÔNG rơi về no-op ngầm."""
     p = argparse.ArgumentParser(description="AOIP durable agent daemon")
     p.add_argument("--agent-id", required=True)
     p.add_argument("--tenant", required=True)
@@ -108,9 +118,15 @@ def main() -> None:
     p.add_argument("--inbox", default=_DEFAULT_INBOX)
     p.add_argument("--interval", type=int, default=_DEFAULT_INTERVAL_S)
     args = p.parse_args()
+
+    mode = os.environ.get("AOIP_AGENT_MODE", MODE_OBSERVE_ONLY).strip().lower()
+    executor, status = build_agent_runtime(mode=mode, agent_id=args.agent_id)
+    print(f"[bootstrap] {status.render()}")
+
     asyncio.run(run_daemon(
         agent_id=args.agent_id, tenant=args.tenant, gateway=args.gateway,
-        api_key=args.api_key, inbox_root=args.inbox, interval_s=args.interval))
+        api_key=args.api_key, inbox_root=args.inbox, interval_s=args.interval,
+        executor=executor))
 
 
 if __name__ == "__main__":

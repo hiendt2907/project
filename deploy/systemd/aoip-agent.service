@@ -12,6 +12,10 @@ Type=simple
 StateDirectory=aoip
 StateDirectoryMode=0700
 Environment=AOIP_INBOX=/var/lib/aoip/inbox
+# Fail-safe default: KHÔNG mutation trừ khi /etc/aoip/agent.env đặt rõ
+# AOIP_AGENT_MODE=mutation_enabled (+ AOIP_REDIS_URL/AOIP_AUDIT_LOG_PATH/AOIP_GATE_*).
+# EnvironmentFile nạp SAU nên override được giá trị này.
+Environment=AOIP_AGENT_MODE=observe_only
 # Bí mật lấy từ file (không hardcode trong unit).
 EnvironmentFile=/etc/aoip/agent.env
 ExecStart=/opt/aoip/.venv/bin/python -m aoip.agent.daemon \

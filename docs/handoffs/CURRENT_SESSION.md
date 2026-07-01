@@ -1,78 +1,106 @@
 # Current Session Handoff
 
-## Deliverable
-**Vertical slice: nối AOIP durable command → `run_guarded_recovery` → outcome → durable report.**
-Thay `_noop_executor` mặc định bằng adapter production-safe (`operations.build_recovery_executor`).
-Không mở capability mới, không sửa deployment/atomic-claim/payload-hash/gateway.
+## Deliverable hiện tại
+Production runtime wiring: đảm bảo AOIP Agent CLI/systemd entrypoint (`daemon.main()`) KHÔNG
+bao giờ âm thầm chạy no-op khi operator tin mutation đang hoạt động. Buộc chọn RÕ runtime mode.
 
-## Pre-change contract map
-- Daemon executor (`delivery_loop.Executor`): `async (payload: dict) -> (terminal_state, outcome_dict)`.
-  `payload` = free-form dict từ durable command's `payload` field (Gateway không biết domain aoip).
-- `run_guarded_recovery(ctx, req, transport, audit_log, gate, approval, env_auto_execute, now, redis,
-  holder, probe_dependent=None, lease_ttl_s=120) -> RecoveryOutcome`. Cần `ctx.findings` +
-  `ctx.diagnosis_confidence` + `ctx.log()` (duck-typed, KHÔNG cần `UnderstandingContext` đầy đủ).
-- Ledger states: `CLAIMED` → `STATUS_TERMINAL` (`recovered|escalated|aborted|completed`).
-  Claim xảy ra TRƯỚC `execute_recovery`; record terminal chỉ khi `recovered`/`escalated`; `aborted`
-  → `release_claim` (cho retry hợp lệ sau). Lease KHÔNG có auto-renewal (chỉ TTL 120s cố định).
-- Ambiguous outcome KHÔNG lộ ra ngoài `run_guarded_recovery`: nó tự resolve nội bộ qua current-state
-  revalidation trong `execute_recovery` trước khi return — mỗi lần gọi luôn trả outcome xác định.
+## Definition of Done
+`AOIP_AGENT_MODE` = `observe_only` (mặc định, fail-safe) hoặc `mutation_enabled`.
+`mutation_enabled` build ĐẦY ĐỦ redis/audit_log/gate/transport/recovery-executor; thiếu/lỗi
+bất kỳ dependency nào → startup FAIL (raise `AgentBootstrapError`, exit non-zero), KHÔNG fallback
+no-op ngầm. `observe_only` executor không bao giờ trả COMPLETED cho mutating command (ESCALATED,
+reason=`executor_disabled_observe_only`). ✅ Xong — 195/195 test AOIP pass (+8 mới).
 
-## Implementation
-- **`src/aoip/agent/operations.py`** (mới, cuối file):
-  - `decode_recovery_command(payload)` — parse `payload["recovery"|"approval"|"evidence"]` →
-    `(RecoveryRequest, Approval, _EvidenceCtx)`. Raise `UnsupportedRecoveryPayload` fail-closed nếu
-    thiếu field hoặc không có operator cho `(failure_mode, substrate)`.
-  - `_EvidenceCtx` — carrier tối thiểu (findings/diagnosis_confidence/log), KHÔNG noun mới.
-  - `_map_recovery_outcome(outcome)` — `recovered`→COMPLETED; `aborted`+"HEALTHY" trong reason→
-    COMPLETED+`NO_ACTION_NEEDED`; `escalated`→ESCALATED; `aborted` khác (gate/lease/approval chặn)→FAILED.
-  - `build_recovery_executor(redis, holder, transport, audit_log, gate, env_auto_execute=False,
-    lease_ttl_s=120, probe_dependent=None, now=None)` — adapter hẹp, KHÔNG bypass lease/ledger.
-    Exception bất kỳ (transport/redis) → FAILED rõ ràng, không bao giờ COMPLETED ngầm.
-- **`src/aoip/agent/daemon.py`**: `run_daemon`/`main` nhận thêm `redis, transport, audit_log, gate,
-  env_auto_execute, now`. Nếu đủ 4 dep đầu → default executor = `build_recovery_executor`; nếu KHÔNG
-  → fallback `_noop_executor` (docstring đổi: DEV/TEST-ONLY, không phải production default khi đã đủ dep).
-- **`tests/test_aoip_operations.py`**: +13 test (decode contract, happy path, duplicate delivery,
-  already-healthy no-op, verification-failure escalate, expired approval, unsupported payload,
-  transport exception, daemon wiring end-to-end).
+## Trạng thái hiện tại
+Hoàn thành, CHƯA commit. Working tree có thay đổi (xem `git status`).
 
-## Safety semantics
-- Mutation chỉ thực hiện khi: payload decode được + qua toàn bộ gate (`_gate_checks` trong
-  `recovery.py`) + current-state xác nhận còn hỏng.
-- `COMPLETED` hợp lệ khi: (1) mutation + verify service/dependents pass, hoặc (2) current-state gate
-  thấy đã khỏe trước mutation → `NO_ACTION_NEEDED` + evidence, KHÔNG mutation.
-- `FAILED`: payload không decode được / gate chặn (approval sai-hạn-tenant-scope, risk, capability) /
-  exception trong `run_guarded_recovery`. KHÔNG COMPLETED trong mọi nhánh này.
-- `ESCALATED`: verify sau mutation fail (đã thử 1 lần, KHÔNG retry vô hạn — domain semantics có sẵn
-  trong `execute_recovery`, giữ nguyên, không đổi).
-- Duplicate delivery / crash-after-claim: `run_guarded_recovery` tự dedup qua `IdempotencyLedger` +
-  `ExecutionLease`; executor gọi lại bao nhiêu lần cũng an toàn (effectively-once, KHÔNG tuyên bố
-  exactly-once tuyệt đối — lease/ledger/mutation không cùng transaction).
+## Đã hoàn thành
+- **Mới**: `src/aoip/agent/runtime_config.py` — `MODE_OBSERVE_ONLY`/`MODE_MUTATION_ENABLED`,
+  `RuntimeStatus` (executor_mode/executor_status: ACTIVE|DISABLED), `AgentBootstrapError`,
+  `observe_only_executor`, `build_agent_runtime(mode, agent_id, env)`. Đọc env bắt buộc:
+  `AOIP_REDIS_URL`, `AOIP_AUDIT_LOG_PATH`, `AOIP_GATE_ALLOWED_FAILURE_MODES`,
+  `AOIP_GATE_ALLOWED_SUBSTRATES`, `AOIP_GATE_SCOPE_PREFIX`, `AOIP_GATE_MAX_RISK`,
+  `AOIP_GATE_MIN_DIAGNOSIS_CONFIDENCE`, `AOIP_GATE_MAX_DIAGNOSIS_AGE_S`; optional
+  `AOIP_RECOVERY_SSH_HOST`/`AOIP_RECOVERY_SSH_USER`/`AOIP_RECOVERY_TARGET`,
+  `AOIP_AUTO_EXECUTE_ENABLED` (default false).
+- `daemon.py`: `main()` đọc `AOIP_AGENT_MODE` (default `observe_only`), gọi
+  `build_agent_runtime()`, in structured status log (`[bootstrap] executor_mode=... executor_status=...`),
+  tiêm executor tường minh vào `run_daemon()`. `_noop_executor`/`_default_executor` chỉ còn dùng
+  khi gọi `run_daemon()` trực tiếp không qua `main()` (test/dev injection, KHÔNG phải CLI path).
+  Docstring module cập nhật để không còn mô tả sai (trước đây tuyên bố adapter là default nhưng
+  `main()` chưa từng tiêm dependency — CLI luôn rơi `_noop_executor` một cách IM LẶNG).
+- `deploy/systemd/aoip-agent.service`: thêm `Environment=AOIP_AGENT_MODE=observe_only` (fail-safe
+  default, override được bởi `EnvironmentFile=/etc/aoip/agent.env` nạp sau).
+- `tests/test_aoip_runtime_config.py` (mới, 8 test): mutation_enabled đủ dep → ACTIVE; thiếu
+  từng dependency (redis/audit_log/gate/numeric-invalid) → `AgentBootstrapError` fail-closed;
+  mode không hợp lệ → fail-closed; observe_only → DISABLED, không cần dependency; observe_only
+  executor không bao giờ COMPLETED end-to-end qua `DeliveryLoop` thật.
+- Verified: `pytest tests/ -q -k aoip` → 195 passed (187 cũ + 8 mới).
 
-## Test results
-| Command | Result |
-| --- | --- |
-| `pytest tests/test_aoip_operations.py tests/test_aoip_agent_daemon.py tests/test_aoip_delivery.py tests/test_aoip_intake.py -q` | 51 passed |
-| `pytest tests/ -q -k aoip` | 187 passed |
-| Full suite / lint | Not run (out of time budget phiên này) |
+## Branch và commit
+`feature/living-operations-runtime` @ `d3c27e5` (HEAD trước phiên này). Phiên này CHƯA commit.
 
-## Remaining gaps (không đổi so với trước, xác nhận lại)
-- **Atomic claim**: `poll_commands` vẫn 4 op rời (chưa Lua/WATCH) — double-DELIVERED risk còn, đã có
-  lease+ledger backstop mutation-safety nên KHÔNG blocker.
-- **Gateway transition enforcement bất đối xứng**: `_advance` chưa validate expected-current-state.
-- **`payload_hash` chỉ metadata**: chưa canonical-hash + verify hai chiều.
-- **CLI chưa wiring production**: `daemon.main()` KHÔNG có flag `--redis-url`/`--audit-path`/gate
-  config → khi chạy thật qua CLI vẫn rơi về `_noop_executor` (không đủ 4 dep). `run_daemon()` đã sẵn
-  sàng nhận dep qua code; nối CLI = việc kế tiếp, không thuộc scope "connect executor" phiên này.
-- **Lease KHÔNG renewal**: TTL cố định 120s, mutation dài hơn TTL có thể mất lease giữa chừng — chưa
-  test riêng case này (đã note trong spec Bước 6.E, chưa viết test).
-- **`command_identity` (immutable IDs) không được dùng bởi `run_guarded_recovery`**: nó vẫn dùng
-  `idempotency_key` (legacy, theo tenant+scope+decision+failure_mode+unit) — gap tồn tại từ trước,
-  KHÔNG do slice này tạo ra, KHÔNG sửa trong scope này (đổi sẽ động ledger key production).
+## Working tree
+Có thay đổi: `src/aoip/agent/runtime_config.py` (mới), `src/aoip/agent/daemon.py`,
+`deploy/systemd/aoip-agent.service`, `tests/test_aoip_runtime_config.py` (mới),
+`docs/handoffs/CURRENT_SESSION.md`.
 
-## Next hardening slice
-Atomic delivery claim (Lua script cho `poll_commands`) hoặc Gateway transition enforcement — chọn
-theo dependency thực tế lúc bắt đầu, không quyết định trước.
+## Files chính đã thay đổi
+`src/aoip/agent/runtime_config.py`, `src/aoip/agent/daemon.py`,
+`deploy/systemd/aoip-agent.service`, `tests/test_aoip_runtime_config.py`.
 
-## Git status
-Chưa commit. Files changed: `src/aoip/agent/operations.py`, `src/aoip/agent/daemon.py`,
-`tests/test_aoip_operations.py`, `docs/handoffs/CURRENT_SESSION.md`.
+## Quyết định đã chốt
+- Mode mặc định khi `AOIP_AGENT_MODE` không set = `observe_only` (fail-safe: không mutation
+  ngoài ý muốn operator). Muốn mutation thật PHẢI set rõ `mutation_enabled` + đủ config.
+- KHÔNG suy ra observe-only từ lỗi dependency — `mutation_enabled` thiếu dependency là LỖI
+  (raise), không phải tín hiệu để tự chuyển mode.
+- Exception dependency-construction KHÔNG bị broad-catch trong `runtime_config.py` — chỉ bọc
+  lại thành `AgentBootstrapError` có tên field thiếu rõ ràng, rồi để propagate lên `main()`
+  (không catch ở đó) → Python traceback mặc định + exit non-zero, đúng systemd `Restart=always`
+  policy hiện có (không đổi).
+- `run_daemon()` giữ nguyên chữ ký cũ (`redis=`, `transport=`, ... optional) để không phá test
+  hiện có dùng inject trực tiếp — thay đổi CHỈ ở `main()`.
+- KHÔNG sửa Gateway atomic claim, lease renewal algorithm, payload hash/signing, K8s manifest,
+  Portal — đúng scope boundary đã cho.
+
+## Verification đã chạy
+- `.venv/bin/python -m pytest tests/test_aoip_runtime_config.py tests/test_aoip_operations.py tests/test_aoip_agent_daemon.py -q` → 31 passed.
+- `.venv/bin/python -m pytest tests/ -q -k aoip` → 195 passed.
+- Import sanity: `PYTHONPATH=src python -c "from aoip.agent.daemon import main; ..."` → OK.
+- `systemd-analyze verify` → Not run (macOS, không có systemd).
+- Full suite / lint ngoài phạm vi AOIP: KHÔNG chạy phiên này.
+
+## Deployment hiện tại
+N/A — không deploy gì trong phiên này. Pod `omni-fullstack` không liên quan tới AOIP agent VM.
+Operator cần set `AOIP_AGENT_MODE=mutation_enabled` + `AOIP_REDIS_URL`/`AOIP_AUDIT_LOG_PATH`/
+`AOIP_GATE_*` trong `/etc/aoip/agent.env` để bật mutation thật trên VM — CHƯA làm trong phiên này.
+
+## Blockers
+None.
+
+## Next step chính xác
+Chọn 1 trong 2 (theo brief gốc, KHÔNG blocker mutation-safety, là hardening):
+(a) atomic delivery claim (Lua script cho `poll_commands` trong
+`src/gateway/routes/agent_runtime.py`, thay 4-op rời bằng 1 op atomic); hoặc
+(b) Gateway transition enforcement (`_advance` cần validate expected-current-state).
+Còn lại các gap đã biết: lease renewal, payload integrity (hash/signing) — KHÔNG đụng tới.
+
+## Lệnh cần chạy lại
+- `.venv/bin/python -m pytest tests/test_aoip_runtime_config.py tests/test_aoip_agent_daemon.py tests/test_aoip_operations.py -q`
+- `.venv/bin/python -m pytest tests/ -q -k aoip`
+- `bash tests/claude_hooks/test_session_hooks.sh`
+
+## Không được làm lại
+- KHÔNG viết lại `runtime_config.build_agent_runtime`/`observe_only_executor` — đã xong, 8 test.
+- KHÔNG thêm mode thứ 3 ngoài `observe_only`/`mutation_enabled` trừ khi được yêu cầu rõ.
+- KHÔNG đổi `run_daemon()` signature test-injection path (`redis=`/`transport=`/...) — giữ
+  backward-compat cho `tests/test_aoip_operations.py` dòng ~387-415.
+- KHÔNG atomic-claim/transition-enforcement TRƯỚC khi đọc lại code hiện tại của
+  `src/gateway/routes/agent_runtime.py` — đọc trước khi sửa.
+
+## Tài liệu liên quan
+- `src/aoip/agent/runtime_config.py` (mode bootstrap mới).
+- `src/aoip/agent/daemon.py` (main() wiring mode → executor).
+- `deploy/systemd/aoip-agent.service` (fail-safe default env).
+- `tests/test_aoip_runtime_config.py` (test suite runtime mode).
+- `src/gateway/routes/agent_runtime.py` (twin phía Gateway — mục tiêu next step, KHÔNG đụng).
