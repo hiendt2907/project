@@ -13,7 +13,12 @@ import pytest
 from aoip import audit
 from aoip.agent.idempotency import IdempotencyLedger, idempotency_key
 from aoip.agent.lease import ExecutionLease
-from aoip.agent.operations import operations_loop, run_guarded_recovery
+from aoip.agent.operations import (
+    build_recovery_executor,
+    decode_recovery_command,
+    operations_loop,
+    run_guarded_recovery,
+)
 from aoip.objects import ActionState, Finding
 from aoip.recovery import Approval, RecoveryGate, RecoveryRequest, plan_recovery
 
@@ -246,3 +251,165 @@ async def test_loop_happy_path_reports():
                           handle_request=handle_request, sleep_s=0, max_iterations=2)
     assert agent.heartbeats == 2
     assert agent.results and agent.results[0][0] == 0
+
+
+# ── Durable-command executor adapter (daemon → run_guarded_recovery) ────────────────
+def _payload(*, tenant="acme", failure_mode="process_down", substrate="systemd",
+            expires_at=NOW + 100.0, healthy=False):
+    return {
+        "recovery": {
+            "failed_node": "svc:db", "failure_mode": failure_mode, "substrate": substrate,
+            "unit": "redis-server", "port": 6379, "risk": 0.3, "diagnosed_at": NOW,
+            "tenant": tenant, "dependents": [],
+        },
+        "approval": {
+            "approver": "alice", "tenant": tenant, "decision_goal": "recover:process_down",
+            "expires_at": expires_at, "action_id": "act-1", "canonical_scope": "svc:db",
+            "issued_at": NOW - 10.0,
+        },
+        "evidence": {
+            "diagnosis_confidence": 0.787,
+            "findings": [
+                {"claim": "svc:db is DOWN (probe failed)", "verdict": True, "confidence": 0.95,
+                 "references": ["i"]},
+                {"claim": "svc:db: process_down", "verdict": True, "confidence": 0.9,
+                 "references": ["d"]},
+            ],
+        },
+    }
+
+
+def test_decode_recovery_command_builds_request_and_approval():
+    req, approval, ctx = decode_recovery_command(_payload())
+    assert req.failed_node == "svc:db" and req.tenant == "acme"
+    assert approval.approved and approval.action_scope == req.action.scope
+    assert ctx.diagnosis_confidence == 0.787 and len(ctx.findings) == 2
+
+
+def test_decode_recovery_command_missing_field_raises():
+    bad = _payload()
+    del bad["recovery"]["unit"]
+    from aoip.agent.operations import UnsupportedRecoveryPayload
+    with pytest.raises(UnsupportedRecoveryPayload):
+        decode_recovery_command(bad)
+
+
+def test_decode_recovery_command_unsupported_capability_raises():
+    from aoip.agent.operations import UnsupportedRecoveryPayload
+    with pytest.raises(UnsupportedRecoveryPayload):
+        decode_recovery_command(_payload(failure_mode="disk_full", substrate="systemd"))
+
+
+# A. Wiring — happy path mutates exactly once and returns COMPLETED
+async def test_executor_happy_path_completes_and_mutates_once(tmp_path):
+    r = _redis()
+    t = FakeSystemd(state="inactive", heal_on_restart=True)
+    executor = build_recovery_executor(redis=r, holder="agent-1", transport=t,
+                                       audit_log=_log(tmp_path), gate=_gate(), now=lambda: NOW)
+    state, outcome = await executor(_payload())
+    assert state == "COMPLETED" and outcome["rc"] == 0
+    assert t.restarts == 1
+
+
+# B. Duplicate delivery — two invocations, mutate once (ledger + lease backstop)
+async def test_executor_duplicate_delivery_mutates_once(tmp_path):
+    r = _redis()
+    t = FakeSystemd(state="inactive", heal_on_restart=True)
+    executor = build_recovery_executor(redis=r, holder="agent-1", transport=t,
+                                       audit_log=_log(tmp_path), gate=_gate(), now=lambda: NOW)
+    s1, o1 = await executor(_payload())
+    s2, o2 = await executor(_payload())  # giao trùng
+    assert s1 == "COMPLETED" and s2 == "COMPLETED"
+    assert t.restarts == 1
+
+
+# H. Already healthy — no mutation, COMPLETED + NO_ACTION_NEEDED evidence
+async def test_executor_already_healthy_completes_without_mutation(tmp_path):
+    r = _redis()
+    t = FakeSystemd(state="active")  # đã khỏe từ đầu
+    executor = build_recovery_executor(redis=r, holder="agent-1", transport=t,
+                                       audit_log=_log(tmp_path), gate=_gate(), now=lambda: NOW)
+    state, outcome = await executor(_payload())
+    assert state == "COMPLETED"
+    assert outcome["outcome"] == "NO_ACTION_NEEDED"
+    assert t.restarts == 0
+
+
+# F. Verification failure → ESCALATED, not COMPLETED, not silently retried
+async def test_executor_verification_failure_escalates(tmp_path):
+    r = _redis()
+    t = FakeSystemd(state="inactive", heal_on_restart=False)  # restart không cứu được
+    executor = build_recovery_executor(redis=r, holder="agent-1", transport=t,
+                                       audit_log=_log(tmp_path), gate=_gate(), now=lambda: NOW)
+    state, outcome = await executor(_payload())
+    assert state == "ESCALATED"
+    assert t.restarts == 1  # đã thử 1 lần, KHÔNG retry vô hạn
+
+
+# F. Approval expired → FAILED, zero mutation
+async def test_executor_expired_approval_fails_zero_mutation(tmp_path):
+    r = _redis()
+    t = FakeSystemd(state="inactive")
+    executor = build_recovery_executor(redis=r, holder="agent-1", transport=t,
+                                       audit_log=_log(tmp_path), gate=_gate(), now=lambda: NOW)
+    state, outcome = await executor(_payload(expires_at=NOW - 1.0))
+    assert state == "FAILED" and t.restarts == 0
+
+
+# G. Unsupported input → fail closed without ever calling the mutation executor
+async def test_executor_unsupported_payload_fails_without_calling_recovery(tmp_path):
+    t = FakeSystemd(state="inactive")
+    executor = build_recovery_executor(redis=_redis(), holder="agent-1", transport=t,
+                                       audit_log=_log(tmp_path), gate=_gate())
+    bad = _payload()
+    del bad["approval"]["approver"]
+    state, outcome = await executor(bad)
+    assert state == "FAILED" and t.restarts == 0
+    assert "unsupported_or_invalid_payload" in outcome["reason"]
+
+
+# Exception in transport during mutation → FAILED, never becomes a false success
+async def test_executor_transport_exception_fails_not_completed(tmp_path):
+    class ExplodingTransport:
+        async def run(self, argv, timeout=15.0):
+            raise ConnectionError("ssh broke")
+
+    executor = build_recovery_executor(redis=_redis(), holder="agent-1",
+                                       transport=ExplodingTransport(), audit_log=_log(tmp_path),
+                                       gate=_gate(), now=lambda: NOW)
+    state, outcome = await executor(_payload())
+    assert state == "FAILED"
+    assert "executor_exception" in outcome["reason"]
+
+
+# Wired into the daemon: default executor becomes the recovery adapter when deps given
+async def test_daemon_uses_recovery_executor_when_deps_provided(tmp_path):
+    from aoip.agent.daemon import run_daemon
+    from aoip.agent.inbox import LocalInbox
+
+    r = _redis()
+    t = FakeSystemd(state="inactive", heal_on_restart=True)
+
+    class FakeClient:
+        def __init__(self, commands):
+            self._commands = commands
+
+        async def poll_runtime(self, agent_id):
+            out, self._commands = self._commands, []
+            return out
+
+        async def accept(self, *a):
+            pass
+
+        async def progress(self, *a):
+            pass
+
+        async def report_terminal(self, agent_id, tenant_id, command_id, state, outcome):
+            return {"acknowledged": True, "state": state}
+
+    client = FakeClient([{"command_id": "cmd-1", "tenant_id": "acme", "payload": _payload()}])
+    await run_daemon(agent_id="agent-1", tenant="acme", gateway="http://x", api_key="",
+                     inbox_root=str(tmp_path), interval_s=0, max_ticks=1, client=client,
+                     redis=r, transport=t, audit_log=_log(tmp_path), gate=_gate(),
+                     now=lambda: NOW)
+    assert t.restarts == 1  # mutation thật đã chạy qua adapter, KHÔNG rơi về _noop_executor

@@ -17,7 +17,9 @@ chỉ qua ``execute_recovery`` (fail-closed, HITL, current-state revalidate).
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable
+import time
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 
 from aoip import audit
 from aoip.agent.idempotency import (
@@ -27,8 +29,16 @@ from aoip.agent.idempotency import (
     idempotency_key,
 )
 from aoip.agent.lease import ExecutionLease
-from aoip.objects import ActionState
-from aoip.recovery import RecoveryOutcome, RecoveryRequest, execute_recovery
+from aoip.objects import ActionState, Finding
+from aoip.recovery import (
+    Approval,
+    RecoveryGate,
+    RecoveryOutcome,
+    RecoveryRequest,
+    execute_recovery,
+    operator_for,
+    plan_recovery,
+)
 
 
 def _key_for(req: RecoveryRequest) -> str:
@@ -148,3 +158,153 @@ async def operations_loop(
                 pass
         await asyncio.sleep(sleep_s)
     return iterations
+
+
+# ── Durable-command executor adapter (Step: nối daemon → run_guarded_recovery) ──────
+#
+# ``daemon.DeliveryLoop`` gọi ``executor(payload) -> (terminal_state, outcome)`` với
+# ``payload`` là dict tự do (durable command's ``payload`` field — Gateway KHÔNG biết
+# domain aoip). Adapter dưới đây là RANH GIỚI hẹp: parse payload → RecoveryRequest +
+# Approval → gọi ``run_guarded_recovery`` (KHÔNG bypass lease/ledger) → map
+# RecoveryOutcome sang (terminal_state, outcome dict) theo semantics daemon cần.
+#
+# Payload contract (typed, không parse được → fail-closed, KHÔNG gọi executor mutation):
+#   {
+#     "recovery": {failed_node, failure_mode, substrate, unit, risk, diagnosed_at,
+#                  tenant, port?, dependents?},
+#     "approval": {approver, tenant, decision_goal, expires_at, action_id,
+#                  canonical_scope, issued_at, action_scope?},
+#     "evidence": {diagnosis_confidence?, findings?: [{claim, verdict, confidence,
+#                  references?}]},
+#   }
+_REQUIRED_RECOVERY_FIELDS = (
+    "failed_node", "failure_mode", "substrate", "unit", "risk", "diagnosed_at", "tenant",
+)
+_REQUIRED_APPROVAL_FIELDS = (
+    "approver", "tenant", "decision_goal", "expires_at", "action_id", "canonical_scope", "issued_at",
+)
+_HEALTHY_NO_ACTION_MARKER = "HEALTHY"
+
+
+class UnsupportedRecoveryPayload(Exception):
+    """Payload không decode được thành RecoveryRequest/Approval hợp lệ.
+
+    Bất kỳ chỗ raise này PHẢI fail-closed: KHÔNG gọi ``run_guarded_recovery``.
+    """
+
+
+@dataclass
+class _EvidenceCtx:
+    """Carrier tối thiểu cho ``_gate_checks``/``execute_recovery`` (chỉ đọc ``.findings``,
+    ``.diagnosis_confidence``, ``.log()``). KHÔNG phải noun ontology mới — chỉ mang
+    evidence đã có sẵn trong payload sang đúng shape ``ctx`` mà recovery gate cần."""
+
+    findings: list[Finding] = field(default_factory=list)
+    diagnosis_confidence: float | None = None
+    trace: list[str] = field(default_factory=list)
+
+    def log(self, verb: str, detail: str) -> None:
+        self.trace.append(f"{verb}: {detail}")
+
+
+def _require(d: dict, keys: tuple[str, ...], what: str) -> None:
+    missing = [k for k in keys if d.get(k) is None]
+    if missing:
+        raise UnsupportedRecoveryPayload(f"{what} thiếu field: {missing}")
+
+
+def decode_recovery_command(payload: dict) -> tuple[RecoveryRequest, Approval, _EvidenceCtx]:
+    """Parse durable command payload → (RecoveryRequest, Approval, ctx).
+
+    Raise ``UnsupportedRecoveryPayload`` fail-closed nếu thiếu field hoặp không có
+    operator cho (failure_mode, substrate) — caller KHÔNG được gọi mutation executor
+    khi bắt exception này.
+    """
+    rec_d = payload.get("recovery") or {}
+    _require(rec_d, _REQUIRED_RECOVERY_FIELDS, "recovery")
+    if operator_for(rec_d["failure_mode"], rec_d["substrate"]) is None:
+        raise UnsupportedRecoveryPayload(
+            f"unsupported_capability: không có operator cho "
+            f"({rec_d['failure_mode']!r}, {rec_d['substrate']!r})")
+
+    action = plan_recovery(failed_node=rec_d["failed_node"], failure_mode=rec_d["failure_mode"],
+                           substrate=rec_d["substrate"], unit=rec_d["unit"],
+                           port=rec_d.get("port"), risk=float(rec_d["risk"]))
+    action = action.at(ActionState.APPROVED)
+    req = RecoveryRequest(failed_node=rec_d["failed_node"], failure_mode=rec_d["failure_mode"],
+                          substrate=rec_d["substrate"], unit=rec_d["unit"], port=rec_d.get("port"),
+                          action=action, risk=float(rec_d["risk"]),
+                          diagnosed_at=float(rec_d["diagnosed_at"]),
+                          dependents=tuple(rec_d.get("dependents") or ()), tenant=rec_d["tenant"])
+
+    appr_d = payload.get("approval") or {}
+    _require(appr_d, _REQUIRED_APPROVAL_FIELDS, "approval")
+    try:
+        approval = Approval.issue(
+            approver=appr_d["approver"], tenant=appr_d["tenant"],
+            canonical_scope=appr_d["canonical_scope"], decision_goal=appr_d["decision_goal"],
+            action_id=appr_d["action_id"], action_scope=appr_d.get("action_scope") or action.scope,
+            issued_at=float(appr_d["issued_at"]), expires_at=float(appr_d["expires_at"]))
+    except ValueError as exc:
+        raise UnsupportedRecoveryPayload(f"invalid_approval: {exc}") from exc
+
+    ev_d = payload.get("evidence") or {}
+    findings = [
+        Finding(claim=f["claim"], references=tuple(f.get("references") or ()),
+               verdict=bool(f.get("verdict", False)), confidence=float(f.get("confidence", 0.0)))
+        for f in (ev_d.get("findings") or ())
+    ]
+    ctx = _EvidenceCtx(findings=findings, diagnosis_confidence=ev_d.get("diagnosis_confidence"))
+    return req, approval, ctx
+
+
+def _map_recovery_outcome(outcome: RecoveryOutcome) -> tuple[str, dict]:
+    """RecoveryOutcome → (terminal_state, outcome dict) theo semantics daemon durable channel.
+
+    KHÔNG tự phát minh terminal state ngoài COMPLETED/FAILED/ESCALATED (đã có ở
+    Gateway ``agent_runtime.TERMINAL``). "aborted vì đã healthy" → COMPLETED +
+    NO_ACTION_NEEDED (evidence current-state, KHÔNG mutation). "aborted" khác (gate/
+    lease/approval chặn) → FAILED (KHÔNG COMPLETED — đây KHÔNG phải generic no-op).
+    """
+    base = {"status": outcome.status, "reason": outcome.reason, "evidence": list(outcome.evidence)}
+    if outcome.status == "recovered":
+        return "COMPLETED", {**base, "rc": 0, "verified": True}
+    if outcome.status == "aborted" and _HEALTHY_NO_ACTION_MARKER in outcome.reason:
+        return "COMPLETED", {**base, "rc": 0, "outcome": "NO_ACTION_NEEDED"}
+    if outcome.status == "escalated":
+        return "ESCALATED", {**base, "rc": 1}
+    return "FAILED", {**base, "rc": 1}  # aborted (gate/lease/approval blocked)
+
+
+def build_recovery_executor(
+    *, redis, holder: str, transport, audit_log: audit.FileAuditLog, gate: RecoveryGate,
+    env_auto_execute: bool = False, lease_ttl_s: int = 120,
+    probe_dependent: Callable[[str], Awaitable[bool]] | None = None,
+    now: Callable[[], float] | None = None,
+) -> Callable[[dict], Awaitable[tuple[str, dict]]]:
+    """Production-safe default executor cho ``daemon.run_daemon`` — thay ``_noop_executor``.
+
+    Adapter hẹp: KHÔNG business logic recovery ở đây (chỉ decode + gọi
+    ``run_guarded_recovery`` nguyên vẹn, giữ lease+ledger). Exception bất kỳ (transport
+    crash, redis lỗi...) → FAILED rõ ràng, KHÔNG bao giờ trở thành COMPLETED ngầm.
+    """
+
+    clock = now or time.time
+
+    async def executor(payload: dict) -> tuple[str, dict]:
+        try:
+            req, approval, ctx = decode_recovery_command(payload)
+        except UnsupportedRecoveryPayload as exc:
+            return "FAILED", {"rc": 1, "reason": f"unsupported_or_invalid_payload: {exc}",
+                              "evidence": []}
+        try:
+            outcome = await run_guarded_recovery(
+                ctx, req=req, transport=transport, audit_log=audit_log, gate=gate,
+                approval=approval, env_auto_execute=env_auto_execute, now=clock(),
+                redis=redis, holder=holder, probe_dependent=probe_dependent,
+                lease_ttl_s=lease_ttl_s)
+        except Exception as exc:  # noqa: BLE001 — mutation-path exception KHÔNG được thành success
+            return "FAILED", {"rc": 1, "reason": f"executor_exception: {exc}", "evidence": []}
+        return _map_recovery_outcome(outcome)
+
+    return executor

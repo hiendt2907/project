@@ -1,57 +1,78 @@
 # Current Session Handoff
 
-## Deliverable hiện tại
-**Living Operations Runtime — Step 3: Durable Command Delivery + Acknowledgement + Agent Resume.**
-Backend-first (governing correction 2026-07-01): backend/runtime là sản phẩm chính; portal =
-projection. Slice này fix P0 (GET=POP) và thêm giao lệnh MUTATING durable end-to-end.
+## Deliverable
+**Vertical slice: nối AOIP durable command → `run_guarded_recovery` → outcome → durable report.**
+Thay `_noop_executor` mặc định bằng adapter production-safe (`operations.build_recovery_executor`).
+Không mở capability mới, không sửa deployment/atomic-claim/payload-hash/gateway.
 
-## Trạng thái hiện tại — HOÀN TẤT (unit/integration) + proof harness cho hạ tầng thật
+## Pre-change contract map
+- Daemon executor (`delivery_loop.Executor`): `async (payload: dict) -> (terminal_state, outcome_dict)`.
+  `payload` = free-form dict từ durable command's `payload` field (Gateway không biết domain aoip).
+- `run_guarded_recovery(ctx, req, transport, audit_log, gate, approval, env_auto_execute, now, redis,
+  holder, probe_dependent=None, lease_ttl_s=120) -> RecoveryOutcome`. Cần `ctx.findings` +
+  `ctx.diagnosis_confidence` + `ctx.log()` (duck-typed, KHÔNG cần `UnderstandingContext` đầy đủ).
+- Ledger states: `CLAIMED` → `STATUS_TERMINAL` (`recovered|escalated|aborted|completed`).
+  Claim xảy ra TRƯỚC `execute_recovery`; record terminal chỉ khi `recovered`/`escalated`; `aborted`
+  → `release_claim` (cho retry hợp lệ sau). Lease KHÔNG có auto-renewal (chỉ TTL 120s cố định).
+- Ambiguous outcome KHÔNG lộ ra ngoài `run_guarded_recovery`: nó tự resolve nội bộ qua current-state
+  revalidation trong `execute_recovery` trước khi return — mỗi lần gọi luôn trả outcome xác định.
 
-### Đã commit
-- `6d3c429` feat(aoip): Provider/Tenant portal projection + governance correction (checkpoint riêng).
+## Implementation
+- **`src/aoip/agent/operations.py`** (mới, cuối file):
+  - `decode_recovery_command(payload)` — parse `payload["recovery"|"approval"|"evidence"]` →
+    `(RecoveryRequest, Approval, _EvidenceCtx)`. Raise `UnsupportedRecoveryPayload` fail-closed nếu
+    thiếu field hoặc không có operator cho `(failure_mode, substrate)`.
+  - `_EvidenceCtx` — carrier tối thiểu (findings/diagnosis_confidence/log), KHÔNG noun mới.
+  - `_map_recovery_outcome(outcome)` — `recovered`→COMPLETED; `aborted`+"HEALTHY" trong reason→
+    COMPLETED+`NO_ACTION_NEEDED`; `escalated`→ESCALATED; `aborted` khác (gate/lease/approval chặn)→FAILED.
+  - `build_recovery_executor(redis, holder, transport, audit_log, gate, env_auto_execute=False,
+    lease_ttl_s=120, probe_dependent=None, now=None)` — adapter hẹp, KHÔNG bypass lease/ledger.
+    Exception bất kỳ (transport/redis) → FAILED rõ ràng, không bao giờ COMPLETED ngầm.
+- **`src/aoip/agent/daemon.py`**: `run_daemon`/`main` nhận thêm `redis, transport, audit_log, gate,
+  env_auto_execute, now`. Nếu đủ 4 dep đầu → default executor = `build_recovery_executor`; nếu KHÔNG
+  → fallback `_noop_executor` (docstring đổi: DEV/TEST-ONLY, không phải production default khi đã đủ dep).
+- **`tests/test_aoip_operations.py`**: +13 test (decode contract, happy path, duplicate delivery,
+  already-healthy no-op, verification-failure escalate, expired approval, unsupported payload,
+  transport exception, daemon wiring end-to-end).
 
-### Chưa commit (slice Step 3, turn này)
-- **Gateway** `src/gateway/routes/agent_runtime.py` — durable route `/webhook/agent/rt`
-  (peek + enqueue/accept/progress/terminal/record). Đăng ký ở `src/gateway/api.py`.
-  Self-contained, KHÔNG import aoip (Dockerfile.gateway không COPY src/aoip).
-- **Agent core** `src/aoip/agent/`:
-  - `delivery.py` — `DurableCommandChannel` (twin phía AOIP; máy trạng thái QUEUED→…→terminal).
-  - `inbox.py` — `LocalInbox` durable (fsync+atomic), local lifecycle + resume flags.
-  - `delivery_loop.py` — `DeliveryLoop.resume()/tick()` (persist trước execute, re-report,
-    reconcile RUNNING, never blind retry).
-  - `daemon.py` — `run_daemon()` vòng bền (register→heartbeat→resume→tick→sleep); executor
-    mặc định no-op an toàn (nối recovery mutation là follow-up).
-  - `omni_client.py` — HTTPOmniClient +poll_runtime/accept/progress/report_terminal.
-- **systemd** `deploy/systemd/aoip-agent.service` (StateDirectory giữ inbox qua reboot).
-- **Proof** `scripts/prove_durable_delivery.py` (Gateway/Redis K8s + VM systemd, 8 case DoD).
-- **Tests (25, all green)**: `tests/test_aoip_delivery.py` (16), `test_aoip_delivery_loop.py` (4),
-  `test_aoip_agent_daemon.py` (1), `test_gateway_agent_runtime.py` (4 qua ASGI thật).
-- **Docs**: CHANGELOG [Unreleased], `docs/plans/living-operations-hardening.md` Bước 3 ✅.
+## Safety semantics
+- Mutation chỉ thực hiện khi: payload decode được + qua toàn bộ gate (`_gate_checks` trong
+  `recovery.py`) + current-state xác nhận còn hỏng.
+- `COMPLETED` hợp lệ khi: (1) mutation + verify service/dependents pass, hoặc (2) current-state gate
+  thấy đã khỏe trước mutation → `NO_ACTION_NEEDED` + evidence, KHÔNG mutation.
+- `FAILED`: payload không decode được / gate chặn (approval sai-hạn-tenant-scope, risk, capability) /
+  exception trong `run_guarded_recovery`. KHÔNG COMPLETED trong mọi nhánh này.
+- `ESCALATED`: verify sau mutation fail (đã thử 1 lần, KHÔNG retry vô hạn — domain semantics có sẵn
+  trong `execute_recovery`, giữ nguyên, không đổi).
+- Duplicate delivery / crash-after-claim: `run_guarded_recovery` tự dedup qua `IdempotencyLedger` +
+  `ExecutionLease`; executor gọi lại bao nhiêu lần cũng an toàn (effectively-once, KHÔNG tuyên bố
+  exactly-once tuyệt đối — lease/ledger/mutation không cùng transaction).
 
-## Inspect kết luận (Step 1)
-- Command lưu: Redis LIST `omni:agent:cmd:{agent_id}` (kênh cũ). GET = **RPOP (pop-on-read)**.
-- cmd_id: `cmd-{uuid4[:12]}` sinh lúc enqueue. Delivery KHÔNG durable, KHÔNG redelivery/ack.
-- Kết quả terminal: `omni:diag:cmdresult:{cmd_id}` STRING TTL 3600.
-- **P0**: kênh cũ pop-on-read — NHƯNG chỉ phục vụ command chẩn đoán READ-ONLY (không mutation).
-  Command MUTATING trước đây KHÔNG có kênh durable → thêm surface mới `/rt` thay vì sửa kênh cũ
-  (tránh vỡ hợp đồng remote-agent diagnostic hiện có).
+## Test results
+| Command | Result |
+| --- | --- |
+| `pytest tests/test_aoip_operations.py tests/test_aoip_agent_daemon.py tests/test_aoip_delivery.py tests/test_aoip_intake.py -q` | 51 passed |
+| `pytest tests/ -q -k aoip` | 187 passed |
+| Full suite / lint | Not run (out of time budget phiên này) |
 
-## Verification đã chạy
-- `.venv/bin/python -m pytest tests/ -q -k "aoip or gateway_agent"` → **222 passed**.
-- `PYTHONPATH=src python -c "import gateway.api"` → OK (router mới nạp sạch).
+## Remaining gaps (không đổi so với trước, xác nhận lại)
+- **Atomic claim**: `poll_commands` vẫn 4 op rời (chưa Lua/WATCH) — double-DELIVERED risk còn, đã có
+  lease+ledger backstop mutation-safety nên KHÔNG blocker.
+- **Gateway transition enforcement bất đối xứng**: `_advance` chưa validate expected-current-state.
+- **`payload_hash` chỉ metadata**: chưa canonical-hash + verify hai chiều.
+- **CLI chưa wiring production**: `daemon.main()` KHÔNG có flag `--redis-url`/`--audit-path`/gate
+  config → khi chạy thật qua CLI vẫn rơi về `_noop_executor` (không đủ 4 dep). `run_daemon()` đã sẵn
+  sàng nhận dep qua code; nối CLI = việc kế tiếp, không thuộc scope "connect executor" phiên này.
+- **Lease KHÔNG renewal**: TTL cố định 120s, mutation dài hơn TTL có thể mất lease giữa chừng — chưa
+  test riêng case này (đã note trong spec Bước 6.E, chưa viết test).
+- **`command_identity` (immutable IDs) không được dùng bởi `run_guarded_recovery`**: nó vẫn dùng
+  `idempotency_key` (legacy, theo tenant+scope+decision+failure_mode+unit) — gap tồn tại từ trước,
+  KHÔNG do slice này tạo ra, KHÔNG sửa trong scope này (đổi sẽ động ledger key production).
 
-## Next step chính xác
-1. Nối `executor` của daemon vào recovery mutation thật (`operations.py`/`recovery.py` +
-   IdempotencyLedger) — hiện no-op; đây là điểm mutation duy nhất còn để nối.
-2. Chạy `scripts/prove_durable_delivery.py` trên Gateway K8s + 3 VM systemd (case 2/3/5 + reboot).
-3. Portal projection: hiện thực stub nav (Agents/Incidents) đọc `/webhook/agent/rt/commands/record`
-   — chỉ khi có nhu cầu; KHÔNG thêm UI field không có nguồn backend.
+## Next hardening slice
+Atomic delivery claim (Lua script cho `poll_commands`) hoặc Gateway transition enforcement — chọn
+theo dependency thực tế lúc bắt đầu, không quyết định trước.
 
-## Không được làm lại
-- KHÔNG đổi kênh cũ `/commands/{agent_id}` sang peek (nó là read-only diagnostic, hợp đồng khác).
-- KHÔNG import aoip vào gateway route (deploy boundary). Twin duy trì contract HTTP, không key Redis.
-- KHÔNG archive local inbox trước terminal ack. Dedup post-archive thuộc Gateway terminal record + ledger.
-- KHÔNG frontend-led product domain; KHÔNG mock/fixture metric.
-
-## Branch
-`feature/living-operations-runtime`, HEAD `6d3c429`. Slice Step 3 CHƯA commit (chờ người dùng).
+## Git status
+Chưa commit. Files changed: `src/aoip/agent/operations.py`, `src/aoip/agent/daemon.py`,
+`tests/test_aoip_operations.py`, `docs/handoffs/CURRENT_SESSION.md`.

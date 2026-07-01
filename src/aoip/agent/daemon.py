@@ -9,9 +9,12 @@ report → sleep → repeat. Chống mất command qua process restart + machine
   boot: OUTCOME_RECORDED → re-report; RUNNING → reconcile; RECEIVED → tick xử lý lại.
 - Gateway giữ record durable + redelivery đến khi terminal ack (GET=peek).
 
-Executor mutation thật do tầng operations/recovery tiêm; ở đây chưa nối để giữ daemon
-mỏng và test được — mặc định executor là no-op an toàn (report COMPLETED rc=0) trừ khi
-``--enable-mutation`` (nối vào recovery pipeline, ngoài phạm vi slice này).
+Executor mutation thật là ``operations.build_recovery_executor`` (nối ``run_guarded_recovery``
+— lease + IdempotencyLedger + current-state revalidation, KHÔNG bypass). ``run_daemon`` dùng
+executor này làm default KHI được tiêm đủ dependency (``redis``/``transport``/``audit_log``/
+``gate``); nếu KHÔNG (vd unit test không cần mutation thật, hoặc CLI chưa wiring dependency —
+xem gap ở cuối module), rơi về ``_noop_executor`` — DEV/TEST-ONLY, KHÔNG phải production path
+mặc định khi đã có đủ dependency.
 """
 from __future__ import annotations
 
@@ -22,27 +25,47 @@ import signal
 from aoip.agent.delivery_loop import DeliveryLoop
 from aoip.agent.inbox import LocalInbox
 from aoip.agent.omni_client import HTTPOmniClient
+from aoip.agent.operations import build_recovery_executor
 
 _DEFAULT_INBOX = "/var/lib/aoip/inbox"
 _DEFAULT_INTERVAL_S = 15
 
 
 async def _noop_executor(payload: dict) -> tuple[str, dict]:
-    """An toàn mặc định: KHÔNG mutation. Ghi nhận đã nhận, report COMPLETED rc=0."""
+    """DEV/TEST-ONLY: KHÔNG mutation. Chỉ dùng khi chưa tiêm dependency recovery thật
+    (redis/transport/audit_log/gate) — KHÔNG phải production default khi đã có đủ."""
     return "COMPLETED", {"rc": 0, "noop": True, "verb": payload.get("verb", "")}
+
+
+def _default_executor(*, redis, transport, audit_log, gate, holder: str,
+                      env_auto_execute: bool, now=None):
+    """Chọn executor mặc định: production-safe adapter nếu có đủ dependency, else no-op."""
+    if redis is not None and transport is not None and audit_log is not None and gate is not None:
+        return build_recovery_executor(redis=redis, holder=holder, transport=transport,
+                                       audit_log=audit_log, gate=gate,
+                                       env_auto_execute=env_auto_execute, now=now)
+    return _noop_executor
 
 
 async def run_daemon(*, agent_id: str, tenant: str, gateway: str, api_key: str,
                      inbox_root: str, interval_s: int, executor=None,
-                     max_ticks: int | None = None, client=None) -> int:
+                     max_ticks: int | None = None, client=None,
+                     redis=None, transport=None, audit_log=None, gate=None,
+                     env_auto_execute: bool = False, now=None) -> int:
     """Chạy vòng bền cho tới khi bị dừng (SIGTERM) hoặc đủ ``max_ticks`` (dùng cho test).
 
     ``client`` cho phép tiêm RuntimeDeliveryClient giả (test); production tự tạo HTTP client.
+    ``executor`` tiêm trực tiếp (test) thắng mọi lựa chọn mặc định. Không tiêm ``executor``
+    nhưng có đủ ``redis``/``transport``/``audit_log``/``gate`` → dùng adapter recovery thật.
+    ``now`` (test-only): clock injectable cho ``build_recovery_executor``.
     """
     client = client or HTTPOmniClient(gateway, api_key=api_key)
     inbox = LocalInbox(inbox_root)
+    resolved_executor = executor or _default_executor(
+        redis=redis, transport=transport, audit_log=audit_log, gate=gate,
+        holder=agent_id, env_auto_execute=env_auto_execute, now=now)
     loop = DeliveryLoop(agent_id=agent_id, client=client, inbox=inbox,
-                        executor=executor or _noop_executor)
+                        executor=resolved_executor)
 
     stopping = asyncio.Event()
 
