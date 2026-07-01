@@ -92,13 +92,13 @@ async def test_observe_only_never_completes_mutating_command_end_to_end():
             out, self._commands = self._commands, []
             return out
 
-        async def accept(self, *a):
+        async def accept(self, *a, **k):
             pass
 
-        async def progress(self, *a):
+        async def progress(self, *a, **k):
             pass
 
-        async def report_terminal(self, agent_id, tenant_id, command_id, state, outcome):
+        async def report_terminal(self, agent_id, tenant_id, command_id, state, outcome, **k):
             self.reported.append((state, outcome))
             return {"acknowledged": True}
 

@@ -20,13 +20,13 @@ class FakeClient:
         out, self._commands = self._commands, []
         return out
 
-    async def accept(self, *a):
+    async def accept(self, *a, **k):
         pass
 
-    async def progress(self, *a):
+    async def progress(self, *a, **k):
         pass
 
-    async def report_terminal(self, agent_id, tenant_id, command_id, state, outcome):
+    async def report_terminal(self, agent_id, tenant_id, command_id, state, outcome, **k):
         self.terminal_calls += 1
         return {"acknowledged": True, "state": state}
 

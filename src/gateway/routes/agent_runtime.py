@@ -15,10 +15,36 @@ Redis layout (tenant-embedded — INV_NAMESPACE_ISOLATION):
 Đây là bản twin phía Gateway của ``aoip.agent.delivery.DurableCommandChannel`` — KHÔNG import
 aoip (Dockerfile.gateway không COPY src/aoip). Hợp đồng HTTP (không phải key Redis) là ranh
 giới với agent; hai bên phải giữ contract này đồng bộ.
+
+## Atomic claim + fencing (delivery ownership)
+
+Trước: ``poll_commands`` GET record rồi SET lại KHÔNG atomic — hai Gateway worker cùng poll
+đồng thời có thể đọc cùng bản QUEUED, cả hai append vào response, và write sau ghi đè write
+trước (lost update, delivery_count sai, KHÔNG rõ ai thực sự "sở hữu" delivery attempt đó).
+
+Giờ mỗi claim chạy qua MỘT Lua script (``_CLAIM_SCRIPT``, atomic — Redis chạy Lua single-
+threaded, không round-trip giữa hai worker nào có thể xen giữa). Script kiểm tra + ghi trong
+CÙNG MỘT operation: record tồn tại, chưa terminal, chưa expired, state claimable (QUEUED, hoặc
+DELIVERED nhưng ``visibility_deadline`` đã qua), rồi tăng ``delivery_attempt``, sinh
+``fencing_token`` mới (= ``{command_id}:{attempt}`` — duy nhất theo attempt, không cần random
+vì attempt đơn điệu), set DELIVERED + ``visibility_deadline`` mới. Worker thua cuộc thấy
+``visibility_deadline`` đã được worker thắng đẩy ra tương lai → tự reject (``still_visible``).
+
+Mọi request Agent SAU delivery (accept/progress/terminal) phải gửi lại đúng
+``delivery_attempt`` + ``fencing_token`` của lần claim mà nó nhận được. Sai (stale attempt sau
+redelivery, token sai, hoặc version không khớp) → 409 với domain reason rõ ràng
+(``stale_delivery_attempt``/``invalid_fencing_token``/``version_conflict``), KHÔNG silently
+accept. Đây là delivery ownership fencing — KHÔNG phải execution idempotency (đã có riêng ở
+``aoip.agent.idempotency.IdempotencyLedger`` + execution lease phía agent, không đổi ở đây).
+
+Effectively-once, KHÔNG phải exactly-once tuyệt đối: hai delivery attempt liên tiếp cho cùng
+command_id vẫn là CÙNG command identity; agent-side idempotency ledger là lớp chặn re-mutation
+cuối cùng nếu attempt N+1 vẫn map về cùng execution key.
 """
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from typing import Any
@@ -29,6 +55,7 @@ from pydantic import BaseModel, Field
 
 from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, require_agent_tenant
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhook/agent/rt", tags=["agent-runtime-delivery"])
 
 ST_QUEUED, ST_DELIVERED, ST_ACCEPTED = "QUEUED", "DELIVERED", "ACCEPTED"
@@ -41,6 +68,53 @@ _VISIBILITY_S = 60
 _TTL_TERMINAL_S = 604800
 _TTL_ACTIVE_S = 86400
 _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
+
+# KEYS[1]=rec_key KEYS[2]=ready_key
+# ARGV[1]=command_id ARGV[2]=now ARGV[3]=visibility_s ARGV[4]=ttl_active_s ARGV[5]=ttl_terminal_s
+_CLAIM_SCRIPT = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  return cjson.encode({claimed=false, reason='missing'})
+end
+local rec = cjson.decode(raw)
+local now = tonumber(ARGV[2])
+local TERMINAL = {COMPLETED=true, FAILED=true, ESCALATED=true, EXPIRED=true}
+if TERMINAL[rec.state] then
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  return cjson.encode({claimed=false, reason='terminal'})
+end
+if rec.expires_at and now >= rec.expires_at then
+  rec.state = 'EXPIRED'
+  rec.terminal_at = now
+  rec.outcome = {reason='expired_before_terminal'}
+  rec.record_version = (rec.record_version or 0) + 1
+  redis.call('SET', KEYS[1], cjson.encode(rec), 'EX', tonumber(ARGV[5]))
+  redis.call('ZREM', KEYS[2], ARGV[1])
+  return cjson.encode({claimed=false, reason='expired'})
+end
+if rec.state == 'QUEUED' then
+  -- claimable
+elseif rec.state == 'DELIVERED' then
+  if rec.visibility_deadline and now < rec.visibility_deadline then
+    return cjson.encode({claimed=false, reason='still_visible'})
+  end
+else
+  return cjson.encode({claimed=false, reason='not_claimable_state'})
+end
+local attempt = (rec.delivery_attempt or rec.delivery_count or 0) + 1
+rec.delivery_attempt = attempt
+rec.delivery_count = attempt
+rec.fencing_token = ARGV[1] .. ':' .. tostring(attempt)
+rec.state = 'DELIVERED'
+rec.last_delivered_at = now
+rec.delivered_at = now
+rec.visibility_deadline = now + tonumber(ARGV[3])
+rec.record_version = (rec.record_version or 0) + 1
+redis.call('SET', KEYS[1], cjson.encode(rec), 'EX', tonumber(ARGV[4]))
+redis.call('ZADD', KEYS[2], rec.visibility_deadline, ARGV[1])
+return cjson.encode({claimed=true, record=rec})
+"""
 
 
 def _rec_key(tenant: str, command_id: str) -> str:
@@ -83,6 +157,9 @@ class AckDelivered(BaseModel):
     agent_id: str = Field(min_length=1, max_length=128)
     tenant_id: str = Field(default="", max_length=128)
     command_id: str = Field(min_length=1, max_length=128)
+    delivery_attempt: int = Field(ge=1)
+    fencing_token: str = Field(min_length=1, max_length=200)
+    expected_version: int | None = Field(default=None, ge=0)
 
 
 class AckProgress(AckDelivered):
@@ -124,6 +201,8 @@ async def enqueue_command(body: EnqueueRuntimeCommand, request: Request) -> JSON
         "canonical_scope": body.canonical_scope, "payload_hash": body.payload_hash,
         "payload": body.payload, "created_at": now, "expires_at": expires_at,
         "delivery_count": 0, "last_delivered_at": 0, "terminal_at": 0, "outcome": {},
+        "delivery_attempt": 0, "fencing_token": "", "delivered_at": 0,
+        "visibility_deadline": 0, "record_version": 0,
     }
     if now >= expires_at:
         base.update(state=ST_EXPIRED, terminal_at=now, outcome={"reason": "expired_before_delivery"})
@@ -156,39 +235,86 @@ async def poll_commands(agent_id: str, request: Request) -> JSONResponse:
 
     out: list[dict] = []
     for cid in due:
-        raw = await redis.get(_rec_key(tenant, cid))
-        if raw is None:
-            await redis.zrem(rkey, cid)
-            continue
-        rec = json.loads(raw)
-        if rec["state"] in TERMINAL:
-            await redis.zrem(rkey, cid)
-            continue
-        if now >= rec["expires_at"]:
-            rec.update(state=ST_EXPIRED, terminal_at=now, outcome={"reason": "expired_before_terminal"})
-            await redis.set(_rec_key(tenant, cid), json.dumps(rec), ex=_TTL_TERMINAL_S)
-            await redis.zrem(rkey, cid)
-            continue
-        rec.update(state=ST_DELIVERED, delivery_count=rec["delivery_count"] + 1,
-                   last_delivered_at=now)
-        await redis.set(_rec_key(tenant, cid), json.dumps(rec), ex=_TTL_ACTIVE_S)
-        await redis.zadd(rkey, {cid: now + _VISIBILITY_S})
-        out.append(rec)
+        claimed = await _claim(redis, tenant, agent_id, cid)
+        if claimed is not None:
+            out.append(claimed)
+        # not claimed (terminal/expired/still_visible/lost race) → skip silently,
+        # another worker won this attempt or it is no longer claimable.
     return JSONResponse(content={"commands": out})
 
 
-async def _advance(redis, tenant: str, command_id: str, agent_id: str, target: str) -> dict | None:
+async def _claim(redis, tenant: str, agent_id: str, command_id: str) -> dict | None:
+    """Atomic claim: một Lua round-trip, chỉ một caller thắng một delivery attempt.
+
+    Trả record đã claim (state=DELIVERED, attempt/token mới) hoặc None nếu không claim được
+    (record mất, terminal, expired, hoặc worker khác vừa thắng attempt này — ``still_visible``).
+    """
+    raw = await redis.eval(
+        _CLAIM_SCRIPT, 2, _rec_key(tenant, command_id), _ready_key(tenant, agent_id),
+        command_id, int(time.time()), _VISIBILITY_S, _TTL_ACTIVE_S, _TTL_TERMINAL_S)
+    result = json.loads(raw)
+    if not result.get("claimed"):
+        reason = result.get("reason", "unknown")
+        event = "expired_claim_rejected" if reason == "expired" else "claim_conflict"
+        logger.info("agent_runtime.%s command_id=%s reason=%s", event, command_id, reason)
+        return None
+    record = result["record"]
+    event = "redelivery" if record.get("delivery_attempt", 1) > 1 else "claim_success"
+    logger.info("agent_runtime.%s command_id=%s attempt=%s", event, command_id,
+               record.get("delivery_attempt"))
+    return record
+
+
+class _OwnershipConflict(Exception):
+    """Fencing rejection — stale attempt/token/version. KHÔNG silently accept."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _check_fencing(rec: dict, *, agent_id: str, delivery_attempt: int, fencing_token: str,
+                   expected_version: int | None) -> None:
+    """Ownership guard — raise ``_OwnershipConflict`` nếu agent/attempt/token/version không
+    khớp record hiện tại. Kiểm agent_id trước (isolation), rồi attempt (lỗi phổ biến nhất sau
+    redelivery), rồi token, rồi version — thứ tự chỉ ảnh hưởng ``reason`` trả về."""
+    if rec.get("agent_id") != agent_id:
+        raise _OwnershipConflict("agent_mismatch")
+    if rec.get("delivery_attempt", 0) != delivery_attempt:
+        raise _OwnershipConflict("stale_delivery_attempt")
+    if rec.get("fencing_token", "") != fencing_token:
+        raise _OwnershipConflict("invalid_fencing_token")
+    if expected_version is not None and rec.get("record_version", 0) != expected_version:
+        raise _OwnershipConflict("version_conflict")
+
+
+async def _advance(redis, tenant: str, command_id: str, agent_id: str, target: str, *,
+                   delivery_attempt: int, fencing_token: str,
+                   expected_version: int | None) -> dict | None:
+    """Ownership-guarded transition. Idempotent nếu record ĐÃ ở ``target`` với đúng
+    attempt/token (retry an toàn) — không bump version thêm lần nữa."""
     raw = await redis.get(_rec_key(tenant, command_id))
     if raw is None:
         return None
     rec = json.loads(raw)
     if rec["state"] in TERMINAL:
         return rec
+    _check_fencing(rec, agent_id=agent_id, delivery_attempt=delivery_attempt,
+                   fencing_token=fencing_token, expected_version=expected_version)
+    if rec["state"] == target:
+        return rec  # idempotent retry của cùng attempt/token đã thành công trước đó
     now = int(time.time())
     rec["state"] = target
+    rec["record_version"] = rec.get("record_version", 0) + 1
     await redis.set(_rec_key(tenant, command_id), json.dumps(rec), ex=_TTL_ACTIVE_S)
     await redis.zadd(_ready_key(tenant, agent_id), {command_id: now + _VISIBILITY_S})
     return rec
+
+
+def _conflict_response(command_id: str, exc: _OwnershipConflict) -> JSONResponse:
+    logger.info("agent_runtime.ownership_conflict command_id=%s reason=%s", command_id, exc.reason)
+    return JSONResponse(status_code=409,
+                        content={"command_id": command_id, "error": exc.reason})
 
 
 @router.post("/commands/accept")
@@ -196,7 +322,13 @@ async def accept_command(body: AckDelivered, request: Request) -> JSONResponse:
     redis = _get_redis(request)
     await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
     tenant = _tenant_of(request, body.tenant_id)
-    rec = await _advance(redis, tenant, body.command_id, body.agent_id, ST_ACCEPTED)
+    try:
+        rec = await _advance(redis, tenant, body.command_id, body.agent_id, ST_ACCEPTED,
+                             delivery_attempt=body.delivery_attempt,
+                             fencing_token=body.fencing_token,
+                             expected_version=body.expected_version)
+    except _OwnershipConflict as exc:
+        return _conflict_response(body.command_id, exc)
     if rec is None:
         raise HTTPException(status_code=404, detail="command not found")
     return JSONResponse(content={"command_id": body.command_id, "state": rec["state"]})
@@ -209,7 +341,13 @@ async def progress_command(body: AckProgress, request: Request) -> JSONResponse:
     redis = _get_redis(request)
     await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
     tenant = _tenant_of(request, body.tenant_id)
-    rec = await _advance(redis, tenant, body.command_id, body.agent_id, body.phase)
+    try:
+        rec = await _advance(redis, tenant, body.command_id, body.agent_id, body.phase,
+                             delivery_attempt=body.delivery_attempt,
+                             fencing_token=body.fencing_token,
+                             expected_version=body.expected_version)
+    except _OwnershipConflict as exc:
+        return _conflict_response(body.command_id, exc)
     if rec is None:
         raise HTTPException(status_code=404, detail="command not found")
     return JSONResponse(content={"command_id": body.command_id, "state": rec["state"]})
@@ -234,10 +372,22 @@ async def terminal_command(body: Terminal, request: Request) -> JSONResponse:
     rec = json.loads(raw)
     now = int(time.time())
     if rec["state"] in TERMINAL:
-        await redis.zrem(_ready_key(tenant, body.agent_id), body.command_id)
-        return JSONResponse(content={"acknowledged": True, "command_id": body.command_id,
-                                     "state": rec["state"], "idempotent": True})
+        if rec["state"] == body.state and rec["outcome"] == body.outcome:
+            await redis.zrem(_ready_key(tenant, body.agent_id), body.command_id)
+            return JSONResponse(content={"acknowledged": True, "command_id": body.command_id,
+                                         "state": rec["state"], "idempotent": True})
+        logger.info("agent_runtime.ownership_conflict command_id=%s reason=terminal_outcome_conflict",
+                   body.command_id)
+        return JSONResponse(status_code=409, content={
+            "command_id": body.command_id, "error": "terminal_outcome_conflict",
+            "state": rec["state"]})
+    try:
+        _check_fencing(rec, agent_id=body.agent_id, delivery_attempt=body.delivery_attempt,
+                       fencing_token=body.fencing_token, expected_version=body.expected_version)
+    except _OwnershipConflict as exc:
+        return _conflict_response(body.command_id, exc)
     rec.update(state=body.state, terminal_at=now, outcome=body.outcome)
+    rec["record_version"] = rec.get("record_version", 0) + 1
     await redis.set(_rec_key(tenant, body.command_id), json.dumps(rec), ex=_TTL_TERMINAL_S)
     await redis.zrem(_ready_key(tenant, body.agent_id), body.command_id)
     return JSONResponse(content={"acknowledged": True, "command_id": body.command_id,

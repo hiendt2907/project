@@ -24,13 +24,13 @@ class FakeClient:
         out, self._commands = self._commands, []
         return out
 
-    async def accept(self, agent_id, tenant_id, command_id):
+    async def accept(self, agent_id, tenant_id, command_id, **k):
         self.accepted.append(command_id)
 
-    async def progress(self, agent_id, tenant_id, command_id, phase):
+    async def progress(self, agent_id, tenant_id, command_id, phase, **k):
         pass
 
-    async def report_terminal(self, agent_id, tenant_id, command_id, state, outcome):
+    async def report_terminal(self, agent_id, tenant_id, command_id, state, outcome, **k):
         self.terminal_calls += 1
         if not self.gateway_up:
             raise ConnectionError("gateway down")

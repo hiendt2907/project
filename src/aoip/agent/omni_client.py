@@ -119,21 +119,32 @@ class HTTPOmniClient:
         resp.raise_for_status()
         return resp.json().get("commands", [])
 
-    async def accept(self, agent_id: str, tenant_id: str, command_id: str) -> None:
+    async def accept(self, agent_id: str, tenant_id: str, command_id: str, *,
+                     delivery_attempt: int, fencing_token: str) -> None:
         await self._post_rt("/commands/accept",
-                            {"agent_id": agent_id, "tenant_id": tenant_id, "command_id": command_id})
+                            {"agent_id": agent_id, "tenant_id": tenant_id, "command_id": command_id,
+                             "delivery_attempt": delivery_attempt, "fencing_token": fencing_token})
 
-    async def progress(self, agent_id: str, tenant_id: str, command_id: str, phase: str) -> None:
+    async def progress(self, agent_id: str, tenant_id: str, command_id: str, phase: str, *,
+                       delivery_attempt: int, fencing_token: str) -> None:
         await self._post_rt("/commands/progress",
                             {"agent_id": agent_id, "tenant_id": tenant_id,
-                             "command_id": command_id, "phase": phase})
+                             "command_id": command_id, "phase": phase,
+                             "delivery_attempt": delivery_attempt, "fencing_token": fencing_token})
 
     async def report_terminal(self, agent_id: str, tenant_id: str, command_id: str,
-                              state: str, outcome: dict) -> dict:
-        """Report terminal outcome; trả Gateway terminal acknowledgement ({acknowledged: bool})."""
+                              state: str, outcome: dict, *,
+                              delivery_attempt: int, fencing_token: str) -> dict:
+        """Report terminal outcome; trả Gateway terminal acknowledgement ({acknowledged: bool}).
+
+        ``delivery_attempt``/``fencing_token`` PHẢI khớp delivery attempt hiện tại của record ở
+        Gateway — sai (stale sau redelivery) → Gateway trả 409 domain reason, KHÔNG mutation.
+        """
         return await self._post_rt("/commands/terminal",
                                    {"agent_id": agent_id, "tenant_id": tenant_id,
-                                    "command_id": command_id, "state": state, "outcome": outcome})
+                                    "command_id": command_id, "state": state, "outcome": outcome,
+                                    "delivery_attempt": delivery_attempt,
+                                    "fencing_token": fencing_token})
 
     async def _post_rt(self, path: str, payload: dict) -> dict:
         resp = await self._client.post(f"/webhook/agent/rt{path}", json=payload)

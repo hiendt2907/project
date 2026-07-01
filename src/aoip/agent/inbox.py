@@ -47,6 +47,12 @@ class InboxEntry:
     payload: dict
     local_state: str = L_RECEIVED
     outcome: dict = field(default_factory=dict)
+    # Delivery ownership/fencing (Gateway twin: src/gateway/routes/agent_runtime.py).
+    # Echoed lại nguyên vẹn trên accept/progress/terminal — KHÔNG đổi giữa các lần report
+    # của CÙNG delivery attempt (kể cả sau resume/restart), để Gateway fencing guard nhận ra.
+    delivery_attempt: int = 0
+    fencing_token: str = ""
+    record_version: int = 0
 
     @property
     def has_outcome(self) -> bool:
@@ -91,13 +97,18 @@ class LocalInbox:
             raise
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
-    def persist(self, command_id: str, *, tenant_id: str, payload: dict) -> InboxEntry:
-        """Ghi RECEIVED. Idempotent: nếu đã có (redelivery) → trả entry hiện tại, KHÔNG reset."""
+    def persist(self, command_id: str, *, tenant_id: str, payload: dict,
+               delivery_attempt: int = 0, fencing_token: str = "",
+               record_version: int = 0) -> InboxEntry:
+        """Ghi RECEIVED. Idempotent: nếu đã có (redelivery) → trả entry hiện tại, KHÔNG reset
+        (giữ nguyên attempt/token của lần persist ĐẦU — xem gap redelivery-while-running ở
+        module docstring của delivery_loop.py)."""
         existing = self.get(command_id)
         if existing is not None:
             return existing
         entry = InboxEntry(command_id=command_id, tenant_id=tenant_id, payload=payload,
-                           local_state=L_RECEIVED)
+                           local_state=L_RECEIVED, delivery_attempt=delivery_attempt,
+                           fencing_token=fencing_token, record_version=record_version)
         self._write_atomic(entry)
         return entry
 

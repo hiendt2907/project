@@ -14,6 +14,14 @@ Bất biến an toàn (never blindly retry a mutating command after unknown outc
 Loop KHÔNG cầm transport mutation trực tiếp — nhận ``executor``/``reconciler`` callable để tầng
 mutation (operations/recovery) tiêm vào. Điều này giữ crash-safety tách khỏi business logic
 và test được độc lập.
+
+Delivery ownership/fencing (Gateway twin: ``src/gateway/routes/agent_runtime.py``): mỗi command
+polled mang ``delivery_attempt``/``fencing_token``/``record_version`` của lần claim đó. Loop lưu
+NGUYÊN VẸN ba field này vào inbox cục bộ tại lần persist ĐẦU và echo lại y hệt trên mọi
+accept/progress/report_terminal — Gateway reject (409) nếu không khớp record hiện tại (stale
+sau redelivery). Đây là GAP CÒN LẠI đã biết: nếu Gateway redeliver (visibility timeout) TRONG
+LÚC agent vẫn đang RUNNING command cũ (persist() không reset), report cuối cùng sẽ dùng attempt
+cũ và bị Gateway từ chối — cần lease renewal/heartbeat để gia hạn visibility, KHÔNG sửa ở đây.
 """
 from __future__ import annotations
 
@@ -35,10 +43,13 @@ Reconciler = Callable[[InboxEntry], Awaitable[tuple[str, dict]]]
 
 class RuntimeDeliveryClient(Protocol):
     async def poll_runtime(self, agent_id: str) -> list[dict]: ...
-    async def accept(self, agent_id: str, tenant_id: str, command_id: str) -> None: ...
-    async def progress(self, agent_id: str, tenant_id: str, command_id: str, phase: str) -> None: ...
+    async def accept(self, agent_id: str, tenant_id: str, command_id: str, *,
+                     delivery_attempt: int, fencing_token: str) -> None: ...
+    async def progress(self, agent_id: str, tenant_id: str, command_id: str, phase: str, *,
+                       delivery_attempt: int, fencing_token: str) -> None: ...
     async def report_terminal(self, agent_id: str, tenant_id: str, command_id: str,
-                              state: str, outcome: dict) -> dict: ...
+                              state: str, outcome: dict, *,
+                              delivery_attempt: int, fencing_token: str) -> dict: ...
 
 
 class DeliveryLoop:
@@ -82,12 +93,20 @@ class DeliveryLoop:
                 processed += 1
                 continue
 
-            entry = self._inbox.persist(cid, tenant_id=tenant, payload=cmd.get("payload", {}))
+            entry = self._inbox.persist(
+                cid, tenant_id=tenant, payload=cmd.get("payload", {}),
+                delivery_attempt=cmd.get("delivery_attempt", 0),
+                fencing_token=cmd.get("fencing_token", ""),
+                record_version=cmd.get("record_version", 0))
             self._inbox.set_state(cid, L_ACCEPTED)
-            await self._client.accept(self._agent_id, tenant, cid)
+            await self._client.accept(self._agent_id, tenant, cid,
+                                      delivery_attempt=entry.delivery_attempt,
+                                      fencing_token=entry.fencing_token)
 
             self._inbox.set_state(cid, L_RUNNING)
-            await self._client.progress(self._agent_id, tenant, cid, "RUNNING")
+            await self._client.progress(self._agent_id, tenant, cid, "RUNNING",
+                                        delivery_attempt=entry.delivery_attempt,
+                                        fencing_token=entry.fencing_token)
             state, outcome = await self._executor(entry.payload)   # mutation xảy ra ở đây
 
             self._inbox.record_outcome(cid, outcome)               # bền TRƯỚC khi report
@@ -97,7 +116,8 @@ class DeliveryLoop:
 
     async def _report_and_archive(self, entry: InboxEntry, outcome: dict, state: str) -> None:
         ack = await self._client.report_terminal(
-            self._agent_id, entry.tenant_id, entry.command_id, state, outcome)
+            self._agent_id, entry.tenant_id, entry.command_id, state, outcome,
+            delivery_attempt=entry.delivery_attempt, fencing_token=entry.fencing_token)
         self._inbox.set_state(entry.command_id, L_REPORTED)
         if ack.get("acknowledged"):
             self._inbox.set_state(entry.command_id, L_ACKED)
