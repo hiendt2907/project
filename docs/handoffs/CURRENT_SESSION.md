@@ -1,225 +1,266 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-Long-running execution safety: atomic execution-lease renewal + Gateway delivery
-visibility heartbeat, wired qua một renewal coordinator dùng chung ở cả agent-execution
-layer (`operations.run_guarded_recovery`) và agent-delivery layer (`DeliveryLoop`).
+**M1 — Human-approved Systemd Service Recovery**: vertical slice sản phẩm đầu tiên trên
+Living Operations Runtime. Chuyển từ infrastructure hardening (5 phiên trước: durable
+delivery, atomic claim/fencing, lease renewal/heartbeat) sang capability THẬT khách hàng
+dùng được: `systemd.restart_unit`.
 
-## Timing model (Bước 1)
+## Product journey (Bước 1 deliverable)
+```
+Incident (evidence: Finding "svc DOWN") → Decision (aoip.decision.decide_recovery, ĐÃ CÓ)
+→ typed capability payload (build_typed_payload) → approval binding (issue_capability_command
+  — hash payload TẠI THỜI ĐIỂM approve) → enqueue Gateway durable command (ĐÃ CÓ, không đổi)
+→ Agent poll (atomic claim + fencing, ĐÃ CÓ) → preflight (capability/version, unit regex,
+  payload-hash, allowlist, unit-exists) → run_guarded_recovery THẬT (lease/ledger/fencing,
+  ĐÃ CÓ, không bypass) → verify (systemctl is-active, ĐÃ CÓ trong recovery.py) → structured
+  product outcome → Gateway terminal report → audit hash-chain đầy đủ correlation IDs.
+```
 
-| Timer | Owner | TTL hiện tại | Renewal | Hết hạn gây ra điều gì |
-|---|---|---:|---|---|
-| Delivery visibility | Gateway (`omni:cmd:ready` zset score + `record.visibility_deadline`) | 60s (`_VISIBILITY_S`) | MỚI: `POST /commands/heartbeat` | Redelivery — attempt/token mới được claim, dù agent cũ vẫn RUNNING |
-| Execution lease | Agent (`lease:{scope}` Redis key, `aoip.agent.lease`) | 120s mặc định | MỚI atomic: `ExecutionLease.renew()` | Agent khác `acquire()` được → concurrent-mutation risk |
-| Action timeout | Agent (`transport.run(..., timeout=)`) | 30s (restart op), 5s (probe) | N/A (hard subprocess timeout) | `ConnectionError`/timeout → `FAILED` |
-| Verification timeout | Trong `execute_recovery` (probe `dev/tcp`) | 5s | N/A | probe fail → `escalated` |
-| Agent heartbeat (control-plane) | Agent → Omni (`register`/`heartbeat()`) | presence-based, không TTL cứng | Periodic call trong `operations_loop` | Registry coi agent stale (ngoài scope phiên này) |
-| Command expiry | Gateway record (`expires_at`, ttl_s lúc enqueue) | mặc định 300s | Không renew (theo thiết kế — expiry là hard deadline của toàn bộ command, không phải ownership) | `EXPIRED`, fail-closed |
+## Bước 1 — Flow hiện có trước phiên này (file:symbol, trạng thái)
+- Mission/orchestrator: `src/aoip/mission.py` — **implemented** (`Mission`, `MissionState`,
+  `run_mission()`; không có class `MissionOrchestrator` riêng, `run_mission()` là driver).
+- Decision: `src/aoip/decision.py::decide_recovery()`, `src/aoip/objects.py:88 Decision` —
+  **implemented**, tái dùng nguyên vẹn (KHÔNG sửa).
+- Approval/HITL: `src/aoip/recovery.py:111 Approval` + `.issue()` — **implemented**, tái dùng.
+  Legacy HITL stack (`src/services/playbook/`, `gateway/routes/{playbooks,autonomy}.py`) —
+  **cố ý KHÔNG coupling**, khác domain.
+- RecoveryGate: `src/aoip/recovery.py:98` — **implemented**, KHÔNG sửa (allowlist đặt ở
+  capability layer, không đụng gate chung).
+- `run_guarded_recovery`/`execute_recovery`: `src/aoip/agent/operations.py:51`,
+  `src/aoip/recovery.py:225` — **implemented**, tái dùng nguyên vẹn (lease renewal đã có từ
+  phiên trước, không sửa thêm).
+- Systemd operator: `src/aoip/recovery.py:36-90` (`_sd_is_broken/_sd_capture/_sd_apply/_sd_health`,
+  `OPERATORS[("process_down","systemd")]`) — **implemented**, KHÔNG unit validation (gap đã vá).
+- Unit allowlist: **absent trước phiên này** — MỚI xây (`SystemdRestartPolicy`).
+- Verification: `recovery.py:281-310` (health + dependents) — **implemented**, tái dùng.
+- Audit: `src/aoip/audit.py` 10 `EV_*` — **implemented**, tái dùng nguyên vẹn.
+- `decode_recovery_command`/`_map_recovery_outcome`: `operations.py:244,289` — **implemented**
+  nhưng KHÔNG đủ cho product outcome taxonomy → capability layer có `_decode`/
+  `_classify_product_outcome` RIÊNG (không sửa bản chung, vì bản chung phục vụ generic
+  recovery command, không riêng capability này).
+- CLI/portal approval-issuing: **absent** — MỚI xây (`aoip.console.approve_systemd_restart`).
 
-## Invariant (Bước 2) — đã áp dụng
-1-10 đều được implement: chỉ current attempt/token mới renew được visibility (Gateway
-guard); chỉ đúng lease token mới renew được lease (Lua compare-and-expire); stale
-attempt/token bị 409; terminal/expired không renew được (heartbeat guard); renewal
-failure trả `False`/409, KHÔNG bao giờ coi là success; ownership loss trong lúc mutation
-→ escalated (không tự COMPLETED); release chỉ với đúng token hiện tại (Lua compare-and-
-delete); renewal luôn set lại full TTL (monotonic, không có nhánh giảm).
+## Capability contract (Bước 2 deliverable)
+`src/aoip/capabilities/systemd_restart.py::CAPABILITY_NAME = "systemd.restart_unit"`,
+`CAPABILITY_VERSION = "1"`. Payload (`build_typed_payload`): `capability, capability_version,
+target.unit, reason.{mission_id,decision_id,incident_id,summary}, preconditions.
+{require_unit_exists,require_allowlisted}, verification.{require_active_state,health_check}`
+— ĐÚNG schema Bước 2, KHÔNG raw shell command. `CAPABILITY_METADATA`: requires_approval=True,
+risk_class="low", blast_radius="single_unit", reversibility="reversible_via_restart",
+verification_required=True. Registry tra cứu: `describe_capability(name, version)` — trả
+None (fail-closed) nếu KHÔNG khớp CHÍNH XÁC name+version (KHÔNG generic fallback).
 
-## Lease renewal protocol (Bước 2)
-`src/aoip/agent/lease.py`: `renew(scope, token, ttl_s)` — Lua 1 round-trip
-(`GET==token → SET EX ttl_s; else 0`). `release()` cũng thành Lua compare-and-delete
-(trước đây GET-rồi-DEL rời, có race window nếu lease hết hạn + agent khác acquire GIỮA
-hai lệnh). `refresh()` cũ giữ làm alias deprecated cho `renew()`.
+## Approval binding (Bước 3 deliverable)
+`capability_payload_hash(typed_payload)` — sha256 canonical JSON (sorted keys) của
+`{capability, capability_version, target, reason, preconditions, verification}`.
+`issue_capability_command()` tính hash TẠI THỜI ĐIỂM approve, nhúng `approved_payload_hash`
+vào envelope. `_decode()` (agent-side) RECOMPUTE hash từ payload nhận được, so sánh — khác
+BẤT KỲ field nào (kể cả `reason.summary`) → `PRECONDITION_FAILED: payload_hash_mismatch`,
+ZERO mutation. Đây là canonical-hash binding tối thiểu theo đúng yêu cầu Bước 6 (KHÔNG
+PKI/signed envelope).
 
-## Visibility heartbeat protocol (Bước 4)
-`POST /webhook/agent/rt/commands/heartbeat` — request fields giống `AckDelivered`
-(`agent_id, tenant_id, command_id, delivery_attempt, fencing_token, expected_version?`).
-Guard: 404 nếu record không tồn tại; 409 `terminal_no_heartbeat` nếu đã terminal; auto-
-EXPIRE + 409 `expired` nếu `now >= expires_at`; 409 qua `_check_fencing` (agent_mismatch/
-stale_delivery_attempt/invalid_fencing_token/version_conflict); 409 `not_running` nếu
-state không phải RUNNING/RECONCILING. Thành công: gia hạn `visibility_deadline` +
-zset score, bump `record_version`, **KHÔNG đổi `delivery_attempt`, KHÔNG cấp
-`fencing_token` mới**, trả `{visibility_deadline, record_version}`.
+## Agent-side allowlist (Bước 4)
+`SystemdRestartPolicy(allowed_units: frozenset, allow_self_restart=False,
+agent_service_name="")`. `load_policy_from_env()` đọc `AOIP_ALLOWED_SYSTEMD_UNITS` (CSV),
+`AOIP_ALLOW_SELF_RESTART`, `AOIP_AGENT_SERVICE_NAME`. Rỗng/thiếu env → allowlist RỖNG
+(fail-closed, KHÔNG wildcard-allow). `validate_unit_name()` — regex
+`^[A-Za-z0-9_.:@-]{1,128}\.service$`, reject path/whitespace/shell metachar/thiếu suffix.
+Self-restart agent's own unit bị chặn mặc định trừ khi `allow_self_restart=True`.
 
-## Renewal coordinator (Bước 5)
-`src/aoip/agent/renewal.py::run_with_renewal(coro, renew_fn, interval_s)` — helper DÙNG
-CHUNG, generic: chạy `coro` trong khi một task nền gọi `renew_fn()` mỗi `interval_s`.
-`renew_fn` trả `False` (ownership_lost thật) hoặc raise (lỗi mạng thoáng qua, KHÔNG mất
-ownership — log rồi tiếp tục). Task LUÔN bị cancel + await sau khi `coro` xong (kể cả
-lỗi), CancelledError KHÔNG bị nuốt. Dùng ở 2 nơi:
-- `operations.run_guarded_recovery`: `renew_fn = lease.renew(target, token, lease_ttl_s)`
-  bọc `execute_recovery(...)`.
-- `delivery_loop.DeliveryLoop._run_executor_with_heartbeat`: `renew_fn =
-  client.heartbeat_visibility(...)` bọc `self._executor(entry.payload)`. Nếu client
-  không có `heartbeat_visibility` (fake cũ/legacy) → bỏ qua im lặng, KHÔNG lỗi.
+## Preflight (Bước 5)
+`build_systemd_restart_executor`'s inner `executor()` chạy TRƯỚC `run_guarded_recovery`:
+capability/version (registry lookup) → unit name valid → payload_hash match → approval
+approved+not-expired+tenant/decision-bound (qua `Approval.issue()` — reuse nguyên vẹn) →
+unit allowlisted → unit exists (`systemctl show -p LoadState`, argv cố định, KHÔNG shell=True/
+bash -c/eval). Ownership/lease (điểm 4-5 Bước 5) + agent mode (điểm 9) + conflicting-op
+(điểm 10) ĐÃ được enforce ở tầng dưới (Gateway fencing, `run_guarded_recovery`'s
+`lease.acquire()`) — KHÔNG re-implement, chỉ note evidence.
 
-## Ownership loss semantics (Bước 6)
-- **Trước mutation**: đã có sẵn (lease `acquire()` fail → `aborted`, KHÔNG chạy
-  `execute_recovery`) — không đổi.
-- **Trong/sau mutation** (lease renew fail trong lúc `execute_recovery` chạy): mutation
-  KHÔNG bị huỷ giữa chừng (an toàn hơn để nó verify xong bằng physical-proof revalidation
-  có sẵn). Nếu kết quả là `"recovered"` → ghi đè thành `"escalated"` +
-  `EV_RECOVERY_OWNERSHIP_LOST` audit, reason
-  `ownership_lost_during_mutation_ambiguous`. Nếu kết quả là `"aborted"` (không có side
-  effect — vd đã healthy từ trước) → GIỮ NGUYÊN, mất ownership vô hại.
-- **Sau verify, trước terminal report** (delivery visibility mất trong lúc RUNNING dài,
-  Gateway đã redeliver attempt mới): `report_terminal` với attempt cũ → Gateway 409 →
-  `HTTPOmniClient.report_terminal` KHÔNG raise, trả
-  `{"acknowledged": False, "conflict": True, "error": ...}`; `DeliveryLoop._report_and_
-  archive` log `terminal_report_conflict`, GIỮ outcome cục bộ (đã persist trước đó),
-  KHÔNG archive — resume/tick sau tự re-report.
+## Execution/Verification (Bước 7/8)
+Reuse `_sd_apply` (argv `["sudo","systemctl","restart",unit]`, timeout 30s — KHÔNG shell)
+qua `run_guarded_recovery`/`execute_recovery` nguyên vẹn (lease renewal + fencing từ 2 phiên
+trước, KHÔNG sửa thêm). Verify: `_sd_health` (`systemctl is-active`) + dependents — KHÔNG
+COMPLETED chỉ vì exit code 0 (execute_recovery LUÔN verify riêng sau execute).
 
-## Config (Bước 7)
-`src/aoip/agent/timing_config.py::TimingConfig` — 5 field
-(`execution_lease_ttl_s, lease_renewal_interval_s, gateway_visibility_s,
-visibility_renewal_interval_s, action_timeout_s`), validate: mọi giá trị > 0;
-`renewal_interval < ttl` (cả lease lẫn visibility); TTL/visibility ≥ 2x renewal interval
-tương ứng (safety margin). `InvalidTimingConfig` raise fail-closed nếu vi phạm. Đây là
-dataclass tham chiếu/validate — CHƯA wiring vào daemon CLI (gap: xem "Remaining gaps"
-nếu operator muốn override qua env, cần thêm bước load từ `AOIP_LEASE_*`/`AOIP_VISIBILITY_*`).
+## Structured product outcome (Bước 9)
+10 outcome constants (`OUTCOME_EXECUTED_AND_VERIFIED` … `OUTCOME_UNSUPPORTED_CAPABILITY`)
++ `OUTCOME_SHADOW_RECOMMENDATION`. `_classify_product_outcome()` map RecoveryOutcome kỹ
+thuật → nhãn sản phẩm. `_operator_summary()` — result operator-facing: attempted, target,
+approver, evidence (capability_checks + recovery_evidence), duration_s, `next_step` gợi ý
+hành động tiếp — KHÔNG raw traceback.
 
-## Failure semantics (Bước 8, bảng)
+## Shadow mode (Bước 11)
+`mode="shadow"` (vs `"human_approved"` mặc định) — chạy ĐẦY ĐỦ preflight (allowlist/unit-
+exists/hash) nhưng KHÔNG gọi `run_guarded_recovery`. Trả `COMPLETED` (delivery layer coi
+command đã xử lý xong) + `product_outcome=SHADOW_RECOMMENDATION` + evidence
+`would_execute`/`predicted_verification_plan` — KHÔNG COMPLETED nghĩa mutation thật.
 
-| Failure point | Side effect possible | Final behavior |
-|---|---:|---|
-| Lease acquire fail (đã bị giữ) | Không | `aborted`, `lease_denied` |
-| Lease renew fail, outcome=recovered | Có (mutation đã chạy) | `escalated`, `ownership_lost_during_mutation_ambiguous` |
-| Lease renew fail, outcome=aborted | Không | Giữ nguyên `aborted`, không escalate |
-| Lease renew transient network error | N/A | Log, KHÔNG mark lost, retry lần sau |
-| Visibility heartbeat 409 trong lúc RUNNING | Có thể | Redelivery tạo attempt mới; report_terminal cuối cùng của attempt cũ bị 409 conflict → giữ outcome cục bộ, không archive |
-| report_terminal 409 (stale attempt) | Đã persist local | KHÔNG raise, KHÔNG crash tick(), retry ở resume sau |
-| Agent crash giữa RUNNING | Không renew nữa | Lease + visibility tự hết hạn theo TTL; redelivery attempt mới; attempt cũ không report được vào attempt mới (fencing) |
-| Gateway heartbeat fail, lease renew vẫn OK | Không | Redelivery có thể xảy ra (nguy cơ 2 agent cùng chạy); execution lease vẫn chặn mutation kép ở tầng agent |
-| Cả lease renew và Gateway heartbeat đều fail | Có thể | Ambiguous → escalate ở tầng execution; delivery tầng report có thể conflict — KHÔNG generic retry vô hạn, đều có giới hạn rõ (lease: escalate 1 lần; delivery: giữ outcome chờ resume) |
+## Operator surface (Bước 12)
+`python -m aoip.console.approve_systemd_restart --unit ... --tenant ... --approver ...
+--mission-id ... --decision-id ... --incident-id ... --summary ...` → in JSON envelope hoàn
+chỉnh (sẵn sàng POST `/webhook/agent/rt/commands/enqueue`). API response (`get_record`,
+ĐÃ CÓ, không sửa) trả nguyên `outcome` dict = operator-facing structured result.
 
-## Implementation summary (Bước 5 deliverable)
-- `src/aoip/agent/lease.py`: `_RENEW_SCRIPT`/`_RELEASE_SCRIPT` (Lua atomic), `renew()` mới,
-  `refresh()` → alias deprecated, `release()` chuyển sang Lua.
-- `src/aoip/agent/renewal.py` (MỚI): `run_with_renewal()`, `RenewalOutcome`.
-- `src/aoip/agent/timing_config.py` (MỚI): `TimingConfig`, `InvalidTimingConfig`.
-- `src/aoip/agent/operations.py`: `run_guarded_recovery` thêm `lease_renewal_interval_s`
-  param, bọc `execute_recovery(...)` bằng `run_with_renewal`, map ownership-lost→escalated.
-- `src/aoip/audit.py`: thêm `EV_RECOVERY_OWNERSHIP_LOST`.
-- `src/gateway/routes/agent_runtime.py`: route mới `POST /commands/heartbeat`
-  (`heartbeat_command`), docstring cập nhật (visibility vs lease).
-- `src/aoip/agent/omni_client.py`: `HTTPOmniClient.heartbeat_visibility()` mới;
-  `report_terminal()` không còn `raise_for_status()` mù — 409 → trả dict conflict.
-- `src/aoip/agent/delivery_loop.py`: `DeliveryLoop.__init__` thêm `heartbeat_interval_s`;
-  `_run_executor_with_heartbeat()` mới (bọc executor bằng `run_with_renewal`, bỏ qua nếu
-  client thiếu `heartbeat_visibility`); `_report_and_archive` xử lý `ack["conflict"]`.
-- Tests: `tests/test_aoip_lease_renewal.py` (MỚI, 9 test); `tests/test_gateway_agent_
-  runtime.py` (+7 test heartbeat); `tests/test_aoip_operations.py` (+3 test ownership-loss/
-  long-running); `tests/test_aoip_delivery_loop.py` (+4 test heartbeat/conflict).
+## TimingConfig wiring (theo brief)
+`build_systemd_restart_executor(..., timing: TimingConfig | None = None)` — truyền
+`execution_lease_ttl_s`/`lease_renewal_interval_s` vào `run_guarded_recovery`. KHÔNG wiring
+`action_timeout_s`/`gateway_visibility_s` (operator `_sd_apply` hardcode 30s, Gateway
+`_VISIBILITY_S` hardcode 60s — sửa cần đổi signature dùng chung, ngoài scope nhỏ nhất; ghi ở
+remaining gaps).
 
-## Concurrency/failure evidence (Bước 6 deliverable)
-- `test_renew_atomic_under_race_old_owner_vs_new_owner` — renew cũ KHÔNG ghi đè lease mới.
-- `test_long_running_execution_renews_lease_no_redelivery` — mutation chạy lâu hơn TTL
-  gốc, renewal giữ lease sống, `recovered` bình thường.
-- `test_ownership_lost_during_mutation_becomes_escalated_not_completed` — lease bị giành
-  giữa mutation → escalated, KHÔNG COMPLETED giả.
-- `test_ownership_lost_but_already_healthy_stays_completed_no_action` — mất ownership vô
-  hại khi không có side effect.
-- `test_heartbeat_fires_during_long_running_executor` — heartbeat thật sự gọi nhiều lần.
-- `test_no_orphan_asyncio_task_after_tick_with_heartbeat` — không orphan task.
-- `test_report_terminal_conflict_keeps_local_outcome_no_archive` — 409 không crash, giữ
-  outcome, không archive.
-- `test_run_with_renewal_cancellation_not_swallowed` — CancelledError không bị nuốt.
+## Implementation summary (Bước 4 deliverable)
+- `src/aoip/capabilities/systemd_restart.py` (MỚI, ~330 dòng): toàn bộ capability contract,
+  policy, hash-binding, decode, preflight, executor builder, outcome taxonomy, shadow mode.
+- `src/aoip/console/approve_systemd_restart.py` (MỚI): CLI operator surface.
+- Tests: `tests/test_capability_systemd_restart.py` (MỚI, 32 test — contract/policy/execution/
+  verification/shadow), `tests/test_m1_systemd_recovery_e2e.py` (MỚI, 5 test — product E2E
+  qua Gateway ASGI thật + DeliveryLoop thật).
+- KHÔNG sửa `src/aoip/recovery.py`, `src/aoip/agent/operations.py`,
+  `src/gateway/routes/agent_runtime.py` — capability layer hoàn toàn additive.
+
+## Product E2E evidence (Bước 5 deliverable)
+| Scenario | Kết quả |
+|---|---|
+| Happy path: enqueue → poll → guarded execute → verify → COMPLETED | PASS — `test_happy_path_incident_to_verified_recovery` |
+| Approval rejected → zero mutation | PASS — `test_approval_rejected_never_executes` |
+| Verification fail (restart rc=0 nhưng KHÔNG active) → ESCALATED | PASS — `test_verification_failure_escalates` |
+| Shadow mode → recommendation, KHÔNG mutation | PASS — `test_shadow_mode_end_to_end_no_mutation` |
+| Unit not allowlisted → BLOCKED_BY_POLICY | PASS — `test_unit_not_allowlisted_end_to_end` |
+| Unit missing/payload tampered/unsupported version/expired approval/ownership-lost/duplicate-delivery | PASS ở tầng unit test (`test_capability_systemd_restart.py`, 32 test) |
+
+## Operator-visible result (Bước 6 deliverable — ví dụ thật)
+```json
+{
+  "capability": "systemd.restart_unit", "capability_version": "1",
+  "attempted": "restart nginx.service", "target": {"unit": "nginx.service"},
+  "mode": "human_approved", "approver": "alice",
+  "product_outcome": "EXECUTED_AND_VERIFIED",
+  "reason": "service + dependents verified",
+  "evidence": {
+    "capability_checks": [
+      {"check": "unit_allowlisted", "ok": true, "detail": "unit=nginx.service allowlist=['nginx.service']"},
+      {"check": "unit_exists", "ok": true, "detail": "systemctl show LoadState unit=nginx.service"},
+      {"check": "capability_version_supported", "ok": true, "detail": "systemd.restart_unit@1"},
+      {"check": "payload_hash_bound", "ok": true, "detail": "approved_payload_hash khớp payload nhận được"}
+    ],
+    "recovery_evidence": ["before=inactive", "service_health=ok", "dependents=n/a"]
+  },
+  "duration_s": 0.34, "next_step": "Không cần hành động thêm — service đã verified active."
+}
+```
 
 ## Test results (Bước 7 deliverable)
 
 | Command | Result | Notes |
 |---|---|---|
-| `pytest tests/test_aoip_lease_renewal.py -q` | 9 passed | Lease atomic renew/release, coordinator |
-| `pytest tests/test_gateway_agent_runtime.py -q` | 21 passed | 14 cũ + 7 heartbeat mới |
-| `pytest tests/test_aoip_delivery_loop.py -q` | 8 passed | 4 cũ + 4 heartbeat/conflict mới |
-| `pytest tests/test_aoip_operations.py -q` | 25 passed | 22 cũ + 3 ownership-loss/long-running |
-| `pytest tests/ -q -k "aoip or gateway_agent_runtime"` | 232 passed | Toàn bộ AOIP+Gateway runtime |
-| `pytest tests/ -q --ignore=tests/integration` (full suite) | 5819 passed, 1 failed | Fail = `test_register_then_real_system_metrics_emitted_through_real_pipeline`, xác nhận pre-existing bằng `git stash` (không liên quan session này/trước) |
-| Lint/type-check riêng | Not run | Không có pyflakes/mypy sẵn trong `.venv`; đã `ast.parse` các file sửa |
+| `pytest tests/test_capability_systemd_restart.py -q` | 32 passed | contract/policy/execution/verification/shadow |
+| `pytest tests/test_m1_systemd_recovery_e2e.py -q` | 5 passed | product E2E qua Gateway ASGI thật |
+| `pytest tests/ -q -k "aoip or gateway_agent_runtime or capability or m1_systemd"` | 271 passed | toàn bộ regression liên quan |
+| `pytest tests/ -q --ignore=tests/integration` (full suite) | 5856 passed, 1 failed | fail = `test_register_then_real_system_metrics_emitted_through_real_pipeline`, pre-existing xác nhận qua git stash các phiên trước, KHÔNG liên quan |
+| Lint/type-check riêng | Not run | không có pyflakes/mypy sẵn trong `.venv`; `ast.parse` OK cho mọi file mới |
 
-## Remaining gaps (Bước 8/9 deliverable — không mở rộng scope)
-- **Shared domain transition enforcement**: `_advance`/`heartbeat_command`/`terminal_command`
-  mới guard attempt/token/version cho CHÍNH các route này; chưa có validate expected-
-  current-state tổng quát cho MỌI transition path khác trong hệ thống (nếu có nơi khác).
-- **Payload integrity/signing**: `payload_hash` field tồn tại trong record nhưng KHÔNG
-  được verify — chưa có hash/signature check thật.
-- **First typed capability certification**: chưa có (ngoài scope timing này, brief liệt
-  kê như remaining gap tổng thể của Living Operations Runtime).
-- `TimingConfig` chưa wiring vào daemon CLI/env loader (chỉ là dataclass validate sẵn
-  sàng dùng) — nếu operator cần override TTL/interval qua env, cần thêm bước load.
-- Structured metrics `execution_lease_renew_success/failed` chưa tách riêng khỏi log
-  chung `renew_error`/`ownership_lost` (đã có structured log, chưa có counter riêng biệt
-  theo tên chính xác brief liệt kê — log hiện tại đủ để trace nhưng chưa named-metric).
+## Remaining product gaps (Bước 8 deliverable)
 
-## Không tuyên bố absolute exactly-once
-Effectively-once vẫn đúng như trước: renewal giảm XÁC SUẤT redelivery/ownership-loss khi
-mutation dài, KHÔNG loại bỏ nó tuyệt đối (network partition dài hơn mọi TTL vẫn có thể
-xảy ra) — ambiguous case luôn resolve về escalate/giữ-outcome-chờ-reconcile, KHÔNG bao giờ
-tự nhận thành công khi không chắc.
+**Blocker cho SHADOW**: không có — SHADOW mode đã hoạt động đầy đủ (preflight thật, không
+mutation), sẵn sàng dùng ngay.
+
+**Blocker cho HUMAN_APPROVED lab**:
+- Chưa có CLI/portal để REJECT approval một cách tường minh phía operator (hiện tại reject =
+  không gọi CLI approve, hoặc tự set `approval.approved=false` thủ công trong payload —
+  chưa có "reject" workflow riêng).
+- `action_timeout_s`/`gateway_visibility_s` chưa parametrize qua TimingConfig (hardcode 30s/
+  60s trong `recovery.py`/`agent_runtime.py`) — an toàn (renewal đã che phần lớn rủi ro) nhưng
+  chưa "config wiring" đúng nghĩa cho 2 giá trị này.
+- Chưa có Mission/Decision integration tự động (AnalystAdvisory → capability payload) —
+  hiện tại CLI operator PHẢI tự điền mission_id/decision_id/incident_id thủ công; bridge từ
+  advisory pipeline sang aoip Action/Decision là absent (đã note từ nghiên cứu Bước 1).
+
+**Blocker cho AUTO_LOW_RISK**: TOÀN BỘ milestone này KHÔNG bật auto-execute production —
+`env_auto_execute=False` mặc định, `requires_approval=True` cứng trong metadata. AUTO_LOW_RISK
+cần: (a) risk-scoring tự động đủ tin cậy để bỏ qua approval cho 1 lớp rủi ro cụ thể, (b) chính
+sách rate-limit/blast-radius bổ sung, (c) governance sign-off — KHÔNG nằm trong scope milestone
+này (brief cấm rõ).
+
+**Ngoài 3 nhóm trên (kế thừa từ phiên trước, không đổi)**: shared domain transition
+enforcement tổng quát (ngoài `_advance`/`heartbeat_command`/`terminal_command`), payload
+integrity/signing đầy đủ (PKI), typed capability certification chính thức (CASAN Automatic).
+
+## CASAN classification
+Milestone HOÀN THÀNH: **CASAN Standard** (typed action, governance qua approval+allowlist,
+verification thật, audit hash-chain đầy đủ). CHUẨN BỊ (KHÔNG hoàn thành) **CASAN Automatic**:
+SHADOW mode hoạt động; HUMAN_APPROVED hoạt động trong lab (FakeSystemd) — CHƯA chứng minh
+trên host thật/production, CHƯA có AUTO_LOW_RISK governance. KHÔNG tuyên bố Automatic.
 
 ## Branch và commit
-`feature/living-operations-runtime` @ `755220f` (HEAD trước phiên này). Phiên này CHƯA commit.
+`feature/living-operations-runtime` @ `2391454` (HEAD trước phiên này). Phiên này CHƯA commit.
 
 ## Files chính đã thay đổi
-`src/aoip/agent/lease.py`, `src/aoip/agent/renewal.py` (mới),
-`src/aoip/agent/timing_config.py` (mới), `src/aoip/agent/operations.py`, `src/aoip/audit.py`,
-`src/gateway/routes/agent_runtime.py`, `src/aoip/agent/omni_client.py`,
-`src/aoip/agent/delivery_loop.py`, `tests/test_aoip_lease_renewal.py` (mới),
-`tests/test_gateway_agent_runtime.py`, `tests/test_aoip_operations.py`,
-`tests/test_aoip_delivery_loop.py`.
+`src/aoip/capabilities/systemd_restart.py` (mới), `src/aoip/console/approve_systemd_restart.py`
+(mới), `tests/test_capability_systemd_restart.py` (mới), `tests/test_m1_systemd_recovery_e2e.py`
+(mới). KHÔNG sửa file nào khác (capability layer hoàn toàn additive).
 
 ## Quyết định đã chốt
-- KHÔNG dùng RecoveryOutcome status mới ("ambiguous"/"reconciling") — tái dùng
-  `"escalated"` (đã tồn tại, đã là domain "cần người xử lý") thay vì mở rộng domain state
-  machine, đúng ràng buộc "không shared domain transition refactor lớn".
-- `run_with_renewal` là helper DÙNG CHUNG cho cả lease renewal (execution layer) và
-  visibility heartbeat (delivery layer) — cùng một shape (renew_fn + interval quanh một
-  coroutine), tránh viết 2 coordinator riêng biệt.
-- Heartbeat coordinator ở `DeliveryLoop` dùng `getattr(client, "heartbeat_visibility",
-  None)` để bỏ qua im lặng nếu client không hỗ trợ — giữ backward-compat với
-  fake/legacy client trong test hiện có, KHÔNG bắt buộc mọi client implement ngay.
-- `report_terminal` đổi hành vi: 409 KHÔNG còn raise (trước đây `_post_rt` raise_for_status
-  mù sẽ crash tick() nếu Gateway từ chối) — đây là thay đổi CẦN THIẾT để chịu được fencing
-  409 xảy ra tự nhiên hơn khi có redelivery-trong-lúc-running.
-- KHÔNG sửa Gateway atomic claim protocol ngoài heartbeat guard — `_CLAIM_SCRIPT` không đổi.
-- KHÔNG redesign execution lease abstraction — chỉ thêm `renew()` atomic, giữ nguyên
-  `acquire()`/`holder_token()`.
+- KHÔNG dùng `aoip.algebra`/`aoip.primitives` (framework mô phỏng cũ, không có durable
+  delivery/lease/fencing thật) — capability build trực tiếp trên `aoip.recovery`/
+  `aoip.agent.operations` (Living Operations Runtime thật).
+- Allowlist đặt ở CAPABILITY layer (`SystemdRestartPolicy`), KHÔNG thêm field vào
+  `RecoveryGate` chung — tránh rủi ro đổi semantics generic gate dùng bởi capability khác
+  trong tương lai.
+- Approval-hash binding nhúng TRONG payload (`approved_payload_hash` field), KHÔNG mở rộng
+  `Approval` dataclass (frozen, dùng ở nhiều nơi) — additive, zero risk cho code cũ.
+- SHADOW mode báo cáo `COMPLETED` ở TẦNG DELIVERY (Gateway không biết/không cần biết khái
+  niệm shadow) nhưng `product_outcome=SHADOW_RECOMMENDATION` ở tầng PRODUCT — tái dùng pattern
+  đã có (`NO_ACTION_NEEDED` cũng COMPLETED-nhưng-zero-mutation).
+- `_decode()`/`_classify_product_outcome()` capability-specific, KHÔNG sửa
+  `decode_recovery_command`/`_map_recovery_outcome` chung trong `operations.py` (những hàm đó
+  phục vụ generic recovery command, không riêng capability này — tránh capability framework
+  lớn hơn cần thiết).
+- `Approval.issue()` LUÔN trả `approved=True` (đã có từ trước) — `_decode()` PHẢI check
+  `payload["approval"]["approved"]` TRƯỚC khi gọi `Approval.issue()`, không dựa vào field đó
+  của kết quả (bug tự phát hiện qua test, đã fix trong phiên này).
 
 ## Verification đã chạy
-- `pytest tests/test_aoip_lease_renewal.py tests/test_gateway_agent_runtime.py tests/test_aoip_delivery_loop.py tests/test_aoip_operations.py -q` → 63 passed.
-- `pytest tests/ -q -k "aoip or gateway_agent_runtime"` → 232 passed.
-- `pytest tests/ -q --ignore=tests/integration` → 5819 passed, 1 failed (pre-existing,
-  không liên quan, xác nhận bằng git stash).
+- `pytest tests/test_capability_systemd_restart.py tests/test_m1_systemd_recovery_e2e.py -q` → 37 passed.
+- `pytest tests/ -q -k "aoip or gateway_agent_runtime or capability or m1_systemd"` → 271 passed.
+- `pytest tests/ -q --ignore=tests/integration` → 5856 passed, 1 failed (pre-existing,
+  không liên quan, xác nhận các phiên trước bằng git stash).
 
 ## Deployment hiện tại
-Không đổi. Route mới `/commands/heartbeat` chưa được gọi bởi CLI production (daemon.main()
-chưa wiring `heartbeat_interval_s`/`TimingConfig` — DeliveryLoop mặc định 15s nếu được dùng
-qua `run_daemon()` trực tiếp với HTTPOmniClient thật, do `heartbeat_visibility` đã tồn tại
-trên `HTTPOmniClient`).
+Không đổi. Capability mới CHƯA deploy — cần operator set
+`AOIP_ALLOWED_SYSTEMD_UNITS=<unit1,unit2>` trong `/etc/aoip/agent.env` (cùng file với
+`AOIP_AGENT_MODE=mutation_enabled` từ phiên trước) để bật thật trên VM. `daemon.py`
+CHƯA wiring capability này làm executor mặc định (hiện tại `runtime_config.build_agent_runtime`
+vẫn dùng `operations.build_recovery_executor` generic — capability-specific executor là
+composition mới, cần wiring riêng nếu muốn dùng qua CLI/systemd, xem Next step).
 
 ## Blockers
 None.
 
 ## Next step chính xác
-Theo brief gốc, còn lại (không blocker, đã ghi rõ ở "Remaining gaps"):
-shared domain transition enforcement tổng quát; payload integrity/signing; typed capability
-certification; wiring `TimingConfig` vào daemon CLI/env nếu operator cần override.
+1. Wiring `build_systemd_restart_executor` vào `daemon.main()`/`runtime_config.py` như một
+   lựa chọn executor (thay vì generic `build_recovery_executor`) khi operator muốn CHỈ cho
+   phép capability `systemd.restart_unit` (tighter scope hơn generic recovery).
+2. Bridge AnalystAdvisory → Decision/capability payload (nếu muốn tự động hoá đề xuất, hiện
+   tại operator phải tự chạy CLI `approve_systemd_restart`).
+3. Reject-approval workflow tường minh (hiện tại thiếu, xem Remaining gaps).
+4. Capability thứ hai (K8s deployment restart, DB action...) — KHÔNG làm trong phiên tới trừ
+   khi M1 đã được operator xác nhận đủ tốt trong lab.
 
 ## Lệnh cần chạy lại
-- `.venv/bin/python -m pytest tests/test_aoip_lease_renewal.py -q`
-- `.venv/bin/python -m pytest tests/ -q -k "aoip or gateway_agent_runtime"`
+- `.venv/bin/python -m pytest tests/test_capability_systemd_restart.py tests/test_m1_systemd_recovery_e2e.py -q`
+- `.venv/bin/python -m pytest tests/ -q -k "aoip or gateway_agent_runtime or capability or m1_systemd"`
 - `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration`
 
 ## Không được làm lại
-- KHÔNG thêm RecoveryOutcome status mới — dùng `escalated` sẵn có cho ambiguous.
-- KHÔNG đổi `_CLAIM_SCRIPT`/atomic claim protocol (heartbeat là route RIÊNG, không chạm claim).
-- KHÔNG viết lại `run_with_renewal` thành 2 bản riêng cho lease/visibility — giữ 1 helper chung.
-- KHÔNG bắt buộc mọi `RuntimeDeliveryClient` phải implement `heartbeat_visibility` — optional,
-  `getattr` fallback là chủ ý.
+- KHÔNG thêm capability thứ hai trong milestone này.
+- KHÔNG sửa `RecoveryGate`/`recovery.py`/`operations.py` để nhét thêm capability-specific
+  logic — capability layer PHẢI ở `src/aoip/capabilities/systemd_restart.py`, additive.
+- KHÔNG bật `env_auto_execute=True` mặc định hay giả định AUTO_LOW_RISK production.
+- KHÔNG viết lại `Approval` dataclass để thêm field `approved` param cho `.issue()` — giữ
+  nguyên "issue() luôn approved=True", check reject TRƯỚC khi gọi issue() ở capability layer.
 
 ## Tài liệu liên quan
-- `src/aoip/agent/lease.py`, `src/aoip/agent/renewal.py`, `src/aoip/agent/timing_config.py`
-  (docstring module đầy đủ protocol).
-- `src/gateway/routes/agent_runtime.py` (docstring heartbeat section mới).
-- `src/aoip/agent/delivery_loop.py` (docstring long-running execution safety mới).
-- `tests/test_aoip_lease_renewal.py`, `tests/test_gateway_agent_runtime.py` (heartbeat
-  section), `tests/test_aoip_operations.py` (ownership-loss section).
+- `src/aoip/capabilities/systemd_restart.py` (module docstring đầy đủ vertical slice).
+- `src/aoip/console/approve_systemd_restart.py` (CLI operator surface).
+- `tests/test_capability_systemd_restart.py`, `tests/test_m1_systemd_recovery_e2e.py`.
