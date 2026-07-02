@@ -38,12 +38,11 @@ KHÔNG được coi golden journey là "repeatable" cho tới khi Phase 4-7 củ
   PARTIAL/CODE_ONLY/ABSENT theo từng capability).
 
 ## Branch và commit
-Đã merge `feature/living-operations-runtime` vào `main` (fast-forward, `main` == `origin/main` ==
-`4185a38`) theo yêu cầu tường minh của user ("push và merge vào main TẤT CẢ đi"). `main` đã push.
-`feature/living-operations-runtime` local vẫn ở `ccbb679` (chưa fast-forward theo commit
-`4185a38` mới nhất trên main — không ảnh hưởng vì main đã chứa toàn bộ lịch sử của nó; có thể
-`git checkout feature/living-operations-runtime && git merge --ff-only main` ở phiên sau nếu muốn
-đồng bộ 2 branch). Commit mới nhất trên main: `4185a38` (supervisor auto-drive IDLE).
+`main` == `origin/main` == `50d2149` (đã push, đã merge `feature/living-operations-runtime` theo
+yêu cầu user). `feature/living-operations-runtime` local vẫn ở `ccbb679` (lag phía sau main, không
+ảnh hưởng — có thể fast-forward ở phiên sau nếu cần). Commit mới nhất: `50d2149` — supervisor dùng
+`--dangerously-skip-permissions` cho invocation `claude -p` (xem "Quyết định đã chốt" bên dưới, đây
+là NGOẠI LỆ tường minh do user yêu cầu 2 lần sau khi được cảnh báo rủi ro, không phải mặc định).
 
 ## Working tree
 Sạch, ngoại trừ 10 file `docs/post-mortems/*.md` modified **có từ trước phiên này** (pre-existing,
@@ -78,6 +77,13 @@ Iteration 6 — tenant idempotency (`61fcdcb`, `f806af0`): `src/services/admin_c
   git history/PDB trước.
 - Mỗi lần runtime thiếu dữ liệu bất thường: nghi ngờ deployment drift trước
   (`hasattr()`/`inspect.getsource()` trong pod) trước khi sửa logic — đúng 2/4 iteration phiên này.
+- **`supervisor.sh` dùng `--dangerously-skip-permissions`** cho invocation `claude -p` của nó
+  (2026-07-02) — user yêu cầu tường minh 2 lần sau khi được cảnh báo rủi ro (đã đề xuất phương án an
+  toàn hơn là scoped `--allowedTools` allowlist, user từ chối, chọn full bypass). Đây là ngoại lệ
+  CHỈ áp dụng cho supervisor's non-interactive invocations, không áp dụng cho phiên tương tác
+  thường, không liên quan tới `OMNI_AUTO_EXECUTE_ENABLED` (kill-switch K8s riêng biệt). Không tự ý
+  gỡ bỏ flag này ở phiên sau trừ khi user yêu cầu — nhưng LUÔN kiểm tra kỹ log/git trước khi tin bất
+  kỳ thay đổi nào supervisor tự tạo ra khi không giám sát.
 
 ## Verification đã chạy
 `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` (sau iteration 6) →
@@ -102,16 +108,26 @@ tier hiệu lực = Redis cache `shadow`. Namespace `multi-agent`, cluster OrbSt
 Không có.
 
 ## Next step chính xác
-**QUAN TRỌNG — có thể ĐÃ tiếp tục tự động**: supervisor.sh của skill `omni-autonomous-productizer`
-đang chạy NỀN THẬT trên máy user (pid ghi trong `.autonomous-loop/supervisor.lock`, log tại
-`.autonomous-loop/logs/supervisor.log`, khởi động qua `nohup caffeinate -i bash
-.claude/skills/omni-autonomous-productizer/scripts/supervisor.sh --start &`). Nó tự phát hiện
-`status=IDLE` trong `docs/operations/AUTONOMOUS_LOOP_STATE.json` và tự gọi `claude -p
-"/omni-autonomous-productizer one-iteration"` lặp lại — nghĩa là có thể ĐÃ CÓ iteration mới chạy
-sau lúc handoff này được ghi. **Session tiếp theo PHẢI kiểm tra
-`docs/operations/AUTONOMOUS_LOOP_STATE.json` + `docs/operations/AUTONOMOUS_LOOP_LEDGER.md` +
-`git log` trước khi tin bất kỳ nội dung nào bên dưới** — nếu supervisor đã chạy thêm iteration,
-thông tin "Trạng thái hiện tại" ở trên có thể đã lỗi thời.
+**QUAN TRỌNG — sự cố đã xảy ra và đã fix trong phiên này**: supervisor ban đầu (khởi động lúc
+07:25Z, pid 10320) bị KẸT VÒNG LẶP VÔ HẠN không tiến triển — mỗi invocation `claude -p
+"/omni-autonomous-productizer one-iteration"` chọn đúng bottleneck (wire `idempotent=True` vào
+`src/gateway/routes/autonomy.py:292`) nhưng bị từ chối quyền Edit (vì `-p` không có TTY để duyệt
+permission), báo cáo, thoát về IDLE, rồi supervisor gọi lại ngay — lặp lại ~4 lần trong 3 phút,
+KHÔNG có thay đổi code nào. Đã dừng supervisor cũ, hỏi user cách xử lý, user chọn tường minh (2 lần,
+sau khi được cảnh báo rủi ro) dùng `--dangerously-skip-permissions`. Đã sửa `supervisor.sh` thêm
+flag này CHỈ cho invocation `claude -p` của nó (commit `50d2149`), khởi động lại supervisor (pid
+19497, đang chạy lúc viết handoff này). Đang chờ xem iteration mới có tiến triển thật không.
+
+**Session tiếp theo PHẢI**:
+1. `bash .claude/skills/omni-autonomous-productizer/scripts/supervisor.sh --status` — còn chạy không.
+2. `tail -50 .autonomous-loop/logs/supervisor.log` — xem iteration gần nhất làm được gì.
+3. `git log --oneline -10` + `docs/operations/AUTONOMOUS_LOOP_STATE.json` — supervisor có thể đã tự
+   commit thêm khi bạn không có mặt. KHÔNG tin nội dung "Trạng thái hiện tại" ở trên nếu git log có
+   commit mới hơn `50d2149`.
+4. Nếu supervisor vẫn chạy với `--dangerously-skip-permissions` không giám sát — đây là quyết định
+   user đã chấp nhận rủi ro, KHÔNG tự ý tắt bypass trừ khi user yêu cầu lại, nhưng PHẢI kiểm tra kỹ
+   working tree/git log xem nó có làm gì ngoài ý muốn không trước khi tin tưởng bất kỳ commit nào
+   nó tạo ra.
 
 Nếu supervisor CHƯA kịp chạy gì mới (kiểm tra bằng git log không có commit mới sau `4185a38`):
 tiếp tục slice "Repeatable Tenant Onboarding Baseline" từ Phase 4 (idempotency đã DONE ở
