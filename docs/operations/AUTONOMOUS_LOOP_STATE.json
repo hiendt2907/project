@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-02T14:45:00Z",
+  "updated_at": "2026-07-02T15:05:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "50d2149",
+  "head": "8e15178",
   "iteration": {
     "id": "iter7-fresh-tenant-repeat-provisioning-proof",
     "bottleneck": null,
     "phase": null,
     "acceptance_passed": true,
-    "last_successful_step": "iter7: scripts/provision_fresh_tenant.py created, calls AdminConfigRepo.create_tenant(idempotent=True) directly against real asyncpg pool. Ran 2x against real Postgres (port-forward svc/omni-postgres) for tenant-replay-01 — verified via direct psql query: 1 row omni_admin.tenant, 1 audit event omni_admin.config_change_log (actor=provisioning-tooling, action=create). VERIFIED_RUNTIME. Not yet committed.",
+    "last_successful_step": "iter7 COMMITTED at 8e15178 (feat(onboarding): canonical fresh-tenant provisioning caller with runtime idempotency proof). Reconciled at start of this iteration: state file previously said head=50d2149/pending-commit but git log confirmed the commit already landed (plus two follow-up handoff-sync commits 0d7d352, 8e15178) — no new code change needed here, this iteration only corrected stale state/ledger to match reality.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Commit iter7 changes (scripts/provision_fresh_tenant.py, docs/product/PRODUCT_PROOF.md, this state file, ledger). Then continue Phase 6-7 of Repeatable Tenant Onboarding Baseline: provision an Agent+VM for tenant-replay-01 and prove golden journey Tenant->Discovery->Fact->Twin->Competency runs for it without manual fixes, plus cross-tenant isolation proof vs staging-sim, plus operator read-only proof flow."
+    "next_step": "Phase 6 of Repeatable Tenant Onboarding Baseline: provision a real Agent+VM for tenant-replay-01 (new OrbStack VM or reuse an existing one with a second agent identity), run the golden journey Tenant->Agent enrollment->Discovery->Fact->Twin->Competency for it without manual fixes, then prove cross-tenant isolation vs staging-sim (Twin/Competency keyed by tenant_id, no cross-contamination) and an operator read-only proof flow (GET /onboarding/competency + /unknowns scoped to tenant-replay-01 only)."
   },
   "quota": {
     "usage_percent_reported": null,

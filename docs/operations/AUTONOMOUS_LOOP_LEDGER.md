@@ -64,3 +64,31 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Reset at: n/a
 - Resume action: commit iter7, then next bottleneck = Phase 6 (provision Agent+VM for
   `tenant-replay-01`, run golden journey end to end for it, prove isolation vs `staging-sim`).
+
+### Checkpoint 2026-07-02T15:05:00Z
+- Timestamp: 2026-07-02T15:05:00Z
+- Iteration: iter7-fresh-tenant-repeat-provisioning-proof (state reconciliation, no new code)
+- Quota state: n/a (not draining)
+- HEAD: 8e15178 (confirmed committed — `git log --oneline -3` shows 8e15178, 0d7d352, both after
+  the 50d2149 the state file still pointed to)
+- Acceptance: N/A — this iteration performed reality reconciliation only, per skill instruction
+  "resume must verify reality lager, not blindly continue a stale hypothesis." State JSON and this
+  ledger previously said iter7 was pre-commit; git history proved it already landed. Working tree
+  reverified clean except pre-existing unrelated post-mortem timestamp diffs and untracked
+  `.autonomous-loop/` runtime log dir (both out of scope, not touched).
+- Last verified: `git status --short`, `git log --oneline -5`, `git diff --stat` (only pre-existing
+  post-mortem files modified), `orb list` (3 VMs Running), `kubectl get deploy,pod -n multi-agent`
+  (omni-fullstack/omni-onboarding/omni-gateway 1/1 Running), `OMNI_AUTO_EXECUTE_ENABLED` present on
+  omni-fullstack env (kill-switch still wired, value check deferred to next mutation-adjacent
+  iteration since this one made no runtime changes).
+- Pending: Phase 6 of "Repeatable Tenant Onboarding Baseline" — provision real Agent+VM for
+  `tenant-replay-01`, run golden journey Tenant->Agent->Discovery->Fact->Twin->Competency for it,
+  prove cross-tenant isolation vs `staging-sim`, prove operator read-only flow. This is a
+  multi-step slice (new VM provisioning + agent install + discovery cycle observation) too large
+  for the remainder of this iteration's budget — deliberately left as `next_step` for the next
+  `one-iteration` invocation rather than started and left half-finished.
+- Reset at: n/a
+- Resume action: `references/operating-model.md` Reality Map procedure, then start Phase 6 fresh:
+  decide reuse-existing-VM-with-second-agent-identity vs provision-new-VM, inspect
+  `scripts/e2e_orbstack_fleet.py` and `scripts/lib/remote_agent_provisioning.py` before writing any
+  provisioning code (inspect-before-code discipline).
