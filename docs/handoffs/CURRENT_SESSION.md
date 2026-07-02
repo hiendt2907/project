@@ -1,128 +1,90 @@
 # Current Session Handoff
 
-## Deliverable hiện tại (phiên này) — 2 phần, cả hai HOÀN TẤT giai đoạn 1
+## Deliverable phiên này — 3 mảng, đều đã HOÀN TẤT + commit
 
-### Phần 1: Runtime Drift Correction and Safety Restoration — HOÀN TẤT
-Sau Whole-System Reality Audit phát hiện runtime lệch tài liệu, đã sửa P0 runtime trước, xác minh
-lại, rồi đồng bộ tài liệu trong cùng slice. Chi tiết đầy đủ: `docs/post-mortems/drift-correction-2026-07-02.md`
-+ memory `project_drift_correction_2026_07_02`.
+### 1. Whole-System Reality Audit + Drift Correction Slice
+Audit phát hiện runtime lệch tài liệu (CLAUDE.md nói "pod duy nhất" nhưng thực tế nhiều pod;
+`OMNI_AUTO_EXECUTE_ENABLED=true` bị bỏ quên từ lab cũ; 5 Deployment zombie; onboarding crash-loop
+vì tenant chưa provision). Đã sửa P0 runtime trước, verify, rồi đồng bộ docs.
+Chi tiết: `docs/post-mortems/drift-correction-2026-07-02.md` + memory
+`project_drift_correction_2026_07_02`. Commit: `0b8fe7c`, `67423b9`.
 
-### Phần 2: Continuous Productization Loop — Iteration 1 + 2 HOÀN TẤT
+### 2. Continuous Productization Loop — Iteration 1-4 (golden journey Tenant→Agent→Discovery→Fact→Twin→Competency)
+| Iter | Bottleneck | Root cause | Fix | Commit |
+|---|---|---|---|---|
+| 1 | System Twin trống 100% | Deployment drift — image chưa rebuild sau `1bc6292` | `make docker-worker` + redeploy | `873435b` |
+| 2 | `cust-app` không có discovery data | Thiếu `OMNI_REMOTE_DISCOVERY_ENABLED=true` trong `run.env` VM | Sửa VM + restart agent | `8ac9208` |
+| 3 | `/onboarding/competency`+`/unknowns` trả 500 | `Dockerfile.gateway` thiếu `COPY src/aoip/` | +1 dòng Dockerfile + rebuild/deploy gateway | `409dcb2` |
+| 4 | Mọi Fact có provenance `agent:unknown` | `_project_into_system_model` đọc `agent_id` sai vị trí (nested trong `extracted_fact`, không phải top-level) | Fix `onboarding_pipeline.py` + `schema.py` (promote agent_id trước khi truncate) | *(xem dưới — cần commit)* |
 
-**Iteration 1:** System Twin (`omni:aoip:system_model:*`) trống hoàn toàn dù O1/O2A/O2B claim DONE.
-**Root cause: deployment drift** — image `multi-agent-system:latest` chưa rebuild kể từ `1bc6292`
-(pod thiếu hẳn `_project_into_system_model`, xác minh bằng `hasattr()` trực tiếp trong pod). Đã
-`make docker-worker` + redeploy `omni-onboarding`+`omni-fullstack` → digest mới `c2d433daac77...`.
-Twin có dữ liệu cho 2/3 host (cust-edge, cust-db) — cust-app thiếu.
+Kết quả hiện tại: Twin đủ 3/3 host thật (76 fact), 0 fact còn `agent:unknown`, operator visibility
+qua API thật (`Bearer $OMNI_GATEWAY_API_KEY`) hoạt động. Full pytest suite: 5924 passed, 0 fail.
+Chi tiết đầy đủ: `docs/product/PRODUCT_PROOF.md` + memory `project_productization_iteration{1,2,3,4}_*`.
 
-**Iteration 2:** Điều tra cust-app → root cause: `/opt/omni-remote-agent/run.env` trên cust-app
-**thiếu dòng `OMNI_REMOTE_DISCOVERY_ENABLED=true`** (cust-edge/cust-db đều có, cust-app không —
-gap lúc provision VM, không phải bug code — `src/remote_agent/settings.py` default `false`). Đã
-thêm dòng đó + `systemctl restart omni-remote-agent` trên cust-app. **Runtime proof: Twin nay có
-đủ 3/3 host, 76 fact, revision 54, `host:cust-app` → `exposes_port 8080` khớp `ss -lntp` đã chạy
-trên VM.**
+**Phát hiện thêm chưa fix (iteration 5 candidate):** `coerce_evidence_dict()` (`pkg/reasoning/schema.py`)
+cắt cứng `extracted_fact` ở 2000 ký tự — nếu `discovery_data` lớn (process_list dài), JSON bị cắt
+giữa chừng → `json.loads()` lỗi → mất TOÀN BỘ evidence (không chỉ agent_id). Chưa fire trong lab
+hiện tại (payload nhỏ) nhưng là rủi ro thật. Xem `project_productization_iteration4_provenance_fix`.
 
-**Iteration 3:** Chọn bottleneck "operator visibility cho Twin" — route `GET /onboarding/competency`
-và `/unknowns` (O2A/O2B) đã tồn tại trong code nhưng gọi thật trả `500 Internal Server Error`.
-**Root cause: cùng bug-class với iteration 1 (deployment drift) nhưng biến thể build-config** —
-`Dockerfile.gateway` là Dockerfile RIÊNG cho gateway (minimal footprint, không copy toàn bộ `src/`),
-và nó thiếu `COPY src/aoip/` — route import `aoip.question_lifecycle`/`aoip.competency_matrix` nên
-`ModuleNotFoundError`. Xác nhận an toàn (grep không có `aoip` import `workers/`) rồi thêm 1 dòng
-`COPY src/aoip/ /app/src/aoip/` vào `Dockerfile.gateway` + `make docker-gateway` + `make deploy-gateway`.
-**Runtime proof:** gọi API thật với `Authorization: Bearer $OMNI_GATEWAY_API_KEY` →
-`.../onboarding/competency?tenant_id=staging-sim&entity_type=host&entity_id=host:cust-app` trả
-`identity: VERIFIED`, evidence_refs trỏ discovery thật; `.../onboarding/unknowns` trả Unknown thật.
-
-**Đây là commit CODE thật đầu tiên trong loop** (`Dockerfile.gateway` +1 dòng) — khác iteration 1-2
-vốn chỉ là deploy/config-only.
-
-Chi tiết đầy đủ cả 3 iteration: `docs/product/PRODUCT_PROOF.md` (capability matrix + golden journey
-status, mỗi dòng trỏ evidence cụ thể) + memory `project_productization_iteration1_twin` +
-`project_productization_iteration2_custapp` + `project_productization_iteration3_gateway_aoip_import`.
-
-## Tóm tắt kết quả (before → after)
-
-| Check | Before | After | Verdict |
-|---|---|---|---|
-| `OMNI_AUTO_EXECUTE_ENABLED` (pod thật) | `true` (bỏ quên từ lab session 2026-06-11) | `false` | ✅ FIXED, verified trên pod mới |
-| `OMNI_SIEM_SUGGEST_ONLY` | `false` | `true` | ✅ FIXED |
-| `OMNI_AUTONOMY_TIER` override | `shadow` (env override thừa) | gỡ bỏ, rơi về Redis cache `shadow` | ✅ cleaned |
-| `omni_admin` schema/tenant | Bị báo cáo sai là "rỗng" (audit trước thiếu `\dn`) | Xác nhận đủ 19 bảng, migration đúng | ✅ không cần sửa schema |
-| Tenant `staging-sim` (=3 VM lab) | Chưa provision → FK crash liên tục trong log onboarding | Đã tạo qua `AdminConfigRepo.create_tenant()` canonical | ✅ FIXED, hết FK error, row ghi thành công |
-| brain-go role/image | Báo cáo audit trước claim mismatch | Xác minh: KHÔNG mismatch, false positive | ✅ không cần sửa |
-| 8 Deployment `replicas=0` | Không phân loại | 5 xóa (RETIRED, manifest đã mất khỏi git từ `915e509`), 3 annotate giữ lại (STILL_CANONICAL, `deploy-siem-stack`) | ✅ FIXED |
-| Restart gateway/brain-go | Chưa rõ nguyên nhân | Gateway: race Kafka-chưa-ready lúc startup (tự phục hồi). brain-go: graceful, trùng sự kiện hạ tầng chung ~13h trước | ✅ classified, không cần fix code |
-| CLAUDE.md/MEMORY.md | Nói sai topology ("pod duy nhất") | Đã sửa: declared/deployed/retired rõ ràng | ✅ FIXED |
-| pytest baseline | 5919 passed/1 flake (pre-existing) | Không chạy lại trong slice này (không đổi code Python) | không đổi |
+### 3. `omni-lane-operator-loop` health-check (iter27)
+Chạy 3 lane diagnostic (sys_resource/sys_hard_fail/siem_security) qua Admin Simulator, xác nhận
+không regression từ các thay đổi runtime ở mục 1-2 (kill-switch revert, xóa zombie deployment,
+rebuild gateway/onboarding/fullstack). 12/12 stage resolved cả 3 lane, CRAT signed, Telegram gửi
+thật. Không có finding mới. Ledger: `project_lane_operator_loop_ledger.md` (session 2026-07-02 iter27).
 
 ## Trạng thái hiện tại
-Repo: chỉ thay đổi tài liệu (`CLAUDE.md`, `docs/handoffs/CURRENT_SESSION.md`,
-`docs/post-mortems/drift-correction-2026-07-02.md` mới, `k8s/services/omni-analyst-service.yaml`
-đã `git rm`). **CHƯA COMMIT** — xem "Next step" bên dưới. Không có thay đổi source code Python nào
-trong slice này (chỉ k8s runtime + docs).
+- Đã commit: `0b8fe7c`, `67423b9` (drift correction), `873435b` (iter1), `8ac9208` (iter2),
+  `409dcb2` (iter3).
+- **CHƯA COMMIT:** fix iteration 4 (`src/workers/onboarding_pipeline.py`,
+  `src/pkg/reasoning/schema.py`, `tests/test_onboarding_pipeline.py`) + cập nhật
+  `docs/product/PRODUCT_PROOF.md` + memory. Full suite đã xanh (5924 passed) — sẵn sàng commit
+  ngay đầu session sau nếu chưa kịp làm trong phiên này.
+- Runtime: `omni-fullstack`/`omni-onboarding` chạy digest `943043a3ef3b...` (bao gồm cả fix iter4),
+  `omni-gateway` chạy digest `24a0047be646...` (bao gồm fix iter3 + pipeline_stages từ iter26).
+  `OMNI_AUTO_EXECUTE_ENABLED=false`, tier hiệu lực = Redis cache `shadow`.
 
-## Đã hoàn thành (P0-1 → P0-5, P1 restart)
-Xem bảng before/after trên + `docs/post-mortems/drift-correction-2026-07-02.md` cho chi tiết đầy đủ
-từng bước, evidence, và bài học (đặc biệt: một agent con trong chuỗi audit trước tạo ra 1 finding
-hoàn toàn sai — brain-go — do rối trong delegation lồng nhau; luôn tự verify lại bằng lệnh thật).
-
-## Quyết định đã chốt (slice này)
-- Runtime truth sửa trước, tài liệu chỉ cập nhật sau khi verify xong (không đảo ngược thứ tự).
-- Không tạo bảng/schema ad hoc — dùng đúng `AdminConfigRepo.create_tenant()` đã có sẵn trong repo.
-- Không xóa Deployment nào chỉ vì `replicas=0` — bắt buộc đối chiếu git history + PDB/Service trước.
-- Không đổi Kafka partition/replication trong slice này (P1 riêng, không gây mất dữ liệu hiện tại).
-- Không làm O2B/O2C trong slice này.
+## Quyết định đã chốt (toàn phiên)
+- Runtime truth sửa trước, tài liệu chỉ cập nhật sau khi verify xong.
+- Không tạo bảng/schema ad hoc — dùng đúng cơ chế canonical đã có trong repo
+  (`AdminConfigRepo.create_tenant()`, `run_migrations()`).
+- Không xóa Deployment chỉ vì `replicas=0` — bắt buộc đối chiếu git history + PDB/Service trước.
+- Không đổi Kafka partition/replication (P1 riêng, không gây mất dữ liệu hiện tại).
+- Không làm O2B/O2C cho tới khi golden journey Tenant→Agent→Discovery→Fact→Twin→Competency
+  "sạch" (operator-visible, không còn provenance/UX gap lớn).
+- Mỗi lần runtime thiếu dữ liệu bất thường: LUÔN nghi ngờ deployment drift trước
+  (`hasattr()`/`inspect.getsource()` trong pod đang chạy) trước khi sửa logic code — đã đúng 2/4
+  iteration.
 
 ## Blockers
-Không có blocker cho phần đã làm. VM/Agent truth trên 3 VM lab (cust-edge/cust-app/cust-db) vẫn
-**BLOCKED** — audit trước thử SSH trực tiếp tới IP và thất bại, nhưng CHƯA thử đúng 2 cách canonical
-của OrbStack (`orb -m <machine> <command>` hoặc `ssh <machine>@orb`) — kết luận BLOCKED trước đó
-CHƯA đủ căn cứ, cần thử lại đúng cách trước khi kết luận lại.
+Không có.
 
-## Next step chính xác — Iteration 4 của Continuous Productization Loop
-Golden journey Tenant→Agent→Discovery→Fact→Twin→Competency đã chạy xuyên suốt VÀ operator-visible
-qua API thật (iteration 1-3 xong). **Bottleneck đề xuất cho iteration 4 (chọn 1 trong các gợi ý,
-không mở song song):**
-
-1. **`agent:unknown` trong provenance** (`src/aoip/onboarding_projection.py` — `to_observation()`
-   không điền `agent_id` thật vào Fact.provenance) — ảnh hưởng chất lượng bằng chứng của toàn bộ
-   Twin, đáng làm sớm vì càng nhiều Fact tích lũy càng khó backfill.
-2. **UX gap của `/onboarding/competency`**: `entity_id` yêu cầu format nội bộ `host:cust-app` thay
-   vì `cust-app` — dễ gây operator hiểu nhầm "không có data" khi thực ra chỉ gọi sai tham số. Cân
-   nhắc: chấp nhận cả 2 format ở route layer (không đổi domain logic).
-3. **Provisioning gap `OMNI_REMOTE_DISCOVERY_ENABLED`**: `scripts/e2e_orbstack_fleet.py` không set
-   biến này — nếu thêm VM thứ 4, sẽ lặp lại đúng gap iteration 2 đã fix thủ công.
-4. Chưa kiểm tra Competency Matrix cho `cust-edge`/`cust-db` (chỉ mới verify `cust-app`) và chưa
-   kiểm route `/onboarding/questions*` (O2B) có cùng lỗi `aoip` import hay không trên các route khác
-   — **kiểm tra nhanh trước khi chọn bottleneck mới**: gọi thử `/onboarding/questions?tenant_id=staging-sim`
-   để xác nhận không còn `ModuleNotFoundError` nào sót lại.
-
-Gợi ý thứ tự: làm mục 4 trước (kiểm tra nhanh, có thể lộ thêm bug cùng loại), sau đó chọn 1 trong
-mục 1-3 làm vertical slice chính cho iteration 4.
-
-Chỉ sau khi các gap nhỏ này được dọn mới quay lại quyết định O2B (source acquisition planner) —
-theo đề xuất của user, golden journey phải "sạch" trước khi mở rộng sang Question/UnderstandingComplete.
+## Next step chính xác — Iteration 5 của Continuous Productization Loop
+1. **Commit fix iteration 4** nếu chưa làm (xem "Trạng thái hiện tại").
+2. **Bottleneck đề xuất (chọn 1, không mở song song):**
+   - Fix rủi ro truncation trong `coerce_evidence_dict()` (mục "Phát hiện thêm chưa fix" ở trên) —
+     ưu tiên cao vì có thể mất evidence hoàn toàn cho VM có nhiều process/service hơn 3 VM lab hiện tại.
+   - UX gap `/onboarding/competency`: `entity_id` yêu cầu format `host:cust-app` thay vì `cust-app`
+     — dễ gây operator hiểu nhầm "không có data".
+   - Provisioning gap `OMNI_REMOTE_DISCOVERY_ENABLED`: `scripts/e2e_orbstack_fleet.py` không set biến
+     này — VM thứ 4 sẽ lặp lại gap iteration 2.
+3. Chỉ sau khi các gap này dọn xong mới quay lại quyết định O2B (source acquisition planner).
 
 ## Không được làm lại
 - Không audit lại pipeline discovery→onboarding→SystemModel→CompetencyMatrix→Question từ đầu (đã
-  map ở 3 commit O1/O2A/O2B trước đó — `1bc6292`/`cf9133f`/`c9cf0f7`).
-- Không coi VM lab là BLOCKED — access method đúng là `orb -m <machine> <command>`, đã audit xong cả
-  3 VM trong phiên này.
-- Không tự động tạo lại Deployment `omni-analyst/core/executor/prober/worker` — đã xác nhận RETIRED
-  qua git history, không phải xóa nhầm.
-- Không revert `OMNI_AUTO_EXECUTE_ENABLED` về `true` mà không có yêu cầu tường minh mới từ user kèm
-  cùng mức cẩn trọng như lần bật gốc (2026-06-11).
-- Không giả định code local chưa deploy đúng chỉ vì runtime thiếu dữ liệu — LUÔN xác minh bằng
-  `hasattr()`/`inspect.getsource()` trực tiếp trong pod trước khi sửa code (bài học iteration 1 —
-  lỗi thực ra là deployment drift, không phải logic bug).
-- Không tạo bảng/schema Postgres bằng SQL thủ công — canonical path đã có (`run_migrations()` +
-  `AdminConfigRepo.create_tenant()`).
+  map đủ qua O1/O2A/O2B + 4 iteration productization phiên này).
+- Không coi VM lab là BLOCKED — access method đúng là `orb -m <machine> <command>`.
+- Không tự tạo lại Deployment `omni-analyst/core/executor/prober/worker` — đã xác nhận RETIRED qua
+  git history (`915e509`).
+- Không revert `OMNI_AUTO_EXECUTE_ENABLED` về `true` mà không có yêu cầu tường minh mới từ user.
+- Không giả định code local chưa deploy đúng chỉ vì runtime thiếu dữ liệu — luôn verify trong pod
+  trước khi sửa logic.
+- Không tạo bảng/schema Postgres bằng SQL thủ công.
+- Không mở rộng fix "coerce_evidence_dict truncation" thành sửa cả `discovery_data` truncation
+  trong cùng 1 iteration nếu chọn nó — đây là 2 vấn đề tách biệt được ghi nhận riêng.
 
 ## Tài liệu liên quan
-- `docs/post-mortems/drift-correction-2026-07-02.md` — chi tiết đầy đủ P0-1→P0-5 + P1, evidence,
-  bài học.
-- Memory `project_drift_correction_2026_07_02` — bản tóm tắt liên-session.
-- `CLAUDE.md` mục "DEPLOYMENT STATE" (đã viết lại 2026-07-02) — topology declared/deployed/retired
-  hiện tại, đọc trước khi giả định bất kỳ điều gì về hạ tầng.
-- `k8s/deployments/omni-fullstack-autoexec-lab.yaml` — overlay lab kill-switch, đã revert qua đúng
-  lệnh rollback tự ghi trong file này.
+- `docs/post-mortems/drift-correction-2026-07-02.md`, `docs/product/PRODUCT_PROOF.md`.
+- Memory: `project_drift_correction_2026_07_02`,
+  `project_productization_iteration{1_twin,2_custapp,3_gateway_aoip_import,4_provenance_fix}`,
+  `project_lane_operator_loop_ledger` (iter27).
+- `CLAUDE.md` mục "DEPLOYMENT STATE" (2026-07-02) — topology declared/deployed/retired hiện tại.

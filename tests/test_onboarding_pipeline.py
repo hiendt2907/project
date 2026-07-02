@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -222,6 +223,94 @@ class TestSystemModelDualWrite:
         await op.accumulate_discovery_evidence(ctx, ev_doc)  # must not raise
         doc = await dd.get_accumulated_doc(r, "acme")
         assert doc["process_list"]["processes"][0]["name"] == "nginx"
+
+    @pytest.mark.asyncio
+    async def test_provenance_uses_real_agent_id_from_nested_extracted_fact(self):
+        """Real gateway envelopes (agent_webhook.py) nest agent_id/hostname
+        INSIDE extracted_fact, never at ev_doc top level. A top-level-only
+        lookup silently falls back to "unknown", weakening Fact provenance
+        for every projected Fact without ever raising or failing loudly."""
+        from aoip.system_model_store import load_system_model
+
+        r = _redis()
+        ctx = _ctx(r)
+        ev_doc = {
+            "tenant_id": "acme", "namespace": "web-02",
+            "probe": "port_scan", "trace_id": "tr-3",
+            "extracted_fact": {
+                "agent_id": "staging-sim_cust-app", "hostname": "cust-app",
+                "discovery_data": {"listening_ports": [{"port": 8080, "service": ""}]},
+            },
+        }
+        await op.accumulate_discovery_evidence(ctx, ev_doc)
+        model, _revision = await load_system_model(r, "acme")
+        fact = next(f for f in model.facts if f.triple == ("host:web-02", "exposes_port", "8080"))
+        assert "agent:staging-sim_cust-app" in fact.provenance
+        assert "agent:unknown" not in fact.provenance
+
+    @pytest.mark.asyncio
+    async def test_provenance_survives_coerce_evidence_dict_realistic_size(self):
+        """End-to-end through coerce_evidence_dict() (pkg/reasoning/schema.py),
+        exactly like kafka_discovery_evidence_loop's real caller
+        (evidence_consumer.py) does, with a realistic-size payload (matches a
+        live-captured cust-db process_list envelope, well under the 2000-char
+        extracted_fact truncation cap)."""
+        from pkg.reasoning import coerce_evidence_dict
+
+        from aoip.system_model_store import load_system_model
+
+        r = _redis()
+        ctx = _ctx(r)
+        raw_envelope = {
+            "tenant_id": "acme", "namespace": "cust-app",
+            "probe": "process_list", "trace_id": "tr-4",
+            "extracted_fact": {
+                "discovery_data": {"processes": [{"name": "nginx", "count": 1}]},
+                "agent_id": "staging-sim_cust-app", "hostname": "cust-app",
+            },
+        }
+        ev_doc = coerce_evidence_dict(raw_envelope)
+        await op.accumulate_discovery_evidence(ctx, ev_doc)
+        model, _revision = await load_system_model(r, "acme")
+        assert any(f.subject == "host:cust-app" for f in model.facts)
+        sample = next(f for f in model.facts if f.subject == "host:cust-app")
+        assert "agent:staging-sim_cust-app" in sample.provenance
+        assert "agent:unknown" not in sample.provenance
+
+
+class TestCoerceEvidenceDictAgentIdPromotion:
+    """coerce_evidence_dict() (pkg/reasoning/schema.py) promotes agent_id/hostname
+    to top-level fields BEFORE truncating extracted_fact to 2000 chars — otherwise
+    a large discovery_data payload silently drops them (they're appended LAST by
+    the gateway's dict-spread in agent_webhook.py). This class tests that
+    boundary directly; TestSystemModelDualWrite covers the realistic-size,
+    full-pipeline case."""
+
+    def test_agent_id_hostname_promoted_even_when_extracted_fact_would_truncate(self):
+        from pkg.reasoning import coerce_evidence_dict
+
+        big_processes = [{"name": f"worker-proc-{i}"} for i in range(200)]
+        raw_envelope = {
+            "probe": "process_list", "trace_id": "tr-5",
+            "extracted_fact": {
+                "discovery_data": {"processes": big_processes},
+                "agent_id": "staging-sim_cust-app", "hostname": "cust-app",
+            },
+        }
+        assert len(json.dumps(raw_envelope["extracted_fact"])) > 2000  # sanity: fixture is actually large
+        out = coerce_evidence_dict(raw_envelope)
+        assert out.get("agent_id") == "staging-sim_cust-app"
+        assert out.get("hostname") == "cust-app"
+        # extracted_fact itself IS truncated/possibly-invalid-JSON at this size —
+        # that's a separate, pre-existing risk (not this fix's scope); this test
+        # only asserts the promoted identity fields survive regardless.
+
+    def test_no_agent_id_field_is_a_noop(self):
+        from pkg.reasoning import coerce_evidence_dict
+
+        out = coerce_evidence_dict({"probe": "sys_metric", "extracted_fact": {"cpu": 1}})
+        assert "agent_id" not in out
+        assert "hostname" not in out
 
 
 class TestAskLoop:

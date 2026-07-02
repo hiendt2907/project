@@ -27,6 +27,11 @@ class DiagnosticEvidenceDict(TypedDict, total=False):
     evidence_source: str
     clinical_priority_note: str
     tenant_id: str
+    # Promoted out of a (possibly-truncated) nested extracted_fact — see
+    # coerce_evidence_dict. Only reliably populated for onboarding discovery
+    # evidence today; other evidence sources may leave these unset.
+    agent_id: str
+    hostname: str
 
 
 class OmniActionKafkaBody(TypedDict):
@@ -72,6 +77,17 @@ def coerce_evidence_dict(obj: Any) -> DiagnosticEvidenceDict:
             out[k] = str(v)  # type: ignore[assignment]
     ef = obj.get("extracted_fact")
     if ef is not None:
+        # Promote agent_id/hostname to dedicated top-level fields BEFORE
+        # truncating extracted_fact below — the gateway (agent_webhook.py)
+        # nests them inside extracted_fact via dict-spread, appended AFTER
+        # discovery_data, so a large discovery_data payload (e.g. a long
+        # process_list) silently truncates them out of the 2000-char cap and
+        # every downstream Fact provenance falls back to "agent:unknown".
+        if isinstance(ef, dict):
+            for identity_key in ("agent_id", "hostname"):
+                v = ef.get(identity_key)
+                if v is not None and identity_key not in out:
+                    out[identity_key] = str(v)  # type: ignore[literal-required]
         if isinstance(ef, (dict, list)):
             out["extracted_fact"] = json.dumps(ef, ensure_ascii=False)[:2000]  # type: ignore[assignment]
         else:

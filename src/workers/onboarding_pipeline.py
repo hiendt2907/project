@@ -65,8 +65,21 @@ async def _project_into_system_model(
     from aoip.onboarding_projection import project_facts, to_observation
     from aoip.system_model_store import fold_and_persist
 
-    agent_id = str(ev_doc.get("agent_id") or "unknown")
-    host = str(ev_doc.get("namespace") or ev_doc.get("hostname") or agent_id or "unknown-host")
+    # coerce_evidence_dict() (pkg/reasoning/schema.py) promotes agent_id/hostname
+    # to top-level fields precisely because the gateway nests them inside
+    # extracted_fact, which gets truncated to 2000 chars — a large discovery_data
+    # payload (e.g. long process_list) can silently cut them off. Prefer the
+    # promoted top-level fields; fall back to the (possibly-truncated) nested
+    # copy only for callers/tests that bypass coerce_evidence_dict.
+    fact = ev_doc.get("extracted_fact") or {}
+    if isinstance(fact, str):
+        try:
+            fact = json.loads(fact)
+        except Exception:
+            fact = {}
+    agent_id = str(ev_doc.get("agent_id") or (fact.get("agent_id") if isinstance(fact, dict) else None) or "unknown")
+    hostname = ev_doc.get("hostname") or (fact.get("hostname") if isinstance(fact, dict) else None)
+    host = str(ev_doc.get("namespace") or hostname or agent_id or "unknown-host")
     try:
         observation = to_observation(ev_doc, tenant_id=tenant_id, agent_id=agent_id, host=host)
         if observation is None:
