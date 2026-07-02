@@ -31,6 +31,7 @@ thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productiza
 | Unknowns API (`GET /onboarding/unknowns`) | ✅ | ✅ (sau fix iteration 3) | ✅ | ✅ | `curl .../onboarding/unknowns?tenant_id=staging-sim` → trả Unknown thật (vd `svc:fsidd` facet `business_capability`) |
 | Mission/Command/Execution (closed-loop mutation) | ✅ code tồn tại | ✅ | ❌ chưa test | ❌ | Ngoài phạm vi golden journey hiện tại — `OMNI_AUTO_EXECUTE_ENABLED=false` cố ý |
 | Fact provenance có agent_id thật | ✅ (fix iteration 4) | ✅ | ✅ | ✅ (qua `/onboarding/competency`) | Root cause: `_project_into_system_model` đọc `ev_doc.get("agent_id")` sai vị trí (thật ra nằm trong `extracted_fact`). Fix 2 lớp: `onboarding_pipeline.py` đọc đúng vị trí + `schema.py` promote `agent_id`/`hostname` lên top-level trước khi truncate. Verify: `redis-cli HGET omni:aoip:system_model:staging-sim facts` → 0/76 fact còn `agent:unknown` |
+| Handover-doc upload (A8, `POST /onboarding/handover-doc`) | ✅ | ✅ | ✅ **VERIFIED_RUNTIME iter 16** | ✅ (qua API) | `POST /onboarding/handover-doc` trên `staging-sim` thật → diagram version 6747→6752; `GET /onboarding/doc` sau đó chỉ chứa `content_hash`/`content_length`, KHÔNG có raw content (xác nhận `INV_DATA_RESIDENCY`). Test: `tests/test_onboarding_pipeline.py -k handover` (3 passed) |
 
 ## Golden Journey
 
@@ -268,6 +269,36 @@ out of scope for a single vertical slice without more research into who else dep
 Verify: `tests/test_aoip_question_lifecycle.py`, `tests/test_gateway_onboarding_competency_routes.py`
 → 19 passed (no code change this iteration, runtime-verification only). No K8s mutation —
 `OMNI_AUTO_EXECUTE_ENABLED=false` unchanged.
+
+## Iteration 16 — Handover-doc upload (A8) VERIFIED_RUNTIME (2026-07-02)
+
+**Bottleneck đã fix**: `POST /onboarding/handover-doc` (`src/gateway/routes/onboarding.py:111`) had
+code + a data-residency design claim in its docstring ("content is hashed ... never persisted") but,
+per iteration 15's leftover list, had never been exercised against the real cluster — only
+`tests/test_onboarding_pipeline.py` unit-tested it.
+
+**VERIFIED_RUNTIME**: via the existing `kubectl port-forward svc/omni-gateway 18080:80`, captured
+`staging-sim`'s diagram version before (`GET /onboarding/diagram` → `version=6747`), then
+`POST /onboarding/handover-doc` with `{"filename": "iter16-runbook.md", "content": "<124-char
+runbook text>", "tenant_id": "staging-sim"}` using the real tenant bearer key from
+`omni-gateway-secret`/`OMNI_TENANT_APIKEYS` → `200 OK`, `{"status":"ok","diagram_version":6752,...}`
+— diagram version advanced 6747→6752, proving `dd.accumulate_probe_fact()` +
+`dd.regenerate_diagrams()` ran against the real Redis-backed pipeline, not just returned a canned
+response. Re-fetched `GET /onboarding/doc?tenant_id=staging-sim` afterward: the accumulated doc now
+has a `doc_snapshot` key containing `{"documents":[{"path":"iter16-runbook.md",
+"content_hash":"5429b992...", "content_length":124}]}` — **no raw content field**, confirming the
+`INV_DATA_RESIDENCY` claim in the route's docstring holds on the real pipeline (only path/hash/length
+persisted on the Omni side, matching the same contract already verified for discovery-evidence docs
+via `document_store.ingest_customer_knowledge()`).
+
+Readiness after the call was unchanged (`business_flow_confirmed_pct=100.0`,
+`readiness_flag=false`) — expected, since handover-doc accumulation feeds `service_topology`-style
+facts, not `competency_matrix`, and iteration 15 already documented that `readiness_flag` has its own
+unrelated blocker (`open_questions_over_threshold`/gate design gap).
+
+Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (no code change this
+iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
+printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
 
 ## Iteration 13 — "2 agents/2 tenants on 1 VM" test coverage + resolve_scope() closed (2026-07-02)
 

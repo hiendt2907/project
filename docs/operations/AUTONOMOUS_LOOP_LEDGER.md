@@ -357,3 +357,29 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
   `UnderstandingComplete=true`, (b) runtime-verify the Handover-doc path (`POST
   /onboarding/handover-doc`, A8) which has code+unit tests but no Continuous-Productization-Loop
   runtime proof yet, (c) `cust-db` agent for `tenant-replay-01` (3/3 host parity, lower priority).
+
+### Checkpoint 2026-07-02T23:45:00Z
+- Timestamp: 2026-07-02T23:45:00Z
+- Iteration: iter16-handover-doc-runtime-verify
+- Status: DONE
+- Summary: Runtime-verified `POST /onboarding/handover-doc` (A8) against the real cluster, closing
+  the last leftover named in iteration 15. Via pre-existing `kubectl port-forward svc/omni-gateway
+  18080:80`, captured `staging-sim`'s diagram version before (`version=6747`), POSTed a real
+  handover doc using the tenant's real bearer key from `omni-gateway-secret` → `200 OK`,
+  `diagram_version=6752` (bump proves `dd.accumulate_probe_fact()`+`dd.regenerate_diagrams()` ran
+  on the real Redis pipeline, not a canned response). `GET /onboarding/doc` afterward shows
+  `doc_snapshot.documents=[{path:"iter16-runbook.md", content_hash:"5429b992...",
+  content_length:124}]` — no raw content field, confirming `INV_DATA_RESIDENCY` holds on the real
+  pipeline. Readiness unchanged (`readiness_flag=false`) as expected — unrelated mechanism, same
+  known gap as iteration 15. No source code changed — ran `pytest tests/test_onboarding_pipeline.py
+  -q -k handover` → 3 passed (no regression). No K8s mutation this iteration;
+  `OMNI_AUTO_EXECUTE_ENABLED=false` reconfirmed via `kubectl exec`.
+- Reset at: n/a
+- Resume action: stage `docs/product/PRODUCT_PROOF.md`, `docs/operations/AUTONOMOUS_LOOP_STATE.json`,
+  `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`, `docs/handoffs/CURRENT_SESSION.md`,
+  `.claude/skills/omni-autonomous-productizer/references/current-priority.md` and commit
+  (docs/runtime-verification only, no source change). Next bottleneck candidates for iteration 17:
+  (a) design + wire `competency_matrix` coverage into `compute_business_flow_pct()`/readiness gate
+  (still the highest-value open golden-journey link, carried over from iteration 15), (b) `cust-db`
+  agent for `tenant-replay-01` (3/3 host parity, lowest priority), (c) operator portal UI for
+  competency/unknowns/diagram (currently API-only).

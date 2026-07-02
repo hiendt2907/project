@@ -26,9 +26,10 @@ danh sách này.
    `competency_matrix`/Human Claim — nghĩa là trả lời hết Question của tenant không đẩy
    `readiness_flag` tiến gần `true`. Cần quyết định thiết kế trước khi sửa (đọc thêm từ
    competency coverage hay giữ nguyên contract cũ) — chưa làm trong iteration này.
-8. Handover — **thực ra đã implement** (`POST /onboarding/handover-doc`, A8, wired vào cùng pipeline
-   accumulation với `service_topology`/`doc_snapshot` probe) nhưng CHƯA runtime-verify riêng trong
-   Continuous Productization Loop (chỉ có unit test) — ứng viên cho iteration kế tiếp.
+8. ~~Handover — thực ra đã implement (`POST /onboarding/handover-doc`, A8) nhưng CHƯA runtime-verify~~
+   — **VERIFIED_RUNTIME iteration 16**: POST thật trên `staging-sim`, diagram version bump
+   6747→6752, `GET /onboarding/doc` xác nhận chỉ lưu `content_hash`/`content_length` (không raw
+   content) — `INV_DATA_RESIDENCY` giữ nguyên trên pipeline thật. Xem PRODUCT_PROOF.md "Iteration 16".
 9. Operator portal — chỉ có API (`GET /onboarding/competency`, `/unknowns`, `/diagram`), chưa có
    UI.
 10. Network/dependency topology — Mermaid diagram đã tồn tại và chạy runtime thật

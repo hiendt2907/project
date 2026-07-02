@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-02T22:10:00Z",
+  "updated_at": "2026-07-02T23:45:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "a7c6847",
+  "head": "5c6d225",
   "iteration": {
-    "id": "iter15-human-claim-runtime-verify",
-    "bottleneck": "PRODUCT_PROOF.md row 28: Unknown/Question/Human-Claim lifecycle (O2B) had code + unit tests but was never runtime-verified against the real cluster ('chưa kiểm trong iteration 1').",
+    "id": "iter16-handover-doc-runtime-verify",
+    "bottleneck": "PRODUCT_PROOF.md leftover from iteration 15: POST /onboarding/handover-doc (A8) had code + unit tests but was never runtime-verified against the real cluster ('chưa runtime-verify riêng trong Continuous Productization Loop').",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "Confirmed iteration 14 (second Agent for tenant-replay-01 on cust-app) was already committed at a7c6847 (state.json was stale, said 'not yet committed' -- corrected here). Then via kubectl port-forward svc/omni-gateway 18090:80, fetched real PENDING questions for tenant staging-sim (GET /onboarding/questions), found bdb9bb5e66be555d1fd3dd80 (svc:nginx, facet business_capability, PENDING). Answered it via POST /onboarding/questions/{id}/answer -> 200 OK, answer_id=a8ddaa6bd49e2f83b9cb, question flips PENDING->ANSWERED (re-fetched, confirmed). GET /onboarding/competency?entity_type=service&entity_id=svc:nginx afterward shows facet business_capability: state=CLAIMED, evidence_refs=[human:iter15-productizer, question:bdb9bb5e66be555d1fd3dd80] -- correctly NOT auto-promoted to VERIFIED (no matching machine Fact for business_capability), confirming the documented Claim-vs-Fact promotion contract holds on the real Twin. Gap found (not fixed): compute_business_flow_pct() (src/pkg/onboarding/discovery_doc.py:198-203), one of 3 conditions in the UnderstandingComplete readiness gate, reads service_topology.services[].described (machine-set only, via src/remote_agent/collectors/discovery_evidence.py:122) and is fully disconnected from competency_matrix/question_lifecycle -- answering every open Question for a tenant does not move readiness_flag toward true. Documented as next bottleneck, not fixed this iteration (needs a design decision). No code changed -- ran existing tests/test_aoip_question_lifecycle.py tests/test_gateway_onboarding_competency_routes.py -q -> 19 passed. Full detail: docs/product/PRODUCT_PROOF.md Iteration 15.",
+    "last_successful_step": "Via pre-existing kubectl port-forward svc/omni-gateway 18080:80, fetched staging-sim's diagram version before (GET /onboarding/diagram -> version=6747). POSTed a real handover doc via POST /onboarding/handover-doc using staging-sim's real tenant bearer key (from omni-gateway-secret/OMNI_TENANT_APIKEYS) -> 200 OK, diagram_version=6752 (bump proves dd.accumulate_probe_fact()+dd.regenerate_diagrams() ran on real Redis pipeline). Re-fetched GET /onboarding/doc?tenant_id=staging-sim -> doc_snapshot key now has {documents:[{path:iter16-runbook.md, content_hash:5429b992..., content_length:124}]} with NO raw content field -- confirms INV_DATA_RESIDENCY claim in the route docstring holds on the real pipeline, not just in the docstring. Readiness unchanged as expected (business_flow_confirmed_pct=100.0, readiness_flag=false -- unrelated to handover-doc accumulation, same known gap as iteration 15). pytest tests/test_onboarding_pipeline.py -q -k handover -> 3 passed. No code changed. Updated PRODUCT_PROOF.md (new Iteration 16 section + capability matrix row), current-priority.md item 8 struck through. Full detail: docs/product/PRODUCT_PROOF.md Iteration 16.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Stage docs/product/PRODUCT_PROOF.md, docs/operations/AUTONOMOUS_LOOP_STATE.json, docs/operations/AUTONOMOUS_LOOP_LEDGER.md, docs/handoffs/CURRENT_SESSION.md, .claude/skills/omni-autonomous-productizer/references/current-priority.md and commit (docs/test-run only, no source change this iteration). Next bottleneck candidates for iteration 16: (a) design + wire competency_matrix coverage into compute_business_flow_pct()/readiness gate so Human Claims can actually reach UnderstandingComplete=true, (b) runtime-verify the Handover-doc path (POST /onboarding/handover-doc, A8) which has code+unit tests but no Continuous-Productization-Loop runtime proof yet, (c) cust-db agent for tenant-replay-01 (3/3 host parity, lower priority -- pure scope expansion, not a bug)."
+    "next_step": "Stage docs/product/PRODUCT_PROOF.md, docs/operations/AUTONOMOUS_LOOP_STATE.json, docs/operations/AUTONOMOUS_LOOP_LEDGER.md, docs/handoffs/CURRENT_SESSION.md, .claude/skills/omni-autonomous-productizer/references/current-priority.md and commit (docs/test-run only, no source change this iteration). Next bottleneck candidates for iteration 17: (a) design + wire competency_matrix coverage into compute_business_flow_pct()/readiness gate (iteration 15's design-decision gap, still open -- highest-value remaining golden-journey link), (b) cust-db agent for tenant-replay-01 (3/3 host parity, lowest priority -- pure scope expansion, not a bug), (c) operator portal UI for competency/unknowns/diagram (currently API-only)."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,7 +24,7 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Verified 2026-07-02T22:10:00Z: all core Deployments Running (kubectl get pods -n multi-agent) -- omni-fullstack, omni-gateway (restarted 23m prior, healthy), omni-onboarding, omni-brain-go, omni-ui, redis-0, kafka, omni-postgres-0. Gateway service is ClusterIP port 80 (not 8090 -- 8090 is the in-pod health port only), used kubectl port-forward svc/omni-gateway 18090:80 for this iteration's HTTP calls. Only network activity this iteration was read + one POST against the real gateway API using existing tenant bearer tokens -- no K8s mutation, no VM change, OMNI_AUTO_EXECUTE_ENABLED untouched (still false per prior iteration's kubectl exec printenv check, not re-checked this iteration since no mutation occurred).",
+    "health_summary": "Verified 2026-07-02T23:45:00Z: all core Deployments Running (kubectl get deploy,pod -n multi-agent) -- omni-fullstack, omni-gateway, omni-onboarding, omni-brain-go, omni-ui, kafka, redis-exporter, aoip-*. Reused pre-existing kubectl port-forward svc/omni-gateway 18080:80 (already running from a prior session, PID 30744) for this iteration's HTTP calls -- no new port-forward started. Only network activity this iteration was 2 reads + 1 POST against the real gateway API using staging-sim's existing tenant bearer token -- no K8s mutation, no VM change. Reconfirmed via kubectl exec deploy/omni-gateway -- printenv OMNI_AUTO_EXECUTE_ENABLED -> false.",
     "deployed_images": {}
   },
   "working_tree": {
@@ -44,7 +44,7 @@
     "git rev-parse HEAD matches this file's head, or reconcile drift",
     "OMNI_AUTO_EXECUTE_ENABLED is false on all live deployments",
     "kubectl get deploy,pod,svc -A -o wide shows omni-fullstack/omni-onboarding/omni-gateway Running",
-    "GET /onboarding/questions?tenant_id=staging-sim shows question bdb9bb5e66be555d1fd3dd80 status=ANSWERED (proof this iteration's answer persisted)",
+    "GET /onboarding/doc?tenant_id=staging-sim shows doc_snapshot.documents containing path=iter16-runbook.md (proof this iteration's handover-doc persisted)",
     "docs/product/PRODUCT_PROOF.md iteration section matches this state's last known bottleneck",
     ".venv/bin/python -m pytest tests/ -q --ignore=tests/integration is green (minus known pre-existing flake test_register_then_real_system_metrics_emitted_through_real_pipeline)"
   ],
