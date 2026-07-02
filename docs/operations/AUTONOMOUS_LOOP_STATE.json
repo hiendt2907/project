@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "status": "COMMITTING",
-  "updated_at": "2026-07-02T07:24:00Z",
+  "status": "IDLE",
+  "updated_at": "2026-07-02T07:30:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "feature/living-operations-runtime",
-  "head": "5c76425",
+  "head": "61fcdcb",
   "iteration": {
-    "id": "iter6-tenant-idempotency",
-    "bottleneck": "AdminConfigRepo.create_tenant() not idempotent (repo.py:569) — blocked Phase 5 of Repeatable Tenant Onboarding Baseline slice",
-    "phase": "DOCUMENTING",
-    "acceptance_passed": true,
-    "last_successful_step": "test_create_tenant_idempotent_true_is_repeatable added and passing; full suite re-run in progress",
+    "id": null,
+    "bottleneck": null,
+    "phase": null,
+    "acceptance_passed": false,
+    "last_successful_step": "iter6-tenant-idempotency committed at 61fcdcb (not pushed — push requires explicit user instruction)",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Confirm full pytest suite (background run) is green, then commit iter6 changes (repo.py, test_admin_config_store.py, PRODUCT_PROOF.md, current-priority.md, this state file, ledger). After commit: status=IDLE, next bottleneck candidate = wire idempotent=True into a real fresh-tenant provisioning caller (Phase 4 of Repeatable Tenant Onboarding Baseline) using scripts/lib/remote_agent_provisioning.py."
+    "next_step": "Run `/omni-autonomous-productizer resume` or `start` to pick the next bottleneck: wire idempotent=True into a real fresh-tenant provisioning caller (Phase 4 of Repeatable Tenant Onboarding Baseline, references/current-priority.md #1/#5) using scripts/lib/remote_agent_provisioning.py against a new lab tenant (e.g. tenant-replay-01)."
   },
   "quota": {
     "usage_percent_reported": null,
