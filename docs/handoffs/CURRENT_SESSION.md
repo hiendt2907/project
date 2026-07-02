@@ -7,19 +7,28 @@ Sau Whole-System Reality Audit phát hiện runtime lệch tài liệu, đã s�
 lại, rồi đồng bộ tài liệu trong cùng slice. Chi tiết đầy đủ: `docs/post-mortems/drift-correction-2026-07-02.md`
 + memory `project_drift_correction_2026_07_02`.
 
-### Phần 2: Continuous Productization Loop — Iteration 1 HOÀN TẤT (PARTIAL acceptance)
-Bottleneck: System Twin (`omni:aoip:system_model:*`) trống hoàn toàn dù O1/O2A/O2B claim DONE.
+### Phần 2: Continuous Productization Loop — Iteration 1 + 2 HOÀN TẤT
+
+**Iteration 1:** System Twin (`omni:aoip:system_model:*`) trống hoàn toàn dù O1/O2A/O2B claim DONE.
 **Root cause: deployment drift** — image `multi-agent-system:latest` chưa rebuild kể từ `1bc6292`
 (pod thiếu hẳn `_project_into_system_model`, xác minh bằng `hasattr()` trực tiếp trong pod). Đã
 `make docker-worker` + redeploy `omni-onboarding`+`omni-fullstack` → digest mới `c2d433daac77...`.
-**Runtime proof:** Twin nay có dữ liệu thật, revision tăng 6→18, facts khớp VM truth cho 2/3 host
-(cust-edge: nginx; cust-db: mariadbd:3306 + redis-server:6379). **cust-app CHƯA có discovery data**
-(chỉ có metrics/log probe, không có process_list/port_scan/service_topology) — bottleneck kế tiếp,
-CHƯA điều tra nguyên nhân. Chi tiết: `docs/product/PRODUCT_PROOF.md` (capability matrix + golden
-journey status, mỗi dòng trỏ evidence cụ thể) + memory `project_productization_iteration1_twin`.
+Twin có dữ liệu cho 2/3 host (cust-edge, cust-db) — cust-app thiếu.
 
-**Không commit code nào trong iteration 1** — root cause là deploy-only (không có diff source code,
-code local đã đúng từ trước). Chỉ commit docs (PRODUCT_PROOF.md, CLAUDE.md, handoff).
+**Iteration 2:** Điều tra cust-app → root cause: `/opt/omni-remote-agent/run.env` trên cust-app
+**thiếu dòng `OMNI_REMOTE_DISCOVERY_ENABLED=true`** (cust-edge/cust-db đều có, cust-app không —
+gap lúc provision VM, không phải bug code — `src/remote_agent/settings.py` default `false`). Đã
+thêm dòng đó + `systemctl restart omni-remote-agent` trên cust-app. **Runtime proof: Twin nay có
+đủ 3/3 host, 76 fact, revision 54, `host:cust-app` → `exposes_port 8080` khớp `ss -lntp` đã chạy
+trên VM.**
+
+Chi tiết đầy đủ cả 2 iteration: `docs/product/PRODUCT_PROOF.md` (capability matrix + golden journey
+status, mỗi dòng trỏ evidence cụ thể) + memory `project_productization_iteration1_twin` +
+`project_productization_iteration2_custapp`.
+
+**Không commit code Python nào trong cả 2 iteration** — iteration 1 là deploy-only (code local đã
+đúng), iteration 2 là sửa config trên VM lab (không phải file trong git repo này — `run.env` sống
+trên VM, không phải source-controlled). Chỉ commit docs.
 
 ## Tóm tắt kết quả (before → after)
 
@@ -60,27 +69,29 @@ Không có blocker cho phần đã làm. VM/Agent truth trên 3 VM lab (cust-edg
 của OrbStack (`orb -m <machine> <command>` hoặc `ssh <machine>@orb`) — kết luận BLOCKED trước đó
 CHƯA đủ căn cứ, cần thử lại đúng cách trước khi kết luận lại.
 
-## Next step chính xác — Iteration 2 của Continuous Productization Loop
-**Bottleneck đã chọn sẵn cho iteration 2 (đừng chọn lại từ đầu):** điều tra vì sao Remote Agent trên
-`cust-app` (192.168.139.237) không bao giờ emit probe loại discovery
-(`process_list`/`port_scan`/`service_topology`/`nfs_topology`) — chỉ có `remote_system_metrics`/
-`remote_log_errors`. Bằng chứng: `omni:evrl:p:staging-sim_cust-app:*` trong Redis chỉ có 2 key đó,
-trong khi `cust-edge`/`cust-db` có đủ 4-5 probe loại discovery. Log agent trên cust-app
-(`/var/log/omni-agent.log` qua `orb -m cust-app tail -f /var/log/omni-agent.log`) cho thấy
-`POST .../webhook/agent/evidence "200 OK"` liên tục — network/gateway OK, vấn đề nằm ở phía
-collector scheduling trong `src/remote_agent/` (có thể do config env khác biệt, ví dụ
-`OMNI_AGENT_LOG_PATHS=/mnt/customer_logs/app.log` chỉ có trên cust-app — kiểm tra xem có flag nào
-tắt discovery collector khi biến này được set).
+## Next step chính xác — Iteration 3 của Continuous Productization Loop
+Twin đã đủ 3/3 host (iteration 1+2 xong). **Bottleneck đã chọn sẵn cho iteration 3 (đừng chọn lại
+từ đầu):** Operator visibility cho System Twin — hiện chỉ đọc được qua `redis-cli HGETALL` trực
+tiếp, vi phạm Phase 11 Master Prompt ("Python function nội bộ không phải operator-visible"). Đây
+là điểm đứt product chain kế tiếp: `Twin → Competency Matrix → operator visibility`.
 
-Sau khi cust-app có discovery data đầy đủ (Twin 3/3 host), bottleneck tiếp theo nên là:
+Đề xuất cụ thể: kiểm tra `src/gateway/routes/onboarding.py` xem đã có route đọc Competency Matrix
+chưa (O2A/O2B claim có +4 route competency/unknowns/questions/answer) — nếu có, verify chúng thật
+sự đọc được `omni:aoip:system_model:staging-sim` bằng cách gọi API thật (không chỉ đọc code), test
+end-to-end qua `curl` với `OMNI_GATEWAY_API_KEY`. Nếu route tồn tại nhưng chưa từng gọi thử thật,
+đó cũng có thể là một deployment-drift/chưa-test-runtime khác giống iteration 1 — ĐỪNG giả định
+route hoạt động chỉ vì code tồn tại.
+
+Việc phụ (ưu tiên thấp hơn, làm nếu còn thời gian trong iteration 3 hoặc để dành iteration 4):
 1. Sửa `agent:unknown` trong provenance (`src/aoip/onboarding_projection.py` — `to_observation()`
    không điền `agent_id` thật).
-2. Operator visibility cho Twin (hiện chỉ đọc được qua `redis-cli` trực tiếp — vi phạm Phase 11 của
-   Master Prompt "Python function nội bộ không phải operator-visible"). Có thể là API endpoint đơn
-   giản `GET /onboarding/{tenant}/system-model` trước, ghi rõ PARTIAL nếu chưa có UI.
-3. Chỉ sau khi Twin 3/3 host + có operator visibility mới quay lại quyết định O2B (source acquisition
-   planner) — **theo đề xuất của user, golden journey Tenant→Agent→Discovery→Fact→Twin→Competency
-   phải chạy mượt trước khi mở rộng sang Question/UnderstandingComplete**.
+2. Thêm `OMNI_REMOTE_DISCOVERY_ENABLED=true` vào cơ chế provisioning VM mặc định (hiện không có
+   trong `scripts/e2e_orbstack_fleet.py`) để VM mới không lặp lại gap giống cust-app.
+
+Chỉ sau khi Twin 3/3 host + có operator visibility thật (không chỉ redis-cli) mới quay lại quyết
+định O2B (source acquisition planner) — **theo đề xuất của user, golden journey
+Tenant→Agent→Discovery→Fact→Twin→Competency phải chạy mượt và operator-visible trước khi mở rộng
+sang Question/UnderstandingComplete**.
 
 ## Không được làm lại
 - Không audit lại pipeline discovery→onboarding→SystemModel→CompetencyMatrix→Question từ đầu (đã
