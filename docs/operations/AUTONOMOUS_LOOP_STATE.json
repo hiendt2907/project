@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "status": "IDLE",
+  "updated_at": "2026-07-02T07:14:15Z",
+  "project_root": "/Users/hiendang/project",
+  "branch": "feature/living-operations-runtime",
+  "head": "e8a8c96390616e0a0cd23d9388289966960cdb08",
+  "iteration": {
+    "id": null,
+    "bottleneck": null,
+    "phase": null,
+    "acceptance_passed": false,
+    "last_successful_step": null,
+    "last_failed_step": null,
+    "hypothesis": null,
+    "next_step": "Run `/omni-autonomous-productizer start` to build the Reality Map and select the first bottleneck (see references/current-priority.md — likely candidate: idempotent AdminConfigRepo.create_tenant()."
+  },
+  "quota": {
+    "usage_percent_reported": null,
+    "reset_at": null,
+    "reset_source": null,
+    "buffer_seconds": 120
+  },
+  "runtime": {
+    "safety_verified": false,
+    "auto_execute_enabled": false,
+    "health_summary": "Not re-verified as part of this bootstrap — last known good from docs/product/PRODUCT_PROOF.md iteration 5 (2026-07-02): omni-fullstack/omni-onboarding digest 943043a3ef3b..., omni-gateway digest 24a0047be646..., tier=shadow, namespace=multi-agent. Must be re-verified live on next `start`/`resume`, not trusted blindly.",
+    "deployed_images": {}
+  },
+  "working_tree": {
+    "owned_changes": [],
+    "unrelated_changes": [
+      "docs/post-mortems/*.md (pre-existing modifications, unrelated to this skill or productization work)"
+    ]
+  },
+  "resume_checks": [
+    "git rev-parse HEAD matches this file's head, or reconcile drift",
+    "OMNI_AUTO_EXECUTE_ENABLED is false on all live deployments",
+    "kubectl get deploy,pod,svc -A -o wide shows omni-fullstack/omni-onboarding/omni-gateway Running",
+    "Redis omni:aoip:system_model:staging-sim exists with revision > 0",
+    "docs/product/PRODUCT_PROOF.md iteration section matches this state's last known bottleneck"
+  ],
+  "blocker": null
+}
