@@ -290,3 +290,36 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
   `docs/handoffs/CURRENT_SESSION.md`, `.claude/skills/omni-autonomous-productizer/references/current-priority.md`
   and commit. Next bottleneck: multi-host for `tenant-replay-01` (Phase 6 decision before the slice
   "Repeatable Tenant Onboarding Baseline" can be called fully DONE).
+
+### Checkpoint 2026-07-02T21:15:00Z
+- Timestamp: 2026-07-02T21:15:00Z
+- Iteration: iter14-tenant-replay-01-multihost
+- Quota state: n/a
+- HEAD: 83013c2 (pre-commit; this checkpoint's changes not yet committed)
+- Acceptance: PASS
+- Last verified: iteration 9's last remaining leftover — `tenant-replay-01` only had 1/1 host
+  (`cust-edge`), no proof of a single-tenant Twin merging facts from multiple distinct hosts.
+  Installed a real second Remote Agent for `tenant-replay-01` on VM `cust-app`
+  (`/opt/omni-remote-agent-replay01/`, systemd unit `omni-remote-agent-replay01.service`, reusing
+  the existing gateway API key for `tenant-replay-01`), alongside the pre-existing `staging-sim`
+  agent already on that VM. Runtime proof: agent log shows register/profile/evidence all 200 OK;
+  Redis `omni:aoip:system_model:tenant-replay-01` revision 54→66, facts now span
+  `{cust-edge, cust-app}` (was `{cust-edge}` only); `staging-sim` Twin on the same shared VM
+  unaffected (`{cust-edge, cust-db, cust-app}`/76 facts, unchanged); `GET
+  /onboarding/competency?entity_type=host&entity_id=host:cust-app` with tenant-replay-01's bearer
+  token returns live VERIFIED facets sourced from `agent:tenant-replay-01_cust-app`. Added
+  `tests/test_onboarding_pipeline.py::TestOneTenantTwoHosts` (2 tests) exercising
+  `accumulate_discovery_evidence()` with two envelopes (same tenant_id, different
+  namespace/agent_id) and asserting Twin merge + per-host provenance isolation.
+  `.venv/bin/python -m pytest tests/test_onboarding_pipeline.py -q` → 31 passed (was 29). Regression
+  `-k "onboarding or gateway_api or tenant or provision" --ignore=tests/integration -q` → 159 passed
+  (was 157). Reconfirmed `OMNI_AUTO_EXECUTE_ENABLED=false` on `omni-fullstack` post-change (VM agent
+  install is a read-only-evidence change, no K8s mutation/executor/CRAT path touched).
+- Reset at: n/a
+- Resume action: stage `tests/test_onboarding_pipeline.py`, `docs/product/PRODUCT_PROOF.md`,
+  `docs/operations/AUTONOMOUS_LOOP_STATE.json`, `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`,
+  `docs/handoffs/CURRENT_SESSION.md`,
+  `.claude/skills/omni-autonomous-productizer/references/current-priority.md` and commit. All
+  iteration-9 leftovers are now closed; next bottleneck TBD at next iteration start (candidates:
+  `cust-db` agent for `tenant-replay-01` for full 3/3 host parity with `staging-sim`, or move to
+  Phase 6/7 items — UnderstandingComplete, Handover, operator portal UI).

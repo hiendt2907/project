@@ -38,6 +38,12 @@ danh sách này.
 - "2 agents/2 tenants on 1 VM" isolation — chỉ có live-cluster manual proof (iteration 9). Đã có
   automated regression test iteration 13 (`tests/test_onboarding_pipeline.py::
   TestTwoAgentsTwoTenantsOneVM`).
+- Multi-host cho `tenant-replay-01` — từng là leftover cuối của iteration 9. DONE iteration 14: agent
+  thứ hai cài trên `cust-app` (bên cạnh agent đã có trên `cust-edge`), Twin gộp fact 2 host thật
+  (revision 54→66), isolation với `staging-sim` (cùng share VM `cust-app`) xác nhận không đổi,
+  `/onboarding/competency` trả evidence thật cho `host:cust-app`. Test:
+  `tests/test_onboarding_pipeline.py::TestOneTenantTwoHosts`. Toàn bộ leftover list iteration 9 nay
+  đã đóng.
 
 ## Known unrelated risk (P1, không chặn golden journey trực tiếp)
 

@@ -354,6 +354,66 @@ class TestTwoAgentsTwoTenantsOneVM:
         assert "agent:staging-sim_cust-edge" not in replay_fact.provenance
 
 
+class TestOneTenantTwoHosts:
+    """Regression coverage for iteration 14 (docs/product/PRODUCT_PROOF.md): a
+    single tenant's Twin must accumulate and merge facts from multiple distinct
+    hosts (proven live by installing a second Remote Agent for tenant-replay-01
+    on VM cust-app, alongside its existing agent on cust-edge)."""
+
+    @pytest.mark.asyncio
+    async def test_single_tenant_twin_merges_facts_from_two_distinct_hosts(self):
+        from aoip.system_model_store import load_system_model
+
+        r = _redis()
+        ctx = _ctx(r)
+        await op.accumulate_discovery_evidence(ctx, {
+            "tenant_id": "tenant-replay-01", "agent_id": "tenant-replay-01_cust-edge",
+            "namespace": "cust-edge", "probe": "port_scan", "trace_id": "tr-edge",
+            "extracted_fact": {"discovery_data": {"listening_ports": [{"port": 443, "service": "envoy"}]}},
+        })
+        await op.accumulate_discovery_evidence(ctx, {
+            "tenant_id": "tenant-replay-01", "agent_id": "tenant-replay-01_cust-app",
+            "namespace": "cust-app", "probe": "port_scan", "trace_id": "tr-app",
+            "extracted_fact": {"discovery_data": {"listening_ports": [{"port": 8080, "service": "app"}]}},
+        })
+
+        model, revision = await load_system_model(r, "tenant-replay-01")
+
+        assert revision == 2
+        triples = {f.triple for f in model.facts}
+        assert ("host:cust-edge", "runs_service", "envoy") in triples
+        assert ("host:cust-edge", "exposes_port", "443") in triples
+        assert ("host:cust-app", "runs_service", "app") in triples
+        assert ("host:cust-app", "exposes_port", "8080") in triples
+        hosts = {f.subject for f in model.facts if f.subject.startswith("host:")}
+        assert hosts == {"host:cust-edge", "host:cust-app"}
+
+    @pytest.mark.asyncio
+    async def test_second_host_provenance_tags_its_own_agent_not_the_first(self):
+        from aoip.system_model_store import load_system_model
+
+        r = _redis()
+        ctx = _ctx(r)
+        await op.accumulate_discovery_evidence(ctx, {
+            "tenant_id": "tenant-replay-01", "agent_id": "tenant-replay-01_cust-edge",
+            "namespace": "cust-edge", "probe": "process_list", "trace_id": "tr-edge",
+            "extracted_fact": {"discovery_data": {"processes": [{"name": "nginx", "count": 1}]}},
+        })
+        await op.accumulate_discovery_evidence(ctx, {
+            "tenant_id": "tenant-replay-01", "agent_id": "tenant-replay-01_cust-app",
+            "namespace": "cust-app", "probe": "process_list", "trace_id": "tr-app",
+            "extracted_fact": {"discovery_data": {"processes": [{"name": "gunicorn", "count": 1}]}},
+        })
+
+        model, _ = await load_system_model(r, "tenant-replay-01")
+        edge_fact = next(f for f in model.facts if f.subject == "host:cust-edge")
+        app_fact = next(f for f in model.facts if f.subject == "host:cust-app")
+        assert "agent:tenant-replay-01_cust-edge" in edge_fact.provenance
+        assert "agent:tenant-replay-01_cust-app" not in edge_fact.provenance
+        assert "agent:tenant-replay-01_cust-app" in app_fact.provenance
+        assert "agent:tenant-replay-01_cust-edge" not in app_fact.provenance
+
+
 class TestCoerceEvidenceDictAgentIdPromotion:
     """coerce_evidence_dict() (pkg/reasoning/schema.py) promotes agent_id/hostname
     to top-level fields BEFORE truncating extracted_fact to 2000 chars — otherwise

@@ -1,5 +1,26 @@
 # Current Session Handoff
 
+## Iteration 14 (2026-07-02T21:15Z)
+Fixed the last iteration-9 leftover: `tenant-replay-01` only had 1/1 host (`cust-edge`), no proof a
+single tenant's Twin can merge facts from multiple distinct hosts. Installed a real second Remote
+Agent for `tenant-replay-01` on VM `cust-app` (`/opt/omni-remote-agent-replay01/`, systemd unit
+`omni-remote-agent-replay01.service`, reusing the existing gateway API key), alongside the
+pre-existing `staging-sim` agent on that same VM. Runtime proof: agent log register/profile/evidence
+all 200 OK; Redis `omni:aoip:system_model:tenant-replay-01` revision 54→66, facts now span
+`{cust-edge, cust-app}` (was `{cust-edge}` only); `staging-sim` Twin on the same shared VM unaffected
+(`{cust-edge, cust-db, cust-app}`/76 facts — isolation holds); `GET
+/onboarding/competency?entity_type=host&entity_id=host:cust-app` with tenant-replay-01's bearer
+token returns live VERIFIED facets. New
+`tests/test_onboarding_pipeline.py::TestOneTenantTwoHosts` (2 tests). `pytest
+tests/test_onboarding_pipeline.py -q` → 31 passed (was 29). Regression `-k "onboarding or
+gateway_api or tenant or provision" --ignore=tests/integration` → 159 passed (was 157). Reconfirmed
+`OMNI_AUTO_EXECUTE_ENABLED=false` (VM agent install, no K8s mutation). Full detail:
+`docs/product/PRODUCT_PROOF.md` → "Iteration 14".
+
+**Not done**: `cust-db` still has no agent for `tenant-replay-01` (2/3 host parity, not 3/3) — not a
+bug, just unexplored scope. All iteration-9 leftovers are now closed. Next bottleneck TBD (candidates:
+`cust-db` for full parity, or Phase 6/7 — UnderstandingComplete, Handover, operator portal UI).
+
 ## Iteration 13 (2026-07-02T20:05Z)
 Fixed the iteration-9 leftover: "2 agents/2 tenants on 1 VM" isolation (`staging-sim` +
 `tenant-replay-01` both on VM `cust-edge`) had only live-cluster manual proof, no automated test.

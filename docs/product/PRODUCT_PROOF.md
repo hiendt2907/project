@@ -185,6 +185,48 @@ mở từ iteration 9.
 Verify: `git show HEAD -- scripts/provision_fresh_tenant.py`; `grep -n provision_api_key
 scripts/provision_fresh_tenant.py`.
 
+## Iteration 14 — tenant-replay-01 multi-host: real second Agent on cust-app (2026-07-02)
+
+**Bottleneck đã fix**: iteration 9's last open leftover — `tenant-replay-01` chỉ có 1/1 host
+(`cust-edge`), chưa chứng minh một Twin gộp fact từ nhiều host phân biệt cho cùng một tenant (khác
+với iteration 9's "2 tenant share 1 host" scenario).
+
+**Fix (runtime, không phải chỉ code)**: cài một Remote Agent instance thứ hai cho `tenant-replay-01`
+trên VM `cust-app` (bên cạnh agent `staging-sim` sẵn có trên cùng VM đó), theo đúng pattern đã dùng
+cho `cust-edge` ở iteration 9: `/opt/omni-remote-agent-replay01/` (venv symlink tới venv của
+`staging-sim` để tiết kiệm ổ đĩa, code `remote_agent` copy riêng), `run.env` với
+`OMNI_AGENT_ID=tenant-replay-01_cust-app`, `OMNI_AGENT_TENANT_ID=tenant-replay-01`,
+`OMNI_AGENT_HOSTNAME=cust-app`, dùng lại API key đã có sẵn trong `OMNI_TENANT_APIKEYS` (không cần
+provision key mới). Systemd unit `omni-remote-agent-replay01.service` enable+start.
+
+**VERIFIED_RUNTIME**: log agent cho thấy register (200 OK) → profile (200 OK) → evidence (200 OK,
+enqueued=5) trong vòng ~2s sau start. Redis `omni:aoip:system_model:tenant-replay-01` revision tăng
+54→66; `facts` field (HGET) parse ra 2 host phân biệt: `{'cust-app', 'cust-edge'}` (trước đó chỉ
+`{'cust-edge'}`). Isolation cross-check: `omni:aoip:system_model:staging-sim` (cùng chia sẻ VM
+`cust-app`) không đổi shape — vẫn `{'cust-edge', 'cust-db', 'cust-app'}`/76 fact, không bị agent mới
+ghi đè hay trộn lẫn. Operator-facing proof: `GET /onboarding/competency?entity_type=host&entity_id=
+host:cust-app` (Bearer token của `tenant-replay-01`) trả về facet `identity`/`runtime_state` VERIFIED
+với `evidence_refs` trỏ `agent:tenant-replay-01_cust-app` — API thật, không phải chỉ Redis key tồn
+tại.
+
+**VERIFIED_TEST**: thêm `tests/test_onboarding_pipeline.py::TestOneTenantTwoHosts` (2 test mới) —
+chạy `accumulate_discovery_evidence()` thật với 2 envelope cùng `tenant_id=tenant-replay-01` nhưng
+khác `namespace`/`agent_id` (`cust-edge` vs `cust-app`), assert Twin merge cả 2 host vào cùng 1
+`system_model` (`revision=2`, `hosts == {"host:cust-edge", "host:cust-app"}`), và provenance mỗi
+host chỉ tag đúng agent_id của chính host đó. `.venv/bin/python -m pytest
+tests/test_onboarding_pipeline.py -q` → 31 passed (was 29). Regression `-k "onboarding or
+gateway_api or tenant or provision" --ignore=tests/integration -q` → 159 passed (was 157, no
+regression). `OMNI_AUTO_EXECUTE_ENABLED=false` reconfirmed on `omni-fullstack` post-mutation (agent
+install is a read-only-evidence VM change, not a K8s mutation — no executor/CRAT path involved).
+
+**Chưa DONE**: `cust-db` chưa có agent cho `tenant-replay-01` (2/3 host phủ, giống pattern
+`staging-sim` ở iteration 2 trước khi cust-app được thêm) — không phải bug, chỉ là scope chưa mở
+rộng; không cần thiết cho việc chứng minh multi-host capability đã hoạt động. Với mục này đóng,
+toàn bộ leftover list của iteration 9 nay đã closed.
+
+Verify: `.venv/bin/python -m pytest tests/test_onboarding_pipeline.py -q -k OneTenantTwoHosts`;
+`orb -m cust-app sudo systemctl status omni-remote-agent-replay01.service`.
+
 ## Iteration 13 — "2 agents/2 tenants on 1 VM" test coverage + resolve_scope() closed (2026-07-02)
 
 **Bottleneck đã fix**: iteration 9's leftover — the cross-tenant isolation proof for two Remote
