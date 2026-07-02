@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any, NotRequired, TypedDict
+
+SCHEMA_VERSION = "1.0"
+EXTRACTED_FACT_BUDGET = 2000
 
 
 class DiagnosticEvidenceDict(TypedDict, total=False):
@@ -32,6 +36,13 @@ class DiagnosticEvidenceDict(TypedDict, total=False):
     # evidence today; other evidence sources may leave these unset.
     agent_id: str
     hostname: str
+    # Compaction provenance — always present when extracted_fact was compacted
+    # so downstream consumers can detect/audit lossy evidence instead of
+    # silently getting a truncated (possibly invalid) blob.
+    schema_version: str
+    content_hash: str
+    original_size: int
+    truncated: bool
 
 
 class OmniActionKafkaBody(TypedDict):
@@ -47,6 +58,53 @@ class OmniActionEnvelope(TypedDict):
 
     data: str
     trace_id: NotRequired[str]
+
+
+def _compact_value(value: Any, field_budget: int) -> Any:
+    """Best-effort shrink of a JSON-serializable value toward ``field_budget``.
+
+    Never mutates ``value``. Strings are truncated with a marker; lists cap
+    both element count and per-element size; dicts recurse over their
+    values. Used only once the full serialization already exceeds the
+    overall budget, so this never runs on the common (small) case.
+    """
+    if isinstance(value, str):
+        return value if len(value) <= field_budget else value[:field_budget] + "…"
+    if isinstance(value, list):
+        max_items = max(1, field_budget // 40)
+        return [_compact_value(item, field_budget) for item in value[:max_items]]
+    if isinstance(value, dict):
+        return {k: _compact_value(v, field_budget) for k, v in value.items()}
+    return value
+
+
+def _compact_extracted_fact(ef: dict[str, Any] | list[Any], budget: int) -> tuple[str, bool, int]:
+    """Serialize ``ef`` to JSON, guaranteed to parse and fit within ``budget``.
+
+    Returns ``(serialized, truncated, original_size)``. Unlike naive string
+    slicing of an already-serialized blob (which can cut mid-token and
+    produce invalid JSON — see post-mortem tr-leg-no-upsert), this shrinks
+    nested string/list values first so the output always round-trips
+    through ``json.loads``.
+    """
+    original = json.dumps(ef, ensure_ascii=False)
+    if len(original) <= budget:
+        return original, False, len(original)
+
+    for field_budget in (500, 200, 80, 20):
+        compacted = _compact_value(ef, field_budget)
+        serialized = json.dumps(compacted, ensure_ascii=False)
+        if len(serialized) <= budget:
+            return serialized, True, len(original)
+
+    # Pathological case (extremely wide dict even at minimum field budget):
+    # drop nested collections rather than emit a payload over budget.
+    if isinstance(ef, dict):
+        minimal = {k: v for k, v in ef.items() if not isinstance(v, (dict, list))}
+        serialized = json.dumps(minimal, ensure_ascii=False)
+        if len(serialized) <= budget:
+            return serialized, True, len(original)
+    return "{}", True, len(original)
 
 
 def coerce_evidence_dict(obj: Any) -> DiagnosticEvidenceDict:
@@ -89,7 +147,15 @@ def coerce_evidence_dict(obj: Any) -> DiagnosticEvidenceDict:
                 if v is not None and identity_key not in out:
                     out[identity_key] = str(v)  # type: ignore[literal-required]
         if isinstance(ef, (dict, list)):
-            out["extracted_fact"] = json.dumps(ef, ensure_ascii=False)[:2000]  # type: ignore[assignment]
+            serialized, truncated, original_size = _compact_extracted_fact(ef, EXTRACTED_FACT_BUDGET)
+            out["extracted_fact"] = serialized  # type: ignore[assignment]
+            out["schema_version"] = SCHEMA_VERSION
+            out["truncated"] = truncated
+            if truncated:
+                out["original_size"] = original_size
+                out["content_hash"] = hashlib.sha256(
+                    json.dumps(ef, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()
         else:
             out["extracted_fact"] = str(ef)  # type: ignore[assignment]
     tid = str(out.get("trace_id") or obj.get("trace_id") or "").strip()

@@ -31,6 +31,9 @@ import time
 import urllib.request
 import uuid
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
+from remote_agent_provisioning import AgentProvisioningSpec, render_run_env  # noqa: E402
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 GATEWAY       = os.getenv("OMNI_GATEWAY_URL", "http://gateway.ai-agent.local")
@@ -297,22 +300,25 @@ def tc_ob02_fresh_install(key: str) -> TC:
         # Non-fatal — agent may work without all deps
         tc.warn("pip install warning", r.stderr[:100])
 
-    # 5. Write run.env với discovery enabled
-    run_env = f"""OMNI_AGENT_GATEWAY_URL=http://gateway.ai-agent.local
-OMNI_AGENT_API_KEY={key}
-OMNI_AGENT_ID={AGENT_ID}
-OMNI_AGENT_HOSTNAME={HOSTNAME}
-OMNI_AGENT_K8S_ENABLED=false
-OMNI_AGENT_COLLECT_INTERVAL={COLLECT_INTERVAL}
-OMNI_AGENT_DATABASE_ENABLED=true
-OMNI_AGENT_MYSQL_HOST=127.0.0.1
-OMNI_AGENT_MYSQL_USER=radmin
-OMNI_AGENT_MYSQL_PASS=radmin
-OMNI_AGENT_STORAGE_ENABLED=true
-OMNI_REMOTE_DISCOVERY_ENABLED=true
-OMNI_AGENT_DOC_SEARCH_DIRS=/opt,/etc,/srv,/var/lib/mysql
-OMNI_AGENT_LOG_PATHS=/var/log/auth.log,/var/log/kern.log,/var/log/omni-agent.log
-"""
+    # 5. Write run.env với discovery enabled — canonical render, không còn
+    #    f-string tay: scripts/lib/remote_agent_provisioning.py là source of
+    #    truth cho mọi caller (fleet script, fresh-tenant flow tương lai).
+    spec = AgentProvisioningSpec(
+        tenant_id=TENANT_ID,
+        agent_id=AGENT_ID,
+        hostname=HOSTNAME,
+        gateway_url="http://gateway.ai-agent.local",
+        collect_interval=COLLECT_INTERVAL,
+        discovery_enabled=True,
+        k8s_enabled=False,
+        database_enabled=True,
+        mysql_host="127.0.0.1",
+        mysql_user="radmin",
+        storage_enabled=True,
+        doc_search_dirs=("/opt", "/etc", "/srv", "/var/lib/mysql"),
+        log_paths=("/var/log/auth.log", "/var/log/kern.log", "/var/log/omni-agent.log"),
+    )
+    run_env = render_run_env(spec, api_key=key, mysql_pass="radmin")
     # Write via heredoc through bash
     write_r = subprocess.run(
         ["orb", "run", "-m", TARGET_VM, "-u", "root",

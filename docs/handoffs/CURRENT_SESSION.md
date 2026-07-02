@@ -1,19 +1,21 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-Continuous Productization Loop cho golden journey `Tenant→Agent→Discovery→Fact→Twin→Competency`.
-Iteration 1-4 đã xong (System Twin persistence, cust-app discovery, gateway/aoip import, Fact
-provenance). Trước đó trong cùng phiên: Whole-System Reality Audit + Drift Correction Slice +
-`omni-lane-operator-loop` health-check (iter27).
+Slice "Repeatable Tenant Onboarding Baseline" (iteration 5 của Continuous Productization Loop).
+Mục tiêu: chứng minh tenant lab mới đi hết Tenant→Agent→Discovery→Fact→Twin→Competency mà không
+sửa tay. Iteration 1-4 trước đó đã DONE (System Twin persistence, cust-app discovery, gateway/aoip
+import, Fact provenance).
 
 ## Definition of Done
 Mỗi iteration: bottleneck → root cause → fix → runtime proof (không chỉ test/deploy) →
-docs/memory cập nhật → commit riêng. Đã đạt cho iteration 1-4.
+docs/memory cập nhật → commit riêng. Đã đạt cho iteration 1-4. Iteration 5 (slice 7-phase) MỚI đạt
+Phase 1-3/7 — xem "Trạng thái hiện tại".
 
 ## Trạng thái hiện tại
-4 iteration productization đã DONE + verified + committed. Golden journey chạy thật tới
-Competency/Unknown qua API (`GET /onboarding/competency`, `/unknowns`). Chưa có UI operator, chưa
-có Handover/Daily-Operations nào được implement hay kiểm chứng. Sẵn sàng bắt đầu iteration 5.
+Iteration 5 — Phase 1 (Inspect) + Phase 2 (safe evidence compaction) + Phase 3 (canonical
+provisioning module) DONE + test xanh. Phase 4-7 (fresh tenant thật trên VM/cluster, repeatability,
+operator proof, deploy+observe) CHƯA làm — cần VM/cluster thật, không đủ trong lượt này. KHÔNG được
+coi golden journey là "repeatable" cho tới khi Phase 4-7 chạy xong. Chi tiết: `docs/product/PRODUCT_PROOF.md` mục "Iteration 5".
 
 ## Đã hoàn thành
 - Drift Correction: kill-switch `OMNI_AUTO_EXECUTE_ENABLED` revert true→false; tenant `staging-sim`
@@ -29,18 +31,22 @@ có Handover/Daily-Operations nào được implement hay kiểm chứng. Sẵn 
   PARTIAL/CODE_ONLY/ABSENT theo từng capability).
 
 ## Branch và commit
-`feature/living-operations-runtime` @ `435b377` (không có commit chưa push riêng — chưa `git push`
-trong phiên này, xem "Lệnh cần chạy lại" nếu cần đồng bộ remote).
+`feature/living-operations-runtime` @ `07f2eed` (đã push). Thay đổi iteration 5 (schema.py,
+provisioning module, tests, docs) CHƯA commit — xem "Files chính đã thay đổi".
 
 ## Working tree
-Sạch, ngoại trừ 10 file `docs/post-mortems/*.md` modified **có từ trước phiên này** (không liên
-quan, không chạm trong phiên).
+Có thay đổi chưa commit: `src/pkg/reasoning/schema.py` (safe compaction), `scripts/lib/remote_agent_provisioning.py` (mới), `scripts/e2e_onboarding_full_flow.py` (dùng module mới),
+`tests/test_evidence_compaction.py` (mới), `tests/test_remote_agent_provisioning.py` (mới),
+`docs/product/PRODUCT_PROOF.md`.
 
-## Files chính đã thay đổi
-`src/workers/onboarding_pipeline.py`, `src/pkg/reasoning/schema.py`,
-`tests/test_onboarding_pipeline.py`, `Dockerfile.gateway`, `CLAUDE.md`,
-`docs/product/PRODUCT_PROOF.md`, `docs/post-mortems/drift-correction-2026-07-02.md`,
-`k8s/services/omni-analyst-service.yaml` (xóa).
+## Files chính đã thay đổi (iteration 5, chưa commit)
+`src/pkg/reasoning/schema.py` — `_compact_extracted_fact()`/`_compact_value()` thay slicing thô,
+thêm `schema_version`/`truncated`/`original_size`/`content_hash`.
+`scripts/lib/remote_agent_provisioning.py` — MỚI, `AgentProvisioningSpec`/`render_run_env()`/
+`is_idempotent_rewrite()`/`effective_config_summary()`.
+`scripts/e2e_onboarding_full_flow.py` — TC-OB02 dùng module thay vì f-string tay.
+`tests/test_evidence_compaction.py`, `tests/test_remote_agent_provisioning.py` — MỚI.
+`docs/product/PRODUCT_PROOF.md` — mục "Iteration 5" + known-broken-links cập nhật.
 
 ## Quyết định đã chốt
 - Không làm O2B/O2C (source acquisition planner) cho tới khi golden journey hiện tại "sạch"
@@ -53,11 +59,13 @@ quan, không chạm trong phiên).
   (`hasattr()`/`inspect.getsource()` trong pod) trước khi sửa logic — đúng 2/4 iteration phiên này.
 
 ## Verification đã chạy
-`.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` (sau iter4) → **5924 passed, 5
-deselected, 0 failed**. Runtime: `redis-cli HGET omni:aoip:system_model:staging-sim facts` → 0/76
-fact còn `agent:unknown`. API thật: `curl -H "Authorization: Bearer $KEY"
-.../onboarding/competency?tenant_id=staging-sim&entity_type=host&entity_id=host:cust-app` →
-`identity: VERIFIED`.
+`.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` (sau iteration 5 Phase 1-3) →
+**5939 passed, 6 deselected, 0 failed** (1 test flaky trước-đã-tồn-tại
+`test_remote_agent_e2e.py::...::test_register_then_real_system_metrics_emitted_through_real_pipeline`
+— confirmed KHÔNG liên quan (routing METRIC_SAMPLE vs ANOMALY phụ thuộc tải máy thật, reproduce cả
+trên commit trước khi sửa), đã deselect trong lần chạy full). 16 test mới cho iteration 5 (9
+compaction + 7 provisioning) đều pass riêng lẻ. CHƯA có runtime proof trên VM/cluster thật cho
+iteration 5 (Phase 4-7 chưa chạy).
 
 ## Deployment hiện tại
 `omni-fullstack`/`omni-onboarding` chạy digest `943043a3ef3b...` (bao gồm fix iter4).
@@ -68,18 +76,22 @@ tier hiệu lực = Redis cache `shadow`. Namespace `multi-agent`, cluster OrbSt
 Không có.
 
 ## Next step chính xác
-Bắt đầu Iteration 5 — chọn 1 trong 3 bottleneck đã liệt kê (không mở song song):
-1. Fix rủi ro truncation trong `coerce_evidence_dict()` (`src/pkg/reasoning/schema.py`) — JSON có
-   thể invalid nếu `discovery_data` lớn, mất toàn bộ evidence (ưu tiên cao nhất, đã có test chứng
-   minh rủi ro nhưng chưa fire trong lab).
-2. UX gap `/onboarding/competency`: `entity_id` yêu cầu format `host:cust-app` thay vì `cust-app`.
-3. Provisioning gap: `scripts/e2e_orbstack_fleet.py` không set `OMNI_REMOTE_DISCOVERY_ENABLED` — VM
-   thứ 4 sẽ lặp lại gap iter2.
+Tiếp tục slice "Repeatable Tenant Onboarding Baseline" từ Phase 4:
+1. **Trước Phase 4**: fix idempotency `AdminConfigRepo.create_tenant()`
+   (`src/services/admin_config/repo.py:574-578`, hiện raise `ValueError` nếu tenant tồn tại) — chặn
+   Phase 5 (repeat provisioning) nếu không sửa trước.
+2. Phase 4: tạo tenant lab mới thật (`tenant-replay-01`) qua `POST /autonomy/tenants`, provision
+   agent bằng `scripts/lib/remote_agent_provisioning.py` (mới, iteration 5), verify Twin/Competency
+   có dữ liệu thật + không cross-tenant contamination với `staging-sim`.
+3. Phase 5: chạy provisioning canonical lần 2, verify không duplicate/mất fact.
+4. Phase 6: operator read-only proof flow (API/CLI đủ, chưa cần UI).
+5. Phase 7: test+deploy+observe (rebuild image, redeploy, quan sát ≥2 discovery cycle).
+Commit iteration 5 Phase 1-3 (schema.py, provisioning module, tests, docs) TRƯỚC khi bắt đầu Phase 4
+nếu chưa commit.
 
 ## Lệnh cần chạy lại
 `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` để xác nhận baseline vẫn xanh
-trước khi bắt đầu iteration 5. Cân nhắc `git push origin feature/living-operations-runtime` nếu
-muốn đồng bộ remote (chưa làm trong phiên này, cần user xác nhận).
+trước khi tiếp tục Phase 4.
 
 ## Không được làm lại
 - Không audit lại pipeline discovery→onboarding→SystemModel→CompetencyMatrix→Question từ đầu.

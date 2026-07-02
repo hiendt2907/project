@@ -53,4 +53,37 @@ thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productiza
 2. Kafka `PartitionCount=1` toàn hệ thống — chưa sửa (P1 riêng, xem drift-correction post-mortem).
 3. **Chỉ `cust-app` bị thiếu discovery flag lúc provision** (`OMNI_REMOTE_DISCOVERY_ENABLED` không có trong `run.env`, trong khi cust-edge/cust-db có) — đã fix trực tiếp trên VM (`echo >> run.env` + `systemctl restart`), nhưng đây là fix runtime, CHƯA có cơ chế provisioning tự động đảm bảo VM mới không rơi vào tình trạng tương tự (gap ở `scripts/e2e_orbstack_fleet.py`/agent bundle provisioning).
 4. `entity_id` param của `/onboarding/competency` yêu cầu format nội bộ `{entity_type}:{entity_id}` (vd `host:cust-app`) thay vì chỉ `cust-app` — API dễ gây nhầm lẫn cho operator, đáng cân nhắc UX fix ở iteration sau.
-5. **[MỚI, phát hiện khi viết test cho iteration 4]** `coerce_evidence_dict()` (`pkg/reasoning/schema.py`) serialize `extracted_fact` cắt cứng ở 2000 ký tự — nếu `discovery_data` đủ lớn (vd process_list rất dài), JSON bị cắt giữa chừng → `json.loads()` lỗi → TOÀN BỘ evidence bị coi là rỗng (mất cả legacy write lẫn AOIP projection, không chỉ mất agent_id). Chưa fire trong lab hiện tại (process list các VM nhỏ, dưới ngưỡng), nhưng là rủi ro thật cho VM có nhiều process/service hơn. Chưa sửa (ngoài phạm vi bottleneck iteration 4) — ưu tiên cho iteration sau nếu quan trọng.
+5. ~~`coerce_evidence_dict()` cắt cứng `extracted_fact` ở 2000 ký tự~~ — **FIXED iteration 5**, xem bên dưới.
+6. **Tenant provisioning KHÔNG idempotent** — `AdminConfigRepo.create_tenant()` (`src/services/admin_config/repo.py:574-578`) raise `ValueError` nếu tenant đã tồn tại thay vì upsert/no-op. Chạy lại provisioning lần 2 cho cùng tenant sẽ fail cứng nếu caller không tự bọc try/except. Chưa sửa — cần cho Phase 5 (Repeatability) của slice "Repeatable Tenant Onboarding Baseline", ưu tiên iteration sau.
+7. **Chưa có fresh-tenant runtime proof** — slice "Repeatable Tenant Onboarding Baseline" mới hoàn thành Phase 1-3 (inspect + safe evidence compaction + canonical provisioning module). Phase 4-7 (tạo tenant lab mới thật, provision qua canonical, chứng minh golden journey không cross-tenant contamination, repeat-provisioning proof, operator read-only flow) CHƯA chạy — cần VM/cluster thật, ngoài phạm vi thời gian iteration này. Không được coi golden journey là "repeatable" cho tới khi Phase 4-7 chạy xong.
+
+## Iteration 5 — Safe evidence compaction + canonical provisioning module (2026-07-02)
+
+**Bottleneck đã fix (Phase 1-3 của slice "Repeatable Tenant Onboarding Baseline"):**
+
+1. `coerce_evidence_dict()` (`src/pkg/reasoning/schema.py`) — thay slicing thô `json.dumps(ef)[:2000]`
+   (có thể cắt giữa JSON token → `json.loads()` lỗi → mất toàn bộ evidence, kể cả AOIP projection) bằng
+   `_compact_extracted_fact()`: parse trước, shrink field lồng (string/list) theo budget giảm dần
+   (500→200→80→20 ký tự/field), fallback drop nested collection nếu vẫn vượt — luôn trả JSON hợp lệ.
+   Thêm field top-level `schema_version`, `truncated`, `original_size`, `content_hash` (SHA-256 của
+   bản gốc chưa cắt) để downstream/audit biết evidence có bị compact hay không. `agent_id`/`hostname`
+   vẫn được promote lên top-level TRƯỚC compaction (giữ nguyên logic iteration 4) nên luôn sống sót
+   dù `extracted_fact` bị cắt. 9 test mới `tests/test_evidence_compaction.py` — dưới ngưỡng, đúng
+   ngưỡng, vượt xa ngưỡng, unicode, nested sâu, `None` field, identity luôn còn, JSON list top-level.
+2. **Canonical provisioning module** `scripts/lib/remote_agent_provisioning.py` (mới) — trích xuất
+   f-string `run.env` viết tay trong `scripts/e2e_onboarding_full_flow.py` (TC-OB02, nguồn gốc gap
+   cust-app thiếu `OMNI_REMOTE_DISCOVERY_ENABLED`) thành `AgentProvisioningSpec` + `render_run_env()`
+   thuần Python, `discovery_enabled: bool = True` mặc định (không còn cách nào quên set flag này khi
+   dùng module). Thêm `is_idempotent_rewrite()` (so sánh nội dung render, không rewrite/restart nếu
+   giống hệt) và `effective_config_summary()` (non-secret, dùng để log lúc agent startup — chưa wire
+   vào `remote_agent/agent.py` thật, chỉ có hàm sẵn sàng). `e2e_onboarding_full_flow.py` đã chuyển
+   sang gọi module này thay vì f-string tay. 7 test mới `tests/test_remote_agent_provisioning.py`.
+
+**Chưa làm (Phase 4-7, cần VM/cluster thật + thời gian dài hơn):** tạo tenant lab mới
+(`tenant-replay-01`), provision qua canonical, chứng minh golden journey Tenant→Twin→Competency chạy
+không sửa tay, chứng minh tenant isolation với `staging-sim`, chứng minh repeat-provisioning không phá
+state, operator read-only proof flow. `AdminConfigRepo.create_tenant()` không idempotent (mục 6 ở
+trên) sẽ chặn Phase 5 nếu không sửa trước.
+
+Verify: `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` — xem log chạy trong
+`docs/handoffs/CURRENT_SESSION.md`.
