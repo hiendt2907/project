@@ -59,6 +59,18 @@ def _deserialize_fact(d: dict[str, Any]) -> Fact:
     )
 
 
+async def load_contradictions(redis: Any, tenant_id: str) -> list[dict[str, Any]]:
+    """Read back the tenant's contradiction log (most-recent-first, as stored)."""
+    raw = await redis.lrange(CONTRADICTIONS_KEY.format(tenant_id=tenant_id), 0, -1)
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        try:
+            out.append(json.loads(item))
+        except Exception:  # noqa: BLE001 — a malformed record must not break readers
+            logger.warning("system_model_store: malformed contradiction record tenant=%s", tenant_id)
+    return out
+
+
 async def load_system_model(redis: Any, tenant_id: str) -> tuple[SystemModel, int]:
     """Reload persisted model + its revision. Empty model, revision 0 if absent."""
     raw = await redis.hgetall(MODEL_KEY.format(tenant_id=tenant_id))

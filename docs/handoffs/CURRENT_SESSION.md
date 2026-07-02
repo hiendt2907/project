@@ -1,7 +1,58 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-**Slice O1 — HOÀN THÀNH (đã review, đúng trạng thái sau đây)**:
+**Slice O2A — HOÀN THÀNH**: Entity Competency Matrix (Host + Service) — projection thuần,
+derived, không persist song song, xây trên `aoip.system_model.SystemModel` +
+`system_model_store` contradiction log đã có từ O1. Đã commit Slice O1
+(`1bc6292`); O2A chưa commit (chờ ở cuối báo cáo này).
+
+### Slice O2A — nội dung
+`src/aoip/competency_matrix.py` (mới):
+- `FacetState`: UNKNOWN/OBSERVED/CLAIMED/VERIFIED/CONTRADICTED/STALE/NOT_APPLICABLE.
+- `FACET_SCHEMA` 13 facet; `ENTITY_APPLICABLE_FACETS`: Service = toàn bộ 13 facet áp dụng;
+  Host = {identity, runtime_state, process, listening_ports, monitoring, logging} — facet
+  ngoài tập này của Host trả `NOT_APPLICABLE` (owner/business_capability/upstream/downstream/
+  runbook/sla không có ý nghĩa ở cấp host).
+- `FacetValue`: state, value, evidence_refs, source_types, confidence, last_observed_at,
+  last_verified_at — đúng yêu cầu #6.
+- `build_entity_competency(model, contradictions, entity_type, entity_id, now, freshness_sec)`
+  — hàm THUẦN (pure), deterministic, không I/O, không LLM. `build_entity_competency_from_store`
+  là wrapper đọc Redis (load_system_model + `load_contradictions` mới thêm vào
+  `system_model_store.py`) rồi gọi hàm thuần ở trên — projection reconstructable 100% từ Fact
+  đã persist (INV_DERIVED_NEVER_PERSIST, không lưu matrix riêng).
+- Facet logic hiện tại (chỉ dựa trên Fact đã có từ O1, KHÔNG bịa thêm predicate mới):
+  - `identity`: VERIFIED nếu entity nằm trong `model.known_nodes`, else UNKNOWN.
+  - Host `runtime_state`: VERIFIED/STALE dựa trên fact mới nhất về host đó (bằng chứng host
+    "còn sống" = có bất kỳ fact nào gắn với nó).
+  - Host `process`/`listening_ports`: multi-value, aggregate `runs_process`/`exposes_port`.
+  - Service `host`: subject của fact `runs_service` khớp tên service; NẾU >1 host phân biệt
+    cùng claim một tên service (trong cửa sổ fresh) → CONTRADICTED (không đoán ai đúng).
+  - Service `runtime_state`: VERIFIED "running" nếu có fact `runs_service` fresh.
+  - Mọi facet chưa có Fact nguồn tương ứng (owner/business_capability/upstream/downstream/
+    monitoring/logging/runbook/sla, và Service.process/listening_ports vì chưa có Fact nối
+    port↔service) → UNKNOWN trung thực, không giả định.
+  - Contradiction log (từ O1) được tra theo (subject,predicate) → nếu khớp facet đang tính,
+    facet đó = CONTRADICTED bất kể model hiện có gì (ưu tiên cao nhất, đúng yêu cầu #8).
+  - STALE: fact fresh nhất của facet quá `freshness_sec` (default 24h) so với `now` (đúng #9).
+  - CLAIMED chỉ xuất hiện khi provenance có tiền tố `human:` — hiện KHÔNG có nguồn nào tạo
+    provenance này (Question/Communication vẫn là luồng riêng, chưa fold vào Fact) → CLAIMED
+    trên thực tế chưa từng xuất hiện, đúng thực trạng hệ thống, không giả (đúng #7: không LLM
+    nào tự nâng CLAIMED→VERIFIED vì không có logic đó).
+- Query API (#12): `entity_coverage`, `critical_unknowns`, `contradicted_facets` — hàm Python
+  thuần, CHƯA wire vào gateway HTTP route (ngoài phạm vi phiên, để O2B/O2C nếu cần).
+- Test: `tests/test_aoip_competency_matrix.py` (13 test) — cover đủ 6 case yêu cầu ở #13
+  (determinism, missing→UNKNOWN, conflict→CONTRADICTED, stale→STALE, tenant isolation,
+  persist/reload, import-boundary không đụng recovery/executor).
+
+### Gaps để lại cho O2B (đúng như đề xuất)
+- Structured Unknown / question fingerprint.
+- Answer-as-Claim (human trả lời → Fact với provenance `human:...` → facet CLAIMED thật sự).
+- Dedup + resolution của contradiction/question.
+- Wiring `entity_coverage`/`critical_unknowns` vào một API đọc thực (gateway) nếu cần UI.
+
+---
+
+## Slice O1 — đã commit (`1bc6292`)
 `Legacy Remote Agent discovery scheduler → AOIP onboarding projection (Observation/Fact) →
 persisted/versioned SystemModel`, additive dual-write alongside legacy onboarding flat-Redis
 pipeline. Không xóa/thay legacy onboarding trong phiên này.
@@ -14,8 +65,8 @@ projection** (Observation/Fact/SystemModel) ăn trên output của legacy schedu
 technical debt cần theo dõi cho slice sau, KHÔNG phải blocker cho O2.
 
 ## Trạng thái hiện tại
-Code + tests xong, toàn bộ unit suite xanh (trừ 1 flake tiền-nhiệm không liên quan).
-Chưa commit (theo AUTONOMY RULES: GIT chỉ khi được chỉ thị rõ).
+Slice O1 đã commit (`1bc6292`). Slice O2A code+test xong, xanh, **CHƯA commit** (chờ chỉ thị
+GIT theo AUTONOMY RULES — commit đề xuất `feat(onboarding): add host and service competency matrix`).
 
 ## Đã hoàn thành
 
@@ -102,59 +153,67 @@ thành công + projection lỗi không mất legacy write).
   test cũ (đều pass).
 
 ## Branch và commit
-`feature/living-operations-runtime` @ `49343b2` — **chưa commit** (chờ chỉ thị GIT theo
-AUTONOMY RULES). Commit message đề xuất:
-`feat(onboarding): project canonical discovery into persisted system twin`
+`feature/living-operations-runtime`. Slice O1 = commit `1bc6292` (đã push? KHÔNG — chỉ commit
+local, chưa push). Slice O2A = working tree hiện tại, **chưa commit**. Commit message đề xuất
+cho O2A: `feat(onboarding): add host and service competency matrix`.
 
-## Working tree
-- `src/workers/omni_worker.py` — role=full giờ chạy `kafka_discovery_evidence_loop`.
-- `src/workers/onboarding_pipeline.py` — thêm `_project_into_system_model` dual-write.
-- `src/aoip/onboarding_projection.py` — MỚI (Observation/Fact projector).
-- `src/aoip/system_model_store.py` — MỚI (persisted/versioned SystemModel store).
-- `tests/test_worker_role_discovery_consumer.py`, `tests/test_aoip_onboarding_projection.py`,
-  `tests/test_aoip_system_model_store.py` — MỚI.
-- `tests/test_onboarding_pipeline.py` — thêm `TestSystemModelDualWrite`.
-- 10 file `docs/post-mortems/*.md` — có từ trước phiên này, không liên quan Slice O1.
+## Working tree (sau O1 đã commit, phần chưa commit là O2A)
+- `src/aoip/competency_matrix.py` — MỚI (Entity Competency Matrix, thuần/derived).
+- `src/aoip/system_model_store.py` — thêm `load_contradictions()` (đọc-only, không đổi logic
+  fold_and_persist hiện có).
+- `tests/test_aoip_competency_matrix.py` — MỚI (13 test).
+- 10 file `docs/post-mortems/*.md` — có từ trước phiên này, không liên quan Slice O1/O2A.
 
 ## Verification đã chạy
-`.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` → **5878 passed, 1 failed
-(pre-existing, không liên quan)**: `tests/test_remote_agent_e2e.py::TestE2ERegisterAndEvidenceCycle::
-test_register_then_real_system_metrics_emitted_through_real_pipeline` — flake phụ thuộc tải máy
-thật lúc chạy test (GIGO/quality-classify routing quyết định topic dựa trên psutil thật), không
-đụng tới file nào của Slice O1 (metrics/GIGO/topic-routing không nằm trong scope sửa đổi).
+- Sau O1 (trước commit): `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` →
+  5878 passed, 1 failed (pre-existing, không liên quan — xem dưới).
+- Sau O2A: cùng lệnh → **5892 passed, 1 failed (cùng 1 flake cũ)**:
+  `tests/test_remote_agent_e2e.py::TestE2ERegisterAndEvidenceCycle::
+  test_register_then_real_system_metrics_emitted_through_real_pipeline` — flake phụ thuộc tải
+  máy thật lúc chạy test (GIGO/quality-classify routing quyết định topic dựa trên psutil thật),
+  không đụng tới file nào của O1/O2A.
 
 ## Deployment hiện tại
 Chưa deploy — mới chỉ code + test, chưa `make deploy-worker`.
 
 ## Blockers
-Không có. Sẵn sàng review/commit khi được chỉ thị.
+Không có. Sẵn sàng review/commit O2A khi được chỉ thị.
 
-## Next step chính xác (Slice O2 — CHƯA làm)
-1. Competency Matrix (hoàn toàn ABSENT — theo audit trước).
-2. Unknown/Question strategy formalize (hiện vẫn ad-hoc trong `_detect_gaps_and_ask`).
-3. Source acquisition planner.
-4. Semantic customer-side knowledge extraction (description/doc content vẫn chỉ
-   mapping/hash — chưa có pipeline trích xuất ý nghĩa nghiệp vụ an toàn).
-Nếu review Slice O1 yêu cầu sửa, ưu tiên sửa tại `system_model_store.py`
-(`_apply_supersession`/`_split_contradictions`) — đây là phần suy luận mới nhất, rủi ro cao nhất.
+## Next step chính xác (Slice O2B/O2C — CHƯA làm)
+- **O2B**: Structured Unknown → question fingerprint → answer-as-Claim (human trả lời tạo Fact
+  provenance `human:...` → facet thật sự chuyển CLAIMED, hiện tại CLAIMED chưa từng xảy ra vì
+  chưa có luồng này) → dedup/resolution contradiction+question.
+- **O2C**: Source acquisition planner — KHÔNG gộp vào cùng phiên với O2B (theo đề xuất, tránh
+  scope quá lớn).
+- Wiring `entity_coverage`/`critical_unknowns`/`contradicted_facets` vào gateway API thật (hiện
+  chỉ là hàm Python thuần, `import`-được nhưng chưa có HTTP route) — làm khi O2B/O2C cần UI.
+- Semantic customer-side knowledge extraction (description/doc content vẫn chỉ mapping/hash) —
+  vẫn để lại, chưa giải quyết.
+- Technical debt đã ghi nhận: discovery scheduling vẫn do legacy `remote_agent/agent.py` cung
+  cấp, chưa có AOIP daemon sở hữu scheduling (xem mục "QUAN TRỌNG" ở đầu file).
 
 ## Không được làm lại
 - Không tạo scheduler/daemon AOIP mới cho discovery — `remote_agent/agent.py` đã đáp ứng đủ
-  Bước 2, xác nhận bằng Read trực tiếp dòng 139-233.
+  Bước 2 (O1), xác nhận bằng Read trực tiếp dòng 139-233.
 - Không sửa `aoip/objects.py` hay `aoip/system_model.py` core `fold()` — supersession/
-  contradiction logic nằm ở `system_model_store.py` để không ảnh hưởng recovery/capability
-  mutation code đang dùng chung `SystemModel`.
+  contradiction logic nằm ở `system_model_store.py`; competency projection nằm ở
+  `competency_matrix.py` — cả hai KHÔNG đụng recovery/capability-mutation code
+  (`aoip.recovery`, `aoip.runner`, `aoip.primitives`, `workers.executor` — có test import-boundary
+  xác nhận `competency_matrix.py` không import các module này).
 - Không đưa raw `content`/`description` text vào bất kỳ `Fact` nào (INV_DATA_RESIDENCY).
 - Không xóa/sửa hành vi `pkg.onboarding.discovery_doc`, readiness API, diagram API, Telegram
   question flow.
-- Không commit/push (chưa được chỉ thị).
+- Không tạo persistence riêng cho competency matrix — nó PHẢI luôn là projection thuần từ Fact
+  đã persist (INV_DERIVED_NEVER_PERSIST), không lưu state riêng trong Redis.
+- Không push (chỉ commit local khi được chỉ thị, chưa từng được yêu cầu push).
 
 ## Tài liệu liên quan
-- `src/workers/omni_worker.py:1146` (role dispatch)
+- `src/workers/omni_worker.py:1146` (role dispatch, O1)
 - `src/workers/onboarding_pipeline.py:23,52,62` (`accumulate_discovery_evidence`,
-  `_project_into_system_model`)
-- `src/aoip/onboarding_projection.py` (Observation/Fact projector, mới)
-- `src/aoip/system_model_store.py` (persisted SystemModel, mới)
+  `_project_into_system_model`, O1)
+- `src/aoip/onboarding_projection.py` (Observation/Fact projector, O1)
+- `src/aoip/system_model_store.py` (persisted SystemModel + `load_contradictions`, O1+O2A)
+- `src/aoip/competency_matrix.py` (Entity Competency Matrix, O2A, MỚI)
 - `src/aoip/objects.py`, `src/aoip/system_model.py` (core, KHÔNG sửa)
 - `src/remote_agent/agent.py:139-233`, `src/remote_agent/collectors/discovery_evidence.py`
   (scheduling + probes, reuse nguyên trạng)
