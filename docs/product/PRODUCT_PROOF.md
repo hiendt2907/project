@@ -185,6 +185,43 @@ mở từ iteration 9.
 Verify: `git show HEAD -- scripts/provision_fresh_tenant.py`; `grep -n provision_api_key
 scripts/provision_fresh_tenant.py`.
 
+## Iteration 13 — "2 agents/2 tenants on 1 VM" test coverage + resolve_scope() closed (2026-07-02)
+
+**Bottleneck đã fix**: iteration 9's leftover — the cross-tenant isolation proof for two Remote
+Agent instances (`staging-sim`, `tenant-replay-01`) both running on VM `cust-edge` only had
+live-cluster manual verification (Twin fact counts inspected by hand via `redis-cli`), no automated
+regression test locking the behavior in.
+
+**Fix**: `tests/test_onboarding_pipeline.py::TestTwoAgentsTwoTenantsOneVM` (2 test mới) — chạy thẳng
+qua `workers.onboarding_pipeline.accumulate_discovery_evidence()` (entrypoint thật của Kafka
+discovery-evidence worker), với 2 evidence envelope cùng `namespace`/hostname (`cust-edge`) nhưng
+khác `tenant_id`/`agent_id`. Assert: (1) mỗi Twin (`aoip.system_model_store`,
+`omni:aoip:system_model:{tenant_id}`) chỉ chứa fact của chính tenant đó dù cùng subject
+`host:cust-edge`; (2) legacy flat-doc accumulation (`pkg.onboarding.discovery_doc`) cũng cô lập theo
+tenant; (3) Fact provenance không bao giờ lẫn `agent_id` của tenant khác. Root cause của việc cô lập
+này là structural, không phải run-time may mắn: `system_model_store.MODEL_KEY =
+"omni:aoip:system_model:{tenant_id}"` — key Redis khoá theo `tenant_id`, nên 2 tenant share hostname
+vẫn fold vào 2 Twin độc lập hoàn toàn tách biệt về storage.
+
+**Đã điều tra thêm (không cần fix)**: `resolve_scope()` non-admin silent-override từng bị ghi là "UX
+gap chưa fix" ở iteration 9. Kiểm tra lại `tests/test_tenant_isolation.py::TestResolveScope::
+test_non_admin_ignores_override` và `TestKpiTenantIsolation::test_non_admin_cannot_scope_override` —
+cả hai đã khóa hành vi silent-ignore này làm contract chính thức, có test từ trước. Đổi sang trả về
+403 sẽ là breaking change với một quyết định thiết kế đã chốt, không phải sửa bug. Đóng mục này là
+"intentional, no action" thay vì "open gap" trong `current-priority.md`.
+
+**VERIFIED_TEST**: `.venv/bin/python -m pytest tests/test_onboarding_pipeline.py -q` → 29 passed
+(was 27). Regression `.venv/bin/python -m pytest -k "onboarding or gateway_api or tenant or
+provision" --ignore=tests/integration -q` → 157 passed (was 155, no regression). Không có mutation
+cluster thật trong iteration này (test-only) — `OMNI_AUTO_EXECUTE_ENABLED=false` reconfirmed qua
+`kubectl exec deploy/omni-fullstack -- printenv`.
+
+**Chưa DONE**: multi-host cho `tenant-replay-01` (vẫn 1/1 host) — item duy nhất còn mở từ iteration
+9's leftovers list. Đây là quyết định cần trước khi coi Phase 6/7 của slice "Repeatable Tenant
+Onboarding Baseline" là DONE hoàn toàn.
+
+Verify: `.venv/bin/python -m pytest tests/test_onboarding_pipeline.py -q -k TwoAgentsTwoTenants`.
+
 ## Iteration 12 — pytest coverage for provision_api_key() (2026-07-02)
 
 **Bottleneck đã fix**: iteration 11's "Chưa DONE" — `provision_api_key()` (subprocess wrapper

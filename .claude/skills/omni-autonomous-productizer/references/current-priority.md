@@ -29,6 +29,16 @@ danh sách này.
     phạm vi cho tới khi golden journey "sạch").
 13. Production hardening — chưa bắt đầu.
 
+## Closed items (không còn là open gap)
+
+- `resolve_scope()` non-admin silent-override — từng ghi là "UX gap chưa fix" (iteration 9). Đã xác
+  nhận iteration 13: đây là contract có chủ đích, đã khóa bằng test từ trước
+  (`tests/test_tenant_isolation.py::TestResolveScope`, `TestKpiTenantIsolation::
+  test_non_admin_cannot_scope_override`). KHÔNG sửa trừ khi có quyết định thiết kế mới rõ ràng.
+- "2 agents/2 tenants on 1 VM" isolation — chỉ có live-cluster manual proof (iteration 9). Đã có
+  automated regression test iteration 13 (`tests/test_onboarding_pipeline.py::
+  TestTwoAgentsTwoTenantsOneVM`).
+
 ## Known unrelated risk (P1, không chặn golden journey trực tiếp)
 
 Kafka mọi topic hiện `PartitionCount=1, ReplicationFactor=1` toàn hệ thống — không khớp thiết kế "3

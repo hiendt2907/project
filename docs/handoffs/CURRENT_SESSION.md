@@ -1,5 +1,23 @@
 # Current Session Handoff
 
+## Iteration 13 (2026-07-02T20:05Z)
+Fixed the iteration-9 leftover: "2 agents/2 tenants on 1 VM" isolation (`staging-sim` +
+`tenant-replay-01` both on VM `cust-edge`) had only live-cluster manual proof, no automated test.
+New `tests/test_onboarding_pipeline.py::TestTwoAgentsTwoTenantsOneVM` (2 tests) drives the real
+`accumulate_discovery_evidence()` pipeline with two envelopes sharing hostname `cust-edge` but
+different `tenant_id`/`agent_id`, asserting per-tenant Twin isolation (`aoip.system_model_store`,
+tenant_id-keyed `MODEL_KEY`), legacy flat-doc isolation, and provenance never cross-tags. `pytest
+tests/test_onboarding_pipeline.py -q` → 29 passed (was 27). Regression `-k "onboarding or
+gateway_api or tenant or provision" --ignore=tests/integration` → 157 passed (was 155). Also
+investigated `resolve_scope()` silent-override — confirmed NOT a bug, already locked in by
+`tests/test_tenant_isolation.py::TestResolveScope` as the intentional contract; closed in
+`current-priority.md` instead of fixing. No live-cluster mutation this iteration (test-only) —
+reconfirmed `OMNI_AUTO_EXECUTE_ENABLED=false` via `kubectl exec ... printenv`. Full detail:
+`docs/product/PRODUCT_PROOF.md` → "Iteration 13".
+
+**Not done**: multi-host for `tenant-replay-01` (still 1/1 host) — the only remaining leftover from
+iteration 9. This is a Phase 6 decision for the slice "Repeatable Tenant Onboarding Baseline".
+
 ## Iteration 12 (2026-07-02T19:40Z)
 Fixed the iteration-11 leftover: added CI-safe pytest coverage for `provision_api_key()`
 (previously only live-cluster manual proof). New `tests/test_provision_fresh_tenant.py` (3 tests):
@@ -62,15 +80,16 @@ Slice "Repeatable Tenant Onboarding Baseline" (Continuous Productization Loop) v
 Tenant→Agent→Discovery→Fact→Twin→Competency without manual intervention. Iterations 1-11 already
 DONE (System Twin persistence, cust-app discovery, gateway/aoip import fix, Fact provenance fix,
 evidence compaction, canonical provisioning module, skill bootstrap, tenant idempotency, fresh-tenant
-Postgres row, second Agent + isolation proof, canonical API-key script, single-command wiring).
+Postgres row, second Agent + isolation proof, canonical API-key script, single-command wiring,
+pytest coverage for API-key provisioning, "2 agents/2 tenants" test coverage).
 
 ## Current state
-- Branch `main` @ `df5e753` (HEAD unchanged this iteration — test + docs only, not yet committed).
+- Branch `main` @ `9710ffd` (HEAD unchanged this iteration — test + docs only, not yet committed).
 - Safety: `OMNI_AUTO_EXECUTE_ENABLED=false` reconfirmed on `omni-fullstack`; no live mutation this
   iteration (test-only). All core pods 1/1 Running.
-- Next step: decide next bottleneck from iteration 9 leftovers — multi-host for `tenant-replay-01`
-  (Phase 6 decision before calling slice Phase 7 DONE), "2 agents/2 tenants" test coverage, or
-  `resolve_scope()` silent-override → explicit 403 UX fix.
+- Next step: multi-host for `tenant-replay-01` (Phase 6 decision) — the only remaining leftover from
+  iteration 9. `resolve_scope()` UX gap is now closed (confirmed intentional, not a bug — see
+  `current-priority.md` → "Closed items").
   Full detail in `docs/operations/AUTONOMOUS_LOOP_STATE.json` → `iteration.next_step`.
 
 ## Note on unrelated commits
@@ -79,8 +98,8 @@ tracking — confirmed unrelated to onboarding/Twin/Competency/tenant-replay-01,
 parallel work merged to `main`. Not re-litigated each iteration; see git log for detail if needed.
 
 ## Working tree
-This iteration added `tests/test_provision_fresh_tenant.py` (new) and updated
-`docs/product/PRODUCT_PROOF.md`, `docs/operations/AUTONOMOUS_LOOP_STATE.json`,
-`docs/operations/AUTONOMOUS_LOOP_LEDGER.md`, this file. Pre-existing unrelated modifications in
-`docs/post-mortems/*.md` and `.autonomous-loop/` (supervisor runtime logs, not source) are untouched
-by this iteration and not part of its commit.
+This iteration updated `tests/test_onboarding_pipeline.py`, `docs/product/PRODUCT_PROOF.md`,
+`docs/operations/AUTONOMOUS_LOOP_STATE.json`, `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`,
+`.claude/skills/omni-autonomous-productizer/references/current-priority.md`, this file. Pre-existing
+unrelated modifications in `docs/post-mortems/*.md` and `.autonomous-loop/` (supervisor runtime
+logs, not source) are untouched by this iteration and not part of its commit.

@@ -278,6 +278,82 @@ class TestSystemModelDualWrite:
         assert "agent:unknown" not in sample.provenance
 
 
+class TestTwoAgentsTwoTenantsOneVM:
+    """Regression coverage for the scenario proven live-only in iteration 9
+    (docs/product/PRODUCT_PROOF.md): two Remote Agent instances bound to two
+    different tenants, running on the SAME physical VM (identical hostname),
+    both feeding discovery evidence through the real gateway->worker pipeline.
+    Each tenant's Twin must stay fully isolated even though both Agents
+    observe the same host."""
+
+    @pytest.mark.asyncio
+    async def test_same_hostname_two_tenants_twins_stay_isolated(self):
+        from aoip.system_model_store import load_system_model
+
+        r = _redis()
+        ctx = _ctx(r)
+        ev_staging_sim = {
+            "tenant_id": "staging-sim", "agent_id": "staging-sim_cust-edge",
+            "namespace": "cust-edge", "probe": "port_scan", "trace_id": "tr-staging-sim",
+            "extracted_fact": {"discovery_data": {"listening_ports": [{"port": 80, "service": "nginx"}]}},
+        }
+        ev_replay01 = {
+            "tenant_id": "tenant-replay-01", "agent_id": "replay01_cust-edge",
+            "namespace": "cust-edge", "probe": "port_scan", "trace_id": "tr-replay01",
+            "extracted_fact": {"discovery_data": {"listening_ports": [{"port": 443, "service": "envoy"}]}},
+        }
+        await op.accumulate_discovery_evidence(ctx, ev_staging_sim)
+        await op.accumulate_discovery_evidence(ctx, ev_replay01)
+
+        staging_model, staging_rev = await load_system_model(r, "staging-sim")
+        replay_model, replay_rev = await load_system_model(r, "tenant-replay-01")
+
+        assert staging_rev == 1
+        assert replay_rev == 1
+        staging_triples = {f.triple for f in staging_model.facts}
+        replay_triples = {f.triple for f in replay_model.facts}
+        assert ("host:cust-edge", "runs_service", "nginx") in staging_triples
+        assert ("host:cust-edge", "exposes_port", "80") in staging_triples
+        assert ("host:cust-edge", "runs_service", "envoy") not in staging_triples
+        assert ("host:cust-edge", "exposes_port", "443") not in staging_triples
+        assert ("host:cust-edge", "runs_service", "envoy") in replay_triples
+        assert ("host:cust-edge", "exposes_port", "443") in replay_triples
+        assert ("host:cust-edge", "runs_service", "nginx") not in replay_triples
+
+        # legacy flat-doc accumulation (pkg.onboarding.discovery_doc) is also
+        # per-tenant keyed — cross-check it stays isolated too.
+        staging_doc = await dd.get_accumulated_doc(r, "staging-sim")
+        replay_doc = await dd.get_accumulated_doc(r, "tenant-replay-01")
+        assert staging_doc["port_scan"]["listening_ports"][0]["service"] == "nginx"
+        assert replay_doc["port_scan"]["listening_ports"][0]["service"] == "envoy"
+
+    @pytest.mark.asyncio
+    async def test_same_hostname_two_tenants_provenance_never_cross_tags(self):
+        from aoip.system_model_store import load_system_model
+
+        r = _redis()
+        ctx = _ctx(r)
+        await op.accumulate_discovery_evidence(ctx, {
+            "tenant_id": "staging-sim", "agent_id": "staging-sim_cust-edge",
+            "namespace": "cust-edge", "probe": "process_list", "trace_id": "tr-a",
+            "extracted_fact": {"discovery_data": {"processes": [{"name": "nginx", "count": 1}]}},
+        })
+        await op.accumulate_discovery_evidence(ctx, {
+            "tenant_id": "tenant-replay-01", "agent_id": "replay01_cust-edge",
+            "namespace": "cust-edge", "probe": "process_list", "trace_id": "tr-b",
+            "extracted_fact": {"discovery_data": {"processes": [{"name": "envoy", "count": 1}]}},
+        })
+
+        staging_model, _ = await load_system_model(r, "staging-sim")
+        replay_model, _ = await load_system_model(r, "tenant-replay-01")
+        staging_fact = next(f for f in staging_model.facts if f.subject == "host:cust-edge")
+        replay_fact = next(f for f in replay_model.facts if f.subject == "host:cust-edge")
+        assert "agent:staging-sim_cust-edge" in staging_fact.provenance
+        assert "agent:replay01_cust-edge" not in staging_fact.provenance
+        assert "agent:replay01_cust-edge" in replay_fact.provenance
+        assert "agent:staging-sim_cust-edge" not in replay_fact.provenance
+
+
 class TestCoerceEvidenceDictAgentIdPromotion:
     """coerce_evidence_dict() (pkg/reasoning/schema.py) promotes agent_id/hostname
     to top-level fields BEFORE truncating extracted_fact to 2000 chars — otherwise

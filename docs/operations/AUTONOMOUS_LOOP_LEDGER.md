@@ -246,3 +246,47 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
   docs/product/PRODUCT_PROOF.md docs/operations/AUTONOMOUS_LOOP_STATE.json
   docs/operations/AUTONOMOUS_LOOP_LEDGER.md docs/handoffs/CURRENT_SESSION.md` + commit, then decide
   next bottleneck (multi-host Phase 6 decision vs resolve_scope() UX fix).
+
+### Checkpoint 2026-07-02T20:05:00Z
+- Timestamp: 2026-07-02T20:05:00Z
+- Iteration: iter13-two-agents-two-tenants-test-coverage
+- Quota state: N/A (not draining)
+- HEAD: 9710ffd (unchanged this iteration until commit below)
+- Acceptance: PASSED
+- Last verified: 2026-07-02T20:05:00Z
+- Bottleneck: iteration 9's leftover — "2 agents/2 tenants on 1 VM" isolation (staging-sim +
+  tenant-replay-01 both running Remote Agent instances on VM `cust-edge`) had only live-cluster
+  manual proof (Twin fact counts inspected by hand), no automated regression test locking the
+  behavior in.
+- Fix: new `tests/test_onboarding_pipeline.py::TestTwoAgentsTwoTenantsOneVM` (2 tests) — drives the
+  real `workers.onboarding_pipeline.accumulate_discovery_evidence()` pipeline (same entrypoint the
+  live Kafka discovery-evidence worker uses) with two evidence envelopes sharing an identical
+  `namespace`/hostname (`cust-edge`) but different `tenant_id`/`agent_id`, asserting: (1) each
+  tenant's `aoip.system_model_store` Twin (`omni:aoip:system_model:{tenant_id}`) contains only its
+  own facts despite the identical `host:cust-edge` subject, (2) the legacy flat-doc accumulation
+  (`pkg.onboarding.discovery_doc`) also stays isolated per tenant, (3) Fact provenance never leaks
+  the other tenant's `agent_id` tag. Confirms structurally why isolation holds:
+  `system_model_store.MODEL_KEY` is `omni:aoip:system_model:{tenant_id}` (tenant_id-keyed Redis
+  key), so two tenants sharing a hostname never share storage even though both fold a
+  `host:cust-edge` subject into their own independent Twin.
+- Runtime proof: no live-cluster mutation this iteration (test-only, root cause already understood
+  structurally from code — `MODEL_KEY` format string — no ambiguity requiring live re-verification).
+  Reconfirmed `OMNI_AUTO_EXECUTE_ENABLED=false` on `omni-fullstack` via `kubectl exec ... printenv`
+  and all core Deployments Running via `kubectl get deploy,pod -n multi-agent -o wide`.
+- Test suite: `.venv/bin/python -m pytest tests/test_onboarding_pipeline.py -q` → 29 passed (was 27).
+  `.venv/bin/python -m pytest -k "onboarding or gateway_api or tenant or provision"
+  --ignore=tests/integration -q` → 157 passed (was 155 — no regressions).
+- Also investigated this iteration (no fix needed): `resolve_scope()` silent-override for non-admin
+  callers is NOT a bug — `tests/test_tenant_isolation.py::TestResolveScope::test_non_admin_ignores_override`
+  and `TestKpiTenantIsolation::test_non_admin_cannot_scope_override` already lock this in as the
+  intentional, tested contract (non-admin tenant_id query param is silently ignored, not honored —
+  changing to 403 would be a breaking behavior change to a settled design, not a bug fix). Downgrading
+  this from "open UX gap" to "confirmed intentional, no action" in `current-priority.md`.
+- Pending: multi-host for tenant-replay-01 (still 1/1 host) — the only remaining item from iteration
+  9's leftovers list.
+- Reset at: n/a
+- Resume action: stage `tests/test_onboarding_pipeline.py`, `docs/product/PRODUCT_PROOF.md`,
+  `docs/operations/AUTONOMOUS_LOOP_STATE.json`, `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`,
+  `docs/handoffs/CURRENT_SESSION.md`, `.claude/skills/omni-autonomous-productizer/references/current-priority.md`
+  and commit. Next bottleneck: multi-host for `tenant-replay-01` (Phase 6 decision before the slice
+  "Repeatable Tenant Onboarding Baseline" can be called fully DONE).

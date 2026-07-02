@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-02T19:40:00Z",
+  "updated_at": "2026-07-02T20:05:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "df5e753",
+  "head": "9710ffd",
   "iteration": {
-    "id": "iter12-pytest-coverage-provision-api-key",
-    "bottleneck": "Iteration 11 leftover: provision_api_key() in scripts/provision_fresh_tenant.py had only live-cluster manual proof, no CI-safe automated test",
+    "id": "iter13-two-agents-two-tenants-test-coverage",
+    "bottleneck": "Iteration 9 leftover: '2 agents/2 tenants on 1 VM' isolation (staging-sim + tenant-replay-01 on cust-edge) had only live-cluster manual proof, no automated regression test",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "Added tests/test_provision_fresh_tenant.py (3 tests): mocks subprocess.run to assert provision_api_key() invokes ['bash', str(ADD_API_KEY_SCRIPT), tenant_id] with check=True and correct cwd (project root); asserts subprocess.CalledProcessError propagates instead of being swallowed; asserts ADD_API_KEY_SCRIPT resolves to a real file on disk. Ran .venv/bin/python -m pytest tests/test_provision_fresh_tenant.py -q -> 3 passed. Regression check -k 'onboarding or gateway_api or tenant or provision' --ignore=tests/integration -> 155 passed (was 146 baseline). Reconfirmed omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false and all core pods 1/1 Running via kubectl (no live mutation needed this iteration — live path already proven in iteration 11). Full detail: docs/product/PRODUCT_PROOF.md Iteration 12.",
+    "last_successful_step": "Added tests/test_onboarding_pipeline.py::TestTwoAgentsTwoTenantsOneVM (2 tests) driving the real accumulate_discovery_evidence() pipeline with two envelopes sharing hostname 'cust-edge' but different tenant_id/agent_id, asserting per-tenant Twin isolation (aoip.system_model_store, keyed by tenant_id in MODEL_KEY), legacy flat-doc isolation, and provenance never cross-tags. .venv/bin/python -m pytest tests/test_onboarding_pipeline.py -q -> 29 passed (was 27). Regression -k 'onboarding or gateway_api or tenant or provision' --ignore=tests/integration -> 157 passed (was 155). Also investigated resolve_scope() silent-override — confirmed NOT a bug (already locked in by tests/test_tenant_isolation.py::TestResolveScope), downgraded from open UX gap to closed/intentional in current-priority.md. No live mutation this iteration (test-only). Full detail: docs/product/PRODUCT_PROOF.md Iteration 13.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Not yet committed — stage tests/test_provision_fresh_tenant.py, docs/product/PRODUCT_PROOF.md, docs/operations/AUTONOMOUS_LOOP_STATE.json, docs/operations/AUTONOMOUS_LOOP_LEDGER.md, docs/handoffs/CURRENT_SESSION.md and commit. Then decide next bottleneck from iteration 9 leftovers: multi-host for tenant-replay-01 (Phase 6 decision), '2 agents/2 tenants on 1 VM' test coverage, or resolve_scope() silent-override -> explicit 403 UX fix."
+    "next_step": "Not yet committed — stage tests/test_onboarding_pipeline.py, docs/product/PRODUCT_PROOF.md, docs/operations/AUTONOMOUS_LOOP_STATE.json, docs/operations/AUTONOMOUS_LOOP_LEDGER.md, docs/handoffs/CURRENT_SESSION.md, .claude/skills/omni-autonomous-productizer/references/current-priority.md and commit. Then decide next bottleneck: multi-host for tenant-replay-01 (Phase 6 decision) — the only remaining iteration-9 leftover."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,19 +24,21 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Re-verified 2026-07-02T19:05:00Z: omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false unchanged. omni-gateway rolling-restarted 2x during this iteration's live script test (wiretest tenant provision+idempotent-rerun -> revert) — all rollouts succeeded, healthz {\"status\":\"ok\"} after final restart, OMNI_TENANT_APIKEYS back to original 3-tenant value (default/staging-sim/tenant-replay-01), no wiretest residue left in the secret or in omni_admin.tenant. cust-edge VM still runs 2 omni-remote-agent systemd units side by side, both active (unchanged this iteration).",
+    "health_summary": "Re-verified 2026-07-02T20:05:00Z: omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false unchanged (kubectl exec printenv). All core Deployments (omni-fullstack, omni-gateway, omni-onboarding, omni-brain-go, omni-ui, redis, kafka, postgres) Running via kubectl get deploy,pod -n multi-agent -o wide. No live mutation this iteration (test-only).",
     "deployed_images": {}
   },
   "working_tree": {
     "owned_changes": [
-      "tests/test_provision_fresh_tenant.py",
+      "tests/test_onboarding_pipeline.py",
       "docs/product/PRODUCT_PROOF.md",
       "docs/operations/AUTONOMOUS_LOOP_STATE.json",
       "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",
-      "docs/handoffs/CURRENT_SESSION.md"
+      "docs/handoffs/CURRENT_SESSION.md",
+      ".claude/skills/omni-autonomous-productizer/references/current-priority.md"
     ],
     "unrelated_changes": [
-      "docs/post-mortems/*.md (pre-existing modifications, unrelated to this skill or productization work)"
+      "docs/post-mortems/*.md (pre-existing modifications, unrelated to this skill or productization work)",
+      ".autonomous-loop/logs/*.log, *.out (supervisor runtime logs, not source)"
     ]
   },
   "resume_checks": [
