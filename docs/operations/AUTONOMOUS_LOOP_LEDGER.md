@@ -191,3 +191,29 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Reset at: n/a
 - Resume action: next iteration picks either the provision_fresh_tenant.py wiring or the Phase 6
   multi-host decision as the next bottleneck.
+
+## Iteration 11 — 2026-07-02T19:05:00Z
+- Bottleneck: iteration 10 leftover — `scripts/provision_fresh_tenant.py` (Postgres tenant row) and
+  `scripts/add_tenant_api_key.sh` (gateway secret) were still 2 separate manual commands.
+- Fix: `provision_fresh_tenant.py` now calls a new `provision_api_key()` (subprocess `bash
+  scripts/add_tenant_api_key.sh <tenant_id>`) right after the Postgres row is provisioned. Added
+  `--skip-api-key` flag for callers that want to manage the gateway secret separately.
+- Runtime proof (live cluster, not just code):
+  - Port-forwarded `omni-postgres:5432`, ran `provision_fresh_tenant.py --tenant-id
+    tenant-wiretest-01 --display-name "Wire Test 01"` — single command produced both the Postgres
+    row AND generated+patched a gateway API key AND rolling-restarted `omni-gateway` successfully.
+  - Idempotent re-run of the same command — Postgres insert no-op'd (`create_tenant(idempotent=True)`),
+    `add_tenant_api_key.sh` no-op'd (same key returned, no duplicate entry, no second restart).
+  - Gateway health after mutation: port-forwarded `svc/omni-gateway:80` → `curl .../healthz` →
+    `{"status":"ok","rate_limit_tps":1000}`.
+  - Cleanup: reverted `OMNI_TENANT_APIKEYS` to the original 3-tenant value + rolling restart +
+    verified content matches original + healthz ok again; `DELETE FROM omni_admin.tenant WHERE
+    tenant_id='tenant-wiretest-01'` — confirmed only the 3 original tenants remain.
+  - `.venv/bin/python -m pytest tests/ -q -k "onboarding or gateway_api or tenant"
+    --ignore=tests/integration` → 146 passed, no regression.
+- Pending: no automated pytest coverage yet for `provision_api_key()` call path (live-cluster manual
+  verification only). Iteration 9 leftovers (multi-host for tenant-replay-01, 2-agent/2-tenant test
+  coverage, resolve_scope() UX gap) still open.
+- Reset at: n/a
+- Resume action: next iteration decides between adding pytest coverage for the new wiring, the
+  Phase 6 multi-host decision, or the resolve_scope() UX gap as the next bottleneck.

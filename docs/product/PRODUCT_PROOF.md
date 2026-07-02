@@ -150,6 +150,41 @@ iteration này).
 Verify: `bash scripts/add_tenant_api_key.sh tenant-replay-01` (no-op, in key hiện có);
 `git show HEAD -- scripts/add_tenant_api_key.sh`.
 
+## Iteration 11 — Wire API-key provisioning into single-command tenant provisioning (2026-07-02)
+
+**Bottleneck đã fix**: iteration 10 mục "Chưa DONE" — `scripts/provision_fresh_tenant.py` (Postgres
+tenant row) và `scripts/add_tenant_api_key.sh` (gateway secret) vẫn là 2 lệnh tách biệt, dễ quên bước
+thứ hai khi provision tenant mới.
+
+**Fix**: `provision_fresh_tenant.py` gọi `provision_api_key()` (subprocess `bash
+scripts/add_tenant_api_key.sh <tenant_id>`) ngay sau khi Postgres row provision thành công. Thêm cờ
+`--skip-api-key` cho trường hợp caller muốn tự quản lý gateway secret riêng.
+
+**Runtime proof (VERIFIED_RUNTIME, chạy trực tiếp trên cluster lab thật)**:
+1. Port-forward `omni-postgres:5432` → chạy `OMNI_ADMIN_PG_DSN=... PYTHONPATH=src python
+   scripts/provision_fresh_tenant.py --tenant-id tenant-wiretest-01 --display-name "Wire Test 01"`
+   → cả 2 bước chạy trong 1 lệnh: log `provisioned tenant=tenant-wiretest-01` rồi
+   `[add_tenant_api_key] generated new key ... secret updated ... successfully rolled out`.
+2. Idempotency re-run: chạy lại lệnh giống hệt → Postgres `create_tenant(idempotent=True)` no-op,
+   `add_tenant_api_key.sh` in đúng key cũ, không patch/không restart lần 2.
+3. Gateway health sau mutation: port-forward `svc/omni-gateway:80` → `curl .../healthz` →
+   `{"status":"ok","rate_limit_tps":1000}`.
+4. Dọn dẹp: revert `OMNI_TENANT_APIKEYS` về đúng 3-tenant gốc (default/staging-sim/
+   tenant-replay-01) + rolling restart + verify secret content khớp nguyên trạng + healthz lại `ok`;
+   `DELETE FROM omni_admin.tenant WHERE tenant_id='tenant-wiretest-01'` → xác nhận
+   `SELECT tenant_id FROM omni_admin.tenant` chỉ còn 3 tenant gốc.
+5. Test suite liên quan: `.venv/bin/python -m pytest tests/ -q -k "onboarding or gateway_api or
+   tenant" --ignore=tests/integration` → 146 passed (không đổi so với iteration 10 — không thêm test
+   mới, chỉ verify không regress).
+
+**Chưa DONE**: chưa có automated test (pytest, không chỉ live-cluster manual run) cho
+`provision_fresh_tenant.py` gọi `provision_api_key()` — vẫn là runtime proof thủ công, chưa CI-safe.
+Multi-host cho `tenant-replay-01`, `resolve_scope()` UX gap, "2 agents/2 tenants" test coverage vẫn
+mở từ iteration 9.
+
+Verify: `git show HEAD -- scripts/provision_fresh_tenant.py`; `grep -n provision_api_key
+scripts/provision_fresh_tenant.py`.
+
 ## Iteration 7 — Fresh-tenant repeat-provisioning runtime proof (2026-07-02)
 
 **Bottleneck đã fix (Phase 4 của slice "Repeatable Tenant Onboarding Baseline"):**

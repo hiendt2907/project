@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-02T18:20:00Z",
+  "updated_at": "2026-07-02T19:05:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "00d7908",
+  "head": "deb8ea8",
   "iteration": {
-    "id": "iter10-canonicalize-tenant-apikey-script",
-    "bottleneck": "Iteration 9 leftover: tenant API-key provisioning into omni-gateway-secret was done by hand via kubectl, not scripted/idempotent",
+    "id": "iter11-wire-apikey-into-provision-fresh-tenant",
+    "bottleneck": "Iteration 10 leftover: provision_fresh_tenant.py (Postgres row) and add_tenant_api_key.sh (gateway secret) were still 2 separate manual commands",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "Added scripts/add_tenant_api_key.sh <tenant_id> [api_key] — idempotent (no-op if tenant already present), generates key via openssl rand -hex 32 if omitted, patches omni-gateway-secret OMNI_TENANT_APIKEYS, rolling-restarts + rollout-status omni-gateway. Verified live on the real cluster: (1) no-op path against tenant-replay-01 (already present) correctly skipped mutation; (2) mutation path against disposable tenant-scripttest-01 generated a key, patched the secret, gateway rolled out successfully; (3) idempotent re-run against tenant-scripttest-01 returned the same key with no duplicate entry; (4) reverted OMNI_TENANT_APIKEYS to its original 3-tenant value and rolling-restarted again, confirmed content matches original; (5) gateway healthz returns {\"status\":\"ok\"} after the full cycle and pod env still contains tenant-replay-01. Ran pytest -k 'onboarding or gateway_api or tenant' -> 146 passed. Full detail: docs/product/PRODUCT_PROOF.md Iteration 10.",
+    "last_successful_step": "Wired scripts/add_tenant_api_key.sh into scripts/provision_fresh_tenant.py via a new provision_api_key() subprocess call, run automatically after the Postgres tenant row is created (added --skip-api-key escape hatch). Verified live on the real cluster: (1) single command 'provision_fresh_tenant.py --tenant-id tenant-wiretest-01' created the Postgres row AND generated+patched the gateway API key AND rolled out omni-gateway, in one process; (2) idempotent re-run no-op'd both the Postgres insert and the secret patch, same key returned; (3) gateway healthz {\"status\":\"ok\"} after mutation; (4) cleanup reverted OMNI_TENANT_APIKEYS to the original 3-tenant value + rolling-restarted + verified content match + healthz ok again, and DELETEd the tenant-wiretest-01 Postgres row, confirmed only the 3 original tenants remain. Ran pytest -k 'onboarding or gateway_api or tenant' --ignore=tests/integration -> 146 passed (no regression). Full detail: docs/product/PRODUCT_PROOF.md Iteration 11.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Wire scripts/add_tenant_api_key.sh into scripts/provision_fresh_tenant.py so a single command does both Postgres tenant creation and gateway API-key provisioning (currently 2 separate manual steps). Also still open from iteration 9: decide if Phase 6 needs multi-host coverage for tenant-replay-01 before calling the slice's Phase 7 (repeatability + operator proof polish) DONE, add automated test coverage for '2 agents/2 tenants on 1 VM', and consider whether resolve_scope() silent-override should become an explicit 403."
+    "next_step": "No automated (pytest) test exists yet for provision_fresh_tenant.py's new provision_api_key() call path — only live-cluster manual verification. Also still open from iteration 9: decide if Phase 6 needs multi-host coverage for tenant-replay-01 before calling the slice's Phase 7 (repeatability + operator proof polish) DONE, add automated test coverage for '2 agents/2 tenants on 1 VM', and consider whether resolve_scope() silent-override should become an explicit 403."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,12 +24,12 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Re-verified 2026-07-02T18:20:00Z: omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false unchanged. omni-gateway rolling-restarted 3x during this iteration's live script test (add scripttest tenant -> verify -> revert) — all rollouts succeeded, healthz {\"status\":\"ok\"} after final restart, OMNI_TENANT_APIKEYS back to original 3-tenant value (default/staging-sim/tenant-replay-01), no scripttest residue left in the secret. cust-edge VM still runs 2 omni-remote-agent systemd units side by side, both active (unchanged this iteration).",
+    "health_summary": "Re-verified 2026-07-02T19:05:00Z: omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false unchanged. omni-gateway rolling-restarted 2x during this iteration's live script test (wiretest tenant provision+idempotent-rerun -> revert) — all rollouts succeeded, healthz {\"status\":\"ok\"} after final restart, OMNI_TENANT_APIKEYS back to original 3-tenant value (default/staging-sim/tenant-replay-01), no wiretest residue left in the secret or in omni_admin.tenant. cust-edge VM still runs 2 omni-remote-agent systemd units side by side, both active (unchanged this iteration).",
     "deployed_images": {}
   },
   "working_tree": {
     "owned_changes": [
-      "scripts/add_tenant_api_key.sh",
+      "scripts/provision_fresh_tenant.py",
       "docs/product/PRODUCT_PROOF.md",
       "docs/operations/AUTONOMOUS_LOOP_STATE.json",
       "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",

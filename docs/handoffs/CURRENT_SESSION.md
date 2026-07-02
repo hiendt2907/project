@@ -1,5 +1,20 @@
 # Current Session Handoff
 
+## Iteration 11 (2026-07-02T19:05Z)
+Fixed the iteration-10 leftover: wired `scripts/add_tenant_api_key.sh` into
+`scripts/provision_fresh_tenant.py` via a new `provision_api_key()` subprocess call, run
+automatically after the Postgres tenant row is created (`--skip-api-key` escape hatch added).
+Verified live on the real cluster: single command `provision_fresh_tenant.py --tenant-id
+tenant-wiretest-01` created both the Postgres row and the gateway API key + rolling-restarted
+`omni-gateway`; idempotent re-run no-op'd both steps; gateway healthz `{"status":"ok"}` after
+mutation; cleanup reverted `OMNI_TENANT_APIKEYS` to the original 3-tenant value and `DELETE`d the
+disposable Postgres row, confirmed only 3 original tenants remain. `pytest -k "onboarding or
+gateway_api or tenant" --ignore=tests/integration` → 146 passed. Full detail:
+`docs/product/PRODUCT_PROOF.md` → "Iteration 11".
+
+**Not done**: no automated pytest coverage yet for `provision_api_key()` — only live-cluster manual
+verification. Iteration 9 leftovers still open (see below).
+
 ## Iteration 10 (2026-07-02T18:20Z)
 Fixed the iteration-9 leftover: tenant API-key provisioning into `omni-gateway-secret`
 (`OMNI_TENANT_APIKEYS`) was done by hand via `kubectl patch`. Added
@@ -30,17 +45,17 @@ in `docs/product/PRODUCT_PROOF.md` → "Iteration 9", not fixed.
 ## Deliverable
 Slice "Repeatable Tenant Onboarding Baseline" (Continuous Productization Loop) via skill
 `.claude/skills/omni-autonomous-productizer/`. Goal: prove a fresh lab tenant can go through
-Tenant→Agent→Discovery→Fact→Twin→Competency without manual intervention. Iterations 1-9 already
+Tenant→Agent→Discovery→Fact→Twin→Competency without manual intervention. Iterations 1-10 already
 DONE (System Twin persistence, cust-app discovery, gateway/aoip import fix, Fact provenance fix,
 evidence compaction, canonical provisioning module, skill bootstrap, tenant idempotency, fresh-tenant
-Postgres row, second Agent + isolation proof).
+Postgres row, second Agent + isolation proof, canonical API-key script).
 
 ## Current state
-- Branch `main` @ `00d7908` (HEAD unchanged this iteration — only docs/scripts, not yet committed).
+- Branch `main` @ `deb8ea8` (HEAD unchanged this iteration — only docs/scripts, not yet committed).
 - Safety: `OMNI_AUTO_EXECUTE_ENABLED=false` verified live on `omni-fullstack` after this iteration's
-  3 gateway rolling restarts (test cycle + revert). All core pods 1/1 Running.
-- Next step: wire `add_tenant_api_key.sh` into `provision_fresh_tenant.py`, OR decide if Phase 6
-  needs multi-host before calling the slice's Phase 7 (repeatability + operator proof polish) DONE.
+  2 gateway rolling restarts (test cycle + revert). All core pods 1/1 Running.
+- Next step: add pytest coverage for `provision_api_key()`, OR decide if Phase 6 needs multi-host
+  before calling the slice's Phase 7 (repeatability + operator proof polish) DONE.
   Full detail in `docs/operations/AUTONOMOUS_LOOP_STATE.json` → `iteration.next_step`.
 
 ## Note on unrelated commits
@@ -49,8 +64,8 @@ tracking — confirmed unrelated to onboarding/Twin/Competency/tenant-replay-01,
 parallel work merged to `main`. Not re-litigated each iteration; see git log for detail if needed.
 
 ## Working tree
-This iteration added `scripts/add_tenant_api_key.sh` (new, executable) and updated
-`docs/product/PRODUCT_PROOF.md`, `docs/operations/AUTONOMOUS_LOOP_STATE.json`,
+This iteration updated `scripts/provision_fresh_tenant.py` (added `provision_api_key()` +
+`--skip-api-key`) and `docs/product/PRODUCT_PROOF.md`, `docs/operations/AUTONOMOUS_LOOP_STATE.json`,
 `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`, this file. Pre-existing unrelated modifications in
 `docs/post-mortems/*.md` and `.autonomous-loop/` (supervisor runtime logs, not source) are untouched
 by this iteration and not part of its commit.
