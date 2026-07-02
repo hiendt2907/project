@@ -135,3 +135,98 @@ async def upload_handover_doc(request: Request, body: HandoverDocUpload) -> JSON
             logger.warning("onboarding.upload_handover_doc readiness recompute failed tenant=%s err=%s", scope, exc)
 
     return JSONResponse(content={"status": "ok", "tenant_id": scope, "diagram_version": version, "readiness": readiness})
+
+
+# ── Slice O2A/O2B — Competency Matrix + Unknown/Question read API ──────────
+# aoip has no dependency on workers/executor (same import-boundary rule as
+# pkg.onboarding above) — safe to import directly from the gateway.
+
+_ENTITY_TYPE_PATTERN = r"^(host|service)$"
+
+
+@router.get("/competency")
+async def get_entity_competency(
+    request: Request,
+    entity_type: str = Query(..., pattern=_ENTITY_TYPE_PATTERN),
+    entity_id: str = Query(..., min_length=1, max_length=200),
+    tenant_id: str | None = Query(default=None, max_length=64, pattern=_TENANT_ID_PATTERN),
+) -> JSONResponse:
+    """Entity Competency Matrix (Slice O2A) — facet/state/evidence/contradiction
+    for one Host or Service, derived on demand from the persisted SystemModel."""
+    from aoip.competency_matrix import build_entity_competency_from_store, contradicted_facets, critical_unknowns, entity_coverage
+
+    redis = _get_redis(request)
+    scope = _effective_tenant_id(request, tenant_id)
+    comp = await build_entity_competency_from_store(redis, scope, entity_type=entity_type, entity_id=entity_id)
+    return JSONResponse(content={
+        "tenant_id": scope,
+        "entity_type": comp.entity_type,
+        "entity_id": comp.entity_id,
+        "facets": {name: {
+            "state": fv.state.value,
+            "value": fv.value,
+            "evidence_refs": list(fv.evidence_refs),
+            "source_types": list(fv.source_types),
+            "confidence": fv.confidence,
+            "last_observed_at": fv.last_observed_at,
+            "last_verified_at": fv.last_verified_at,
+        } for name, fv in comp.facets.items()},
+        "coverage": entity_coverage(comp),
+        "critical_unknowns": list(critical_unknowns(comp)),
+        "contradicted_facets": list(contradicted_facets(comp)),
+    })
+
+
+@router.get("/unknowns")
+async def get_unknowns(
+    request: Request,
+    tenant_id: str | None = Query(default=None, max_length=64, pattern=_TENANT_ID_PATTERN),
+) -> JSONResponse:
+    """Structured Unknowns (Slice O2B) — what Omni still doesn't know per entity/facet."""
+    from aoip.question_lifecycle import list_unknowns
+
+    redis = _get_redis(request)
+    scope = _effective_tenant_id(request, tenant_id)
+    unknowns = await list_unknowns(redis, scope)
+    return JSONResponse(content={"tenant_id": scope, "unknowns": unknowns})
+
+
+@router.get("/questions")
+async def get_questions(
+    request: Request,
+    tenant_id: str | None = Query(default=None, max_length=64, pattern=_TENANT_ID_PATTERN),
+) -> JSONResponse:
+    """Structured Questions (Slice O2B) — pending/answered/resolved, per entity/facet."""
+    from aoip.question_lifecycle import list_questions
+
+    redis = _get_redis(request)
+    scope = _effective_tenant_id(request, tenant_id)
+    questions = await list_questions(redis, scope)
+    return JSONResponse(content={"tenant_id": scope, "questions": questions})
+
+
+class AnswerQuestionBody(BaseModel):
+    answered_by: str = Field(..., min_length=1, max_length=120)
+    value: str = Field(..., min_length=1, max_length=500)
+    source_channel: str = Field(default="api")
+    confidence: float = Field(default=0.6, ge=0.0, le=1.0)
+    tenant_id: str | None = Field(default=None, pattern=_TENANT_ID_PATTERN)
+
+
+@router.post("/questions/{question_id}/answer")
+async def answer_question(request: Request, question_id: str, body: AnswerQuestionBody) -> JSONResponse:
+    """Human answer -> Claim (Slice O2B). Never marked VERIFIED here — only
+    ``competency_matrix`` promotes a Claim to VERIFIED, by cross-checking a
+    matching machine Fact."""
+    from aoip.question_lifecycle import submit_answer
+
+    redis = _get_redis(request)
+    scope = _effective_tenant_id(request, body.tenant_id)
+    answer = await submit_answer(
+        redis, scope, question_id,
+        answered_by=body.answered_by, value=body.value,
+        source_channel=body.source_channel, confidence=body.confidence,
+    )
+    if answer is None:
+        raise HTTPException(status_code=404, detail="question not found, not pending, or belongs to another tenant")
+    return JSONResponse(content={"status": "ok", "tenant_id": scope, "answer": answer})

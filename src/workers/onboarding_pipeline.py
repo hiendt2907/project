@@ -96,6 +96,47 @@ async def _project_into_system_model(
             tenant_id, len(contradictions),
         )
 
+    # Slice O2B (additive): re-derive the Competency Matrix for the entities this
+    # evidence touched and open/refresh structured Unknowns — isolated the same way
+    # as the O1 projection above, never allowed to affect the legacy write.
+    await _sync_understanding_gaps(ctx, ev_doc, tenant_id=tenant_id, host=host, new_facts=new_facts)
+
+
+async def _sync_understanding_gaps(
+    ctx: WorkerHandlerContext, ev_doc: dict[str, Any], *, tenant_id: str, host: str, new_facts: Any,
+) -> None:
+    """Bookkeeping only: open/refresh structured Unknown records for whatever
+    the Competency Matrix currently reports as UNKNOWN/CONTRADICTED.
+
+    Deliberately does NOT create Questions or send Telegram here — a single
+    evidence event can touch a dozen still-empty facets (owner, sla, runbook,
+    ...) and firing one question per facet per event would flood the tenant.
+    Turning an open Unknown into an actual Question is a separate, deliberate
+    step (``question_lifecycle.ensure_question_for_unknown``) meant to be
+    invoked by a batched/paced caller, not inline on every probe message.
+    """
+    from aoip.competency_matrix import build_entity_competency_from_store
+    from aoip.question_lifecycle import sync_unknowns_from_competency
+    from aoip.system_graph import make_node
+
+    host_node = make_node("host", host)
+    entities: list[tuple[str, str]] = [("host", host_node)]
+    for f in new_facts:
+        if f.predicate == "runs_service":
+            entities.append(("service", make_node("service", f.obj)))
+
+    for entity_type, entity_id in entities:
+        try:
+            comp = await build_entity_competency_from_store(
+                ctx.redis, tenant_id, entity_type=entity_type, entity_id=entity_id,
+            )
+            await sync_unknowns_from_competency(ctx.redis, tenant_id, comp)
+        except Exception as exc:  # noqa: BLE001 — additive path, never blocks the legacy write
+            logger.warning(
+                "onboarding_pipeline: understanding-gap sync failed tenant=%s entity=%s err=%s",
+                tenant_id, entity_id, exc,
+            )
+
 
 async def accumulate_handover_document(
     ctx: WorkerHandlerContext, tenant_id: str, *, filename: str, content: str,

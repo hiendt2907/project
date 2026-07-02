@@ -1,7 +1,121 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-**Slice O2A — HOÀN THÀNH**: Entity Competency Matrix (Host + Service) — projection thuần,
+**Slice O2B — HOÀN THÀNH**: Structured Unknown → deduplicated Question → human Answer-as-Claim
+→ Competency Matrix CLAIMED/VERIFIED/CONTRADICTED transitions → resolution lifecycle. O1
+(`1bc6292`) và O2A (`cf9133f`) đã commit trước đó. O2B chưa commit (ở cuối báo cáo này). Trước
+khi làm O2B, đã sửa 2 rủi ro review nêu trong O2A (xem "Sửa risk review O2A" bên dưới).
+
+### Sửa risk review O2A (trước khi bắt đầu O2B)
+- **Risk #1 (identity quá dễ VERIFIED)**: `identity` giờ chỉ VERIFIED nếu có ≥2 Fact riêng biệt
+  làm bằng chứng (không tính 2 phần tử provenance của CÙNG một Fact — sửa lỗi thiết kế: mỗi Fact
+  từ O1 luôn có provenance 2 phần `discovery:probe:trace` + `agent:id`, nên đếm source_types
+  luôn ≥2 một cách giả — bỏ điều kiện đó). 1 Fact duy nhất → `OBSERVED`, không phải `VERIFIED`.
+- **Risk #2 (Host facet bị NOT_APPLICABLE che gap collector)**: thêm `owner`, `runbook` vào tập
+  facet áp dụng cho Host (giờ → `UNKNOWN` thay vì `NOT_APPLICABLE`, đúng vì host thật sự có
+  owner/runbook trong vận hành). Giữ `NOT_APPLICABLE` chỉ cho facet thật sự chỉ có nghĩa ở cấp
+  service (`business_capability`, `upstream`, `downstream`, `sla`).
+- Test mới trong `tests/test_aoip_competency_matrix.py`: `TestIdentityCorroboration` (2 test),
+  `TestClaimableFacets` (6 test) — tổng file này giờ 21 test (từ 13).
+
+### Slice O2B — nội dung
+`src/aoip/claims_store.py` (mới): `ClaimRecord` (subject/predicate/value/answered_by/
+answered_at/question_id/confidence) — lưu Redis hash `omni:aoip:claims:{tenant_id}`, 1 claim
+mới nhất mỗi (subject,predicate). KHÔNG fold vào SystemModel qua `fold_and_persist` — cố ý tách
+khỏi luồng Fact máy móc để một câu trả lời human không bao giờ tự động ghi đè/thắng Fact máy
+(việc so khớp CLAIMED vs VERIFIED vs CONTRADICTED do `competency_matrix.py` quyết định, không
+phải do fold semantics).
+
+`src/aoip/competency_matrix.py` (mở rộng): thêm `FACET_PREDICATE` (map facet→predicate cho 6
+facet chưa có collector: owner/business_capability/monitoring/logging/runbook/sla),
+`build_entity_competency(..., claims=...)`, `_claimable_facet()` implement đúng priority yêu
+cầu: **CONTRADICTED > VERIFIED > CLAIMED > OBSERVED > STALE/UNKNOWN**:
+- Không claim, không machine fact → UNKNOWN.
+- Chỉ machine fact → theo logic O1 hiện có (VERIFIED/OBSERVED/STALE).
+- Chỉ claim, còn "tươi" (< `CLAIM_FRESHNESS_SEC`=180 ngày) → CLAIMED.
+- Claim quá hạn, không có machine fact → STALE.
+- Claim + machine fact cùng giá trị → VERIFIED (machine xác nhận claim).
+- Claim + machine fact khác giá trị → CONTRADICTED (không đoán ai đúng).
+- Machine-vs-machine contradiction (từ O1 contradiction log) → CONTRADICTED, ưu tiên cao nhất,
+  kiểm tra trước cả claim.
+- Không có bất kỳ LLM call nào trong toàn bộ path — test `test_llm_never_promotes_claimed_to_verified`
+  xác nhận bằng cách grep source không có `import ollama`/`openai`/`chat_completion`/
+  `generate_advisory`.
+
+`src/aoip/question_lifecycle.py` (mới) — Unknown/Question/Answer model + lifecycle:
+- `Unknown`: unknown_id/tenant_id/entity_type/entity_id/facet/reason(missing|contradicted)/
+  evidence_refs/created_at/last_seen_at/status/severity/source. Status: OPEN/QUESTION_PENDING/
+  CLAIMED/VERIFIED/CONTRADICTED/RESOLVED/STALE.
+- `Question`: question_id/unknown_id/tenant_id/entity_type/entity_id/facet/question_type/
+  normalized_fingerprint/text/context_summary/known_evidence/created_at/expires_at/status/
+  asked_via/target_role/answer_id. Status: PENDING/ANSWERED/RESOLVED/EXPIRED/CANCELLED.
+- `Answer`: answer_id/question_id/tenant_id/answered_by/answered_at/value(≤500 ký tự, KHÔNG
+  raw content)/source_channel/confidence/evidence_reference.
+- `compute_fingerprint(tenant, entity_type, entity_id, facet, reason)` = sha256 24 ký tự đầu —
+  deterministic, KHÔNG dùng text câu hỏi làm identity. `question_id == unknown_id` (1:1 trong
+  scope này) để dedup Question/Unknown dùng chung 1 khóa.
+- `sync_unknowns_from_competency()`: quét facet UNKNOWN/CONTRADICTED của một EntityCompetency,
+  mở/refresh Unknown theo fingerprint (không tạo bản sao); facet không còn UNKNOWN/CONTRADICTED
+  → tự RESOLVE Unknown + Question liên quan (Bước 6 — machine evidence tự resolve, KHÔNG phải
+  vì câu hỏi được trả lời).
+- `ensure_question_for_unknown()`: KHÔNG tạo Question mới nếu đang PENDING hoặc đã ANSWERED
+  (chỉ tạo lại khi EXPIRED/CANCELLED/RESOLVED — Unknown mở lại).
+- `submit_answer()`: chỉ nhận nếu Question đang PENDING và thuộc đúng tenant (namespace theo
+  Redis key tự nhiên chặn cross-tenant); ghi Answer, set Question→ANSWERED, Unknown→CLAIMED,
+  và ghi `ClaimRecord` (predicate lấy từ `FACET_PREDICATE`; facet không có mapping (machine-only
+  facet) → answer vẫn lưu nhưng không tạo claim, log rõ lý do).
+- `render_telegram_text()`: text thô để tương thích kênh Telegram hiện có (Bước 7).
+
+**Quyết định quan trọng (khác với prompt gốc)**: KHÔNG wire tự động gửi Telegram/tạo Question
+ngay trên mỗi discovery event. `onboarding_pipeline._sync_understanding_gaps` (mới, gọi sau
+`_project_into_system_model`) CHỈ đồng bộ Unknown (bookkeeping âm thầm), KHÔNG gọi
+`ensure_question_for_unknown`/Telegram. Lý do: một entity có tới 6+ facet UNKNOWN cùng lúc
+(owner/business_capability/monitoring/logging/runbook/sla) — nếu tạo Question+gửi Telegram cho
+MỌI facet trên MỌI evidence event sẽ spam tenant (đã thấy trực tiếp: test cũ kỳ vọng 1 Telegram
+message nhưng nhận 17). Việc biến Unknown→Question→Telegram vẫn là hàm thư viện độc lập, sẵn
+sàng gọi có kiểm soát (batched/paced) — chưa wire thành job tự động trong phiên này, ghi vào gap
+O2C.
+
+`src/gateway/routes/onboarding.py` (mở rộng, Bước 8): 4 route mới, cùng pattern với route
+onboarding cũ (import `aoip.*` trực tiếp — không vi phạm INV gateway-không-import-workers vì
+`aoip` không phụ thuộc `workers`):
+- `GET /onboarding/competency?entity_type=&entity_id=&tenant_id=` — trả full facet grid +
+  coverage + critical_unknowns + contradicted_facets.
+- `GET /onboarding/unknowns?tenant_id=`
+- `GET /onboarding/questions?tenant_id=`
+- `POST /onboarding/questions/{question_id}/answer` — body {answered_by, value, source_channel,
+  confidence, tenant_id}; 404 nếu question không tồn tại/không PENDING/sai tenant.
+
+### Test (Bước 9)
+- `tests/test_aoip_question_lifecycle.py` (15 test mới): fingerprint determinism, dedup (same
+  evidence lặp lại → 1 Unknown), pending-question-không-tạo-lại, tenant/entity/facet phân biệt,
+  answer→claim với human provenance, answer→CLAIMED (không phải VERIFIED), machine fact khớp→
+  VERIFIED, machine fact xung đột→CONTRADICTED, answer đơn độc KHÔNG BAO GIỜ tự thành VERIFIED,
+  không trả lời được question đã ANSWERED, machine evidence tự resolve Unknown+Question, repeated
+  evidence không mở lại question đã trả lời, tenant B không trả lời được question tenant A, answer
+  value bị cắt ≤500 ký tự.
+- `tests/test_gateway_onboarding_competency_routes.py` (4 test mới): GET competency trả đúng
+  facet, entity_type sai bị 422, full flow GET unknowns→GET questions→POST answer→trả lời lần 2
+  bị 404, answer question không tồn tại → 404.
+- `tests/test_aoip_competency_matrix.py`: +8 test (identity corroboration + claimable facets),
+  sửa 1 test cũ (`test_host_not_applicable_facets`) cho khớp Risk #2.
+- Full suite: `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` → **5919 passed,
+  1 failed (cùng flake môi trường cũ, không liên quan)**.
+
+### Gaps để lại cho O2C (đúng như đề xuất, KHÔNG làm trong phiên này)
+- Source acquisition planner (quyết định tìm ở đâu trước khi hỏi người).
+- Entity normalization/canonical identity (review risk #3: `nginx` vs `nginx.service` vs full
+  path hiện bị coi là entity khác nhau do exact-string match — chưa giải quyết).
+- Facet-specific freshness (review risk #4: hiện `DEFAULT_FRESHNESS_SEC`=24h dùng chung cho mọi
+  facet máy móc, `CLAIM_FRESHNESS_SEC`=180 ngày dùng chung cho mọi claim — cần khác nhau theo
+  facet, vd runtime_state vài phút vs owner vài tháng).
+- Batched/paced Question issuance + Telegram dispatch (hiện là hàm thư viện, chưa wire thành job
+  tự động — xem "Quyết định quan trọng" ở trên).
+- Customer-side semantic knowledge vault (vẫn từ O1/O2A, chưa giải quyết).
+
+---
+
+## Slice O2A — đã commit (`cf9133f`) Entity Competency Matrix (Host + Service) — projection thuần,
 derived, không persist song song, xây trên `aoip.system_model.SystemModel` +
 `system_model_store` contradiction log đã có từ O1. Đã commit Slice O1
 (`1bc6292`); O2A chưa commit (chờ ở cuối báo cáo này).
@@ -65,8 +179,9 @@ projection** (Observation/Fact/SystemModel) ăn trên output của legacy schedu
 technical debt cần theo dõi cho slice sau, KHÔNG phải blocker cho O2.
 
 ## Trạng thái hiện tại
-Slice O1 đã commit (`1bc6292`). Slice O2A code+test xong, xanh, **CHƯA commit** (chờ chỉ thị
-GIT theo AUTONOMY RULES — commit đề xuất `feat(onboarding): add host and service competency matrix`).
+Slice O1 (`1bc6292`) và O2A (`cf9133f`) đã commit. Slice O2B code+test xong, xanh, **CHƯA
+commit** (chờ chỉ thị GIT — commit đề xuất `feat(onboarding): add structured unknown and
+question lifecycle`).
 
 ## Đã hoàn thành
 
@@ -153,48 +268,59 @@ thành công + projection lỗi không mất legacy write).
   test cũ (đều pass).
 
 ## Branch và commit
-`feature/living-operations-runtime`. Slice O1 = commit `1bc6292` (đã push? KHÔNG — chỉ commit
-local, chưa push). Slice O2A = working tree hiện tại, **chưa commit**. Commit message đề xuất
-cho O2A: `feat(onboarding): add host and service competency matrix`.
+`feature/living-operations-runtime` (chỉ commit local, chưa push). O1=`1bc6292`, O2A=`cf9133f`.
+O2B = working tree hiện tại, **chưa commit**. Commit đề xuất:
+`feat(onboarding): add structured unknown and question lifecycle`.
 
-## Working tree (sau O1 đã commit, phần chưa commit là O2A)
-- `src/aoip/competency_matrix.py` — MỚI (Entity Competency Matrix, thuần/derived).
-- `src/aoip/system_model_store.py` — thêm `load_contradictions()` (đọc-only, không đổi logic
-  fold_and_persist hiện có).
-- `tests/test_aoip_competency_matrix.py` — MỚI (13 test).
-- 10 file `docs/post-mortems/*.md` — có từ trước phiên này, không liên quan Slice O1/O2A.
+## Working tree (O1+O2A đã commit; phần chưa commit là O2B)
+- `src/aoip/claims_store.py` — MỚI (ClaimRecord, Redis store riêng, không fold vào SystemModel).
+- `src/aoip/question_lifecycle.py` — MỚI (Unknown/Question/Answer model + lifecycle + dedup).
+- `src/aoip/competency_matrix.py` — sửa: identity corroboration (risk #1), Host owner/runbook
+  = UNKNOWN không NOT_APPLICABLE (risk #2), `FACET_PREDICATE` + `_claimable_facet` (claim
+  projection), `build_entity_competency(..., claims=...)`.
+- `src/gateway/routes/onboarding.py` — thêm 4 route (competency/unknowns/questions/answer).
+- `tests/test_aoip_question_lifecycle.py` — MỚI (15 test).
+- `tests/test_gateway_onboarding_competency_routes.py` — MỚI (4 test).
+- `tests/test_aoip_competency_matrix.py` — +8 test, sửa 1 test cũ.
+- `src/workers/onboarding_pipeline.py` — thêm `_sync_understanding_gaps` (bookkeeping-only, xem
+  "Quyết định quan trọng" ở trên — KHÔNG tự gửi Telegram).
+- 10 file `docs/post-mortems/*.md` — có từ trước phiên này, không liên quan.
 
 ## Verification đã chạy
-- Sau O1 (trước commit): `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` →
-  5878 passed, 1 failed (pre-existing, không liên quan — xem dưới).
-- Sau O2A: cùng lệnh → **5892 passed, 1 failed (cùng 1 flake cũ)**:
+- Sau O1 (trước commit): 5878 passed, 1 failed (flake cũ).
+- Sau O2A (trước commit): 5892 passed, 1 failed (cùng flake).
+- Sau O2B: `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` → **5919 passed,
+  1 failed (cùng flake môi trường cũ, không liên quan)**:
   `tests/test_remote_agent_e2e.py::TestE2ERegisterAndEvidenceCycle::
-  test_register_then_real_system_metrics_emitted_through_real_pipeline` — flake phụ thuộc tải
-  máy thật lúc chạy test (GIGO/quality-classify routing quyết định topic dựa trên psutil thật),
-  không đụng tới file nào của O1/O2A.
+  test_register_then_real_system_metrics_emitted_through_real_pipeline`.
 
 ## Deployment hiện tại
 Chưa deploy — mới chỉ code + test, chưa `make deploy-worker`.
 
 ## Blockers
-Không có. Sẵn sàng review/commit O2A khi được chỉ thị.
+Không có. Sẵn sàng review/commit O2B khi được chỉ thị.
 
-## Next step chính xác (Slice O2B/O2C — CHƯA làm)
-- **O2B**: Structured Unknown → question fingerprint → answer-as-Claim (human trả lời tạo Fact
-  provenance `human:...` → facet thật sự chuyển CLAIMED, hiện tại CLAIMED chưa từng xảy ra vì
-  chưa có luồng này) → dedup/resolution contradiction+question.
-- **O2C**: Source acquisition planner — KHÔNG gộp vào cùng phiên với O2B (theo đề xuất, tránh
-  scope quá lớn).
-- Wiring `entity_coverage`/`critical_unknowns`/`contradicted_facets` vào gateway API thật (hiện
-  chỉ là hàm Python thuần, `import`-được nhưng chưa có HTTP route) — làm khi O2B/O2C cần UI.
-- Semantic customer-side knowledge extraction (description/doc content vẫn chỉ mapping/hash) —
-  vẫn để lại, chưa giải quyết.
+## Next step chính xác (Slice O2C — CHƯA làm)
+- Source acquisition planner (quyết định tìm ở đâu trước khi hỏi người) — KHÔNG gộp cùng phiên
+  với việc khác, theo đề xuất tách riêng.
+- Entity normalization/canonical identity (review risk #3 — chưa giải quyết, exact-string match
+  vẫn coi `nginx`/`nginx.service` là khác nhau).
+- Facet-specific freshness (review risk #4 — `DEFAULT_FRESHNESS_SEC`=24h và
+  `CLAIM_FRESHNESS_SEC`=180 ngày vẫn là hằng số dùng chung, chưa theo từng facet).
+- Batched/paced Question issuance + Telegram dispatch tự động (hiện là hàm thư viện độc lập,
+  `ensure_question_for_unknown` phải được gọi có kiểm soát, không tự động trên mọi evidence
+  event — xem "Quyết định quan trọng" trong mục O2B ở trên).
+- Semantic customer-side knowledge extraction (từ O1/O2A, chưa giải quyết).
 - Technical debt đã ghi nhận: discovery scheduling vẫn do legacy `remote_agent/agent.py` cung
-  cấp, chưa có AOIP daemon sở hữu scheduling (xem mục "QUAN TRỌNG" ở đầu file).
+  cấp, chưa có AOIP daemon sở hữu scheduling (xem mục "QUAN TRỌNG" ở đầu file — không phải lệnh
+  cấm vĩnh viễn, xem "Không được làm lại" bên dưới).
 
 ## Không được làm lại
-- Không tạo scheduler/daemon AOIP mới cho discovery — `remote_agent/agent.py` đã đáp ứng đủ
-  Bước 2 (O1), xác nhận bằng Read trực tiếp dòng 139-233.
+- Không tạo scheduler/daemon AOIP mới cho discovery **trong phạm vi O2A/O2B** —
+  `remote_agent/agent.py` đã đáp ứng đủ Bước 2 (O1), xác nhận bằng Read trực tiếp dòng
+  139-233. Đây KHÔNG phải lệnh cấm vĩnh viễn: migrate scheduling từ legacy Remote Agent sang
+  một AOIP daemon thật vẫn là technical debt hợp lệ cho một slice riêng trong tương lai (không
+  được lấy ghi chú này để khóa cứng kiến trúc legacy mãi mãi).
 - Không sửa `aoip/objects.py` hay `aoip/system_model.py` core `fold()` — supersession/
   contradiction logic nằm ở `system_model_store.py`; competency projection nằm ở
   `competency_matrix.py` — cả hai KHÔNG đụng recovery/capability-mutation code

@@ -8,7 +8,9 @@ from typing import Any
 import fakeredis.aioredis
 import pytest
 
+from aoip.claims_store import ClaimRecord
 from aoip.competency_matrix import (
+    CLAIM_FRESHNESS_SEC,
     FacetState,
     build_entity_competency,
     build_entity_competency_from_store,
@@ -54,8 +56,14 @@ class TestMissingFact:
     def test_host_not_applicable_facets(self):
         model = SystemModel(scope="acme", facts=(_fact("host:web-01", "exposes_port", "80"),))
         comp = build_entity_competency(model, [], entity_type="host", entity_id="host:web-01", now=2000.0)
-        assert comp.facet("owner").state == FacetState.NOT_APPLICABLE
+        # sla/business_capability/upstream/downstream are genuinely service-relational —
+        # a Host has no meaningful value for them at all.
         assert comp.facet("sla").state == FacetState.NOT_APPLICABLE
+        assert comp.facet("business_capability").state == FacetState.NOT_APPLICABLE
+        # owner/runbook DO make sense for a host — UNKNOWN (not observed yet), not
+        # NOT_APPLICABLE (review risk #2: don't use NOT_APPLICABLE to hide a collector gap).
+        assert comp.facet("owner").state == FacetState.UNKNOWN
+        assert comp.facet("runbook").state == FacetState.UNKNOWN
 
 
 class TestContradicted:
@@ -145,6 +153,94 @@ class TestTenantIsolationAndPersistReload:
         )
         assert comp1 == comp2
         assert comp1.facet("listening_ports").state == FacetState.VERIFIED
+
+
+class TestIdentityCorroboration:
+    """Review risk #1: a single probe mentioning a name once must not be VERIFIED."""
+
+    def test_single_fact_identity_is_observed_not_verified(self):
+        model = SystemModel(scope="acme", facts=(_fact("host:web-01", "exposes_port", "80"),))
+        comp = build_entity_competency(model, [], entity_type="host", entity_id="host:web-01", now=2000.0)
+        assert comp.facet("identity").state == FacetState.OBSERVED
+
+    def test_two_corroborating_facts_identity_is_verified(self):
+        model = SystemModel(
+            scope="acme",
+            facts=(
+                _fact("host:web-01", "exposes_port", "80"),
+                _fact("host:web-01", "runs_process", "nginx"),
+            ),
+        )
+        comp = build_entity_competency(model, [], entity_type="host", entity_id="host:web-01", now=2000.0)
+        assert comp.facet("identity").state == FacetState.VERIFIED
+
+
+class TestClaimableFacets:
+    def test_claim_only_gives_claimed(self):
+        model = SystemModel(scope="acme")
+        claim = ClaimRecord(
+            subject="svc:payment-api", predicate="owned_by", value="team-payments",
+            answered_by="alice", answered_at=1000.0, question_id="q1",
+        )
+        comp = build_entity_competency(
+            model, [], entity_type="service", entity_id="svc:payment-api", claims=[claim], now=1500.0,
+        )
+        assert comp.facet("owner").state == FacetState.CLAIMED
+        assert comp.facet("owner").value == "team-payments"
+
+    def test_claim_confirmed_by_machine_fact_is_verified(self):
+        model = SystemModel(
+            scope="acme",
+            facts=(_fact("svc:payment-api", "owned_by", "team-payments", ts=1200.0),),
+        )
+        claim = ClaimRecord(
+            subject="svc:payment-api", predicate="owned_by", value="team-payments",
+            answered_by="alice", answered_at=1000.0, question_id="q1",
+        )
+        comp = build_entity_competency(
+            model, [], entity_type="service", entity_id="svc:payment-api", claims=[claim], now=1500.0,
+        )
+        assert comp.facet("owner").state == FacetState.VERIFIED
+
+    def test_claim_conflicting_with_machine_fact_is_contradicted(self):
+        model = SystemModel(
+            scope="acme",
+            facts=(_fact("svc:payment-api", "owned_by", "team-checkout", ts=1200.0),),
+        )
+        claim = ClaimRecord(
+            subject="svc:payment-api", predicate="owned_by", value="team-payments",
+            answered_by="alice", answered_at=1000.0, question_id="q1",
+        )
+        comp = build_entity_competency(
+            model, [], entity_type="service", entity_id="svc:payment-api", claims=[claim], now=1500.0,
+        )
+        assert comp.facet("owner").state == FacetState.CONTRADICTED
+
+    def test_stale_claim_becomes_stale_not_verified(self):
+        model = SystemModel(scope="acme")
+        claim = ClaimRecord(
+            subject="svc:payment-api", predicate="owned_by", value="team-payments",
+            answered_by="alice", answered_at=0.0, question_id="q1",
+        )
+        comp = build_entity_competency(
+            model, [], entity_type="service", entity_id="svc:payment-api", claims=[claim],
+            now=CLAIM_FRESHNESS_SEC + 1000.0,
+        )
+        assert comp.facet("owner").state == FacetState.STALE
+
+    def test_no_claim_no_fact_is_unknown(self):
+        model = SystemModel(scope="acme", facts=(_fact("host:web-01", "runs_service", "payment-api"),))
+        comp = build_entity_competency(model, [], entity_type="service", entity_id="svc:payment-api", now=2000.0)
+        assert comp.facet("owner").state == FacetState.UNKNOWN
+
+    def test_llm_never_promotes_claimed_to_verified(self):
+        """No code path in build_entity_competency calls any LLM/inference service —
+        the only way a facet reaches VERIFIED from CLAIMED is a matching machine Fact."""
+        import aoip.competency_matrix as cm
+        with open(cm.__file__, encoding="utf-8") as f:
+            text = f.read()
+        for forbidden in ("import ollama", "openai", "chat_completion", "generate_advisory"):
+            assert forbidden not in text.lower()
 
 
 class TestImportBoundary:
