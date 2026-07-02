@@ -52,6 +52,50 @@ async def accumulate_discovery_evidence(ctx: WorkerHandlerContext, ev_doc: dict[
         logger.warning("onboarding_pipeline: diagram regen failed tenant=%s err=%s", tenant_id, exc)
     await recompute_readiness(ctx, tenant_id)
 
+    # Slice O1 (additive, dual-write): project the same evidence into the canonical
+    # AOIP Observation/Fact/SystemModel twin. Isolated on purpose — a failure here
+    # must never lose the legacy discovery_doc write above (already committed) and
+    # must never be reported as a successful twin update.
+    await _project_into_system_model(ctx, ev_doc, tenant_id=tenant_id, trace=trace)
+
+
+async def _project_into_system_model(
+    ctx: WorkerHandlerContext, ev_doc: dict[str, Any], *, tenant_id: str, trace: str,
+) -> None:
+    from aoip.onboarding_projection import project_facts, to_observation
+    from aoip.system_model_store import fold_and_persist
+
+    agent_id = str(ev_doc.get("agent_id") or "unknown")
+    host = str(ev_doc.get("namespace") or ev_doc.get("hostname") or agent_id or "unknown-host")
+    try:
+        observation = to_observation(ev_doc, tenant_id=tenant_id, agent_id=agent_id, host=host)
+        if observation is None:
+            return  # unsupported probe / malformed evidence — not an error
+        new_facts = project_facts(observation)
+        if not new_facts:
+            return
+        _model, _revision, contradictions = await fold_and_persist(
+            ctx.redis, tenant_id, new_facts, source=observation.source,
+        )
+    except Exception as exc:  # noqa: BLE001 — additive path, never blocks/breaks the legacy write
+        logger.error(
+            "onboarding_pipeline: system_model projection failed tenant=%s agent=%s host=%s err=%s",
+            tenant_id, agent_id, host, exc,
+        )
+        return
+
+    if trace:
+        await mark_stage(
+            ctx.redis, trace, "SYSTEM_MODEL", "ok",
+            detail=f"aoip_fact_projected probe={ev_doc.get('probe')} contradictions={len(contradictions)}",
+            lane="ONBOARDING_DISCOVERY",
+        )
+    if contradictions:
+        logger.warning(
+            "onboarding_pipeline: system_model contradiction tenant=%s count=%d",
+            tenant_id, len(contradictions),
+        )
+
 
 async def accumulate_handover_document(
     ctx: WorkerHandlerContext, tenant_id: str, *, filename: str, content: str,

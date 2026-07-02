@@ -180,6 +180,50 @@ class TestAccumulateDiscoveryEvidence:
         await op.accumulate_discovery_evidence(ctx, ev_doc)  # must not raise
 
 
+class TestSystemModelDualWrite:
+    """Slice O1: additive AOIP Fact/SystemModel projection alongside the legacy
+    flat-doc write. Must never lose the legacy write, never raise, never claim
+    success on failure."""
+
+    @pytest.mark.asyncio
+    async def test_discovery_evidence_also_folds_into_system_model(self):
+        from aoip.system_model_store import load_system_model
+
+        r = _redis()
+        ctx = _ctx(r)
+        ev_doc = {
+            "tenant_id": "acme", "agent_id": "agent-1", "namespace": "web-01",
+            "probe": "port_scan", "trace_id": "tr-1",
+            "extracted_fact": {"discovery_data": {"listening_ports": [{"port": 80, "service": "nginx"}]}},
+        }
+        await op.accumulate_discovery_evidence(ctx, ev_doc)
+        model, revision = await load_system_model(r, "acme")
+        assert revision == 1
+        assert ("host:web-01", "runs_service", "nginx") in {f.triple for f in model.facts}
+        # legacy path is untouched by the additive write
+        doc = await dd.get_accumulated_doc(r, "acme")
+        assert doc["port_scan"]["listening_ports"][0]["port"] == 80
+
+    @pytest.mark.asyncio
+    async def test_projection_failure_never_loses_legacy_write(self, monkeypatch):
+        import aoip.onboarding_projection as proj
+
+        def _boom(*a, **k):
+            raise RuntimeError("projection exploded")
+
+        monkeypatch.setattr(proj, "to_observation", _boom)
+
+        r = _redis()
+        ctx = _ctx(r)
+        ev_doc = {
+            "tenant_id": "acme", "probe": "process_list", "trace_id": "tr-2",
+            "extracted_fact": {"discovery_data": {"processes": [{"name": "nginx", "count": 1}]}},
+        }
+        await op.accumulate_discovery_evidence(ctx, ev_doc)  # must not raise
+        doc = await dd.get_accumulated_doc(r, "acme")
+        assert doc["process_list"]["processes"][0]["name"] == "nginx"
+
+
 class TestAskLoop:
     @pytest.mark.asyncio
     async def test_unnamed_service_gap_opens_question_and_sends_telegram(self):

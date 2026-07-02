@@ -1143,9 +1143,10 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
             tasks.append(asyncio.create_task(kafka_proactive_incidents_loop(ctx, stop), name="kafka_proactive_incidents"))
         tasks.append(asyncio.create_task(_temporal_prediction_loop(ctx, stop), name="temporal_prediction"))
         tasks.append(asyncio.create_task(_sigma_calibration_loop(ctx, stop), name="sigma_calibration"))
-    if role == "onboarding":
-        # Onboarding pipeline (agent/plans/PLAN_onboarding_ops_agent.md step-3) — deliberately
-        # NOT folded into role=full's dispatch; runs as its own independent worker process.
+    if role in ("full", "onboarding"):
+        # Onboarding pipeline (agent/plans/PLAN_onboarding_ops_agent.md step-3). role=full is the
+        # canonical lab deployment (single omni-fullstack pod) and must also consume discovery
+        # evidence — otherwise onboarding accumulation silently never runs in production (Slice O1 audit).
         tasks.append(asyncio.create_task(kafka_discovery_evidence_loop(ctx, stop), name="kafka_discovery_evidence_loop"))
     return tasks
 
