@@ -25,7 +25,7 @@ thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productiza
 | Observation → Fact projection | ✅ (code từ `1bc6292`) | ✅ (sau redeploy iteration 1) | ✅ | ❌ | log `onboarding_pipeline: system_model contradiction tenant=staging-sim` + Redis `omni:aoip:system_model:staging-sim` |
 | System Twin persisted | ✅ | ✅ | ✅ **3/3 host** | ❌ (chỉ đọc được qua `redis-cli`) | `HGETALL omni:aoip:system_model:staging-sim` → revision=54, 76 facts (cust-edge 38, cust-db 19, cust-app 19); `host:cust-app` → `exposes_port 8080` khớp `ss -lntp` trên VM |
 | Competency Matrix | ✅ | ✅ | ⚠️ chưa test riêng trong iteration này | ❌ | chưa kiểm trong iteration 1 |
-| Unknown/Question lifecycle (O2B) | ✅ | ✅ | ⚠️ chưa test riêng | ❌ | chưa kiểm trong iteration 1 |
+| Unknown/Question lifecycle (O2B) — Human Claim | ✅ | ✅ | ✅ **VERIFIED_RUNTIME iter 15** | ✅ (qua API) | `POST /onboarding/questions/{id}/answer` trên câu hỏi PENDING thật của `staging-sim` (`bdb9bb5e66be555d1fd3dd80`, facet `business_capability` của `svc:nginx`) → `status=ANSWERED`, `answer_id=a8ddaa6bd49e2f83b9cb`; `GET /onboarding/competency?...&entity_id=svc:nginx` sau đó trả facet `business_capability: state=CLAIMED, evidence_refs=["human:iter15-productizer","question:bdb9bb5e66be555d1fd3dd80"]` — đúng thiết kế (Claim KHÔNG tự thành VERIFIED, cần Fact máy khớp mới promote). Test: `tests/test_aoip_question_lifecycle.py` + `tests/test_gateway_onboarding_competency_routes.py` (19 passed) |
 | Onboarding readiness | ✅ | ✅ | ✅ | ⚠️ (đọc DB trực tiếp) | `omni_admin.tenant_readiness_state` có row `staging-sim`, `readiness_flag=false` |
 | Competency Matrix API (`GET /onboarding/competency`) | ✅ | ✅ (sau fix iteration 3) | ✅ | ✅ | `curl -H "Authorization: Bearer $KEY" ".../onboarding/competency?tenant_id=staging-sim&entity_type=host&entity_id=host:cust-app"` → `identity: VERIFIED`, evidence_refs trỏ `discovery:port_scan/process_list` thật |
 | Unknowns API (`GET /onboarding/unknowns`) | ✅ | ✅ (sau fix iteration 3) | ✅ | ✅ | `curl .../onboarding/unknowns?tenant_id=staging-sim` → trả Unknown thật (vd `svc:fsidd` facet `business_capability`) |
@@ -226,6 +226,48 @@ toàn bộ leftover list của iteration 9 nay đã closed.
 
 Verify: `.venv/bin/python -m pytest tests/test_onboarding_pipeline.py -q -k OneTenantTwoHosts`;
 `orb -m cust-app sudo systemctl status omni-remote-agent-replay01.service`.
+
+## Iteration 15 — Human Claim (Unknown→Question→Claim) VERIFIED_RUNTIME, readiness-gate disconnect found (2026-07-02)
+
+**Bottleneck đã fix**: golden-journey link "Unknown → Question → Human Claim → Verification" had
+code (`aoip.question_lifecycle`, `POST /onboarding/questions/{id}/answer`) and unit tests
+(`tests/test_aoip_question_lifecycle.py`, `tests/test_gateway_onboarding_competency_routes.py`,
+19 tests) but had never been exercised against the real running cluster — `PRODUCT_PROOF.md` row 28
+still said "chưa kiểm trong iteration 1".
+
+**VERIFIED_RUNTIME**: via `kubectl port-forward svc/omni-gateway 18090:80`, fetched real PENDING
+questions for tenant `staging-sim` (`GET /onboarding/questions`) — found
+`bdb9bb5e66be555d1fd3dd80` (`svc:nginx`, facet `business_capability`, PENDING). Answered it as a
+human operator would: `POST /onboarding/questions/bdb9bb5e66be555d1fd3dd80/answer` with a real
+`value` → `200 OK`, `answer_id=a8ddaa6bd49e2f83b9cb`, question status flips PENDING→ANSWERED
+(re-fetched and confirmed). `GET /onboarding/competency?entity_type=service&entity_id=svc:nginx`
+afterward shows facet `business_capability: state=CLAIMED, value="nginx serves the customer-facing
+reverse proxy for cust-edge", evidence_refs=["human:iter15-productizer",
+"question:bdb9bb5e66be555d1fd3dd80"], source_types=["human"]` — correctly stays `CLAIMED` (not
+auto-promoted to `VERIFIED`) since there is no matching machine `Fact` for `business_capability`;
+this confirms `competency_matrix`'s documented "Claim only promotes to VERIFIED via a matching
+machine Fact" contract holds on the real Twin, not just in unit tests.
+
+**Gap found (not fixed this iteration)**: `compute_readiness()` /
+`compute_business_flow_pct()` (`src/pkg/onboarding/discovery_doc.py:198-203`) — the
+`business_flow_confirmed_pct` component of the `UnderstandingComplete`/readiness gate is computed
+from a *different, disconnected* mechanism: a `service_topology` probe's `services[].described`
+boolean, which today is only ever set by a machine-parsed comment field in
+`src/remote_agent/collectors/discovery_evidence.py:122` (`parts[4]`), never by a human `Claim`
+answered through `/onboarding/questions/{id}/answer`. Practically this means answering every open
+Question for a tenant does **not** move that tenant's `readiness_flag` toward `true` — the
+Unknown→Question→Claim loop and the readiness/`UnderstandingComplete` gate are two parallel systems
+that don't talk to each other. Confirmed live: `staging-sim`'s `readiness_flag` was `false` before
+and after this iteration's answer (`compute_business_flow_pct` is unaffected by
+`competency_matrix`/`question_lifecycle` state). This is the next real bottleneck for Phase 6/7 of
+the golden journey — not addressed here because it requires a design decision (does readiness read
+from `competency_matrix` coverage instead of/in addition to `service_topology.described`?), which is
+out of scope for a single vertical slice without more research into who else depends on
+`compute_business_flow_pct`'s current contract.
+
+Verify: `tests/test_aoip_question_lifecycle.py`, `tests/test_gateway_onboarding_competency_routes.py`
+→ 19 passed (no code change this iteration, runtime-verification only). No K8s mutation —
+`OMNI_AUTO_EXECUTE_ENABLED=false` unchanged.
 
 ## Iteration 13 — "2 agents/2 tenants on 1 VM" test coverage + resolve_scope() closed (2026-07-02)
 

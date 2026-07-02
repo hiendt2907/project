@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-02T21:15:00Z",
+  "updated_at": "2026-07-02T22:10:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "83013c2",
+  "head": "a7c6847",
   "iteration": {
-    "id": "iter14-tenant-replay-01-multihost",
-    "bottleneck": "Iteration 9 final leftover: tenant-replay-01 only had 1/1 host (cust-edge) — no proof a single tenant's Twin can merge facts from multiple distinct hosts",
+    "id": "iter15-human-claim-runtime-verify",
+    "bottleneck": "PRODUCT_PROOF.md row 28: Unknown/Question/Human-Claim lifecycle (O2B) had code + unit tests but was never runtime-verified against the real cluster ('chưa kiểm trong iteration 1').",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "Installed a real second Remote Agent for tenant-replay-01 on VM cust-app (/opt/omni-remote-agent-replay01/, systemd unit omni-remote-agent-replay01.service, reused existing gateway API key), alongside the pre-existing staging-sim agent on that same VM. Runtime proof: agent log register/profile/evidence all 200 OK; Redis omni:aoip:system_model:tenant-replay-01 revision 54->66, facts now span {cust-edge, cust-app} (was {cust-edge} only); staging-sim Twin on the same shared VM unaffected ({cust-edge, cust-db, cust-app}/76 facts, unchanged -- cross-tenant isolation holds); GET /onboarding/competency?entity_type=host&entity_id=host:cust-app with tenant-replay-01's bearer token returns live VERIFIED facets sourced from agent:tenant-replay-01_cust-app. Added tests/test_onboarding_pipeline.py::TestOneTenantTwoHosts (2 tests) exercising accumulate_discovery_evidence() with two envelopes (same tenant_id, different namespace/agent_id), asserting Twin merge (revision=2, hosts=={host:cust-edge, host:cust-app}) and per-host provenance isolation. .venv/bin/python -m pytest tests/test_onboarding_pipeline.py -q -> 31 passed (was 29). Regression -k 'onboarding or gateway_api or tenant or provision' --ignore=tests/integration -q -> 159 passed (was 157, no regression). Reconfirmed OMNI_AUTO_EXECUTE_ENABLED=false on omni-fullstack post-change (VM agent install is read-only-evidence, no K8s mutation/executor/CRAT path touched). Full detail: docs/product/PRODUCT_PROOF.md Iteration 14.",
+    "last_successful_step": "Confirmed iteration 14 (second Agent for tenant-replay-01 on cust-app) was already committed at a7c6847 (state.json was stale, said 'not yet committed' -- corrected here). Then via kubectl port-forward svc/omni-gateway 18090:80, fetched real PENDING questions for tenant staging-sim (GET /onboarding/questions), found bdb9bb5e66be555d1fd3dd80 (svc:nginx, facet business_capability, PENDING). Answered it via POST /onboarding/questions/{id}/answer -> 200 OK, answer_id=a8ddaa6bd49e2f83b9cb, question flips PENDING->ANSWERED (re-fetched, confirmed). GET /onboarding/competency?entity_type=service&entity_id=svc:nginx afterward shows facet business_capability: state=CLAIMED, evidence_refs=[human:iter15-productizer, question:bdb9bb5e66be555d1fd3dd80] -- correctly NOT auto-promoted to VERIFIED (no matching machine Fact for business_capability), confirming the documented Claim-vs-Fact promotion contract holds on the real Twin. Gap found (not fixed): compute_business_flow_pct() (src/pkg/onboarding/discovery_doc.py:198-203), one of 3 conditions in the UnderstandingComplete readiness gate, reads service_topology.services[].described (machine-set only, via src/remote_agent/collectors/discovery_evidence.py:122) and is fully disconnected from competency_matrix/question_lifecycle -- answering every open Question for a tenant does not move readiness_flag toward true. Documented as next bottleneck, not fixed this iteration (needs a design decision). No code changed -- ran existing tests/test_aoip_question_lifecycle.py tests/test_gateway_onboarding_competency_routes.py -q -> 19 passed. Full detail: docs/product/PRODUCT_PROOF.md Iteration 15.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Not yet committed -- stage tests/test_onboarding_pipeline.py, docs/product/PRODUCT_PROOF.md, docs/operations/AUTONOMOUS_LOOP_STATE.json, docs/operations/AUTONOMOUS_LOOP_LEDGER.md, docs/handoffs/CURRENT_SESSION.md, .claude/skills/omni-autonomous-productizer/references/current-priority.md and commit. All iteration-9 leftovers are now closed. Next bottleneck TBD at next iteration start (candidates: cust-db agent for tenant-replay-01 for full 3/3 host parity with staging-sim, or move to next Phase 6/7 items -- UnderstandingComplete, Handover, operator portal UI)."
+    "next_step": "Stage docs/product/PRODUCT_PROOF.md, docs/operations/AUTONOMOUS_LOOP_STATE.json, docs/operations/AUTONOMOUS_LOOP_LEDGER.md, docs/handoffs/CURRENT_SESSION.md, .claude/skills/omni-autonomous-productizer/references/current-priority.md and commit (docs/test-run only, no source change this iteration). Next bottleneck candidates for iteration 16: (a) design + wire competency_matrix coverage into compute_business_flow_pct()/readiness gate so Human Claims can actually reach UnderstandingComplete=true, (b) runtime-verify the Handover-doc path (POST /onboarding/handover-doc, A8) which has code+unit tests but no Continuous-Productization-Loop runtime proof yet, (c) cust-db agent for tenant-replay-01 (3/3 host parity, lower priority -- pure scope expansion, not a bug)."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,12 +24,11 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Re-verified 2026-07-02T21:15:00Z: omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false unchanged (kubectl exec printenv). All core Deployments (omni-fullstack, omni-gateway, omni-onboarding, omni-brain-go, omni-ui, redis, kafka, postgres) Running via kubectl get deploy,pod -n multi-agent -o wide. This iteration's only mutation was on VM cust-app (new systemd unit + /opt dir for a Remote Agent) -- no K8s cluster mutation, no executor/CRAT path involved.",
+    "health_summary": "Verified 2026-07-02T22:10:00Z: all core Deployments Running (kubectl get pods -n multi-agent) -- omni-fullstack, omni-gateway (restarted 23m prior, healthy), omni-onboarding, omni-brain-go, omni-ui, redis-0, kafka, omni-postgres-0. Gateway service is ClusterIP port 80 (not 8090 -- 8090 is the in-pod health port only), used kubectl port-forward svc/omni-gateway 18090:80 for this iteration's HTTP calls. Only network activity this iteration was read + one POST against the real gateway API using existing tenant bearer tokens -- no K8s mutation, no VM change, OMNI_AUTO_EXECUTE_ENABLED untouched (still false per prior iteration's kubectl exec printenv check, not re-checked this iteration since no mutation occurred).",
     "deployed_images": {}
   },
   "working_tree": {
     "owned_changes": [
-      "tests/test_onboarding_pipeline.py",
       "docs/product/PRODUCT_PROOF.md",
       "docs/operations/AUTONOMOUS_LOOP_STATE.json",
       "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",
@@ -45,8 +44,7 @@
     "git rev-parse HEAD matches this file's head, or reconcile drift",
     "OMNI_AUTO_EXECUTE_ENABLED is false on all live deployments",
     "kubectl get deploy,pod,svc -A -o wide shows omni-fullstack/omni-onboarding/omni-gateway Running",
-    "Redis omni:aoip:system_model:tenant-replay-01 exists with revision >= 66 and hosts {cust-edge, cust-app}",
-    "orb -m cust-app sudo systemctl status omni-remote-agent-replay01.service is active",
+    "GET /onboarding/questions?tenant_id=staging-sim shows question bdb9bb5e66be555d1fd3dd80 status=ANSWERED (proof this iteration's answer persisted)",
     "docs/product/PRODUCT_PROOF.md iteration section matches this state's last known bottleneck",
     ".venv/bin/python -m pytest tests/ -q --ignore=tests/integration is green (minus known pre-existing flake test_register_then_real_system_metrics_emitted_through_real_pipeline)"
   ],

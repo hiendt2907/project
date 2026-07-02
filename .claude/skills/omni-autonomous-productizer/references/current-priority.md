@@ -16,9 +16,19 @@ danh sách này.
    `scripts/lib/remote_agent_provisioning.py`), nhưng CHƯA wire vào `src/remote_agent/agent.py`
    thật (chỉ có sẵn hàm `effective_config_summary()`, chưa log ở agent startup).
 5. Fresh tenant replay — chưa làm (phụ thuộc #1/#2).
-6. Unknown → Question → Human Claim → Verification — chưa được chứng minh đầy đủ runtime.
-7. UnderstandingComplete — chưa implement/chưa chứng minh.
-8. Handover — chưa implement/chưa chứng minh.
+6. ~~Unknown → Question → Human Claim → Verification — chưa được chứng minh đầy đủ runtime.~~ —
+   **VERIFIED_RUNTIME iteration 15**: `POST /onboarding/questions/{id}/answer` chạy thật trên
+   `staging-sim` (câu hỏi PENDING thật → ANSWERED → competency facet CLAIMED với evidence_refs
+   human:*). Xem PRODUCT_PROOF.md "Iteration 15".
+7. UnderstandingComplete — code tồn tại (`compute_readiness()` → `readiness_flag`) nhưng **gap mới
+   phát hiện iteration 15**: `business_flow_confirmed_pct` (một trong 3 điều kiện gate) chỉ đọc
+   `service_topology.described` do máy set (agent-parsed comment), KHÔNG đọc từ
+   `competency_matrix`/Human Claim — nghĩa là trả lời hết Question của tenant không đẩy
+   `readiness_flag` tiến gần `true`. Cần quyết định thiết kế trước khi sửa (đọc thêm từ
+   competency coverage hay giữ nguyên contract cũ) — chưa làm trong iteration này.
+8. Handover — **thực ra đã implement** (`POST /onboarding/handover-doc`, A8, wired vào cùng pipeline
+   accumulation với `service_topology`/`doc_snapshot` probe) nhưng CHƯA runtime-verify riêng trong
+   Continuous Productization Loop (chỉ có unit test) — ứng viên cho iteration kế tiếp.
 9. Operator portal — chỉ có API (`GET /onboarding/competency`, `/unknowns`, `/diagram`), chưa có
    UI.
 10. Network/dependency topology — Mermaid diagram đã tồn tại và chạy runtime thật

@@ -323,3 +323,37 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
   iteration-9 leftovers are now closed; next bottleneck TBD at next iteration start (candidates:
   `cust-db` agent for `tenant-replay-01` for full 3/3 host parity with `staging-sim`, or move to
   Phase 6/7 items — UnderstandingComplete, Handover, operator portal UI).
+
+### Checkpoint 2026-07-02T22:10:00Z
+- Iteration: iter15-human-claim-runtime-verify
+- Quota state: n/a
+- HEAD: a7c6847 (iteration 14 confirmed already committed — prior state.json was stale/said
+  "not yet committed"; corrected)
+- Acceptance: PASS
+- Last verified: PRODUCT_PROOF.md row 28 said Unknown/Question/Human-Claim lifecycle (O2B) was
+  never runtime-verified ("chưa kiểm trong iteration 1") despite having code + unit tests. Via
+  `kubectl port-forward svc/omni-gateway 18090:80`, fetched real PENDING questions for tenant
+  `staging-sim`, found `bdb9bb5e66be555d1fd3dd80` (`svc:nginx`, facet `business_capability`).
+  Answered via `POST /onboarding/questions/{id}/answer` → 200 OK, `answer_id=a8ddaa6bd49e2f83b9cb`,
+  question flips PENDING→ANSWERED (re-fetched, confirmed). `GET
+  /onboarding/competency?entity_type=service&entity_id=svc:nginx` then shows facet
+  `business_capability: state=CLAIMED, evidence_refs=[human:iter15-productizer,
+  question:bdb9bb5e66be555d1fd3dd80]` — correctly stays CLAIMED not VERIFIED (no matching machine
+  Fact), confirming the Claim-vs-Fact promotion contract holds on the real Twin. Gap found (not
+  fixed): `compute_business_flow_pct()` (`src/pkg/onboarding/discovery_doc.py:198-203`) — one of 3
+  conditions in the `UnderstandingComplete`/readiness gate — reads
+  `service_topology.services[].described` (machine-set only) and is fully disconnected from
+  `competency_matrix`/`question_lifecycle`; answering every open Question for a tenant does not move
+  `readiness_flag` toward `true`. Documented as next bottleneck candidate, not fixed this iteration
+  (needs a design decision on how readiness should read Claim coverage). No source code changed —
+  ran `tests/test_aoip_question_lifecycle.py tests/test_gateway_onboarding_competency_routes.py -q`
+  → 19 passed (no regression). No K8s mutation this iteration.
+- Reset at: n/a
+- Resume action: stage `docs/product/PRODUCT_PROOF.md`, `docs/operations/AUTONOMOUS_LOOP_STATE.json`,
+  `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`, `docs/handoffs/CURRENT_SESSION.md`,
+  `.claude/skills/omni-autonomous-productizer/references/current-priority.md` and commit
+  (docs/runtime-verification only, no source change). Next bottleneck candidates for iteration 16:
+  (a) wire `competency_matrix` coverage into the readiness gate so Human Claims can actually reach
+  `UnderstandingComplete=true`, (b) runtime-verify the Handover-doc path (`POST
+  /onboarding/handover-doc`, A8) which has code+unit tests but no Continuous-Productization-Loop
+  runtime proof yet, (c) `cust-db` agent for `tenant-replay-01` (3/3 host parity, lower priority).
