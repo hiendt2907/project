@@ -43,3 +43,24 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Pending: wire `idempotent=True` into a real Phase-4 fresh-tenant provisioning caller (not done yet — this iteration only unblocks it)
 - Reset at: n/a
 - Resume action: after commit, next bottleneck = Phase 4 of "Repeatable Tenant Onboarding Baseline" (fresh tenant `tenant-replay-01` via canonical provisioning + `scripts/lib/remote_agent_provisioning.py`)
+
+### Checkpoint 2026-07-02T14:45:00Z
+- Timestamp: 2026-07-02T14:45:00Z
+- Iteration: iter7-fresh-tenant-repeat-provisioning-proof
+- Quota state: n/a (not draining)
+- HEAD: 50d2149 (pre-commit of this iteration)
+- Acceptance: PASS — new `scripts/provision_fresh_tenant.py` calls `AdminConfigRepo.create_tenant(idempotent=True)`
+  directly against a real asyncpg pool. Ran twice against real Postgres in-cluster (`omni-postgres-0`
+  via `kubectl port-forward svc/omni-postgres 15432:5432`) for tenant `tenant-replay-01`. Verified by
+  direct `psql` query: exactly 1 row in `omni_admin.tenant`, exactly 1 audit event in
+  `omni_admin.config_change_log` (`actor=provisioning-tooling, action=create`) despite 2 calls —
+  first-time VERIFIED_RUNTIME proof of iteration 6's idempotent path (previously only VERIFIED_TEST
+  with FakePgPool). `.venv/bin/python -m pytest tests/test_admin_config_store.py
+  tests/test_remote_agent_provisioning.py -q` → 29 passed.
+- Last verified: psql query output captured in this checkpoint; PRODUCT_PROOF.md "Iteration 7" section updated.
+- Pending: commit this iteration. Phase 6-7 of "Repeatable Tenant Onboarding Baseline" still open —
+  `tenant-replay-01` only exists as an `omni_admin.tenant` row, no Agent/VM/discovery/Twin/Competency
+  wired to it yet, and no cross-tenant isolation proof vs `staging-sim` yet.
+- Reset at: n/a
+- Resume action: commit iter7, then next bottleneck = Phase 6 (provision Agent+VM for
+  `tenant-replay-01`, run golden journey end to end for it, prove isolation vs `staging-sim`).

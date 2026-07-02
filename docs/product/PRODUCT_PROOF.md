@@ -55,7 +55,34 @@ thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productiza
 4. `entity_id` param của `/onboarding/competency` yêu cầu format nội bộ `{entity_type}:{entity_id}` (vd `host:cust-app`) thay vì chỉ `cust-app` — API dễ gây nhầm lẫn cho operator, đáng cân nhắc UX fix ở iteration sau.
 5. ~~`coerce_evidence_dict()` cắt cứng `extracted_fact` ở 2000 ký tự~~ — **FIXED iteration 5**, xem bên dưới.
 6. ~~Tenant provisioning KHÔNG idempotent~~ — **FIXED iteration 6**: `create_tenant(..., idempotent=True)` opt-in param, xem bên dưới. API HTTP `POST /autonomy/tenants` (gateway) vẫn giữ nguyên semantics 409 cũ (không set `idempotent=True`) — không phá contract hiện có, chỉ mở đường cho caller nội bộ (provisioning tooling) dùng repeat-safe path.
-7. **Chưa có fresh-tenant runtime proof** — slice "Repeatable Tenant Onboarding Baseline" mới hoàn thành Phase 1-3 (inspect + safe evidence compaction + canonical provisioning module). Phase 4-7 (tạo tenant lab mới thật, provision qua canonical, chứng minh golden journey không cross-tenant contamination, repeat-provisioning proof, operator read-only flow) CHƯA chạy — cần VM/cluster thật, ngoài phạm vi thời gian iteration này. Không được coi golden journey là "repeatable" cho tới khi Phase 4-7 chạy xong.
+7. ~~Chưa có fresh-tenant runtime proof~~ — **PARTIAL iteration 7**: Phase 4 (repeat-provisioning
+   proof trên Postgres thật) DONE, xem bên dưới. Phase 6-7 (golden journey Tenant→Twin→Competency
+   không sửa tay cho tenant mới, cross-tenant isolation proof, operator read-only flow) CHƯA chạy —
+   `tenant-replay-01` mới có row `omni_admin.tenant`, CHƯA có Agent/VM thật gắn vào tenant này.
+
+## Iteration 7 — Fresh-tenant repeat-provisioning runtime proof (2026-07-02)
+
+**Bottleneck đã fix (Phase 4 của slice "Repeatable Tenant Onboarding Baseline"):**
+
+`scripts/provision_fresh_tenant.py` (MỚI) — canonical caller gọi thẳng
+`AdminConfigRepo.create_tenant(idempotent=True)` qua `asyncpg` pool thật, tách biệt khỏi HTTP
+`POST /autonomy/tenants` (gateway route cố ý giữ nguyên contract 409, không set `idempotent=True` —
+xem mục 6 ở trên). Chạy THẬT 2 lần liên tiếp trên Postgres thật trong cluster (port-forward
+`svc/omni-postgres`, tenant `tenant-replay-01`):
+- Lần 1: tạo tenant, 1 row `omni_admin.tenant`, 1 row `omni_admin.config_change_log`
+  (`actor=provisioning-tooling, action=create`).
+- Lần 2 (idempotent=True): trả về result giống hệt, **không** raise, **không** row thêm — verify
+  bằng `SELECT` trực tiếp: đúng 1 row tenant, đúng 1 audit event (`GROUP BY` count=1).
+
+`VERIFIED_RUNTIME` cho riêng phần "create_tenant(idempotent=True) an toàn khi re-run trên Postgres
+thật" — đây là bằng chứng runtime đầu tiên cho iteration 6 (trước đó chỉ `VERIFIED_TEST` với
+FakePgPool). Chưa DONE toàn bộ Phase 4-7 của slice: `tenant-replay-01` mới tồn tại ở tầng
+`omni_admin.tenant`, CHƯA có Agent provisioning + discovery + Twin + Competency thật cho tenant này
+(đó là Phase 6, cần VM lab riêng — ngoài phạm vi iteration này).
+
+Verify: `.venv/bin/python -m pytest tests/test_admin_config_store.py
+tests/test_remote_agent_provisioning.py -q` → 29 passed. Runtime: `psql` query trực tiếp trên
+`omni-postgres-0` qua port-forward, output đính kèm ledger.
 
 ## Iteration 5 — Safe evidence compaction + canonical provisioning module (2026-07-02)
 
