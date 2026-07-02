@@ -153,9 +153,20 @@ RAG `omni:rag:sop` HLEN=1019 (khớp MEMORY.md). Redis AOF enabled. Knowledge pi
 KHÔNG khớp con số "3 partitions" đã ghi trước đây (P1, chưa sửa trong slice này — xem risk register
 post-mortem).
 
-### Còn BLOCKED (chưa audit được)
-VM/Agent truth trên 3 VM lab (cust-edge/cust-app/cust-db, OrbStack) — chưa xác định đúng access
-method (`orb -m`/`ssh ...@orb`). Twin-vs-VM comparison phụ thuộc bước này, chưa thực hiện được.
+### VM/Agent truth (2026-07-02, giải quyết)
+Access method đúng là `orb -m <machine> <command>` (không phải SSH thẳng tới IP). Cả 3 VM lab đã
+audit trực tiếp: `cust-edge` (nginx :80, NFS, portmapper), `cust-app` (app :8080), `cust-db` (MySQL
+:3306 + Redis :6379, cả hai bind localhost-only). Agent chạy qua systemd unit
+`omni-remote-agent.service` (tên khác `aoip-agent` — đừng tìm nhầm unit).
+
+### Productization Iteration 1 — System Twin (2026-07-02)
+`omni:aoip:system_model:{tenant}` trống hoàn toàn dù O1/O2A/O2B claim DONE — root cause là
+**deployment drift**: image `multi-agent-system:latest` chưa `make docker-worker` rebuild kể từ
+`1bc6292`, pod chạy thiếu hẳn `_project_into_system_model`. Đã rebuild+redeploy (digest
+`c2d433daac77...`). Twin nay có dữ liệu thật cho 2/3 host (cust-edge, cust-db) — `cust-app` chưa có
+discovery probe nào (chỉ metrics/log probe), là bottleneck kế tiếp. Chi tiết + capability matrix:
+`docs/product/PRODUCT_PROOF.md`. Bài học: `test pass + push` KHÔNG chứng minh đã deploy — luôn
+`hasattr()` check module trong pod đang chạy trước khi coi slice DONE.
 
 ## COMMUNICATION
 

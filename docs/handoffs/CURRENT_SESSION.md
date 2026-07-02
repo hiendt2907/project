@@ -1,10 +1,25 @@
 # Current Session Handoff
 
-## Deliverable hiện tại (phiên này) — HOÀN TẤT
-**Runtime Drift Correction and Safety Restoration** — sau Whole-System Reality Audit phát hiện
-runtime lệch tài liệu, đã sửa P0 runtime trước, xác minh lại, rồi đồng bộ tài liệu trong cùng slice.
-Chi tiết đầy đủ: `docs/post-mortems/drift-correction-2026-07-02.md` + memory
-`project_drift_correction_2026_07_02`.
+## Deliverable hiện tại (phiên này) — 2 phần, cả hai HOÀN TẤT giai đoạn 1
+
+### Phần 1: Runtime Drift Correction and Safety Restoration — HOÀN TẤT
+Sau Whole-System Reality Audit phát hiện runtime lệch tài liệu, đã sửa P0 runtime trước, xác minh
+lại, rồi đồng bộ tài liệu trong cùng slice. Chi tiết đầy đủ: `docs/post-mortems/drift-correction-2026-07-02.md`
++ memory `project_drift_correction_2026_07_02`.
+
+### Phần 2: Continuous Productization Loop — Iteration 1 HOÀN TẤT (PARTIAL acceptance)
+Bottleneck: System Twin (`omni:aoip:system_model:*`) trống hoàn toàn dù O1/O2A/O2B claim DONE.
+**Root cause: deployment drift** — image `multi-agent-system:latest` chưa rebuild kể từ `1bc6292`
+(pod thiếu hẳn `_project_into_system_model`, xác minh bằng `hasattr()` trực tiếp trong pod). Đã
+`make docker-worker` + redeploy `omni-onboarding`+`omni-fullstack` → digest mới `c2d433daac77...`.
+**Runtime proof:** Twin nay có dữ liệu thật, revision tăng 6→18, facts khớp VM truth cho 2/3 host
+(cust-edge: nginx; cust-db: mariadbd:3306 + redis-server:6379). **cust-app CHƯA có discovery data**
+(chỉ có metrics/log probe, không có process_list/port_scan/service_topology) — bottleneck kế tiếp,
+CHƯA điều tra nguyên nhân. Chi tiết: `docs/product/PRODUCT_PROOF.md` (capability matrix + golden
+journey status, mỗi dòng trỏ evidence cụ thể) + memory `project_productization_iteration1_twin`.
+
+**Không commit code nào trong iteration 1** — root cause là deploy-only (không có diff source code,
+code local đã đúng từ trước). Chỉ commit docs (PRODUCT_PROOF.md, CLAUDE.md, handoff).
 
 ## Tóm tắt kết quả (before → after)
 
@@ -45,34 +60,40 @@ Không có blocker cho phần đã làm. VM/Agent truth trên 3 VM lab (cust-edg
 của OrbStack (`orb -m <machine> <command>` hoặc `ssh <machine>@orb`) — kết luận BLOCKED trước đó
 CHƯA đủ căn cứ, cần thử lại đúng cách trước khi kết luận lại.
 
-## Next step chính xác
-1. **Commit checkpoint cho slice này** (chưa làm — làm ngay đầu session sau nếu chưa commit):
-   `git add CLAUDE.md docs/handoffs/CURRENT_SESSION.md docs/post-mortems/drift-correction-2026-07-02.md`
-   + `git rm` đã stage sẵn cho `k8s/services/omni-analyst-service.yaml` — commit message gợi ý:
-   `fix(runtime): restore safe canonical omni deployment state`. Lưu ý: các thay đổi K8s (kubectl
-   delete/set env/annotate) đã áp dụng trực tiếp lên cluster, KHÔNG có file manifest tương ứng để
-   commit cho phần kill-switch/annotation (đó là live cluster state, không phải source-controlled) —
-   chỉ commit phần docs + xóa manifest orphan.
-2. **Tiếp tục Whole-System Reality Audit — Phần C/D/F (VM truth)**: khám phá đúng access method
-   OrbStack theo đúng thứ tự: `orb status` → `orb list` → `orb info <machine>` → thử
-   `orb -m <machine> hostname` → nếu lỗi mới thử `ssh <machine>@orb hostname` → chỉ kết luận BLOCKED
-   nếu CẢ HAI đều thất bại. Sau khi có access, audit VM truth (hostname/IP/route/listener/service),
-   Remote Agent runtime trên từng VM, rồi so sánh với System Twin (Fact/SystemModel/Competency
-   Matrix) cho tenant `staging-sim` (nay đã được provision đúng cách, có thể dùng làm case study).
-3. Chỉ sau khi VM/Twin audit xong và không phát hiện gap nghiêm trọng mới, mới quay lại quyết định
-   O2B (source acquisition planner) hay tiếp tục hardening theo phát hiện VM/Twin — **theo đề xuất
-   của user, ưu tiên VM/Twin validation trước O2B** vì hiện có Fact→SystemModel→Competency Matrix
-   nhưng chưa chứng minh chúng phản ánh đúng 3 VM thật.
+## Next step chính xác — Iteration 2 của Continuous Productization Loop
+**Bottleneck đã chọn sẵn cho iteration 2 (đừng chọn lại từ đầu):** điều tra vì sao Remote Agent trên
+`cust-app` (192.168.139.237) không bao giờ emit probe loại discovery
+(`process_list`/`port_scan`/`service_topology`/`nfs_topology`) — chỉ có `remote_system_metrics`/
+`remote_log_errors`. Bằng chứng: `omni:evrl:p:staging-sim_cust-app:*` trong Redis chỉ có 2 key đó,
+trong khi `cust-edge`/`cust-db` có đủ 4-5 probe loại discovery. Log agent trên cust-app
+(`/var/log/omni-agent.log` qua `orb -m cust-app tail -f /var/log/omni-agent.log`) cho thấy
+`POST .../webhook/agent/evidence "200 OK"` liên tục — network/gateway OK, vấn đề nằm ở phía
+collector scheduling trong `src/remote_agent/` (có thể do config env khác biệt, ví dụ
+`OMNI_AGENT_LOG_PATHS=/mnt/customer_logs/app.log` chỉ có trên cust-app — kiểm tra xem có flag nào
+tắt discovery collector khi biến này được set).
+
+Sau khi cust-app có discovery data đầy đủ (Twin 3/3 host), bottleneck tiếp theo nên là:
+1. Sửa `agent:unknown` trong provenance (`src/aoip/onboarding_projection.py` — `to_observation()`
+   không điền `agent_id` thật).
+2. Operator visibility cho Twin (hiện chỉ đọc được qua `redis-cli` trực tiếp — vi phạm Phase 11 của
+   Master Prompt "Python function nội bộ không phải operator-visible"). Có thể là API endpoint đơn
+   giản `GET /onboarding/{tenant}/system-model` trước, ghi rõ PARTIAL nếu chưa có UI.
+3. Chỉ sau khi Twin 3/3 host + có operator visibility mới quay lại quyết định O2B (source acquisition
+   planner) — **theo đề xuất của user, golden journey Tenant→Agent→Discovery→Fact→Twin→Competency
+   phải chạy mượt trước khi mở rộng sang Question/UnderstandingComplete**.
 
 ## Không được làm lại
 - Không audit lại pipeline discovery→onboarding→SystemModel→CompetencyMatrix→Question từ đầu (đã
   map ở 3 commit O1/O2A/O2B trước đó — `1bc6292`/`cf9133f`/`c9cf0f7`).
-- Không coi kết luận "BLOCKED — không SSH được VM" của audit lần trước là cuối cùng — đó là do thử
-  sai access method (SSH thẳng tới IP), CHƯA thử `orb -m`/`ssh ...@orb`.
+- Không coi VM lab là BLOCKED — access method đúng là `orb -m <machine> <command>`, đã audit xong cả
+  3 VM trong phiên này.
 - Không tự động tạo lại Deployment `omni-analyst/core/executor/prober/worker` — đã xác nhận RETIRED
   qua git history, không phải xóa nhầm.
 - Không revert `OMNI_AUTO_EXECUTE_ENABLED` về `true` mà không có yêu cầu tường minh mới từ user kèm
   cùng mức cẩn trọng như lần bật gốc (2026-06-11).
+- Không giả định code local chưa deploy đúng chỉ vì runtime thiếu dữ liệu — LUÔN xác minh bằng
+  `hasattr()`/`inspect.getsource()` trực tiếp trong pod trước khi sửa code (bài học iteration 1 —
+  lỗi thực ra là deployment drift, không phải logic bug).
 - Không tạo bảng/schema Postgres bằng SQL thủ công — canonical path đã có (`run_migrations()` +
   `AdminConfigRepo.create_tenant()`).
 
