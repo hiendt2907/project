@@ -185,6 +185,30 @@ mở từ iteration 9.
 Verify: `git show HEAD -- scripts/provision_fresh_tenant.py`; `grep -n provision_api_key
 scripts/provision_fresh_tenant.py`.
 
+## Iteration 12 — pytest coverage for provision_api_key() (2026-07-02)
+
+**Bottleneck đã fix**: iteration 11's "Chưa DONE" — `provision_api_key()` (subprocess wrapper
+calling `add_tenant_api_key.sh`) only had live-cluster manual proof, no CI-safe automated test.
+
+**Fix**: `tests/test_provision_fresh_tenant.py` (mới, 3 test) — mock `subprocess.run` to assert
+`provision_api_key()` invokes `["bash", str(ADD_API_KEY_SCRIPT), tenant_id]` với `check=True` và
+đúng `cwd` (project root); asserts `subprocess.CalledProcessError` propagates (no swallowed
+failure); asserts `ADD_API_KEY_SCRIPT` resolves to a real file on disk. Scope: subprocess wiring
+only — the real Postgres/gateway mutation path stays covered by the iteration 11 live-cluster
+runtime proof, not re-tested here (would require live Postgres + gateway, out of scope for a unit
+test).
+
+**VERIFIED_TEST**: `.venv/bin/python -m pytest tests/test_provision_fresh_tenant.py -q` → 3 passed.
+Regression check `.venv/bin/python -m pytest -k "onboarding or gateway_api or tenant or provision"
+--ignore=tests/integration -q` → 155 passed (was 146 in iteration 11 baseline + these 3 new + other
+already-existing tests newly matched by the broadened `provision` keyword).
+
+**Chưa DONE**: multi-host cho `tenant-replay-01`, `resolve_scope()` UX gap, "2 agents/2 tenants" test
+coverage vẫn mở từ iteration 9 — decide whether Phase 6/7 of the slice needs these before declaring
+"Repeatable Tenant Onboarding Baseline" fully DONE.
+
+Verify: `.venv/bin/python -m pytest tests/test_provision_fresh_tenant.py -q`.
+
 ## Iteration 7 — Fresh-tenant repeat-provisioning runtime proof (2026-07-02)
 
 **Bottleneck đã fix (Phase 4 của slice "Repeatable Tenant Onboarding Baseline"):**

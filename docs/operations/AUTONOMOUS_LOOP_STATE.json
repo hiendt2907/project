@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-02T19:05:00Z",
+  "updated_at": "2026-07-02T19:40:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "deb8ea8",
+  "head": "df5e753",
   "iteration": {
-    "id": "iter11-wire-apikey-into-provision-fresh-tenant",
-    "bottleneck": "Iteration 10 leftover: provision_fresh_tenant.py (Postgres row) and add_tenant_api_key.sh (gateway secret) were still 2 separate manual commands",
+    "id": "iter12-pytest-coverage-provision-api-key",
+    "bottleneck": "Iteration 11 leftover: provision_api_key() in scripts/provision_fresh_tenant.py had only live-cluster manual proof, no CI-safe automated test",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "Wired scripts/add_tenant_api_key.sh into scripts/provision_fresh_tenant.py via a new provision_api_key() subprocess call, run automatically after the Postgres tenant row is created (added --skip-api-key escape hatch). Verified live on the real cluster: (1) single command 'provision_fresh_tenant.py --tenant-id tenant-wiretest-01' created the Postgres row AND generated+patched the gateway API key AND rolled out omni-gateway, in one process; (2) idempotent re-run no-op'd both the Postgres insert and the secret patch, same key returned; (3) gateway healthz {\"status\":\"ok\"} after mutation; (4) cleanup reverted OMNI_TENANT_APIKEYS to the original 3-tenant value + rolling-restarted + verified content match + healthz ok again, and DELETEd the tenant-wiretest-01 Postgres row, confirmed only the 3 original tenants remain. Ran pytest -k 'onboarding or gateway_api or tenant' --ignore=tests/integration -> 146 passed (no regression). Full detail: docs/product/PRODUCT_PROOF.md Iteration 11.",
+    "last_successful_step": "Added tests/test_provision_fresh_tenant.py (3 tests): mocks subprocess.run to assert provision_api_key() invokes ['bash', str(ADD_API_KEY_SCRIPT), tenant_id] with check=True and correct cwd (project root); asserts subprocess.CalledProcessError propagates instead of being swallowed; asserts ADD_API_KEY_SCRIPT resolves to a real file on disk. Ran .venv/bin/python -m pytest tests/test_provision_fresh_tenant.py -q -> 3 passed. Regression check -k 'onboarding or gateway_api or tenant or provision' --ignore=tests/integration -> 155 passed (was 146 baseline). Reconfirmed omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false and all core pods 1/1 Running via kubectl (no live mutation needed this iteration — live path already proven in iteration 11). Full detail: docs/product/PRODUCT_PROOF.md Iteration 12.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "No automated (pytest) test exists yet for provision_fresh_tenant.py's new provision_api_key() call path — only live-cluster manual verification. Also still open from iteration 9: decide if Phase 6 needs multi-host coverage for tenant-replay-01 before calling the slice's Phase 7 (repeatability + operator proof polish) DONE, add automated test coverage for '2 agents/2 tenants on 1 VM', and consider whether resolve_scope() silent-override should become an explicit 403."
+    "next_step": "Not yet committed — stage tests/test_provision_fresh_tenant.py, docs/product/PRODUCT_PROOF.md, docs/operations/AUTONOMOUS_LOOP_STATE.json, docs/operations/AUTONOMOUS_LOOP_LEDGER.md, docs/handoffs/CURRENT_SESSION.md and commit. Then decide next bottleneck from iteration 9 leftovers: multi-host for tenant-replay-01 (Phase 6 decision), '2 agents/2 tenants on 1 VM' test coverage, or resolve_scope() silent-override -> explicit 403 UX fix."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -29,7 +29,7 @@
   },
   "working_tree": {
     "owned_changes": [
-      "scripts/provision_fresh_tenant.py",
+      "tests/test_provision_fresh_tenant.py",
       "docs/product/PRODUCT_PROOF.md",
       "docs/operations/AUTONOMOUS_LOOP_STATE.json",
       "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",

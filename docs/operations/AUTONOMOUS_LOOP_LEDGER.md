@@ -217,3 +217,32 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Reset at: n/a
 - Resume action: next iteration decides between adding pytest coverage for the new wiring, the
   Phase 6 multi-host decision, or the resolve_scope() UX gap as the next bottleneck.
+
+### Checkpoint 2026-07-02T19:40:00Z
+- Timestamp: 2026-07-02T19:40:00Z
+- Iteration: iter12-pytest-coverage-provision-api-key
+- Quota state: N/A (not draining)
+- HEAD: df5e753 (unchanged this iteration — test-only addition, not yet committed)
+- Acceptance: PASSED
+- Last verified: 2026-07-02T19:40:00Z
+- Bottleneck: iteration 11's leftover — `provision_api_key()` in `scripts/provision_fresh_tenant.py`
+  only had live-cluster manual proof, no CI-safe automated test.
+- Fix: new `tests/test_provision_fresh_tenant.py` (3 tests) — mocks `subprocess.run` to assert the
+  exact `bash add_tenant_api_key.sh <tenant_id>` invocation with `check=True` and correct `cwd`;
+  asserts `CalledProcessError` propagates instead of being swallowed; asserts `ADD_API_KEY_SCRIPT`
+  resolves to a real file. Read-only w.r.t. cluster — no live mutation this iteration (not needed;
+  live path already runtime-proven in iteration 11).
+- Runtime proof: reused iteration 11's live-cluster proof (unchanged this iteration) — omni-fullstack
+  `OMNI_AUTO_EXECUTE_ENABLED=false` reconfirmed via `kubectl get deploy omni-fullstack -o jsonpath`,
+  all core pods 1/1 Running (`kubectl get deploy,pod -n multi-agent`).
+- Test suite: `.venv/bin/python -m pytest tests/test_provision_fresh_tenant.py -q` → 3 passed.
+  `.venv/bin/python -m pytest -k "onboarding or gateway_api or tenant or provision"
+  --ignore=tests/integration -q` → 155 passed (was 146 in iteration 11 baseline; +3 new +6 more
+  matched by broadened `provision` keyword — no regressions).
+- Pending: multi-host for tenant-replay-01, "2 agents/2 tenants" test coverage, resolve_scope() UX
+  gap — all still open from iteration 9, unaffected by this iteration.
+- Reset at: n/a
+- Resume action: not yet committed — next step is `git add tests/test_provision_fresh_tenant.py
+  docs/product/PRODUCT_PROOF.md docs/operations/AUTONOMOUS_LOOP_STATE.json
+  docs/operations/AUTONOMOUS_LOOP_LEDGER.md docs/handoffs/CURRENT_SESSION.md` + commit, then decide
+  next bottleneck (multi-host Phase 6 decision vs resolve_scope() UX fix).
