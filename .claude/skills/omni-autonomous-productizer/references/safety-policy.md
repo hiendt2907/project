@@ -43,7 +43,12 @@ của người dùng, không phải của agent tự trị.
 ## Quy tắc chung
 
 - Không in secret ra output/log/commit message.
-- Không tự dùng quyền bypass vô hạn (`--dangerously-skip-permissions` và tương đương bị cấm).
+- Không tự dùng quyền bypass vô hạn (`--dangerously-skip-permissions` và tương đương bị cấm theo
+  mặc định). **Ngoại lệ duy nhất**: `scripts/supervisor.sh` dùng flag này cho các invocation
+  `claude -p` không tương tác của nó, vì `-p` không có TTY nên mọi Edit/Write/Bash bị auto-deny
+  nếu không có override — đây là quyết định user đã xác nhận tường minh 2 lần sau khi được cảnh báo
+  rủi ro (2026-07-02), KHÔNG phải hành vi mặc định của skill này. `OMNI_AUTO_EXECUTE_ENABLED=false`
+  là kill-switch riêng, không liên quan và không bị ảnh hưởng bởi ngoại lệ này.
 - Không sửa live Kubernetes object trực tiếp (`kubectl edit`/`kubectl patch` ad hoc) mà bỏ quên
   source of truth trong git — mọi thay đổi manifest phải quay lại repo.
 

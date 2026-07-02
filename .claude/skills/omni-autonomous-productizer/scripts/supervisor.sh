@@ -1,10 +1,25 @@
 #!/usr/bin/env bash
 # External supervisor for the omni-autonomous-productizer loop. Pure
 # orchestration only: inspect state -> sleep until quota reset -> invoke
-# `claude -p "/omni-autonomous-productizer resume"` -> repeat. Never edits
-# code, deploys, deletes resources, bypasses permissions, enables
-# auto-execute, commits, or pushes — those are exclusively the skill's job
-# inside an actual Claude Code invocation.
+# `claude -p "/omni-autonomous-productizer resume|one-iteration"` -> repeat.
+# The supervisor process itself never edits code, deploys, deletes
+# resources, enables auto-execute, commits, or pushes — those only ever
+# happen inside the invoked `claude -p` process.
+#
+# ⚠️  SAFETY OVERRIDE (explicit, twice-confirmed user request, 2026-07-02):
+# `claude -p` runs non-interactively (no TTY), so without a permission
+# override every Edit/Write/Bash call is auto-denied and the loop hot-loops
+# doing nothing (observed live: iterations 7+ all blocked on
+# src/gateway/routes/autonomy.py, no progress). The user was shown the
+# safer alternative (scoped --allowedTools allowlist) and explicitly chose
+# full --dangerously-skip-permissions instead, twice, after the tradeoff was
+# explained. This CONTRADICTS the general project rule "never use
+# --dangerously-skip-permissions" — it is enabled here ONLY because of that
+# explicit override, not by default project policy. If you did not
+# personally ask for this, do not re-enable it after disabling.
+# OMNI_AUTO_EXECUTE_ENABLED=false remains a SEPARATE, unrelated safety gate
+# inside Omni itself (K8s mutation kill-switch) — this override does not
+# touch it and never should.
 #
 # Usage:
 #   scripts/supervisor.sh --start   # run the supervise loop in the foreground
@@ -18,6 +33,7 @@ STATE="${PROJECT_ROOT}/docs/operations/AUTONOMOUS_LOOP_STATE.json"
 LOCK_DIR="${PROJECT_ROOT}/.autonomous-loop"
 LOCK_FILE="${LOCK_DIR}/supervisor.lock"
 LOG_DIR="${LOCK_DIR}/logs"
+CLAUDE_FLAGS=(--dangerously-skip-permissions)
 
 mkdir -p "$LOG_DIR"
 
@@ -111,14 +127,18 @@ supervise_loop() {
         if python3 "${SCRIPT_DIR}/calculate_sleep.py" --state-file "$STATE" --sleep; then
           backoff=30
         fi
-        log "invoking resume"
-        if claude -p "/omni-autonomous-productizer resume" >>"${LOG_DIR}/supervisor.log" 2>&1; then
+        log "invoking resume (${CLAUDE_FLAGS[*]})"
+        if claude -p "/omni-autonomous-productizer resume" "${CLAUDE_FLAGS[@]}" >>"${LOG_DIR}/supervisor.log" 2>&1; then
           backoff=30
         else
           log "resume invocation failed — backing off ${backoff}s"
           sleep "$backoff"
           backoff=$(( backoff * 2 > max_backoff ? max_backoff : backoff * 2 ))
         fi
+        # Unconditional pacing floor — a live session runs many API calls and
+        # takes minutes in practice, but if something ever returns instantly
+        # this stops the loop from hot-looping (and burning quota) on repeat.
+        sleep 10
         ;;
       IDLE)
         # No live session mid-iteration and nothing to sleep for — this is
@@ -127,14 +147,15 @@ supervise_loop() {
         # (or QUOTA_DRAINING/SLEEPING_UNTIL_QUOTA_RESET) on its own; it never
         # opens a second iteration itself, so calling it repeatedly here is
         # what actually drives the 24/7 loop forward.
-        log "status=IDLE — invoking one-iteration"
-        if claude -p "/omni-autonomous-productizer one-iteration" >>"${LOG_DIR}/supervisor.log" 2>&1; then
+        log "status=IDLE — invoking one-iteration (${CLAUDE_FLAGS[*]})"
+        if claude -p "/omni-autonomous-productizer one-iteration" "${CLAUDE_FLAGS[@]}" >>"${LOG_DIR}/supervisor.log" 2>&1; then
           backoff=30
         else
           log "one-iteration invocation failed — backing off ${backoff}s"
           sleep "$backoff"
           backoff=$(( backoff * 2 > max_backoff ? max_backoff : backoff * 2 ))
         fi
+        sleep 10
         ;;
       BLOCKED_FOR_HUMAN)
         log "status=BLOCKED_FOR_HUMAN — supervisor exiting, human action required"

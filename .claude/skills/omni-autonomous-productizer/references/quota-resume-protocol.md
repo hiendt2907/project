@@ -71,8 +71,17 @@ launchd), có nhiệm vụ THUẦN orchestration:
 Claude invocation → state inspection → sleep → resume
 ```
 
-Supervisor **không được** tự: sửa code, deploy, xóa resource, bypass permission, bật auto-execute,
-commit, push. Mọi thay đổi sản phẩm phải do Claude (qua skill) thực hiện.
+Supervisor process (bash script) **không được** tự: sửa code, deploy, xóa resource, bật
+auto-execute, commit, push — nó chỉ gọi `claude -p` rồi để invocation đó tự làm mọi thứ theo skill.
+Mọi thay đổi sản phẩm phải do Claude (qua skill) thực hiện.
+
+⚠️ **Override đã kích hoạt (2026-07-02, user xác nhận tường minh 2 lần)**: các invocation `claude -p`
+trong `supervisor.sh` chạy với `--dangerously-skip-permissions` vì `-p` không có TTY để duyệt
+permission — không có flag này, mọi Edit/Write/Bash bị auto-deny và loop hot-loop vô ích (đã quan
+sát thật: nhiều iteration liên tiếp bị chặn ở `src/gateway/routes/autonomy.py`, 0 tiến triển). Đây
+LÀ NGOẠI LỆ so với quy tắc mặc định "không dùng --dangerously-skip-permissions" bên dưới — chỉ áp
+dụng cho invocation của riêng supervisor.sh, không áp dụng cho phiên tương tác thường.
+`OMNI_AUTO_EXECUTE_ENABLED=false` là kill-switch riêng, không bị ảnh hưởng.
 
 Yêu cầu với supervisor.sh:
 - Lock file chống chạy hai instance song song.
@@ -91,7 +100,8 @@ Yêu cầu với supervisor.sh:
 - Nếu state JSON invalid (`validate_state.py` exit non-zero) → dừng, log lỗi rõ ràng.
 - Log vào `.autonomous-loop/logs/`.
 - Dùng `caffeinate` trên macOS nếu có sẵn (tránh sleep hệ điều hành trong lúc chờ).
-- KHÔNG dùng `--dangerously-skip-permissions` hay tương đương.
+- `--dangerously-skip-permissions` chỉ dùng trong invocation `claude -p` (xem override ở trên) —
+  KHÔNG tự thêm flag tương đương ở nơi khác trong script.
 - Backoff khi gặp quota/rate-limit lặp lại (không retry nhanh liên tục).
 - `trap` cleanup lock file khi thoát (kể cả SIGINT/SIGTERM).
 - Tự kiểm tra không có supervisor khác đang chạy trước khi start.
