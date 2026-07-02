@@ -10,11 +10,11 @@ import type { NavItem } from "@aoip/shared-types";
 // phải product domain giả. Route product-domain cũ giữ trên đĩa nhưng KHÔNG liệt kê (dọn sau).
 export const PROVIDER_NAV: NavItem[] = [
   { label: "Overview", href: "/", implemented: true },
-  { label: "Agents", href: "/agents", implemented: false, slice: "Fleet projection" },
-  { label: "Understanding", href: "/understanding", implemented: false, slice: "Understanding projection" },
+  { label: "Agents", href: "/agents", implemented: true },
+  { label: "Understanding", href: "/understanding", implemented: true },
   { label: "Missions", href: "/missions", implemented: false, slice: "Mission projection" },
   { label: "Incidents", href: "/incidents", implemented: false, slice: "Incident timeline projection" },
-  { label: "Human Inbox", href: "/human-inbox", implemented: false, slice: "Human Inbox projection" },
+  { label: "Human Inbox", href: "/human-inbox", implemented: true },
   { label: "Audit", href: "/audit", implemented: false, slice: "Audit & trace projection" },
 ];
 

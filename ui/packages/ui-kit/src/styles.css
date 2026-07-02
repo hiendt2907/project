@@ -33,6 +33,7 @@ body[data-kind="tenant"] { --accent: #6cb6ff; }
 .aoip-k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
 .aoip-v { font-size: 15px; margin-bottom: 14px; word-break: break-all; }
 .aoip-chip { display: inline-block; background: #0e1620; border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px; margin: 0 6px 6px 0; color: var(--accent); }
+.aoip-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .aoip-state { padding: 24px; text-align: center; color: var(--muted); }
 .aoip-center { text-align: center; }
 .aoip-muted { color: var(--muted); font-size: 12px; }
@@ -64,3 +65,28 @@ body[data-kind="tenant"] { --accent: #6cb6ff; }
 .aoip-dot.ok { background: #3fb950; }
 .aoip-dot.down { background: #ff7b72; }
 .aoip-dot.unavailable { background: #8a6d3b; }
+.aoip-ok { color: #3fb950; }
+.aoip-table-wrap { overflow-x: auto; }
+.aoip-table { width: 100%; border-collapse: collapse; min-width: 820px; }
+.aoip-table th {
+  color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+}
+.aoip-table td { vertical-align: top; padding: 10px; border-bottom: 1px solid var(--line); }
+.aoip-table tr:last-child td { border-bottom: none; }
+.aoip-pill {
+  display: inline-block; border: 1px solid var(--line); border-radius: 999px;
+  padding: 2px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+}
+.aoip-pill.online, .aoip-pill.idle { color: #3fb950; border-color: #2f7d45; }
+.aoip-pill.stale, .aoip-pill.active { color: #f0b429; border-color: #8a6d3b; }
+.aoip-pill.offline, .aoip-pill.failed { color: #ff7b72; border-color: #8e3b3b; }
+.aoip-question { border-top: 1px solid var(--line); padding: 12px 0; }
+.aoip-question:first-of-type { border-top: none; }
+.aoip-answer { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.aoip-input {
+  font: inherit; min-width: 240px; flex: 1; color: var(--text); background: #0e1620;
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px;
+}
+.aoip-input:focus { outline: none; border-color: var(--accent); }
+.aoip-err { color: #ff7b72; font-size: 12px; }

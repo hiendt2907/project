@@ -17,11 +17,16 @@ import time
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+from pydantic import BaseModel, Field
 
 from aoip.console import assets, identity, identity_store, oidc
+from aoip.console.agents import build_provider_agents
 from aoip.console.authz import KIND_PROVIDER, KIND_TENANT, P_RAW_EVIDENCE, P_VIEW, Principal
+from aoip.console.human_inbox import build_provider_human_inbox
 from aoip.console.overview import build_provider_overview
 from aoip.console.projections import provider_incident, tenant_incident
+from aoip.console.understanding import build_provider_understanding
+from aoip.question_lifecycle import submit_answer
 from aoip.agent.trace import RuntimeTrace
 
 # Cookie session HOST-SCOPED, tên RIÊNG mỗi portal → không đụng nhau trên cùng trình duyệt
@@ -30,6 +35,12 @@ from aoip.agent.trace import RuntimeTrace
 PROVIDER_COOKIE = "aoip_provider_session"
 TENANT_COOKIE = "aoip_tenant_session"
 SESSION_COOKIE = PROVIDER_COOKIE  # backward-compat cho import cũ (provider app)
+
+
+class AnswerQuestionBody(BaseModel):
+    value: str = Field(..., min_length=1, max_length=500)
+    answered_by: str | None = Field(default=None, max_length=120)
+    confidence: float = Field(default=0.6, ge=0.0, le=1.0)
 
 
 async def _default_http_json(method: str, url: str, *, data=None, auth=None) -> dict:
@@ -208,6 +219,38 @@ def create_provider_app(redis, *, oidc_http=None) -> FastAPI:
         pool = getattr(request.app.state, "pool", None)
         return await build_provider_overview(redis, pool, trace, now=time.time())
 
+    @app.get("/api/provider/v1/agents")
+    async def agents(p: Principal = Depends(provider)) -> dict:
+        # Remote-agent fleet projection từ Redis registry/checks/command ready-set.
+        # Không tạo nguồn sự thật thứ hai; chỉ chuẩn hoá thành bảng operator đọc được.
+        return await build_provider_agents(redis, now=time.time())
+
+    @app.get("/api/provider/v1/understanding")
+    async def understanding(p: Principal = Depends(provider)) -> dict:
+        # System Twin + Competency + Unknowns projection từ AOIP runtime store.
+        return await build_provider_understanding(redis, now=time.time())
+
+    @app.get("/api/provider/v1/human-inbox")
+    async def human_inbox(p: Principal = Depends(provider)) -> dict:
+        # Unknown -> Question projection. May open bounded structured questions
+        # from existing Unknowns so the operator can answer them in-product.
+        return await build_provider_human_inbox(redis, now=time.time())
+
+    @app.post("/api/provider/v1/questions/{tenant}/{question_id}/answer")
+    async def answer_question(tenant: str, question_id: str, body: AnswerQuestionBody,
+                              p: Principal = Depends(provider)) -> dict:
+        answer = await submit_answer(
+            redis, tenant, question_id,
+            answered_by=body.answered_by or p.subject,
+            value=body.value,
+            source_channel="provider_portal",
+            confidence=body.confidence,
+            now=time.time(),
+        )
+        if answer is None:
+            raise HTTPException(404, "question not found or not pending")
+        return {"tenant_id": tenant, "question_id": question_id, "answer": answer}
+
     @app.get("/api/provider/v1/tenants")
     async def tenants(p: Principal = Depends(provider)) -> dict:
         out = []
@@ -341,4 +384,3 @@ def create_tenant_app(redis, *, oidc_http=None) -> FastAPI:
         return resp
 
     return app
-

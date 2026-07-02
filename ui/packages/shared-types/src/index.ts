@@ -66,6 +66,113 @@ export interface ProviderOverview {
   recent_activity: Metric<RecentActivity[]>;
 }
 
+export interface ProviderAgentLastCheck {
+  probe: string;
+  ts: number;
+  result: string;
+  summary: string;
+}
+
+export interface ProviderAgent {
+  agent_id: string;
+  tenant_id: string;
+  hostname: string;
+  status: "online" | "stale" | "offline" | string;
+  online: boolean;
+  age_seconds: number;
+  last_seen: number;
+  version: string;
+  platform: string;
+  capabilities: string[];
+  discovery_enabled: boolean;
+  evidence_count: number;
+  last_discovery_result: ProviderAgentLastCheck | null;
+  command_state: string;
+  pending_commands: number;
+}
+
+export interface ProviderAgentsResponse {
+  generated_at: number;
+  summary: { total: number; online: number; stale: number; offline: number };
+  agents: ProviderAgent[];
+}
+
+export interface ProviderTwinFact {
+  subject: string;
+  predicate: string;
+  object: string;
+  confidence: number;
+  provenance: string[];
+  observation_time: number;
+  verified_time: number;
+  freshness_seconds: number;
+}
+
+export interface ProviderCompetencyProjection {
+  entity_type: string;
+  entity_id: string;
+  coverage: { coverage_pct: number; state_counts: Record<string, number> };
+  critical_unknowns: string[];
+  contradicted_facets: string[];
+}
+
+export interface ProviderTenantUnderstanding {
+  tenant_id: string;
+  twin: {
+    revision: number;
+    entity_count: number;
+    fact_count: number;
+    relationship_count: number;
+    unknown_edge_targets: string[];
+  };
+  entities: string[];
+  relationships: ProviderTwinFact[];
+  facts: ProviderTwinFact[];
+  contradictions: Record<string, unknown>[];
+  contradiction_count: number;
+  unknowns: Record<string, unknown>[];
+  unknown_count: number;
+  questions: Record<string, unknown>[];
+  question_count: number;
+  competency: ProviderCompetencyProjection[];
+}
+
+export interface ProviderUnderstandingResponse {
+  generated_at: number;
+  tenant_count: number;
+  tenants: ProviderTenantUnderstanding[];
+}
+
+export interface ProviderQuestion {
+  question_id: string;
+  tenant_id: string;
+  entity_type: string;
+  entity_id: string;
+  facet: string;
+  text: string;
+  context_summary: string;
+  known_evidence: string[];
+  status: string;
+  target_role: string;
+  can_create_claim: boolean;
+  created_at: number;
+  answer_id?: string;
+}
+
+export interface ProviderHumanInboxTenant {
+  tenant_id: string;
+  unknown_count: number;
+  question_count: number;
+  pending_questions: number;
+  questions: ProviderQuestion[];
+}
+
+export interface ProviderHumanInboxResponse {
+  generated_at: number;
+  summary: { tenants: number; unknowns: number; pending_questions: number };
+  tenants: ProviderHumanInboxTenant[];
+}
+
 /** Một mục điều hướng Provider. `implemented=false` → route đánh dấu unavailable, KHÔNG giả. */
 export interface NavItem {
   label: string;
