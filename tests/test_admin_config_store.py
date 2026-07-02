@@ -475,6 +475,16 @@ async def test_create_tenant_rejects_duplicate(pool, redis):
         await repo.create_tenant(tenant_id="dup", display_name="Dup2", actor="admin")
 
 
+async def test_create_tenant_idempotent_true_is_repeatable(pool, redis) -> None:
+    repo = AdminConfigRepo(pool, redis=redis)
+    first = await repo.create_tenant(tenant_id="replay", display_name="Replay", actor="admin", idempotent=True)
+    second = await repo.create_tenant(tenant_id="replay", display_name="Replay", actor="admin", idempotent=True)
+    assert first == second == {"tenant_id": "replay", "display_name": "Replay"}
+    # no duplicate row and no extra audit event on the second (no-op) call
+    assert len([t for t in pool.store.tenant if t == "replay"]) == 1
+    assert len([o for o in pool.store.crat_outbox if o["dedup_key"] == "tenant:replay:create"]) == 1
+
+
 async def test_decide_hitl_idempotent_and_enqueues_outbox(pool, redis):
     repo = AdminConfigRepo(pool, redis=redis)
     pool.store.hitl["p1"] = {

@@ -9,9 +9,8 @@ danh sách này.
 1. Repeatable tenant onboarding — Phase 4-7 của slice "Repeatable Tenant Onboarding Baseline" chưa
    chạy (fresh tenant thật, repeatability, operator proof, deploy+observe). Phase 1-3 đã DONE
    (commit `e8a8c96`).
-2. **Blocker cho #1**: `AdminConfigRepo.create_tenant()`
-   (`src/services/admin_config/repo.py:574-578`) không idempotent — raise `ValueError` nếu tenant
-   tồn tại. Phải sửa trước khi làm Phase 5 (repeat provisioning).
+2. ~~Blocker cho #1: `AdminConfigRepo.create_tenant()` không idempotent~~ — **DONE iteration 6**:
+   `idempotent=True` opt-in param thêm, test `VERIFIED_TEST`. CHƯA wire vào caller thật cho Phase 4/5.
 3. Safe evidence compaction — DONE (commit `e8a8c96`, `src/pkg/reasoning/schema.py`).
 4. Canonical Agent provisioning — DONE (commit `e8a8c96`,
    `scripts/lib/remote_agent_provisioning.py`), nhưng CHƯA wire vào `src/remote_agent/agent.py`

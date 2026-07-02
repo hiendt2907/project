@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "status": "IDLE",
-  "updated_at": "2026-07-02T07:14:15Z",
+  "status": "COMMITTING",
+  "updated_at": "2026-07-02T07:24:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "feature/living-operations-runtime",
-  "head": "e8a8c96390616e0a0cd23d9388289966960cdb08",
+  "head": "5c76425",
   "iteration": {
-    "id": null,
-    "bottleneck": null,
-    "phase": null,
-    "acceptance_passed": false,
-    "last_successful_step": null,
+    "id": "iter6-tenant-idempotency",
+    "bottleneck": "AdminConfigRepo.create_tenant() not idempotent (repo.py:569) — blocked Phase 5 of Repeatable Tenant Onboarding Baseline slice",
+    "phase": "DOCUMENTING",
+    "acceptance_passed": true,
+    "last_successful_step": "test_create_tenant_idempotent_true_is_repeatable added and passing; full suite re-run in progress",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Run `/omni-autonomous-productizer start` to build the Reality Map and select the first bottleneck (see references/current-priority.md — likely candidate: idempotent AdminConfigRepo.create_tenant()."
+    "next_step": "Confirm full pytest suite (background run) is green, then commit iter6 changes (repo.py, test_admin_config_store.py, PRODUCT_PROOF.md, current-priority.md, this state file, ledger). After commit: status=IDLE, next bottleneck candidate = wire idempotent=True into a real fresh-tenant provisioning caller (Phase 4 of Repeatable Tenant Onboarding Baseline) using scripts/lib/remote_agent_provisioning.py."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -22,13 +22,20 @@
     "buffer_seconds": 120
   },
   "runtime": {
-    "safety_verified": false,
+    "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Not re-verified as part of this bootstrap — last known good from docs/product/PRODUCT_PROOF.md iteration 5 (2026-07-02): omni-fullstack/omni-onboarding digest 943043a3ef3b..., omni-gateway digest 24a0047be646..., tier=shadow, namespace=multi-agent. Must be re-verified live on next `start`/`resume`, not trusted blindly.",
+    "health_summary": "Verified live via reality_check.sh at bootstrap: omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false confirmed on the running Deployment env (not just manifest). 3 OrbStack VMs (cust-edge/cust-app/cust-db) Running. omni-fullstack/omni-onboarding/omni-gateway Running in namespace multi-agent.",
     "deployed_images": {}
   },
   "working_tree": {
-    "owned_changes": [],
+    "owned_changes": [
+      "src/services/admin_config/repo.py",
+      "tests/test_admin_config_store.py",
+      "docs/product/PRODUCT_PROOF.md",
+      ".claude/skills/omni-autonomous-productizer/references/current-priority.md",
+      "docs/operations/AUTONOMOUS_LOOP_STATE.json",
+      "docs/operations/AUTONOMOUS_LOOP_LEDGER.md"
+    ],
     "unrelated_changes": [
       "docs/post-mortems/*.md (pre-existing modifications, unrelated to this skill or productization work)"
     ]
@@ -38,7 +45,8 @@
     "OMNI_AUTO_EXECUTE_ENABLED is false on all live deployments",
     "kubectl get deploy,pod,svc -A -o wide shows omni-fullstack/omni-onboarding/omni-gateway Running",
     "Redis omni:aoip:system_model:staging-sim exists with revision > 0",
-    "docs/product/PRODUCT_PROOF.md iteration section matches this state's last known bottleneck"
+    "docs/product/PRODUCT_PROOF.md iteration section matches this state's last known bottleneck",
+    ".venv/bin/python -m pytest tests/ -q --ignore=tests/integration is green (minus known pre-existing flake test_register_then_real_system_metrics_emitted_through_real_pipeline)"
   ],
   "blocker": null
 }

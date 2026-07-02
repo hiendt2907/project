@@ -567,14 +567,25 @@ class AdminConfigRepo:
     # ---- tenant / api-key writes (audited via _log_and_enqueue) ------------
 
     async def create_tenant(
-        self, *, tenant_id: str, display_name: str, actor: str,
+        self, *, tenant_id: str, display_name: str, actor: str, idempotent: bool = False,
     ) -> dict[str, Any]:
+        """Create a tenant. By default raises ValueError on duplicate (existing
+        API contract — gateway maps this to HTTP 409). Pass ``idempotent=True``
+        for repeatable provisioning callers (e.g. onboarding replay tooling)
+        that must be safe to re-run without failing or duplicating state — in
+        that mode an existing tenant is returned as-is (no row change, no new
+        audit event) instead of raising.
+        """
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 exists = await conn.fetchval(
                     "SELECT 1 FROM omni_admin.tenant WHERE tenant_id = $1", tenant_id,
                 )
                 if exists:
+                    if idempotent:
+                        # Repeatable-provisioning path: no row mutation, no new audit
+                        # event — the caller already has a tenant to work with.
+                        return {"tenant_id": tenant_id, "display_name": display_name}
                     raise ValueError(f"tenant {tenant_id!r} đã tồn tại")
                 await conn.execute(
                     "INSERT INTO omni_admin.tenant (tenant_id, display_name) VALUES ($1,$2)",

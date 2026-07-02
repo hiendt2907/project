@@ -54,7 +54,7 @@ thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productiza
 3. **Chỉ `cust-app` bị thiếu discovery flag lúc provision** (`OMNI_REMOTE_DISCOVERY_ENABLED` không có trong `run.env`, trong khi cust-edge/cust-db có) — đã fix trực tiếp trên VM (`echo >> run.env` + `systemctl restart`), nhưng đây là fix runtime, CHƯA có cơ chế provisioning tự động đảm bảo VM mới không rơi vào tình trạng tương tự (gap ở `scripts/e2e_orbstack_fleet.py`/agent bundle provisioning).
 4. `entity_id` param của `/onboarding/competency` yêu cầu format nội bộ `{entity_type}:{entity_id}` (vd `host:cust-app`) thay vì chỉ `cust-app` — API dễ gây nhầm lẫn cho operator, đáng cân nhắc UX fix ở iteration sau.
 5. ~~`coerce_evidence_dict()` cắt cứng `extracted_fact` ở 2000 ký tự~~ — **FIXED iteration 5**, xem bên dưới.
-6. **Tenant provisioning KHÔNG idempotent** — `AdminConfigRepo.create_tenant()` (`src/services/admin_config/repo.py:574-578`) raise `ValueError` nếu tenant đã tồn tại thay vì upsert/no-op. Chạy lại provisioning lần 2 cho cùng tenant sẽ fail cứng nếu caller không tự bọc try/except. Chưa sửa — cần cho Phase 5 (Repeatability) của slice "Repeatable Tenant Onboarding Baseline", ưu tiên iteration sau.
+6. ~~Tenant provisioning KHÔNG idempotent~~ — **FIXED iteration 6**: `create_tenant(..., idempotent=True)` opt-in param, xem bên dưới. API HTTP `POST /autonomy/tenants` (gateway) vẫn giữ nguyên semantics 409 cũ (không set `idempotent=True`) — không phá contract hiện có, chỉ mở đường cho caller nội bộ (provisioning tooling) dùng repeat-safe path.
 7. **Chưa có fresh-tenant runtime proof** — slice "Repeatable Tenant Onboarding Baseline" mới hoàn thành Phase 1-3 (inspect + safe evidence compaction + canonical provisioning module). Phase 4-7 (tạo tenant lab mới thật, provision qua canonical, chứng minh golden journey không cross-tenant contamination, repeat-provisioning proof, operator read-only flow) CHƯA chạy — cần VM/cluster thật, ngoài phạm vi thời gian iteration này. Không được coi golden journey là "repeatable" cho tới khi Phase 4-7 chạy xong.
 
 ## Iteration 5 — Safe evidence compaction + canonical provisioning module (2026-07-02)
@@ -87,3 +87,21 @@ trên) sẽ chặn Phase 5 nếu không sửa trước.
 
 Verify: `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` — xem log chạy trong
 `docs/handoffs/CURRENT_SESSION.md`.
+
+## Iteration 6 — omni-autonomous-productizer skill + tenant idempotency (2026-07-02)
+
+Bootstrap skill `.claude/skills/omni-autonomous-productizer/` (Continuous Productization Loop
+operator — Reality Map, evidence taxonomy, safety policy, quota/resume protocol, supervisor
+fallback). Smoke-tested read-only (`reality_check.sh` chạy thật, xác nhận 3 VM lab Running +
+`OMNI_AUTO_EXECUTE_ENABLED=false` trên `omni-fullstack`). Commit `5c76425`.
+
+Iteration đầu tiên do skill này chọn (bottleneck #2 trong `references/current-priority.md`):
+`AdminConfigRepo.create_tenant()` (`src/services/admin_config/repo.py:569-596`) thêm tham số opt-in
+`idempotent: bool = False` — mặc định vẫn raise `ValueError` (giữ nguyên HTTP 409 contract của
+`POST /autonomy/tenants`), nhưng khi `idempotent=True` (dành cho provisioning tooling nội bộ, ví dụ
+fresh-tenant replay ở Phase 4-5 của slice "Repeatable Tenant Onboarding Baseline"), tenant đã tồn
+tại được trả về nguyên trạng, không tạo dòng trùng, không tạo audit event trùng. Test mới
+`test_create_tenant_idempotent_true_is_repeatable`
+(`tests/test_admin_config_store.py`) verify: gọi 2 lần idempotent=True → cùng kết quả, đúng 1 row,
+đúng 1 audit event. `VERIFIED_TEST` — CHƯA runtime-verify trên Postgres thật (chỉ FakePgPool), CHƯA
+wire vào bất kỳ caller thật nào (đang chờ Phase 4 dùng).
