@@ -22,13 +22,23 @@ thêm dòng đó + `systemctl restart omni-remote-agent` trên cust-app. **Runti
 đủ 3/3 host, 76 fact, revision 54, `host:cust-app` → `exposes_port 8080` khớp `ss -lntp` đã chạy
 trên VM.**
 
-Chi tiết đầy đủ cả 2 iteration: `docs/product/PRODUCT_PROOF.md` (capability matrix + golden journey
-status, mỗi dòng trỏ evidence cụ thể) + memory `project_productization_iteration1_twin` +
-`project_productization_iteration2_custapp`.
+**Iteration 3:** Chọn bottleneck "operator visibility cho Twin" — route `GET /onboarding/competency`
+và `/unknowns` (O2A/O2B) đã tồn tại trong code nhưng gọi thật trả `500 Internal Server Error`.
+**Root cause: cùng bug-class với iteration 1 (deployment drift) nhưng biến thể build-config** —
+`Dockerfile.gateway` là Dockerfile RIÊNG cho gateway (minimal footprint, không copy toàn bộ `src/`),
+và nó thiếu `COPY src/aoip/` — route import `aoip.question_lifecycle`/`aoip.competency_matrix` nên
+`ModuleNotFoundError`. Xác nhận an toàn (grep không có `aoip` import `workers/`) rồi thêm 1 dòng
+`COPY src/aoip/ /app/src/aoip/` vào `Dockerfile.gateway` + `make docker-gateway` + `make deploy-gateway`.
+**Runtime proof:** gọi API thật với `Authorization: Bearer $OMNI_GATEWAY_API_KEY` →
+`.../onboarding/competency?tenant_id=staging-sim&entity_type=host&entity_id=host:cust-app` trả
+`identity: VERIFIED`, evidence_refs trỏ discovery thật; `.../onboarding/unknowns` trả Unknown thật.
 
-**Không commit code Python nào trong cả 2 iteration** — iteration 1 là deploy-only (code local đã
-đúng), iteration 2 là sửa config trên VM lab (không phải file trong git repo này — `run.env` sống
-trên VM, không phải source-controlled). Chỉ commit docs.
+**Đây là commit CODE thật đầu tiên trong loop** (`Dockerfile.gateway` +1 dòng) — khác iteration 1-2
+vốn chỉ là deploy/config-only.
+
+Chi tiết đầy đủ cả 3 iteration: `docs/product/PRODUCT_PROOF.md` (capability matrix + golden journey
+status, mỗi dòng trỏ evidence cụ thể) + memory `project_productization_iteration1_twin` +
+`project_productization_iteration2_custapp` + `project_productization_iteration3_gateway_aoip_import`.
 
 ## Tóm tắt kết quả (before → after)
 
@@ -69,29 +79,29 @@ Không có blocker cho phần đã làm. VM/Agent truth trên 3 VM lab (cust-edg
 của OrbStack (`orb -m <machine> <command>` hoặc `ssh <machine>@orb`) — kết luận BLOCKED trước đó
 CHƯA đủ căn cứ, cần thử lại đúng cách trước khi kết luận lại.
 
-## Next step chính xác — Iteration 3 của Continuous Productization Loop
-Twin đã đủ 3/3 host (iteration 1+2 xong). **Bottleneck đã chọn sẵn cho iteration 3 (đừng chọn lại
-từ đầu):** Operator visibility cho System Twin — hiện chỉ đọc được qua `redis-cli HGETALL` trực
-tiếp, vi phạm Phase 11 Master Prompt ("Python function nội bộ không phải operator-visible"). Đây
-là điểm đứt product chain kế tiếp: `Twin → Competency Matrix → operator visibility`.
+## Next step chính xác — Iteration 4 của Continuous Productization Loop
+Golden journey Tenant→Agent→Discovery→Fact→Twin→Competency đã chạy xuyên suốt VÀ operator-visible
+qua API thật (iteration 1-3 xong). **Bottleneck đề xuất cho iteration 4 (chọn 1 trong các gợi ý,
+không mở song song):**
 
-Đề xuất cụ thể: kiểm tra `src/gateway/routes/onboarding.py` xem đã có route đọc Competency Matrix
-chưa (O2A/O2B claim có +4 route competency/unknowns/questions/answer) — nếu có, verify chúng thật
-sự đọc được `omni:aoip:system_model:staging-sim` bằng cách gọi API thật (không chỉ đọc code), test
-end-to-end qua `curl` với `OMNI_GATEWAY_API_KEY`. Nếu route tồn tại nhưng chưa từng gọi thử thật,
-đó cũng có thể là một deployment-drift/chưa-test-runtime khác giống iteration 1 — ĐỪNG giả định
-route hoạt động chỉ vì code tồn tại.
+1. **`agent:unknown` trong provenance** (`src/aoip/onboarding_projection.py` — `to_observation()`
+   không điền `agent_id` thật vào Fact.provenance) — ảnh hưởng chất lượng bằng chứng của toàn bộ
+   Twin, đáng làm sớm vì càng nhiều Fact tích lũy càng khó backfill.
+2. **UX gap của `/onboarding/competency`**: `entity_id` yêu cầu format nội bộ `host:cust-app` thay
+   vì `cust-app` — dễ gây operator hiểu nhầm "không có data" khi thực ra chỉ gọi sai tham số. Cân
+   nhắc: chấp nhận cả 2 format ở route layer (không đổi domain logic).
+3. **Provisioning gap `OMNI_REMOTE_DISCOVERY_ENABLED`**: `scripts/e2e_orbstack_fleet.py` không set
+   biến này — nếu thêm VM thứ 4, sẽ lặp lại đúng gap iteration 2 đã fix thủ công.
+4. Chưa kiểm tra Competency Matrix cho `cust-edge`/`cust-db` (chỉ mới verify `cust-app`) và chưa
+   kiểm route `/onboarding/questions*` (O2B) có cùng lỗi `aoip` import hay không trên các route khác
+   — **kiểm tra nhanh trước khi chọn bottleneck mới**: gọi thử `/onboarding/questions?tenant_id=staging-sim`
+   để xác nhận không còn `ModuleNotFoundError` nào sót lại.
 
-Việc phụ (ưu tiên thấp hơn, làm nếu còn thời gian trong iteration 3 hoặc để dành iteration 4):
-1. Sửa `agent:unknown` trong provenance (`src/aoip/onboarding_projection.py` — `to_observation()`
-   không điền `agent_id` thật).
-2. Thêm `OMNI_REMOTE_DISCOVERY_ENABLED=true` vào cơ chế provisioning VM mặc định (hiện không có
-   trong `scripts/e2e_orbstack_fleet.py`) để VM mới không lặp lại gap giống cust-app.
+Gợi ý thứ tự: làm mục 4 trước (kiểm tra nhanh, có thể lộ thêm bug cùng loại), sau đó chọn 1 trong
+mục 1-3 làm vertical slice chính cho iteration 4.
 
-Chỉ sau khi Twin 3/3 host + có operator visibility thật (không chỉ redis-cli) mới quay lại quyết
-định O2B (source acquisition planner) — **theo đề xuất của user, golden journey
-Tenant→Agent→Discovery→Fact→Twin→Competency phải chạy mượt và operator-visible trước khi mở rộng
-sang Question/UnderstandingComplete**.
+Chỉ sau khi các gap nhỏ này được dọn mới quay lại quyết định O2B (source acquisition planner) —
+theo đề xuất của user, golden journey phải "sạch" trước khi mở rộng sang Question/UnderstandingComplete.
 
 ## Không được làm lại
 - Không audit lại pipeline discovery→onboarding→SystemModel→CompetencyMatrix→Question từ đầu (đã

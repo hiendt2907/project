@@ -24,6 +24,10 @@ COPY src/pkg/reasoning/ /app/src/pkg/reasoning/
 COPY src/pkg/rag/ /app/src/pkg/rag/
 COPY src/pkg/observability/ /app/src/pkg/observability/
 COPY src/pkg/onboarding/ /app/src/pkg/onboarding/
+# AOIP domain model (Observation/Fact/SystemModel/CompetencyMatrix/Claims/Questions) —
+# pure domain package, không import workers/executor/LLM. Cần cho routes/onboarding.py
+# (/onboarding/competency, /unknowns, /questions*) từ slice O2A/O2B.
+COPY src/aoip/ /app/src/aoip/
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1
