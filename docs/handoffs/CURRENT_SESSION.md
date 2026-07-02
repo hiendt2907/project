@@ -118,16 +118,25 @@ sau khi được cảnh báo rủi ro) dùng `--dangerously-skip-permissions`. �
 flag này CHỈ cho invocation `claude -p` của nó (commit `50d2149`), khởi động lại supervisor (pid
 19497, đang chạy lúc viết handoff này). Đang chờ xem iteration mới có tiến triển thật không.
 
+**Cập nhật 07:33Z**: bypass-permissions hoạt động — iteration hiện tại (pid biến động, invoke qua
+supervisor) lần đầu tiên THẬT SỰ sửa được code, đang viết `scripts/provision_fresh_tenant.py` (mới,
+CHƯA COMMIT, còn dang dở khi handoff này được ghi — không phải bug, chỉ là background process chưa
+xong). Đây là Phase 4 của slice "Repeatable Tenant Onboarding Baseline" (fresh tenant provisioning
+script dùng `idempotent=True` + `scripts/lib/remote_agent_provisioning.py`).
+
 **Session tiếp theo PHẢI**:
 1. `bash .claude/skills/omni-autonomous-productizer/scripts/supervisor.sh --status` — còn chạy không.
-2. `tail -50 .autonomous-loop/logs/supervisor.log` — xem iteration gần nhất làm được gì.
-3. `git log --oneline -10` + `docs/operations/AUTONOMOUS_LOOP_STATE.json` — supervisor có thể đã tự
-   commit thêm khi bạn không có mặt. KHÔNG tin nội dung "Trạng thái hiện tại" ở trên nếu git log có
-   commit mới hơn `50d2149`.
+2. `tail -80 .autonomous-loop/logs/supervisor.log` — xem iteration gần nhất làm được gì, đặc biệt
+   có commit nào cho `scripts/provision_fresh_tenant.py` chưa.
+3. `git status --short` + `git log --oneline -10` + `docs/operations/AUTONOMOUS_LOOP_STATE.json` —
+   supervisor có thể đã tự commit thêm khi bạn không có mặt, hoặc `scripts/provision_fresh_tenant.py`
+   vẫn còn untracked/dang dở nếu iteration bị gián đoạn giữa chừng. KHÔNG tin nội dung "Trạng thái
+   hiện tại" ở trên nếu git log có commit mới hơn `87e63a2`.
 4. Nếu supervisor vẫn chạy với `--dangerously-skip-permissions` không giám sát — đây là quyết định
    user đã chấp nhận rủi ro, KHÔNG tự ý tắt bypass trừ khi user yêu cầu lại, nhưng PHẢI kiểm tra kỹ
    working tree/git log xem nó có làm gì ngoài ý muốn không trước khi tin tưởng bất kỳ commit nào
-   nó tạo ra.
+   nó tạo ra — đặc biệt review nội dung `scripts/provision_fresh_tenant.py` trước khi tin nó an toàn
+   (script này có thể gọi API tạo tenant thật — xác nhận nó chỉ target lab, không target production).
 
 Nếu supervisor CHƯA kịp chạy gì mới (kiểm tra bằng git log không có commit mới sau `4185a38`):
 tiếp tục slice "Repeatable Tenant Onboarding Baseline" từ Phase 4 (idempotency đã DONE ở
