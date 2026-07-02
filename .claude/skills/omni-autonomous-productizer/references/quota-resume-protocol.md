@@ -78,6 +78,10 @@ Yêu cầu với supervisor.sh:
 - Lock file chống chạy hai instance song song.
 - Không cần secret trong script.
 - Đọc `docs/operations/AUTONOMOUS_LOOP_STATE.json`.
+- Nếu `status == IDLE` → gọi ngay `claude -p "/omni-autonomous-productizer one-iteration"` (đây là
+  trạng thái an toàn duy nhất để tự mở iteration mới — `one-iteration` tự checkpoint về IDLE hoặc
+  QUOTA_DRAINING/SLEEPING khi xong, không tự mở iteration thứ hai, nên gọi lặp lại từ supervisor là
+  cách thật sự "drive" loop 24/7).
 - Nếu `status == SLEEPING_UNTIL_QUOTA_RESET` → sleep tới `reset_at + buffer_seconds`.
 - Sau khi sleep xong, gọi `claude -p "/omni-autonomous-productizer resume"` (verify flag `-p` tồn
   tại bằng `claude --help` trước khi hard-code — ĐÃ verify trong bootstrap: `-p/--print` tồn tại,

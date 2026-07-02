@@ -120,6 +120,22 @@ supervise_loop() {
           backoff=$(( backoff * 2 > max_backoff ? max_backoff : backoff * 2 ))
         fi
         ;;
+      IDLE)
+        # No live session mid-iteration and nothing to sleep for — this is
+        # the unambiguous "kick the next iteration" state. one-iteration
+        # performs exactly one vertical slice and checkpoints back to IDLE
+        # (or QUOTA_DRAINING/SLEEPING_UNTIL_QUOTA_RESET) on its own; it never
+        # opens a second iteration itself, so calling it repeatedly here is
+        # what actually drives the 24/7 loop forward.
+        log "status=IDLE — invoking one-iteration"
+        if claude -p "/omni-autonomous-productizer one-iteration" >>"${LOG_DIR}/supervisor.log" 2>&1; then
+          backoff=30
+        else
+          log "one-iteration invocation failed — backing off ${backoff}s"
+          sleep "$backoff"
+          backoff=$(( backoff * 2 > max_backoff ? max_backoff : backoff * 2 ))
+        fi
+        ;;
       BLOCKED_FOR_HUMAN)
         log "status=BLOCKED_FOR_HUMAN — supervisor exiting, human action required"
         exit 0
@@ -129,8 +145,11 @@ supervise_loop() {
         exit 0
         ;;
       *)
-        # Loop is actively running inside a live Claude session — nothing
-        # for the supervisor to do right now. Poll slowly.
+        # DISCOVERING..COMMITTING/QUOTA_DRAINING/RESUMING: ambiguous whether a
+        # live session is actively mid-iteration right now or a prior session
+        # crashed leaving this status stale. Never safe to auto-invoke here —
+        # poll slowly and let a human or the next IDLE/SLEEPING transition
+        # resolve it.
         sleep 60
         ;;
     esac

@@ -152,6 +152,9 @@ schema nếu thực sự cần, ghi rõ migration trong ledger, KHÔNG reset tr�
 Claude Code không có cơ chế wake-up nền thật sự độc lập với phiên hiện tại — "sleep đến quota
 reset" trong một invocation `Skill` sẽ block tool call hiện tại (dùng `scripts/calculate_sleep.py
 --sleep`, chấp nhận block trong giới hạn timeout của harness) hoặc cần `scripts/supervisor.sh` chạy
-như tiến trình ngoài (cron/launchd/nohup) gọi lại `claude -p "/omni-autonomous-productizer resume"`
-sau reset. Bootstrap report của lần chạy `start` đầu tiên phải nêu rõ cơ chế nào đang thực sự hoạt
-động trong môi trường hiện tại, không giả định.
+như tiến trình ngoài (cron/launchd/nohup). Supervisor drive loop 24/7 bằng cách: khi
+`status=IDLE` → gọi `claude -p "/omni-autonomous-productizer one-iteration"`; khi
+`status=SLEEPING_UNTIL_QUOTA_RESET` → sleep tới reset rồi gọi `resume`. Các status trung gian
+(DISCOVERING..COMMITTING/RESUMING) supervisor KHÔNG tự invoke gì (ambiguous giữa "đang chạy" và
+"crash dở dang") — chỉ poll. Nếu máy chạy supervisor tắt/ngủ, loop dừng cho tới khi supervisor được
+khởi động lại — đây là giới hạn thật, không phải bug.
