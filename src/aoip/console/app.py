@@ -23,6 +23,7 @@ from aoip.console import assets, identity, identity_store, oidc
 from aoip.console.agents import build_provider_agents
 from aoip.console.authz import KIND_PROVIDER, KIND_TENANT, P_RAW_EVIDENCE, P_VIEW, Principal
 from aoip.console.human_inbox import build_provider_human_inbox
+from aoip.console.lab_incidents import create_lab_incident, list_provider_lab_incidents
 from aoip.console.overview import build_provider_overview
 from aoip.console.projections import provider_incident, tenant_incident
 from aoip.console.understanding import build_provider_understanding
@@ -41,6 +42,14 @@ class AnswerQuestionBody(BaseModel):
     value: str = Field(..., min_length=1, max_length=500)
     answered_by: str | None = Field(default=None, max_length=120)
     confidence: float = Field(default=0.6, ge=0.0, le=1.0)
+
+
+class CreateLabIncidentBody(BaseModel):
+    tenant_id: str = Field(..., min_length=1, max_length=128)
+    agent_id: str = Field(..., min_length=1, max_length=128)
+    host: str = Field(..., min_length=1, max_length=256)
+    service: str = Field(..., min_length=1, max_length=128)
+    unit: str = Field(..., min_length=1, max_length=128)
 
 
 async def _default_http_json(method: str, url: str, *, data=None, auth=None) -> dict:
@@ -272,6 +281,27 @@ def create_provider_app(redis, *, oidc_http=None) -> FastAPI:
                                   "phase": v["execution_phase"],
                                   "reconcile_required": v["reconcile_required"]})
         return {"operations": items}
+
+    @app.get("/api/provider/v1/incidents")
+    async def incidents(p: Principal = Depends(provider)) -> dict:
+        return await list_provider_lab_incidents(redis, trace)
+
+    @app.post("/api/provider/v1/lab/incidents")
+    async def create_lab_incident_route(body: CreateLabIncidentBody,
+                                        p: Principal = Depends(provider)) -> dict:
+        try:
+            return await create_lab_incident(
+                redis,
+                tenant_id=body.tenant_id,
+                agent_id=body.agent_id,
+                host=body.host,
+                service=body.service,
+                unit=body.unit,
+                requested_by=p.subject,
+                now=time.time(),
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.get("/api/provider/v1/incident/{tenant}/{correlation_id}")
     async def incident(request: Request, tenant: str, correlation_id: str, raw: bool = False,

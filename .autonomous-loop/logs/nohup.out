@@ -1,0 +1,30 @@
+[supervisor 2026-07-02T07:31:22Z] current status=IDLE
+[supervisor 2026-07-02T07:31:22Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T07:34:55Z] current status=IDLE
+[supervisor 2026-07-02T07:34:55Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T07:35:51Z] current status=IDLE
+[supervisor 2026-07-02T07:35:51Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T07:37:16Z] current status=IDLE
+[supervisor 2026-07-02T07:37:16Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T07:37:32Z] one-iteration invocation failed — backing off 30s
+[supervisor 2026-07-02T07:38:12Z] current status=IDLE
+[supervisor 2026-07-02T07:38:12Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T07:38:15Z] one-iteration invocation failed — backing off 60s
+[supervisor 2026-07-02T07:39:25Z] current status=IDLE
+[supervisor 2026-07-02T07:39:25Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T07:39:27Z] one-iteration invocation failed — backing off 120s
+[supervisor 2026-07-02T07:41:37Z] current status=IDLE
+[supervisor 2026-07-02T07:41:37Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T07:41:40Z] one-iteration invocation failed — backing off 240s
+[supervisor 2026-07-02T07:45:50Z] current status=IDLE
+[supervisor 2026-07-02T07:45:50Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T07:45:53Z] one-iteration invocation failed — backing off 480s
+[supervisor 2026-07-02T07:54:03Z] current status=IDLE
+[supervisor 2026-07-02T07:54:03Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T07:54:06Z] one-iteration invocation failed — backing off 960s
+[supervisor 2026-07-02T08:10:17Z] current status=IDLE
+[supervisor 2026-07-02T08:10:17Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T08:10:20Z] one-iteration invocation failed — backing off 1800s
+[supervisor 2026-07-02T08:40:30Z] current status=IDLE
+[supervisor 2026-07-02T08:40:30Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+[supervisor 2026-07-02T08:40:32Z] one-iteration invocation failed — backing off 1800s
