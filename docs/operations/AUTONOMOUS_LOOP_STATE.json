@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-02T18:05:00Z",
+  "updated_at": "2026-07-02T18:20:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "7689049",
+  "head": "00d7908",
   "iteration": {
-    "id": "iter9-phase6-tenant-replay-01-agent",
-    "bottleneck": "Phase 6 of Repeatable Tenant Onboarding Baseline: tenant-replay-01 had no Agent/VM",
-    "phase": "DONE (scoped: 1/1 host, second-agent-identity approach)",
+    "id": "iter10-canonicalize-tenant-apikey-script",
+    "bottleneck": "Iteration 9 leftover: tenant API-key provisioning into omni-gateway-secret was done by hand via kubectl, not scripted/idempotent",
+    "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "Added tenant-replay-01 key to omni-gateway-secret (OMNI_TENANT_APIKEYS), rolling-restarted omni-gateway. Installed second omni-remote-agent instance on cust-edge (/opt/omni-remote-agent-replay01, systemd unit omni-remote-agent-replay01.service) bound to tenant-replay-01, running alongside the existing staging-sim agent. Verified runtime: agent log shows register/profile/evidence all HTTP 200; Redis omni:aoip:system_model:tenant-replay-01 has 41 facts / revision=6 / subject only host:cust-edge / provenance only agent:tenant-replay-01_cust-edge; staging-sim Twin unchanged (78 facts / 3 hosts) confirming no cross-contamination. Verified via response body (not just status code) that GET /onboarding/unknowns?tenant_id=staging-sim called with tenant-replay-01's key silently returns tenant-replay-01's own data (resolve_scope() ignores override_tid for non-admin) — not a defect, noted as UX gap. Operator API (/onboarding/unknowns, /onboarding/competency) verified working for tenant-replay-01 with real evidence_refs. Full detail: docs/product/PRODUCT_PROOF.md Iteration 9.",
+    "last_successful_step": "Added scripts/add_tenant_api_key.sh <tenant_id> [api_key] — idempotent (no-op if tenant already present), generates key via openssl rand -hex 32 if omitted, patches omni-gateway-secret OMNI_TENANT_APIKEYS, rolling-restarts + rollout-status omni-gateway. Verified live on the real cluster: (1) no-op path against tenant-replay-01 (already present) correctly skipped mutation; (2) mutation path against disposable tenant-scripttest-01 generated a key, patched the secret, gateway rolled out successfully; (3) idempotent re-run against tenant-scripttest-01 returned the same key with no duplicate entry; (4) reverted OMNI_TENANT_APIKEYS to its original 3-tenant value and rolling-restarted again, confirmed content matches original; (5) gateway healthz returns {\"status\":\"ok\"} after the full cycle and pod env still contains tenant-replay-01. Ran pytest -k 'onboarding or gateway_api or tenant' -> 146 passed. Full detail: docs/product/PRODUCT_PROOF.md Iteration 10.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Decide if Phase 6 needs multi-host coverage for tenant-replay-01 (currently only cust-edge) before Phase 7 (repeatability + operator proof polish), or if 1-host + isolation proof is sufficient to call Phase 6 DONE. Also candidates for a future iteration: canonicalize the gateway-secret API-key provisioning step (done by hand via kubectl this iteration, not scripted), add automated test coverage for '2 agents/2 tenants on 1 VM', and consider whether resolve_scope() silent-override should become an explicit 403 for clearer caller feedback."
+    "next_step": "Wire scripts/add_tenant_api_key.sh into scripts/provision_fresh_tenant.py so a single command does both Postgres tenant creation and gateway API-key provisioning (currently 2 separate manual steps). Also still open from iteration 9: decide if Phase 6 needs multi-host coverage for tenant-replay-01 before calling the slice's Phase 7 (repeatability + operator proof polish) DONE, add automated test coverage for '2 agents/2 tenants on 1 VM', and consider whether resolve_scope() silent-override should become an explicit 403."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,15 +24,16 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Re-verified 2026-07-02T18:05:00Z: omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false unchanged. omni-gateway rolling-restarted after OMNI_TENANT_APIKEYS secret patch (added tenant-replay-01 key) — rollout succeeded, all pods 1/1 Running. cust-edge VM now runs 2 omni-remote-agent systemd units side by side (omni-remote-agent.service for staging-sim, omni-remote-agent-replay01.service for tenant-replay-01), both active.",
+    "health_summary": "Re-verified 2026-07-02T18:20:00Z: omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false unchanged. omni-gateway rolling-restarted 3x during this iteration's live script test (add scripttest tenant -> verify -> revert) — all rollouts succeeded, healthz {\"status\":\"ok\"} after final restart, OMNI_TENANT_APIKEYS back to original 3-tenant value (default/staging-sim/tenant-replay-01), no scripttest residue left in the secret. cust-edge VM still runs 2 omni-remote-agent systemd units side by side, both active (unchanged this iteration).",
     "deployed_images": {}
   },
   "working_tree": {
     "owned_changes": [
-      "scripts/provision_fresh_tenant.py",
+      "scripts/add_tenant_api_key.sh",
       "docs/product/PRODUCT_PROOF.md",
       "docs/operations/AUTONOMOUS_LOOP_STATE.json",
-      "docs/operations/AUTONOMOUS_LOOP_LEDGER.md"
+      "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",
+      "docs/handoffs/CURRENT_SESSION.md"
     ],
     "unrelated_changes": [
       "docs/post-mortems/*.md (pre-existing modifications, unrelated to this skill or productization work)"

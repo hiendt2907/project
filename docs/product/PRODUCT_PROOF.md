@@ -115,6 +115,41 @@ Verify: `orb -m cust-edge sudo systemctl status omni-remote-agent-replay01.servi
 facts, đúng agent_id); `kubectl exec deploy/omni-gateway -- curl .../onboarding/unknowns?tenant_id=tenant-replay-01`
 (200, Unknown thật).
 
+## Iteration 10 — Canonicalize tenant API-key provisioning step (2026-07-02)
+
+**Bottleneck đã fix**: iteration 9 mục "Chưa DONE" #3 — bước "thêm API key vào
+`omni-gateway-secret`" trước đây làm tay qua `kubectl patch`, không có script canonical, không
+idempotent, dễ lặp lỗi khi provision tenant tiếp theo.
+
+**Fix**: `scripts/add_tenant_api_key.sh <tenant_id> [api_key]` — đọc giá trị hiện tại của
+`OMNI_TENANT_APIKEYS` trong secret `omni-gateway-secret`, no-op nếu `tenant_id` đã tồn tại (in ra
+key hiện có), sinh key mới bằng `openssl rand -hex 32` nếu không truyền, patch secret, rolling
+restart + `rollout status` gateway.
+
+**Runtime proof (VERIFIED_RUNTIME, chạy trực tiếp trên cluster lab thật, không chỉ code/test)**:
+1. No-op path: chạy với `tenant-replay-01` (đã tồn tại từ iteration 9) → in đúng key hiện có, không
+   patch, không restart.
+2. Mutation path: chạy với tenant tạm `tenant-scripttest-01` → sinh key mới, patch secret thành
+   công, `omni-gateway` rollout restart xanh (`successfully rolled out`).
+3. Idempotency re-run: chạy lại lệnh giống hệt cho `tenant-scripttest-01` → no-op, trả đúng key vừa
+   sinh ở bước 2 (không tạo entry trùng, không sinh key thứ hai).
+4. Dọn dẹp: revert `OMNI_TENANT_APIKEYS` về đúng giá trị gốc (3 tenant: default/staging-sim/
+   tenant-replay-01), rolling restart lại, verify secret content khớp nguyên trạng.
+5. Gateway health sau toàn bộ chu trình: `kubectl get --raw
+   /api/v1/namespaces/multi-agent/services/omni-gateway:80/proxy/healthz` → `{"status":"ok",
+   "rate_limit_tps":1000}`; `printenv OMNI_TENANT_APIKEYS` trong pod mới xác nhận chứa
+   `tenant-replay-01`.
+6. Test suite liên quan: `.venv/bin/python -m pytest tests/ -q -k "onboarding or gateway_api or
+   tenant"` → 146 passed.
+
+**Chưa DONE**: script chưa được gọi tự động từ `scripts/provision_fresh_tenant.py` (vẫn là 2 bước
+tách biệt: tạo tenant Postgres + thêm API key) — canonical hoá thành 1 lệnh duy nhất là candidate
+cho iteration sau. UX gap `resolve_scope()` silent override vẫn chưa fix (không phải bottleneck của
+iteration này).
+
+Verify: `bash scripts/add_tenant_api_key.sh tenant-replay-01` (no-op, in key hiện có);
+`git show HEAD -- scripts/add_tenant_api_key.sh`.
+
 ## Iteration 7 — Fresh-tenant repeat-provisioning runtime proof (2026-07-02)
 
 **Bottleneck đã fix (Phase 4 của slice "Repeatable Tenant Onboarding Baseline"):**

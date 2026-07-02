@@ -165,3 +165,29 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Resume action: pytest full suite + docs sync + commit this iteration's doc/state changes; next
   iteration should decide whether Phase 6 counts as DONE (1/1 host, isolation proven) or needs
   multi-host before moving to Phase 7 (repeatability + operator proof polish).
+
+## Iteration 10 — 2026-07-02T18:20:00Z
+- Bottleneck: iteration 9 leftover — tenant API-key provisioning into `omni-gateway-secret`
+  (`OMNI_TENANT_APIKEYS`) was done by hand via `kubectl patch`, no script, not idempotent.
+- Fix: `scripts/add_tenant_api_key.sh <tenant_id> [api_key]` — no-op if tenant already present
+  (prints existing key), generates a key via `openssl rand -hex 32` if omitted, patches the secret,
+  rolling-restarts + `rollout status` on `omni-gateway`.
+- Runtime proof (live cluster, not just code):
+  - No-op path against `tenant-replay-01` (already present from iter9) — printed the existing key,
+    did not mutate the secret.
+  - Mutation path against disposable `tenant-scripttest-01` — generated a key, patched the secret,
+    gateway rollout succeeded.
+  - Idempotent re-run against `tenant-scripttest-01` — returned the same key, no duplicate entry
+    created.
+  - Reverted `OMNI_TENANT_APIKEYS` to the original 3-tenant value (default/staging-sim/
+    tenant-replay-01) via manual patch + rolling restart, verified content matches original exactly.
+  - Post-cycle health: `kubectl get --raw .../omni-gateway:80/proxy/healthz` →
+    `{"status":"ok","rate_limit_tps":1000}`; pod env `OMNI_TENANT_APIKEYS` still contains
+    `tenant-replay-01`.
+  - `.venv/bin/python -m pytest tests/ -q -k "onboarding or gateway_api or tenant"` → 146 passed.
+- Pending: wire this script into `scripts/provision_fresh_tenant.py` for a single-command tenant
+  provisioning flow (currently 2 separate steps). Iteration 9 leftovers (multi-host for
+  tenant-replay-01, 2-agent/2-tenant test coverage, resolve_scope() UX gap) still open.
+- Reset at: n/a
+- Resume action: next iteration picks either the provision_fresh_tenant.py wiring or the Phase 6
+  multi-host decision as the next bottleneck.
