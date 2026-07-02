@@ -38,13 +38,17 @@ KHÔNG được coi golden journey là "repeatable" cho tới khi Phase 4-7 củ
   PARTIAL/CODE_ONLY/ABSENT theo từng capability).
 
 ## Branch và commit
-`feature/living-operations-runtime` @ `f806af0` (local, CHƯA push — 4 commit sau `07f2eed`:
-`e8a8c96` iter5 Phase1-3, `5c76425` skill bootstrap, `61fcdcb` iter6 idempotent tenant, `f806af0`
-loop-state IDLE). Push cần chỉ thị rõ từ user.
+Đã merge `feature/living-operations-runtime` vào `main` (fast-forward, `main` == `origin/main` ==
+`4185a38`) theo yêu cầu tường minh của user ("push và merge vào main TẤT CẢ đi"). `main` đã push.
+`feature/living-operations-runtime` local vẫn ở `ccbb679` (chưa fast-forward theo commit
+`4185a38` mới nhất trên main — không ảnh hưởng vì main đã chứa toàn bộ lịch sử của nó; có thể
+`git checkout feature/living-operations-runtime && git merge --ff-only main` ở phiên sau nếu muốn
+đồng bộ 2 branch). Commit mới nhất trên main: `4185a38` (supervisor auto-drive IDLE).
 
 ## Working tree
 Sạch, ngoại trừ 10 file `docs/post-mortems/*.md` modified **có từ trước phiên này** (pre-existing,
-không liên quan, không chạm trong phiên).
+timestamp tự cập nhật bởi hook, không liên quan) và thư mục MỚI `.autonomous-loop/` (log runtime
+của supervisor đang chạy — KHÔNG commit, đây là log nền của tiến trình, không phải source code).
 
 ## Files chính đã thay đổi (iteration 5-6, đã commit local)
 Iteration 5 (`e8a8c96`): `src/pkg/reasoning/schema.py` (`_compact_extracted_fact()`/
@@ -98,29 +102,34 @@ tier hiệu lực = Redis cache `shadow`. Namespace `multi-agent`, cluster OrbSt
 Không có.
 
 ## Next step chính xác
-Có 2 lựa chọn khởi động cho session tiếp theo (cả hai đều hợp lệ — skill mới có thể tự chọn qua
-Reality Map, hoặc tiếp tục thủ công theo slice cũ):
+**QUAN TRỌNG — có thể ĐÃ tiếp tục tự động**: supervisor.sh của skill `omni-autonomous-productizer`
+đang chạy NỀN THẬT trên máy user (pid ghi trong `.autonomous-loop/supervisor.lock`, log tại
+`.autonomous-loop/logs/supervisor.log`, khởi động qua `nohup caffeinate -i bash
+.claude/skills/omni-autonomous-productizer/scripts/supervisor.sh --start &`). Nó tự phát hiện
+`status=IDLE` trong `docs/operations/AUTONOMOUS_LOOP_STATE.json` và tự gọi `claude -p
+"/omni-autonomous-productizer one-iteration"` lặp lại — nghĩa là có thể ĐÃ CÓ iteration mới chạy
+sau lúc handoff này được ghi. **Session tiếp theo PHẢI kiểm tra
+`docs/operations/AUTONOMOUS_LOOP_STATE.json` + `docs/operations/AUTONOMOUS_LOOP_LEDGER.md` +
+`git log` trước khi tin bất kỳ nội dung nào bên dưới** — nếu supervisor đã chạy thêm iteration,
+thông tin "Trạng thái hiện tại" ở trên có thể đã lỗi thời.
 
-**A. Dùng skill mới**: `/omni-autonomous-productizer resume` hoặc `start` — sẽ tự đọc
-`docs/operations/AUTONOMOUS_LOOP_STATE.json` (status=IDLE, next_step đã ghi rõ), dựng lại Reality
-Map, và tiếp tục.
-
-**B. Tiếp tục thủ công slice "Repeatable Tenant Onboarding Baseline" từ Phase 4** (idempotency đã
-DONE ở iteration 6, không còn là blocker):
+Nếu supervisor CHƯA kịp chạy gì mới (kiểm tra bằng git log không có commit mới sau `4185a38`):
+tiếp tục slice "Repeatable Tenant Onboarding Baseline" từ Phase 4 (idempotency đã DONE ở
+iteration 6, không còn là blocker):
 1. Wire `create_tenant(..., idempotent=True)` vào một provisioning caller thật (chưa có caller nào
    dùng flag này — hiện chỉ có test).
 2. Phase 4: tạo tenant lab mới thật (`tenant-replay-01`) qua path idempotent, provision agent bằng
    `scripts/lib/remote_agent_provisioning.py` (iteration 5), verify Twin/Competency có dữ liệu thật
    + không cross-tenant contamination với `staging-sim`.
-3. Phase 5: chạy provisioning canonical lần 2, verify không duplicate/mất fact (giờ có
-   `idempotent=True` để dùng).
+3. Phase 5: chạy provisioning canonical lần 2, verify không duplicate/mất fact.
 4. Phase 6: operator read-only proof flow (API/CLI đủ, chưa cần UI).
 5. Phase 7: test+deploy+observe (rebuild image, redeploy, quan sát ≥2 discovery cycle).
 
 ## Lệnh cần chạy lại
-`.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` để xác nhận baseline vẫn xanh
-trước khi tiếp tục Phase 4. Cân nhắc `git push origin feature/living-operations-runtime` (4 commit
-local chưa push: `e8a8c96`, `5c76425`, `61fcdcb`, `f806af0`) — cần user xác nhận trước.
+`bash .claude/skills/omni-autonomous-productizer/scripts/supervisor.sh --status` để biết loop nền
+còn chạy không. `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` để xác nhận
+baseline vẫn xanh trước khi tiếp tục thủ công bất kỳ việc gì (tránh đụng độ với supervisor đang
+chạy song song).
 
 ## Không được làm lại
 - Không audit lại pipeline discovery→onboarding→SystemModel→CompetencyMatrix→Question từ đầu.
