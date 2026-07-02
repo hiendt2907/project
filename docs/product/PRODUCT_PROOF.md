@@ -60,6 +60,61 @@ thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productiza
    không sửa tay cho tenant mới, cross-tenant isolation proof, operator read-only flow) CHƯA chạy —
    `tenant-replay-01` mới có row `omni_admin.tenant`, CHƯA có Agent/VM thật gắn vào tenant này.
 
+## Iteration 9 — Phase 6 slice: real Agent+VM for tenant-replay-01, cross-tenant isolation proof (2026-07-02)
+
+**Bottleneck đã fix (Phase 6 của slice "Repeatable Tenant Onboarding Baseline"):**
+
+Trước iteration này `tenant-replay-01` chỉ có 1 row `omni_admin.tenant` (iteration 7) — chưa có
+Agent/VM thật nào gắn vào, nên golden journey Agent→Discovery→Fact→Twin→Competency chưa từng chạy
+cho tenant này và chưa có bằng chứng cách ly (isolation) giữa 2 tenant trong cùng cluster.
+
+Không tạo VM mới (chỉ có 3 VM lab: cust-edge/cust-app/cust-db, đều đã gắn `staging-sim`) — dùng lại
+`cust-edge`, cài **agent thứ hai song song** (identity riêng, install dir riêng, systemd unit
+riêng) bind vào `tenant-replay-01`:
+
+1. Thêm API key `tenant-replay-01` vào `omni-gateway-secret` (`OMNI_TENANT_APIKEYS`), rolling
+   restart `omni-gateway` — verify `kubectl rollout status` xanh.
+2. Cài `/opt/omni-remote-agent-replay01` trên `cust-edge` (copy venv từ agent staging-sim có sẵn),
+   `run.env` mới (`OMNI_AGENT_ID=tenant-replay-01_cust-edge`, `OMNI_AGENT_TENANT_ID=tenant-replay-01`),
+   systemd unit `omni-remote-agent-replay01.service` riêng — `systemctl enable --now`.
+3. Runtime proof (log agent, không chỉ code/deploy):
+   `/var/log/omni-agent-replay01.log` → `POST .../webhook/agent/register "HTTP/1.1 200 OK"`,
+   `POST .../webhook/agent/profile "HTTP/1.1 200 OK"`, `POST .../webhook/agent/evidence` →
+   `emitted evidence enqueued=6`.
+4. Twin persisted thật: `redis-cli HGETALL omni:aoip:system_model:tenant-replay-01` → 41 facts,
+   `revision=6`, subject duy nhất `host:cust-edge`, mọi provenance `agent:tenant-replay-01_cust-edge`
+   (không có `agent:unknown`, không có host của tenant khác).
+5. **Cross-tenant isolation — VERIFIED_RUNTIME**: `redis-cli HGET omni:aoip:system_model:staging-sim
+   facts` vẫn nguyên 78 facts / 3 host (`cust-edge`, `cust-app`, `cust-db`) — không bị agent mới ghi
+   đè hay trộn lẫn. Ở tầng API: `GET /onboarding/unknowns?tenant_id=staging-sim` gọi bằng API key
+   của `tenant-replay-01` → HTTP 200 nhưng **body trả về `tenant_id: tenant-replay-01`** (281
+   unknowns của chính tenant gọi, không phải của staging-sim) — `resolve_scope()`
+   (`src/gateway/tenant_context.py:29`) cố tình bỏ qua `override_tid` cho caller non-admin, chỉ dùng
+   `ctx.tenant_id` từ key. Ban đầu nghi ngờ đây là lỗ hổng cách ly (chỉ check HTTP status code) —
+   sau khi đọc body mới xác nhận KHÔNG phải bug, chỉ là hành vi cố ý (silent-scope-override, không
+   phải 403) — **lưu ý UX**: caller không biết mình đang bị scope lại âm thầm, đáng cân nhắc trả
+   403 hoặc warning thay vì âm thầm đổi scope ở iteration UX sau, nhưng không phải data-loss/security
+   defect.
+6. Operator-visible qua API thật: `GET /onboarding/unknowns?tenant_id=tenant-replay-01` (Bearer
+   đúng key) → Unknown thật (`svc:systemd-networkd` facet `owner`, `svc:omni-remote-agent` facet
+   `upstream`, …); `GET /onboarding/competency?tenant_id=tenant-replay-01&entity_type=host&entity_id=host:cust-edge`
+   → `identity: VERIFIED`, evidence_refs trỏ `agent:tenant-replay-01_cust-edge` +
+   `discovery:port_scan/process_list` thật.
+
+**Chưa DONE** (để lại cho iteration sau, không mở rộng trong iteration này):
+- Chỉ 1/1 host cho tenant-replay-01 (dùng chung VM `cust-edge` với staging-sim qua 2 agent song
+  song) — chưa test multi-host thật cho tenant thứ hai.
+- Chưa viết automated test (unit/integration) cho kịch bản "2 agent, 2 tenant, cùng 1 VM" — mới chỉ
+  runtime proof thủ công qua `orb -m` + `redis-cli` + `curl` trong pod.
+- Chưa cập nhật `scripts/provision_fresh_tenant.py` / `remote_agent_provisioning.py` để tự động hoá
+  bước "thêm API key vào `omni-gateway-secret`" — hiện làm tay qua `kubectl` patch, chưa canonical.
+- UX gap `resolve_scope()` silent override (mục 5 ở trên) chưa fix, chỉ ghi nhận.
+
+Verify: `orb -m cust-edge sudo systemctl status omni-remote-agent-replay01.service` (active running);
+`kubectl exec pod/redis-0 -- redis-cli HGET omni:aoip:system_model:tenant-replay-01 facts` (41
+facts, đúng agent_id); `kubectl exec deploy/omni-gateway -- curl .../onboarding/unknowns?tenant_id=tenant-replay-01`
+(200, Unknown thật).
+
 ## Iteration 7 — Fresh-tenant repeat-provisioning runtime proof (2026-07-02)
 
 **Bottleneck đã fix (Phase 4 của slice "Repeatable Tenant Onboarding Baseline"):**

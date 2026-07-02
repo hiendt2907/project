@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-02T15:05:00Z",
+  "updated_at": "2026-07-02T18:05:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "8e15178",
+  "head": "7689049",
   "iteration": {
-    "id": "iter7-fresh-tenant-repeat-provisioning-proof",
-    "bottleneck": null,
-    "phase": null,
+    "id": "iter9-phase6-tenant-replay-01-agent",
+    "bottleneck": "Phase 6 of Repeatable Tenant Onboarding Baseline: tenant-replay-01 had no Agent/VM",
+    "phase": "DONE (scoped: 1/1 host, second-agent-identity approach)",
     "acceptance_passed": true,
-    "last_successful_step": "iter7 COMMITTED at 8e15178 (feat(onboarding): canonical fresh-tenant provisioning caller with runtime idempotency proof). Reconciled at start of this iteration: state file previously said head=50d2149/pending-commit but git log confirmed the commit already landed (plus two follow-up handoff-sync commits 0d7d352, 8e15178) — no new code change needed here, this iteration only corrected stale state/ledger to match reality.",
+    "last_successful_step": "Added tenant-replay-01 key to omni-gateway-secret (OMNI_TENANT_APIKEYS), rolling-restarted omni-gateway. Installed second omni-remote-agent instance on cust-edge (/opt/omni-remote-agent-replay01, systemd unit omni-remote-agent-replay01.service) bound to tenant-replay-01, running alongside the existing staging-sim agent. Verified runtime: agent log shows register/profile/evidence all HTTP 200; Redis omni:aoip:system_model:tenant-replay-01 has 41 facts / revision=6 / subject only host:cust-edge / provenance only agent:tenant-replay-01_cust-edge; staging-sim Twin unchanged (78 facts / 3 hosts) confirming no cross-contamination. Verified via response body (not just status code) that GET /onboarding/unknowns?tenant_id=staging-sim called with tenant-replay-01's key silently returns tenant-replay-01's own data (resolve_scope() ignores override_tid for non-admin) — not a defect, noted as UX gap. Operator API (/onboarding/unknowns, /onboarding/competency) verified working for tenant-replay-01 with real evidence_refs. Full detail: docs/product/PRODUCT_PROOF.md Iteration 9.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Phase 6 of Repeatable Tenant Onboarding Baseline: provision a real Agent+VM for tenant-replay-01 (new OrbStack VM or reuse an existing one with a second agent identity), run the golden journey Tenant->Agent enrollment->Discovery->Fact->Twin->Competency for it without manual fixes, then prove cross-tenant isolation vs staging-sim (Twin/Competency keyed by tenant_id, no cross-contamination) and an operator read-only proof flow (GET /onboarding/competency + /unknowns scoped to tenant-replay-01 only)."
+    "next_step": "Decide if Phase 6 needs multi-host coverage for tenant-replay-01 (currently only cust-edge) before Phase 7 (repeatability + operator proof polish), or if 1-host + isolation proof is sufficient to call Phase 6 DONE. Also candidates for a future iteration: canonicalize the gateway-secret API-key provisioning step (done by hand via kubectl this iteration, not scripted), add automated test coverage for '2 agents/2 tenants on 1 VM', and consider whether resolve_scope() silent-override should become an explicit 403 for clearer caller feedback."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,7 +24,7 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Verified live via reality_check equivalent at iteration start: omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false confirmed. 3 OrbStack VMs (cust-edge/cust-app/cust-db) Running. omni-fullstack/omni-onboarding/omni-gateway Running in namespace multi-agent. omni-postgres-0 Running, reached via port-forward for iter7 proof.",
+    "health_summary": "Re-verified 2026-07-02T18:05:00Z: omni-fullstack OMNI_AUTO_EXECUTE_ENABLED=false unchanged. omni-gateway rolling-restarted after OMNI_TENANT_APIKEYS secret patch (added tenant-replay-01 key) — rollout succeeded, all pods 1/1 Running. cust-edge VM now runs 2 omni-remote-agent systemd units side by side (omni-remote-agent.service for staging-sim, omni-remote-agent-replay01.service for tenant-replay-01), both active.",
     "deployed_images": {}
   },
   "working_tree": {

@@ -92,3 +92,76 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
   decide reuse-existing-VM-with-second-agent-identity vs provision-new-VM, inspect
   `scripts/e2e_orbstack_fleet.py` and `scripts/lib/remote_agent_provisioning.py` before writing any
   provisioning code (inspect-before-code discipline).
+
+### Checkpoint 2026-07-02T17:55:00Z
+- Timestamp: 2026-07-02T17:55:00Z
+- Iteration: iter8-reality-reconciliation-pre-phase6
+- Quota state: n/a (not draining)
+- HEAD: 7689049 (confirmed via `git log --oneline -3`)
+- Acceptance: N/A — reality reconciliation only, no new code this iteration. State/ledger
+  previously pointed to HEAD=8e15178; git history showed 2 additional commits already landed
+  outside this loop: `8d4c0ed` (feat(portal): runtime-backed understanding and human claim
+  workflow with codex — src/aoip/console/{agents,understanding,human_inbox}.py +
+  ui/apps/provider-portal) and `7689049` (Add provider lab incident endpoints —
+  src/aoip/console/lab_incidents.py). Both are provider-portal / lab-incident feature work,
+  unrelated to the tracked "Repeatable Tenant Onboarding Baseline" slice — confirmed no touch on
+  tenant-replay-01, onboarding pipeline, Twin, or Competency code paths. Per skill instruction
+  ("resume must verify reality, not blindly continue a stale hypothesis"), reconciled state/ledger
+  to match before deciding next bottleneck.
+- Last verified: `git status --short` (only pre-existing post-mortem timestamp diffs +
+  `.autonomous-loop/` runtime logs, no untracked owned files), `kubectl get deploy omni-fullstack -n
+  multi-agent -o json` → `OMNI_AUTO_EXECUTE_ENABLED=false`, `kubectl get pods -n multi-agent` → all
+  core pods 1/1 Running (omni-fullstack, omni-onboarding, omni-gateway, omni-postgres-0), `orb list`
+  → 3 VMs Running, `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` → **5948
+  passed, 5 deselected, 1 failed** (known pre-existing flake
+  `test_register_then_real_system_metrics_emitted_through_real_pipeline`, confirmed unrelated in
+  prior iterations).
+- Pending: Phase 6 of "Repeatable Tenant Onboarding Baseline" unchanged — provision real Agent+VM
+  for `tenant-replay-01`, run golden journey Tenant→Agent→Discovery→Fact→Twin→Competency for it,
+  prove cross-tenant isolation vs `staging-sim`, prove operator read-only flow. Not started this
+  iteration — multi-step VM/agent provisioning slice too large for remaining budget, deliberately
+  left as clean `next_step` rather than started and abandoned mid-way.
+- Reset at: n/a
+- Resume action: `references/operating-model.md` Reality Map procedure, then start Phase 6:
+  decide reuse-existing-VM-with-second-agent-identity vs provision-new-VM, inspect
+  `scripts/e2e_orbstack_fleet.py` and `scripts/lib/remote_agent_provisioning.py` before writing any
+  provisioning code (inspect-before-code discipline).
+
+### Checkpoint 2026-07-02T18:05:00Z
+- Timestamp: 2026-07-02T18:05:00Z
+- Iteration: iter9-phase6-tenant-replay-01-agent
+- Quota state: n/a (not draining)
+- HEAD: 7689049 (unchanged — infra/runtime iteration, no source commit yet pending below)
+- Acceptance: PARTIAL (bottleneck fixed, scoped honestly) — Phase 6 of "Repeatable Tenant Onboarding
+  Baseline". Chose reuse-existing-VM-with-second-agent-identity (no new OrbStack VM — all 3 lab VMs
+  already host staging-sim agents). Added `tenant-replay-01` key to `omni-gateway-secret`
+  (OMNI_TENANT_APIKEYS), rolling-restarted omni-gateway (verified rollout status). Installed second
+  agent on cust-edge: `/opt/omni-remote-agent-replay01` + systemd unit
+  `omni-remote-agent-replay01.service`, bound to tenant-replay-01, running alongside the existing
+  staging-sim agent without conflict (separate install dir, separate unit, separate log).
+- Last verified:
+  - `orb -m cust-edge sudo systemctl status omni-remote-agent-replay01.service` → active running.
+  - `/var/log/omni-agent-replay01.log` → register/profile/evidence all HTTP 200, `enqueued=6`.
+  - `redis-cli HGETALL omni:aoip:system_model:tenant-replay-01` → revision=6, 41 facts, subject only
+    `host:cust-edge`, provenance only `agent:tenant-replay-01_cust-edge` (no agent:unknown).
+  - `redis-cli HGET omni:aoip:system_model:staging-sim facts` → unchanged 78 facts / 3 hosts — no
+    cross-tenant contamination from the new agent.
+  - `GET /onboarding/unknowns?tenant_id=staging-sim` called with tenant-replay-01's API key → HTTP
+    200 but body `tenant_id: tenant-replay-01` (281 own unknowns, not staging-sim's) — confirmed via
+    body inspection (not just status code) that `resolve_scope()` silently ignores override_tid for
+    non-admin callers. Initially misread as an isolation gap from status code alone; corrected after
+    reading response body. Not a defect — noted as a UX gap (silent scope override instead of 403)
+    for a future iteration, not fixed here.
+  - `GET /onboarding/unknowns?tenant_id=tenant-replay-01` and
+    `GET /onboarding/competency?tenant_id=tenant-replay-01&entity_type=host&entity_id=host:cust-edge`
+    (correct key) → real Unknown/Competency data, evidence_refs point to
+    `agent:tenant-replay-01_cust-edge` + real discovery probes.
+- Pending: multi-host coverage for tenant-replay-01 (currently 1/1 host — cust-edge only, via second
+  agent identity sharing the VM with staging-sim), automated test coverage for "2 agents/2 tenants on
+  1 VM", canonicalizing the gateway-secret API-key provisioning step (done by hand via kubectl this
+  iteration), and the resolve_scope() silent-override UX gap. docs/product/PRODUCT_PROOF.md
+  "Iteration 9" has full detail.
+- Reset at: n/a
+- Resume action: pytest full suite + docs sync + commit this iteration's doc/state changes; next
+  iteration should decide whether Phase 6 counts as DONE (1/1 host, isolation proven) or needs
+  multi-host before moving to Phase 7 (repeatability + operator proof polish).

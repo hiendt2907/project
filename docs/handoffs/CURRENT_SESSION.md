@@ -1,5 +1,17 @@
 # Current Session Handoff
 
+## Update iteration 9 (2026-07-02T18:05Z)
+Phase 6 của slice "Repeatable Tenant Onboarding Baseline" DONE ở mức scoped: cài agent thứ hai
+(`omni-remote-agent-replay01.service`) trên VM `cust-edge` bind vào `tenant-replay-01`, chạy song
+song agent staging-sim có sẵn. Runtime proof đầy đủ: register/evidence 200 OK, Twin
+(`omni:aoip:system_model:tenant-replay-01`) có 41 fact/revision=6/chỉ host cust-edge, cách ly xác
+nhận với `staging-sim` (Twin 78 fact/3 host không đổi). API `/onboarding/unknowns`,
+`/onboarding/competency` verify sống cho tenant mới. Chi tiết đầy đủ + 1 UX-gap phát hiện
+(`resolve_scope()` silent override, không phải bug) → `docs/product/PRODUCT_PROOF.md` mục
+"Iteration 9". Full suite: 5948 passed (1 flake cũ, không đổi). CHƯA làm: multi-host cho
+tenant-replay-01 (hiện chỉ 1/1 host), script hoá bước thêm API key vào `omni-gateway-secret`.
+Next step chi tiết ở `docs/operations/AUTONOMOUS_LOOP_STATE.json` → `iteration.next_step`.
+
 ## Deliverable hiện tại
 Slice "Repeatable Tenant Onboarding Baseline" (iteration 5-6 của Continuous Productization Loop) +
 skill mới `.claude/skills/omni-autonomous-productizer/` (autonomous productization loop operator).
@@ -38,18 +50,22 @@ KHÔNG được coi golden journey là "repeatable" cho tới khi Phase 4-7 củ
   PARTIAL/CODE_ONLY/ABSENT theo từng capability).
 
 ## Branch và commit
-`main` == `origin/main` == `50d2149` (đã push, đã merge `feature/living-operations-runtime` theo
-yêu cầu user). `feature/living-operations-runtime` local vẫn ở `ccbb679` (lag phía sau main, không
-ảnh hưởng — có thể fast-forward ở phiên sau nếu cần). Commit mới nhất: `50d2149` — supervisor dùng
-`--dangerously-skip-permissions` cho invocation `claude -p` (xem "Quyết định đã chốt" bên dưới, đây
-là NGOẠI LỆ tường minh do user yêu cầu 2 lần sau khi được cảnh báo rủi ro, không phải mặc định).
+`main` HEAD hiện tại = `7689049` ("Add provider lab incident endpoints"). Lịch sử gần nhất:
+`7689049` ← `8d4c0ed` (feat(portal): runtime-backed understanding + human claim workflow with
+codex) ← `c7c66eb` (docs: reconcile stale state.json/ledger) ← `8e15178` (iter7 fresh-tenant
+provisioning) ← `0d7d352` ← `c7c66eb`. **Lưu ý**: `8d4c0ed` và `7689049` là công việc
+provider-portal / lab-incidents (`src/aoip/console/`, `ui/apps/provider-portal/`) làm NGOÀI vòng
+lặp `omni-autonomous-productizer` (không đụng tới onboarding/Twin/Competency/tenant-replay-01) —
+được phát hiện qua drift reconciliation ở iter8, không phải bug, chỉ là công việc song song đã
+merge vào `main`. Chưa xác nhận đã push lên `origin/main` hay chưa — kiểm tra `git fetch && git
+status` ở phiên sau trước khi giả định đồng bộ.
 
 ## Working tree
 Sạch, ngoại trừ 10 file `docs/post-mortems/*.md` modified **có từ trước phiên này** (pre-existing,
-timestamp tự cập nhật bởi hook, không liên quan) và thư mục MỚI `.autonomous-loop/` (log runtime
-của supervisor đang chạy — KHÔNG commit, đây là log nền của tiến trình, không phải source code).
+timestamp tự cập nhật bởi hook, không liên quan) và thư mục `.autonomous-loop/` (log runtime của
+supervisor — KHÔNG commit, log nền của tiến trình, không phải source code).
 
-## Files chính đã thay đổi (iteration 5-6, đã commit local)
+## Files chính đã thay đổi (iteration 5-8, đã commit local)
 Iteration 5 (`e8a8c96`): `src/pkg/reasoning/schema.py` (`_compact_extracted_fact()`/
 `_compact_value()` thay slicing thô, thêm `schema_version`/`truncated`/`original_size`/
 `content_hash`); `scripts/lib/remote_agent_provisioning.py` (MỚI —
@@ -67,6 +83,18 @@ Iteration 6 — tenant idempotency (`61fcdcb`, `f806af0`): `src/services/admin_c
 `test_create_tenant_idempotent_true_is_repeatable`); `docs/product/PRODUCT_PROOF.md` (mục
 "Iteration 5" + "Iteration 6"); `.claude/skills/omni-autonomous-productizer/references/current-priority.md`;
 `docs/operations/AUTONOMOUS_LOOP_STATE.json` (status=IDLE).
+
+Iteration 7 (`8e15178`, đã commit trước phiên này): `scripts/provision_fresh_tenant.py` (MỚI —
+canonical caller gọi `AdminConfigRepo.create_tenant(idempotent=True)` qua asyncpg pool thật);
+`VERIFIED_RUNTIME` trên Postgres thật cho tenant `tenant-replay-01` (1 row tenant, 1 audit event
+sau 2 lần gọi). Xem `docs/product/PRODUCT_PROOF.md` mục "Iteration 7".
+
+Iteration 8 (`7689049`, reconciliation-only — không phải công việc của skill này, phát hiện qua
+drift check): `8d4c0ed` + `7689049` thêm provider-portal understanding/human-claim workflow +
+lab-incident endpoints (`src/aoip/console/{agents,understanding,human_inbox,lab_incidents}.py`,
+`ui/apps/provider-portal/**`). Skill `omni-autonomous-productizer` chỉ cập nhật
+`docs/operations/AUTONOMOUS_LOOP_STATE.json` + `AUTONOMOUS_LOOP_LEDGER.md` để phản ánh HEAD thật —
+không viết code mới. Full suite re-verify: 5948 passed, 5 deselected, 1 failed (flake đã biết).
 
 ## Quyết định đã chốt
 - Không làm O2B/O2C (source acquisition planner) cho tới khi golden journey hiện tại "sạch"
@@ -108,47 +136,31 @@ tier hiệu lực = Redis cache `shadow`. Namespace `multi-agent`, cluster OrbSt
 Không có.
 
 ## Next step chính xác
-**QUAN TRỌNG — sự cố đã xảy ra và đã fix trong phiên này**: supervisor ban đầu (khởi động lúc
-07:25Z, pid 10320) bị KẸT VÒNG LẶP VÔ HẠN không tiến triển — mỗi invocation `claude -p
-"/omni-autonomous-productizer one-iteration"` chọn đúng bottleneck (wire `idempotent=True` vào
-`src/gateway/routes/autonomy.py:292`) nhưng bị từ chối quyền Edit (vì `-p` không có TTY để duyệt
-permission), báo cáo, thoát về IDLE, rồi supervisor gọi lại ngay — lặp lại ~4 lần trong 3 phút,
-KHÔNG có thay đổi code nào. Đã dừng supervisor cũ, hỏi user cách xử lý, user chọn tường minh (2 lần,
-sau khi được cảnh báo rủi ro) dùng `--dangerously-skip-permissions`. Đã sửa `supervisor.sh` thêm
-flag này CHỈ cho invocation `claude -p` của nó (commit `50d2149`), khởi động lại supervisor (pid
-19497, đang chạy lúc viết handoff này). Đang chờ xem iteration mới có tiến triển thật không.
+Supervisor incident (báo cáo trước đây trong handoff này) đã kết thúc và đã bị vượt qua bởi các
+iteration sau — iter7 commit thành công (`8e15178`), và 2 commit ngoài-loop `8d4c0ed`/`7689049`
+(provider-portal work) đã landed on `main` sau đó mà không liên quan tới supervisor. HEAD hiện tại
+đã xác nhận = `7689049`. `.autonomous-loop/supervisor.lock` tồn tại trong `7689049` — session sau
+PHẢI chạy `bash .claude/skills/omni-autonomous-productizer/scripts/supervisor.sh --status` trước để
+biết loop nền còn chạy không trước khi tự invoke `one-iteration` thủ công (tránh đụng độ 2 tiến
+trình sửa cùng lúc).
 
-**Cập nhật 07:33Z**: bypass-permissions hoạt động — iteration hiện tại (pid biến động, invoke qua
-supervisor) lần đầu tiên THẬT SỰ sửa được code, đang viết `scripts/provision_fresh_tenant.py` (mới,
-CHƯA COMMIT, còn dang dở khi handoff này được ghi — không phải bug, chỉ là background process chưa
-xong). Đây là Phase 4 của slice "Repeatable Tenant Onboarding Baseline" (fresh tenant provisioning
-script dùng `idempotent=True` + `scripts/lib/remote_agent_provisioning.py`).
+**Bottleneck kế tiếp (không đổi từ iter7, chưa ai làm)** — Phase 6 của slice "Repeatable Tenant
+Onboarding Baseline": `tenant-replay-01` hiện chỉ có 1 row `omni_admin.tenant` (từ iter7), CHƯA có
+Agent/VM/discovery/Twin/Competency thật gắn vào. Việc cần làm:
+1. Quyết định reuse VM lab hiện có (`cust-edge`/`cust-app`/`cust-db`) với agent identity thứ 2 hay
+   provision VM mới trong OrbStack — inspect `scripts/e2e_orbstack_fleet.py` trước khi chọn.
+2. Provision Agent cho `tenant-replay-01` qua `scripts/lib/remote_agent_provisioning.py` (iteration
+   5, đã có `discovery_enabled: bool = True` mặc định — không lặp lại gap cust-app cũ).
+3. Chạy golden journey Tenant→Agent→Discovery→Fact→Twin→Competency không sửa tay, quan sát runtime
+   thật (không chỉ log tồn tại).
+4. Chứng minh cross-tenant isolation: Twin/Competency của `tenant-replay-01` và `staging-sim` không
+   lẫn dữ liệu (keyed đúng `tenant_id`).
+5. Chứng minh operator read-only proof flow: `GET /onboarding/competency` + `/unknowns` scoped
+   đúng `tenant-replay-01`.
 
-**Session tiếp theo PHẢI**:
-1. `bash .claude/skills/omni-autonomous-productizer/scripts/supervisor.sh --status` — còn chạy không.
-2. `tail -80 .autonomous-loop/logs/supervisor.log` — xem iteration gần nhất làm được gì, đặc biệt
-   có commit nào cho `scripts/provision_fresh_tenant.py` chưa.
-3. `git status --short` + `git log --oneline -10` + `docs/operations/AUTONOMOUS_LOOP_STATE.json` —
-   supervisor có thể đã tự commit thêm khi bạn không có mặt, hoặc `scripts/provision_fresh_tenant.py`
-   vẫn còn untracked/dang dở nếu iteration bị gián đoạn giữa chừng. KHÔNG tin nội dung "Trạng thái
-   hiện tại" ở trên nếu git log có commit mới hơn `87e63a2`.
-4. Nếu supervisor vẫn chạy với `--dangerously-skip-permissions` không giám sát — đây là quyết định
-   user đã chấp nhận rủi ro, KHÔNG tự ý tắt bypass trừ khi user yêu cầu lại, nhưng PHẢI kiểm tra kỹ
-   working tree/git log xem nó có làm gì ngoài ý muốn không trước khi tin tưởng bất kỳ commit nào
-   nó tạo ra — đặc biệt review nội dung `scripts/provision_fresh_tenant.py` trước khi tin nó an toàn
-   (script này có thể gọi API tạo tenant thật — xác nhận nó chỉ target lab, không target production).
-
-Nếu supervisor CHƯA kịp chạy gì mới (kiểm tra bằng git log không có commit mới sau `4185a38`):
-tiếp tục slice "Repeatable Tenant Onboarding Baseline" từ Phase 4 (idempotency đã DONE ở
-iteration 6, không còn là blocker):
-1. Wire `create_tenant(..., idempotent=True)` vào một provisioning caller thật (chưa có caller nào
-   dùng flag này — hiện chỉ có test).
-2. Phase 4: tạo tenant lab mới thật (`tenant-replay-01`) qua path idempotent, provision agent bằng
-   `scripts/lib/remote_agent_provisioning.py` (iteration 5), verify Twin/Competency có dữ liệu thật
-   + không cross-tenant contamination với `staging-sim`.
-3. Phase 5: chạy provisioning canonical lần 2, verify không duplicate/mất fact.
-4. Phase 6: operator read-only proof flow (API/CLI đủ, chưa cần UI).
-5. Phase 7: test+deploy+observe (rebuild image, redeploy, quan sát ≥2 discovery cycle).
+Đây là slice nhiều bước (VM/agent provisioning + quan sát ≥1 discovery cycle thật) — không cố nhồi
+vào 1 `one-iteration` ngắn, chia nhỏ nếu cần nhưng mỗi checkpoint phải để lại trạng thái sạch (không
+dở dang giữa VM provisioning và Agent enrollment).
 
 ## Lệnh cần chạy lại
 `bash .claude/skills/omni-autonomous-productizer/scripts/supervisor.sh --status` để biết loop nền
