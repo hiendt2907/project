@@ -45,15 +45,20 @@ Alert sources → `omni-diagnostic-evidence` → analyst (RAG → LLM → Analys
 
 ## COMPONENT ROLES (OMNI_WORKER_ROLE)
 
-| Role | Active loops |
-|---|---|
-| `full` | tất cả: evidence, actions, feedback, kpi, knowledge, siem-chains, tier |
-| `analyst` | kafka_evidence_loop, action_feedback, kpi, knowledge, siem-chains, tier |
-| `prober` | kafka_alerts_loop, delayed_queue, circuit_breaker, telegram_polling |
-| `core` | deep_scout, forecast, baseline_snapshot, proactive |
-| `executor` | kafka_actions_loop |
-| `gateway` | FastAPI HTTP → kafka omni-alerts (separate image) |
-| `onboarding` | discovery-evidence worker (pod `omni-onboarding`, riêng `omni-fullstack`) |
+| Role | Active loops | Deployed thật? |
+|---|---|---|
+| `full` | tất cả: evidence, actions, feedback, kpi, knowledge, siem-chains, tier | ✅ pod `omni-fullstack` |
+| `onboarding` | discovery-evidence worker | ✅ pod `omni-onboarding` (riêng `omni-fullstack`) |
+| `analyst` | kafka_evidence_loop, action_feedback, kpi, knowledge, siem-chains, tier | ❌ RETIRED 2026-07-02 (manifest xóa từ `915e509`, object cluster đã dọn) |
+| `prober` | kafka_alerts_loop, delayed_queue, circuit_breaker, telegram_polling | ❌ RETIRED 2026-07-02 |
+| `core` | deep_scout, forecast, baseline_snapshot, proactive | ❌ RETIRED 2026-07-02 |
+| `executor` | kafka_actions_loop | ❌ RETIRED 2026-07-02 (mutation logic nay chạy trong `full`) |
+| `gateway` | FastAPI HTTP → kafka omni-alerts (separate image, deployment riêng `omni-gateway`) | ✅ |
+
+Ghi chú: các role split (`analyst/prober/core/executor`) từng tồn tại như Deployment riêng ở giai
+đoạn kiến trúc trước consolidation `915e509`; nay logic của chúng chạy gộp trong `role=full`
+(`omni-fullstack`). Không tạo lại Deployment riêng cho các role này trừ khi có quyết định kiến trúc
+mới rõ ràng.
 
 ## INVARIANTS (vi phạm = bug)
 
@@ -77,9 +82,17 @@ Alert sources → `omni-diagnostic-evidence` → analyst (RAG → LLM → Analys
 
 ## INFRASTRUCTURE
 
-- **K8s**: OrbStack, namespace `multi-agent`; pod duy nhất `omni-fullstack` (role=full). `make deploy-worker` = `deploy-fullstack`.
+- **K8s**: OrbStack, namespace `multi-agent`. **KHÔNG phải pod duy nhất** — xem "DEPLOYMENT STATE" bên
+  dưới cho topology thật (đã audit runtime, không phải suy diễn từ tài liệu cũ).
+  `make deploy-worker` = `deploy-fullstack` (chỉ deploy `omni-fullstack`, không phải toàn bộ stack).
 - **LLM**: Ollama `qwen2.5-coder:7b` (active) + `nomic-embed-text:latest` (768-dim). Host: `host.orb.internal:11434`.
-- **DB**: PostgreSQL `omni_admin` schema = source-of-truth autonomy config. Redis = hot-path cache + RAG HNSW + audit chain.
+- **DB**: PostgreSQL `omni_admin` schema (19 bảng, migration `migrations/omni_admin/000{1..4}_*.sql`,
+  chạy tự động lúc worker khởi động qua `run_migrations()` cho role `full/analyst/onboarding` nếu
+  `OMNI_ADMIN_PG_DSN` không rỗng) = source-of-truth autonomy config + tenant registry. Tenant PHẢI
+  được provision qua `AdminConfigRepo.create_tenant()` / `POST /autonomy/tenants` trước khi
+  onboarding pipeline ghi `tenant_readiness_state` cho tenant đó — thiếu bước này gây FK violation
+  liên tục (xem post-mortem `docs/post-mortems/drift-correction-2026-07-02.md`). Redis = hot-path
+  cache + RAG HNSW + audit chain.
 - **Tests**: pytest `asyncio_mode=auto` `pythonpath=src`; dùng `FakeRedis(decode_responses=True)` cho ZSET tests (không AsyncMock).
 
 ## KEY DIRS
@@ -101,9 +114,48 @@ NS=multi-agent make omni-death-loop                                # chaos loop
 
 `OMNI_WORKER_ROLE` · `OMNI_ENV_MODE` (lab|prod) · `OMNI_KAFKA_BOOTSTRAP_SERVERS` · `OMNI_REDIS_URL` · `OMNI_OLLAMA_BASE_URL` · `OMNI_AUTO_EXECUTE_ENABLED` (default false) · `OMNI_LLM_NUM_CTX` (default 8192) · `OMNI_KAFKA_TOPIC_KNOWLEDGE_EVIDENCE` (default omni-knowledge-evidence) · `OMNI_AUDIT_PRIVATE_KEY_PATH` · `OMNI_TENANT_APIKEYS` (tenant_id:key,...) · `OMNI_GATEWAY_API_KEY`
 
-## DEPLOYMENT STATE (2026-06-27)
+## DEPLOYMENT STATE (2026-07-02, xác minh qua Whole-System Reality Audit + Drift Correction Slice)
 
-Pod `omni-fullstack` 1/1 Running, role=full, tier=shadow (observe-only). Kill-switch ON. RAG `omni:rag:sop` HLEN≥1010. Redis AOF enabled. Knowledge pipeline active (omni-knowledge-evidence, 3 partitions).
+### Declared target topology
+`omni-fullstack` (role=full) là workload lõi duy nhất được `make deploy-worker` deploy mặc định.
+`omni-gateway`, `omni-onboarding`, `omni-brain-go`, `omni-ui` là các Deployment RIÊNG BIỆT, có
+manifest/target Makefile riêng — không phải "instance phụ của omni-fullstack".
+
+### Current deployed topology (đã kubectl describe/exec xác minh trực tiếp)
+| Deployment | Role/chức năng | Trạng thái |
+|---|---|---|
+| `omni-fullstack` | `OMNI_WORKER_ROLE=full`, tier hiệu lực = Redis cache `omni:cfg:tier:default`=`shadow` | 1/1 Running |
+| `omni-gateway` | FastAPI HTTP ingress (không import `workers/`) | 1/1 Running (restart do race Kafka-chưa-ready lúc pod khởi động — dependency outage, tự phục hồi, không phải bug) |
+| `omni-onboarding` | `OMNI_WORKER_ROLE=onboarding` — discovery-evidence worker | 1/1 Running |
+| `omni-brain-go` | SIEM correlation engine THẬT (image `finguard/brain-go:siem-v2-corr`, consume `omni-siem-raw`→produce `omni-siem-incidents`/`omni-siem-chains`, consumer group `brain-go-kafka` không trùng lặp) — **không liên quan onboarding** | 1/1 Running |
+| `omni-ui`, `redis-0`, `kafka`, `omni-postgres-0`, `redis-exporter`, `aoip-dex`, `aoip-provider-*`, `aoip-tenant-*` | portal/hạ tầng phụ trợ | Running |
+
+### Kill-switch — effective value đã xác minh trên pod thật
+`OMNI_AUTO_EXECUTE_ENABLED=false` (đã revert 2026-07-02; trước đó bị override thành `true` từ phiên
+lab `2090ac7` ngày 2026-06-11 "bật SIEM self-heal user-authorized" và bị bỏ quên chưa rollback —
+xem post-mortem). `OMNI_SIEM_SUGGEST_ONLY=true` (advisory-only, đã revert). `OMNI_AUTONOMY_TIER`
+override đã gỡ khỏi Deployment env — tier hiệu lực nay chỉ đến từ Redis cache/PG theo đúng invariant
+`resolve_tier`. Precedence xác nhận: ConfigMap `omni-worker-configmap` (default an toàn) < Deployment
+`env:` override (đã dọn) < Redis cache (nguồn hiệu lực thật cho tier).
+
+### Retired compatibility artifacts
+`omni-analyst`, `omni-core`, `omni-executor`, `omni-prober`, `omni-worker` — manifest đã bị xóa khỏi
+git từ commit `915e509` (split-role consolidation) nhưng object Deployment (`replicas=0`) vẫn còn sót
+trong cluster đến 2026-07-02 → đã `kubectl delete` dứt điểm (kèm Service `omni-analyst` orphan, đã
+`git rm k8s/services/omni-analyst-service.yaml`). `omni-siem-bridge`, `omni-hitl-dispatcher`,
+`omni-evidence-adapter` — manifest VẪN còn trong git (`replicas: 1`, target `make deploy-siem-stack`,
+có PDB riêng) nhưng đang scale 0 trong lab hiện tại vì `omni-brain-go` đã đảm nhiệm SIEM correlation
+cho kịch bản lab này; đã annotate `omni.io/status=scaled-down-intentional` + owner + sunset condition
+trên cả 3 — KHÔNG coi là zombie, KHÔNG xóa.
+
+RAG `omni:rag:sop` HLEN=1019 (khớp MEMORY.md). Redis AOF enabled. Knowledge pipeline active
+(`omni-knowledge-evidence`) — nhưng Kafka mọi topic hiện `PartitionCount=1, ReplicationFactor=1`,
+KHÔNG khớp con số "3 partitions" đã ghi trước đây (P1, chưa sửa trong slice này — xem risk register
+post-mortem).
+
+### Còn BLOCKED (chưa audit được)
+VM/Agent truth trên 3 VM lab (cust-edge/cust-app/cust-db, OrbStack) — chưa xác định đúng access
+method (`orb -m`/`ssh ...@orb`). Twin-vs-VM comparison phụ thuộc bước này, chưa thực hiện được.
 
 ## COMMUNICATION
 
