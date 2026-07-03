@@ -509,3 +509,22 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Resume action: Phase 2 slice kế tiếp — cân nhắc (a) diagram history/diff view
   (`GET /onboarding/diagram/history` đã có), hoặc (b) wire `npm run e2e` vào quy trình release.
   Không mở action/billing song song (PRODUCT_CONTRACT §9).
+
+### Checkpoint 2026-07-03T23:55:00+07:00
+- Timestamp: 2026-07-03T23:55:00+07:00
+- Iteration: iter23-diagram-history-diff
+- Status: DONE (VERIFIED_RUNTIME)
+- Summary: Diagram History/Diff view trên `/understanding` + fix product gap: endpoint
+  `GET /onboarding/diagram/history` cũ (from/to, cap 200) không bao giờ chạm được version gần đây
+  (staging-sim latest=10058) — redesign `?before=&limit=` neo tại latest, đi lùi, newest-first,
+  `next_before` phân trang (không consumer nào dùng contract cũ → không breaking). 5 pytest mới
+  (test_gateway_onboarding_diagram_history.py). UI: proxy passthrough `diagram-history` (validate
+  trước forward, honest 502), `diffLines()` LCS thuần TS, `DiagramHistoryPanel` (chip version,
+  Older… pagination, diff +/− hoặc identical-notice), nút History trên card. E2E mới assert panel
+  neo latest (version > 20) + diff render — 8 passed, 1 skipped trên pod thật. Rebuild + rollout cả
+  omni-gateway lẫn omni-ui; curl gateway thật xác minh latest/pagination. Pytest full 5972 passed /
+  1 fail env-dependent đã biết. Chi tiết: `docs/product/PRODUCT_PROOF.md` → "Iteration 23".
+- Reset at: n/a
+- Resume action: Phase 2 slice kế tiếp — cân nhắc (b) wire `npm run e2e` vào quy trình release
+  (cần pod + port-forward), hoặc slice Golden Journey đọc tiếp theo. Không mở action/billing song
+  song (PRODUCT_CONTRACT §9).

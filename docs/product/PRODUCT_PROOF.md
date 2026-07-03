@@ -300,6 +300,40 @@ Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (
 iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
 printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
 
+## Iteration 23 — Diagram History/Diff view + fix history endpoint không chạm được version gần đây VERIFIED_RUNTIME (2026-07-03)
+
+Golden Journey slice tiếp theo của iter 22 (đúng "Next step (a)" trong handoff): operator xem được
+**lịch sử version diagram và diff giữa các version** ngay trong card System Diagram.
+
+**Product gap tìm thấy khi audit runtime:** endpoint cũ `GET /onboarding/diagram/history` nhận
+`from_version/to_version` với cap `to_version ≤ 200`, trong khi tenant lab `staging-sim` đã ở
+`latest=10058` — endpoint **không bao giờ trả được version gần đây** (chỉ xem được v1..200 cổ đại).
+Không có consumer/test nào dùng contract cũ (grep toàn repo) → redesign hợp lệ, không breaking ai.
+
+- `src/gateway/routes/onboarding.py`: contract mới `?before=&limit=` (limit 1-50, default 10) —
+  neo tại `latest` (key `DIAGRAM_LATEST_KEY`), đi LÙI xuống, trả `versions` newest-first +
+  `latest` + `next_before` (con trỏ phân trang trang cũ hơn). Probe cap 200 chống store bệnh lý
+  (version append-only qua INCR, không TTL nên gap hiếm).
+- `tests/test_gateway_onboarding_diagram_history.py` (mới, 5 test): empty tenant, newest-first neo
+  latest, phân trang `before`, skip version thiếu, limit bounds 422.
+- `ui/app/api/onboarding/diagram-history/route.ts` (mới): passthrough proxy pattern iter 19/20 —
+  validate `limit`/`before` trước khi forward (400), honest 502, không mock fallback.
+- `ui/lib/diagram-diff.ts` (mới): `diffLines()` LCS line-level thuần TS (input nhỏ — 3 diagram/
+  version, không cần dependency) + `hasChanges()`.
+- `ui/components/diagram-history.tsx` (mới): `DiagramHistoryPanel` — chip version newest-first,
+  nút "Older…" phân trang qua `next_before`, chọn version → diff màu +/− so với version cũ hơn kế
+  tiếp; version regenerate không đổi cấu trúc → thông báo "identical" (`data-testid=diff-identical`).
+- `ui/app/understanding/page.tsx`: nút toggle "History" trên header card System Diagram.
+- `ui/e2e/understanding.spec.ts`: test mới "diagram history panel lists versions and diffs against
+  the previous one" — assert panel neo tại latest (version đầu **> 20**, chứng minh không còn kẹt
+  ở contract v1..20 cũ), ≥2 version chip, chọn version → diff lines hoặc identical notice.
+
+Runtime proof: rebuild + rollout cả `omni-gateway` (Python đổi) lẫn `omni-ui`. Curl gateway thật:
+`?tenant_id=staging-sim&limit=3` → `latest:10058, versions:[10058,10057,10056]`;
+`?before=10057&limit=2` → `[10056,10055], next_before:10055`. Playwright lên pod thật →
+**8 passed, 1 skipped** (write-flow gate giữ nguyên). Pytest full: 5972 passed / 1 fail
+env-dependent đã biết (`test_register_then_real_system_metrics...`, baseline không đổi).
+
 ## Iteration 22 — Mermaid System Diagram trên /understanding VERIFIED_RUNTIME (2026-07-03)
 
 Golden Journey visibility slice: trang `/understanding` render **System Diagram** — 3 diagram

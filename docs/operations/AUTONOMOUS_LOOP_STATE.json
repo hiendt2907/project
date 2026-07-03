@@ -1,54 +1,54 @@
 {
- "schema_version": 1,
- "status": "IDLE",
- "updated_at": "2026-07-03T11:40:00Z",
- "project_root": "/Users/hiendang/project",
- "branch": "main",
- "head": "6761993",
- "iteration": {
-  "id": "iter22-mermaid-diagram-understanding",
-  "bottleneck": "GET /onboarding/diagram co backend nhung chua co UI — Golden Journey visibility gap tren /understanding.",
-  "phase": "DONE",
-  "acceptance_passed": true,
-  "last_successful_step": "System Diagram card tren /understanding render 3 Mermaid SVG (component/API sequence/business flow) tu du lieu Redis that cua staging-sim. Proxy aggregate them section diagram (honest-error). Image omni-ui rebuild digest e20e6a9c1cdc + rollout, imageID xac minh tren pod. E2E: 8 passed (ALLOW_WRITE) / 7 passed 1 skipped. npm run build xanh. Khong doi Python. Chi tiet: PRODUCT_PROOF.md Iteration 22.",
-  "last_failed_step": null,
-  "hypothesis": null,
-  "next_step": "Phase 2 slice ke tiep: (a) diagram history/diff view (GET /onboarding/diagram/history), hoac (b) wire npm run e2e vao quy trinh release."
- },
- "quota": {
-  "usage_percent_reported": null,
-  "reset_at": null,
-  "reset_source": null,
-  "buffer_seconds": 120
- },
- "runtime": {
-  "safety_verified": true,
-  "auto_execute_enabled": false,
-  "health_summary": "Verified 2026-07-03 iter22: omni-ui Running image e20e6a9c1cdc (rebuild co mermaid); /understanding render 3 SVG qua E2E; OMNI_AUTO_EXECUTE_ENABLED=false (auth boundary 401 reconfirmed qua E2E).",
-  "deployed_images": {}
- },
- "working_tree": {
-  "owned_changes": [
-   "ui/app/api/onboarding/understanding/route.ts",
-   "ui/components/mermaid-diagram.tsx",
-   "ui/app/understanding/page.tsx",
-   "ui/e2e/understanding.spec.ts",
-   "ui/package.json",
-   "ui/package-lock.json",
-   "docs/product/PRODUCT_PROOF.md",
-   "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",
-   "docs/operations/AUTONOMOUS_LOOP_STATE.json",
-   "docs/handoffs/CURRENT_SESSION.md"
+  "schema_version": 1,
+  "status": "IDLE",
+  "updated_at": "2026-07-03T16:55:00Z",
+  "project_root": "/Users/hiendang/project",
+  "branch": "main",
+  "head": "c808189",
+  "iteration": {
+    "id": "iter23-diagram-history-diff",
+    "bottleneck": "GET /onboarding/diagram/history cap to_version<=200 khong bao gio tra duoc version gan day (latest=10058) + chua co UI history/diff.",
+    "phase": "DONE",
+    "acceptance_passed": true,
+    "last_successful_step": "Endpoint history redesign ?before=&limit= neo tai latest (curl that: latest=10058, [10058,10057,10056]; before=10057 -> [10056,10055]). 5 pytest moi. UI DiagramHistoryPanel + diffLines LCS + proxy diagram-history. E2E 8 passed 1 skipped tren pod that. Rebuild+rollout omni-gateway va omni-ui. Chi tiet: PRODUCT_PROOF.md Iteration 23.",
+    "last_failed_step": null,
+    "hypothesis": null,
+    "next_step": "Phase 2 slice ke tiep: (b) wire npm run e2e vao quy trinh release, hoac slice Golden Journey doc tiep theo."
+  },
+  "quota": {
+    "usage_percent_reported": null,
+    "reset_at": null,
+    "reset_source": null,
+    "buffer_seconds": 120
+  },
+  "runtime": {
+    "safety_verified": true,
+    "auto_execute_enabled": false,
+    "health_summary": "Verified 2026-07-03 iter22: omni-ui Running image e20e6a9c1cdc (rebuild co mermaid); /understanding render 3 SVG qua E2E; OMNI_AUTO_EXECUTE_ENABLED=false (auth boundary 401 reconfirmed qua E2E).",
+    "deployed_images": {}
+  },
+  "working_tree": {
+    "owned_changes": [
+      "ui/app/api/onboarding/understanding/route.ts",
+      "ui/components/mermaid-diagram.tsx",
+      "ui/app/understanding/page.tsx",
+      "ui/e2e/understanding.spec.ts",
+      "ui/package.json",
+      "ui/package-lock.json",
+      "docs/product/PRODUCT_PROOF.md",
+      "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",
+      "docs/operations/AUTONOMOUS_LOOP_STATE.json",
+      "docs/handoffs/CURRENT_SESSION.md"
+    ],
+    "unrelated_changes": []
+  },
+  "resume_checks": [
+    "git rev-parse HEAD matches this file's head, or reconcile drift",
+    "OMNI_AUTO_EXECUTE_ENABLED is false on all live deployments",
+    "kubectl get deploy,pod,svc -A -o wide shows omni-fullstack/omni-onboarding/omni-gateway Running",
+    "kubectl exec deploy/omni-gateway -- python -c \"import inspect; from pkg.onboarding import discovery_doc as dd; print(inspect.signature(dd.compute_business_flow_pct))\" shows (redis, tenant_id, doc) async signature",
+    "docs/product/PRODUCT_PROOF.md iteration section matches this state's last known bottleneck",
+    ".venv/bin/python -m pytest tests/ -q --ignore=tests/integration is green (minus known pre-existing flake test_register_then_real_system_metrics_emitted_through_real_pipeline)"
   ],
-  "unrelated_changes": []
- },
- "resume_checks": [
-  "git rev-parse HEAD matches this file's head, or reconcile drift",
-  "OMNI_AUTO_EXECUTE_ENABLED is false on all live deployments",
-  "kubectl get deploy,pod,svc -A -o wide shows omni-fullstack/omni-onboarding/omni-gateway Running",
-  "kubectl exec deploy/omni-gateway -- python -c \"import inspect; from pkg.onboarding import discovery_doc as dd; print(inspect.signature(dd.compute_business_flow_pct))\" shows (redis, tenant_id, doc) async signature",
-  "docs/product/PRODUCT_PROOF.md iteration section matches this state's last known bottleneck",
-  ".venv/bin/python -m pytest tests/ -q --ignore=tests/integration is green (minus known pre-existing flake test_register_then_real_system_metrics_emitted_through_real_pipeline)"
- ],
- "blocker": null
+  "blocker": null
 }
