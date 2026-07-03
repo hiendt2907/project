@@ -41,8 +41,8 @@ answer-question + auth boundary, CI-safe mặc định (không mutate nếu thi�
 - Các quyết định iter 19/20 giữ nguyên (honest-error, không mock fallback, Claim không tự VERIFIED).
 
 ## Branch và commit
-`main`. Iteration bắt đầu từ `47e9ab4`, working tree chỉ có thay đổi thuộc iteration này
-(ui test infra + docs governance). Commit trong phiên, chưa push.
+`main`, HEAD `14e51a9`. Commit của iteration: `e5f4b95` (test portal E2E) + `14e51a9` (docs
+governance) — đã commit trong phiên, chưa push. Working tree sạch.
 
 ## Blockers
 None.
