@@ -474,3 +474,22 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Resume action: Phase 2 slice kế tiếp — (a) Mermaid diagram render (`GET /onboarding/diagram`)
   trên trang Understanding, hoặc (b) Playwright E2E cho `/understanding` (giờ có cả read + write
   flow để test). Không mở action/billing song song (PRODUCT_CONTRACT §9).
+
+### Checkpoint 2026-07-03T17:30:00+07:00
+- Timestamp: 2026-07-03T17:30:00+07:00
+- Iteration: iter21-playwright-e2e-understanding
+- Status: DONE (VERIFIED_RUNTIME)
+- Summary: Bộ Playwright E2E đầu tiên của portal — 7 test cho `/understanding` chạy Chromium thật
+  lên pod omni-ui thật (port-forward + host-resolver-rules cho Host omni.ai-agent.local): login
+  NextAuth thật (setup project + storageState), read flow (4 section + competency matrix), write
+  flow answer-question gated `E2E_ALLOW_WRITE=1` (mutation thật, mặc định skip → CI-safe),
+  write-negative 400 tại proxy, auth boundary (redirect /login + POST 401). KHÔNG đổi Python/app
+  code. `E2E_ALLOW_WRITE=1 npx playwright test` → 7 passed; không flag → 6 passed 1 skipped;
+  `npm run build` xanh. Pytest 5967 passed / 1 fail = known env-dependent
+  test_register_then_real_system_metrics_emitted_through_real_pipeline (đã ghi resume_checks).
+  Chi tiết + gotcha (APIRequestContext không ăn resolver-rules; ops-realm redirect mất port):
+  `docs/product/PRODUCT_PROOF.md` → "Iteration 21".
+- Reset at: n/a
+- Resume action: Phase 2 slice kế tiếp — Mermaid diagram render (`GET /onboarding/diagram`) trên
+  trang Understanding (Golden Journey visibility). Không mở action/billing song song
+  (PRODUCT_CONTRACT §9).

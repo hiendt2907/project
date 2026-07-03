@@ -300,6 +300,41 @@ Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (
 iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
 printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
 
+## Iteration 21 — Playwright E2E cho /understanding (read + write + auth boundary) VERIFIED_RUNTIME (2026-07-03)
+
+Bộ E2E browser-level đầu tiên của portal — chạy Chromium thật lên pod `omni-ui` thật (K8s) qua
+`kubectl port-forward svc/omni-ui 18081:80`, hostname `omni.ai-agent.local` map về 127.0.0.1 bằng
+Chromium `--host-resolver-rules` (NextAuth cookie + realm middleware nhận đúng Host). KHÔNG đổi
+Python, KHÔNG đổi app code — chỉ thêm test infrastructure.
+
+**Files:** `ui/playwright.config.ts` (setup project login → chromium project dùng storageState),
+`ui/e2e/auth.setup.ts` (login qua form NextAuth thật, credentials từ env
+`E2E_USERNAME`/`E2E_PASSWORD` — lấy từ secret `omni-ui-secrets`, không hardcode),
+`ui/e2e/understanding.spec.ts` (7 test). Script `npm run e2e`. `@playwright/test` 1.61.1 devDep.
+
+**7 test — tất cả PASS trên runtime thật (tenant staging-sim):**
+1. setup: login form NextAuth thật → cookie `next-auth.session-token` tồn tại.
+2. read: 4 section (Readiness/Entities/Unknowns/Questions) render, Twin có entity thật.
+3. read: click entity → Competency Matrix load, ≥1 facet có state badge hợp lệ.
+4. write (gate `E2E_ALLOW_WRITE=1`): answer 1 PENDING question qua form → badge ANSWERED tăng
+   (mutation thật vào Redis lab); không có flag → test skip (mặc định CI-safe).
+5. write-negative: `POST /api/onboarding/answer` question_id sai format → 400 tại proxy.
+6. auth: unauthenticated visit `/understanding` → middleware redirect `/login`.
+7. auth: unauthenticated POST answer → 401.
+
+**Verify:** `E2E_ALLOW_WRITE=1 npx playwright test` → 7 passed (3.7s); không flag → 6 passed
+1 skipped. `npm run build` xanh (playwright files không phá Next build). Full pytest suite:
+5967 passed / 1 fail duy nhất là known env-dependent test
+`test_register_then_real_system_metrics_emitted_through_real_pipeline` (đo psutil thật trên máy
+dev, routing ANOMALY vs METRIC_SAMPLE phụ thuộc tải máy lúc chạy — đã ghi trong resume_checks từ
+trước, không liên quan slice này).
+
+**Gotcha ghi lại:** (a) assertion HTTP phải đi qua browser (`page.evaluate(fetch)`) — Playwright
+`APIRequestContext` chạy trong Node, không ăn `--host-resolver-rules`; (b) ops-realm middleware
+redirect về public host KHÔNG port (Ingress :80) nên qua port-forward chỉ assert được URL path
+`/login`, không assert được form render sau redirect; (c) sau submit answer, `load()` re-render
+row làm locator bám row cũ chết — so sánh count badge ANSWERED trước/sau (`expect.poll`).
+
 ## Iteration 20 — Answer-question trên portal (Phase-2, write-action đầu tiên) VERIFIED_RUNTIME (2026-07-03)
 
 **Mục tiêu**: đóng loop Unknown→Question→Claim ngay trên official portal — operator trả lời

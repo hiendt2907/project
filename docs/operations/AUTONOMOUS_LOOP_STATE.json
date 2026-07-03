@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-03T09:15:00Z",
+  "updated_at": "2026-07-03T10:30:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "af87274",
+  "head": "47e9ab4",
   "iteration": {
-    "id": "iter20-portal-answer-question",
-    "bottleneck": "Golden Journey loop Unknown->Question->Claim chi dong duoc qua curl Bearer key, chua co write-action tren portal.",
+    "id": "iter21-playwright-e2e-understanding",
+    "bottleneck": "Portal co read+write flow nhung chua co E2E browser-level nao — production readiness gap.",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "Proxy POST ui/app/api/onboarding/answer/route.ts + form Answer inline tren /understanding (khong doi Python). Full suite 5968 passed/0 fail; npm run build xanh. Runtime: rebuild+rollout omni-ui 4cdb63f6e68a (imageID pod khop); NextAuth login that -> POST answer question a96324a653fe6491b3be9fec -> 200 answer_id 5abc1da3499876efd4bb; re-fetch status=ANSWERED; unauth 401; invalid 400. Chi tiet: PRODUCT_PROOF.md Iteration 20.",
+    "last_successful_step": "7 Playwright test cho /understanding chay len pod omni-ui that (port-forward + host-resolver-rules): login NextAuth that, read flow, write flow answer-question (gate E2E_ALLOW_WRITE=1), 400 proxy, auth boundary 401/redirect. 7 passed voi flag, 6 passed 1 skipped khong flag. npm run build xanh. Khong doi Python/app code. Chi tiet: PRODUCT_PROOF.md Iteration 21.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Phase 2 slice ke tiep: (a) Mermaid diagram render tren /understanding, hoac (b) Playwright E2E cho /understanding (read + write flow)."
+    "next_step": "Phase 2 slice ke tiep: Mermaid diagram render (GET /onboarding/diagram) tren /understanding."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,13 +24,17 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Verified 2026-07-03 iter20: omni-ui sha256:4cdb63f6e68a... rolled out (imageID pod khop); page /understanding 200; OMNI_AUTO_EXECUTE_ENABLED=false.",
+    "health_summary": "Verified 2026-07-03 iter21: omni-ui Running (image 4cdb63f6e68a tu iter20, khong rebuild — chi them test infra); page /understanding 200 qua E2E; OMNI_AUTO_EXECUTE_ENABLED=false (unauth boundary reconfirmed qua E2E 401).",
     "deployed_images": {}
   },
   "working_tree": {
     "owned_changes": [
-      "ui/app/api/onboarding/answer/route.ts",
-      "ui/app/understanding/page.tsx",
+      "ui/playwright.config.ts",
+      "ui/e2e/auth.setup.ts",
+      "ui/e2e/understanding.spec.ts",
+      "ui/package.json",
+      "ui/package-lock.json",
+      "ui/.gitignore",
       "docs/product/PRODUCT_PROOF.md",
       "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",
       "docs/operations/AUTONOMOUS_LOOP_STATE.json",
