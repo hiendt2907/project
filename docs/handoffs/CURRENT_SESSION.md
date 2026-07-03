@@ -1,276 +1,100 @@
 # Current Session Handoff
 
-## Session note (2026-07-03T10:15Z) — Tech-debt sweep, IN PROGRESS (test verification pending)
-User asked to (1) handle the 10 post-mortem timestamp files (done, see prior session note below —
-already committed at `8194c73`), and (2) plan + fix outstanding tech debt across the whole repo.
-Chose "scan whole repo" option. Ran 3 parallel Explore subagents (TODO/FIXME/code-smell in `src/`;
-skip/xfail tests + doc gaps; CLAUDE.md invariant violations) and synthesized 10 findings, tracked in
-new `docs/architecture/TECH_DEBT_BACKLOG.md`.
+## Deliverable hiện tại
+Không có deliverable đang dang dở. Phiên vừa xong gồm 2 việc tuần tự, cả hai đã đóng:
+(1) Phase 0 + quick-win từ audit ChatGPT, (2) tech-debt sweep toàn repo.
 
-**Fixed this session (working tree, NOT YET COMMITTED — waiting on full test suite confirmation):**
-- `src/workers/sdk_service_tools.py`, `src/workers/proactive_observer.py`,
-  `src/workers/proactive_react_runner.py` — removed `_dbg_log()` debug-session leftover (wrote to
-  `/Users/hiendang/project/.cursor/debug-*.log`, hardcoded personal dev path). Removal from
-  `proactive_react_runner.py` was missed on the first pass, causing a real regression: 6 test
-  failures in `tests/test_cov_proactive_react_runner.py` (AttributeError swallowed silently
-  somewhere upstream). Found via `git stash`/diff comparison against pre-change baseline (18/18
-  passed before, 6 failed after) and fixed by removing the remaining call site. Re-verified
-  18/18 passed after fix.
-- `tests/test_cov_proactive_observer_gaps.py`, `tests/test_track2b_diagnostic_proactive.py` —
-  removed now-dead `TestDbgLog` test classes (function no longer exists).
-- `tests/test_cov_autonomous_feedback.py::TestArchivePostmortem` — was calling `async def
-  _archive_postmortem(...)` without `await` (RuntimeWarning: coroutine never awaited, test
-  provided false confidence, never actually exercised the function). Fixed: added `await` +
-  made the 3 test methods `async def` (pytest `asyncio_mode=auto`, no decorator needed).
-- `tests/conftest.py` — added session-scoped autouse fixture `_isolate_postmortem_dir()` setting
-  `OMNI_POSTMORTEM_DIR` to a scratch tmp dir for the whole test session. Root cause fix for a
-  recurring issue: `workers.archivist.write_incident_postmortem()` defaults to writing into the
-  REAL `docs/post-mortems/` repo dir when this env var is unset, and some tests (found via the
-  `_archive_postmortem` await bug above, plus likely other call sites not yet fully enumerated)
-  call it for real, overwriting real post-mortem timestamps on every full-suite run — this
-  happened twice in this very session (previously "handled" once by just committing the diff at
-  `8194c73`, but it recurred on the next full-suite run, proving that wasn't a real fix). After
-  adding the fixture: ran full suite once, `git status docs/post-mortems/` was clean — confirmed
-  fixed. Reverted the 10 files back to committed state with `git checkout --` before re-verifying.
-- `k8s/deployments/omni-fullstack-rbac.yaml` — corrected a stale/misleading comment claiming
-  "RBAC resources are READ-ONLY" for the whole `omni-executor-mutate-lab` ClusterRole, when in
-  fact `secrets`/`configmaps`/`deployments` etc. have `patch`/`update`. Investigated whether this
-  is a real security violation (CLAUDE.md invariant says worker SA should have no Secrets access)
-  — found it's actually a **designed, gated feature**: `k8s_patch_secret` mutate tool
-  (`src/workers/k8s_cluster_tools.py:1020`) used for credential rotation during SIEM/security
-  remediation (`src/workers/analyst_agentic_loop.py` has dedicated LLM prompt guidance for it,
-  gated by `required_evidence` + `MUTATE_TOOL_ALLOWLIST`). Did NOT revoke the RBAC (would break
-  this real capability) — fixed the misleading comment instead.
-- `CLAUDE.md` — (a) corrected the RBAC invariant line to describe the real, intentional exception
-  (see above) instead of a blanket "no Secrets" claim; (b) corrected a stale claim that "all Kafka
-  topics are PartitionCount=1" — verified `scripts/kafka_ensure_omni_topics.sh`:
-  `omni-knowledge-evidence`=3 partitions, SIEM topic=6, rest still 1 (not urgent, lab-scale).
-- `k8s/deployments/omni-postgres.yaml` — added an explicit KNOWN LAB DEBT comment documenting that
-  `POSTGRES_PASSWORD` is committed in cleartext (though via a proper K8s `Secret` object, not a
-  plaintext env in the pod spec). User explicitly chose "document only, don't rotate now" via
-  AskUserQuestion — rotating live would require restarting Postgres + every consumer of
-  `OMNI_ADMIN_PG_DSN` (gateway, worker), real downtime risk if rushed. NOT rotated this session.
-- `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`, `docs/operations/AUTONOMOUS_LOOP_STATE.json` —
-  backfilled a missing "iteration 17" checkpoint entry (the initial Explore-agent scan flagged
-  the readiness-gate/competency wiring as an open gap, but that was stale — `PRODUCT_PROOF.md` and
-  `current-priority.md` already document it as VERIFIED_RUNTIME/done from commit `cf11f1f`; only
-  the ledger + state.json were missing the corresponding entry — backfilled to match).
-- `docs/architecture/TECH_DEBT_BACKLOG.md` (new) — full record of all 10 scanned findings, which
-  were fixed vs. documented-only vs. deferred, and why. Read this file for the complete picture
-  instead of re-deriving from this handoff.
+## Definition of Done
+- (1) Quick-win: ADR chốt runtime canonical, `/readyz` runtime-verified trên cluster, NetworkPolicy
+  Postgres egress áp thật, CI python-version đồng nhất. **DONE.**
+- (2) Tech-debt sweep: quét 3 hướng (TODO/code-smell, doc-gap/test-skip, invariant CLAUDE.md), mỗi
+  finding phải đọc code thật trước khi hành động (không sửa mù theo báo cáo subagent), full test
+  suite phải xanh sau mọi thay đổi. **DONE.**
 
-**Deferred (see TECH_DEBT_BACKLOG.md for full rationale):** Kafka partition count mostly still 1
-(repartition risk on live cluster, needs its own slice); no automated safeguard against VM
-provisioning missing discovery flags (recurrence risk, needs design); ~90 silent
-`except Exception: pass` blocks across the codebase (2-3 highest-risk ones identified —
-`rollback_executor.py:135`, `deterministic_mutate_from_evidence.py:336` — not yet fixed, volume too
-large to blindly fix all); duplicate error-format pattern in `k8s_cluster_tools.py`/`k8s_tools.py`
-(18+ places, refactor candidate, low priority); suspected dead code (`AutonomyGate` etc., grep
-confidence too low to delete blindly).
+## Trạng thái hiện tại
+Cả hai việc đã hoàn tất và commit. Không có công việc mở đang chờ tiếp tục.
 
-**NOT YET COMMITTED — blocked on this:** launched `pytest tests/ -q --ignore=tests/integration` in
-background (shell id `bny7kx1ud`, started ~10:11AM) to do a final full-suite confirmation after all
-the fixes above (especially the conftest fixture and the proactive_react_runner regression fix).
-**Output was empty / job status unclear when this handoff was written** — a Stop-hook fired mid-wait.
-**Next step for whoever resumes:** re-run `.venv/bin/python -m pytest tests/ -q
---ignore=tests/integration` fresh (do not trust a stale background shell across a session boundary),
-confirm it's green (expect exactly 1 known pre-existing flake,
-`test_register_then_real_system_metrics_emitted_through_real_pipeline`, unrelated), confirm
-`git status docs/post-mortems/` is clean (proves the conftest fixture works), then commit all the
-changes listed above in one or more logical commits (suggest: one commit for the debug-leftover +
-regression-fix + test fixes, one for the RBAC/CLAUDE.md/Postgres doc-only fixes, one for the
-ledger/state.json backfill, plus the new TECH_DEBT_BACKLOG.md file). Do not re-run the whole
-tech-debt scan from scratch — it's already done and recorded.
+## Đã hoàn thành
+- ADR-001 chốt `aoip.agent.daemon` là target runtime dài hạn; phát hiện phụ: Dockerfile.gateway đã
+  COPY `src/aoip/` từ trước, lý do "duplicate" trong `agent_runtime.py` đã lỗi thời.
+- `GET /readyz` mới cho gateway (Redis+Postgres check), build+deploy+runtime-verify thật trên
+  cluster lab (200 OK qua port-forward).
+- NetworkPolicy gateway thêm egress `omni-postgres:5432`, áp thật lên cluster.
+- CI `python-version` 3.12→3.13 khớp Dockerfile.
+- 10 file `docs/post-mortems/*.md` bị đổi timestamp: xác nhận là hành vi archivist thật (không phải
+  bug), commit riêng; sau đó root-cause thật (test không mock `OMNI_POSTMORTEM_DIR`) được tìm và
+  sửa bằng session-scoped fixture trong `tests/conftest.py`.
+- Xoá debug leftover `_dbg_log()` khỏi 3 file worker (path tuyệt đối máy dev cá nhân) — phát hiện
+  và sửa 1 regression thật (6 test fail ở `proactive_react_runner.py`) gây ra bởi việc xoá thiếu sót
+  ở lượt đầu.
+- Sửa comment RBAC sai lệch (`omni-fullstack-rbac.yaml`) sau khi xác nhận quyền Secrets patch/update
+  là tính năng có chủ đích (`k8s_patch_secret` mutate tool), không phải lỗ hổng — KHÔNG thu hồi quyền.
+- Làm rõ 2 invariant CLAUDE.md lỗi thời (RBAC Secrets, Kafka partition count).
+- Document (không rotate) password Postgres hardcode plaintext trong git — theo lựa chọn người dùng.
+- Backfill `AUTONOMOUS_LOOP_LEDGER.md`/`AUTONOMOUS_LOOP_STATE.json` thiếu checkpoint iteration 17.
+- Tạo `docs/architecture/TECH_DEBT_BACKLOG.md` — ghi đầy đủ 12 finding, cái nào fixed/documented/deferred.
 
-## Session note (2026-07-03T09:55Z) — Phase 0 + quick-win DONE, runtime-verified
-Reviewed external audit (ChatGPT) of the repo; executed narrow "Phase 0 + quick-win" slice per
-plan `/Users/hiendang/.claude/plans/h-y-l-n-k-ho-ch-parallel-thompson.md`. Corrected a stale
-handoff claim: iteration 17 (below) was already committed at `cf11f1f` — not uncommitted as
-previously written.
-
-**Changes (ready to commit, not yet committed):**
-- `docs/architecture/ADR-001-canonical-agent-runtime.md` (new) — chốt `aoip.agent.daemon` là
-  target runtime dài hạn; `remote_agent.agent` giữ nguyên là runtime thật trên VM lab (không
-  migrate trong scope này). **Sửa 1 lần trong phiên**: phát hiện `Dockerfile.gateway` đã COPY
-  `src/aoip/` từ commit `409dcb2` (2026-07-02) — lý do "duplicate vì Gateway không import được
-  aoip" trong `agent_runtime.py` đã lỗi thời; ADR ghi rõ điều này và đề xuất hướng sửa rẻ hơn
-  (import trực tiếp thay vì tách package `aoip_protocol`), để một task riêng.
-- `docs/vendor/OMNI_PROJECT_CANONICAL.md` — 1 dòng trỏ tới ADR-001.
-- `src/gateway/api.py` — route `GET /readyz` mới (Redis PING + Postgres `SELECT 1` nếu
-  `OMNI_ADMIN_PG_DSN` set; 503 nếu dependency bắt buộc down). `/healthz` giữ nguyên, docstring làm
-  rõ chỉ là liveness.
-- `k8s/deployments/omni-gateway.yaml` — NetworkPolicy egress thêm rule `app: omni-postgres:5432`.
-- `.github/workflows/ci.yml`, `.github/workflows/wiki.yml` — `python-version` `3.12` → `3.13` khớp
-  `Dockerfile`/`Dockerfile.gateway`.
-
-**Runtime-verified thật trên cluster lab** (không chỉ test pass):
-- `make docker-gateway` rebuild image → `make deploy-gateway` (`kubectl apply` + rollout restart)
-  → pod mới `omni-gateway-6894b7d5f9-xcrfp` Running, 0 restart.
-- `kubectl apply --dry-run=server -f k8s/deployments/omni-gateway.yaml` → NetworkPolicy
-  `configured` (hợp lệ) trước khi apply thật; đã apply thật (user đã chọn "Deploy và
-  runtime-verify ngay" qua AskUserQuestion).
-- Port-forward `svc/omni-gateway` → `curl /readyz` → `200 {"status":"ok","checks":{"redis":"ok","postgres":"ok"}}`.
-  `/healthz` vẫn `200 {"status":"ok",...}`. Cả hai xác nhận chạy thật trên image mới, không phải
-  suy luận từ code.
-
-**Test:** `pytest tests/ -q --ignore=tests/integration` → 5956 passed, 1 failed (pre-existing
-flaky, KHÔNG liên quan quick-win — `tests/test_remote_agent_e2e.py::...test_register_then_real_system_metrics_emitted_through_real_pipeline`
-chạy `psutil` thật, assert routing phụ thuộc z-score máy tại thời điểm chạy test; máy hiện "khỏe"
-nên rẽ nhánh `omni-knowledge-evidence` thay vì `omni-diagnostic-evidence` như test kỳ vọng — lỗi
-môi trường, không phải regression từ `gateway/api.py`, `omni-gateway.yaml`, CI, hay ADR). Riêng
-`pytest tests/test_onboarding_pipeline.py -q` → 32 passed (iteration 17 không hỏng).
-
-**KHÔNG liên quan phiên này — không commit:** 10 file `docs/post-mortems/*.md` chỉ đổi
-`**Date:**` timestamp (nội dung không đổi), tác dụng phụ từ một lần chạy test/tiến trình nền
-trước đó có ghi thật ra các file post-mortem fixture. Đã `git diff` xác nhận an toàn nhưng để
-ngoài scope commit của phiên này để tránh gộp nhầm lịch sử.
-
-**Next step cho phiên mới:**
-1. `git add` + commit riêng nhóm quick-win (`ADR-001` + `OMNI_PROJECT_CANONICAL.md` +
-   `src/gateway/api.py` + `k8s/deployments/omni-gateway.yaml` + 2 workflow file) — KHÔNG gộp
-   `docs/post-mortems/*.md` hay `.autonomous-loop/logs/supervisor.log`.
-2. Cân nhắc task riêng: sửa `agent_runtime.py` import trực tiếp `aoip.agent.delivery` thay vì
-   duplicate (xem ADR-001 mục 5) — chưa làm trong scope quick-win này.
-3. `docs/product/PRODUCT_PROOF.md`/ledger cho Iteration 17 vẫn chưa cập nhật (xem block Iteration
-   17 bên dưới) — có thể gộp vào cùng lượt dọn tài liệu tiếp theo nếu muốn.
-4. Nếu muốn mở rộng sang Phase 1 (mTLS, `aoip_protocol` package, migrate VM lab), cần một
-   ADR/kế hoạch mới — không suy diễn từ ADR-001 vì nó chỉ chốt hướng, không phải lệnh thực thi.
-
-## Iteration 17 (2026-07-02, ĐÃ COMMIT ở `cf11f1f` — text "not yet committed" bên dưới SAI, xem note ở trên)
-Bottleneck: iteration 15's design-decision gap — `compute_business_flow_pct()` in
-`src/pkg/onboarding/discovery_doc.py` only read `service_topology.services[].described`
-(machine-set), so answering a Human Claim question (O2B) never moved a tenant's
-`business_flow_confirmed_pct` / `readiness_flag`.
-
-Design decision made: a service counts as "confirmed" if EITHER the discovery-doc
-`described` flag is true OR the Entity Competency Matrix (`aoip.competency_matrix`) reports
-a CLAIMED/VERIFIED `business_capability` facet for it (i.e. a Human Claim answered via O2B).
-
-Change: `compute_business_flow_pct()` signature changed from
-`compute_business_flow_pct(doc)` (sync) to `compute_business_flow_pct(redis, tenant_id, doc)`
-(async) — only caller was `compute_readiness()` (already async, already awaited), so this is
-not a breaking change for any other code path (confirmed via grep — only one call site
-existed). Implementation loads `SystemModel` + contradictions + claims once via
-`aoip.system_model_store`/`aoip.claims_store`, then projects `business_capability` per
-service via `aoip.competency_matrix.build_entity_competency()` (pure/derived, no LLM).
-
-Tests: new `TestReadinessThresholds::test_answered_human_claim_counts_toward_business_flow_pct`
-in `tests/test_onboarding_pipeline.py` proves a service with no doc description but an
-answered Claim reaches `business_flow_confirmed_pct == 100.0`. `pytest
-tests/test_onboarding_pipeline.py -q` → 32 passed (was 31). Regression `-k "onboarding or
-gateway_api or tenant or provision or competency or claim" --ignore=tests/integration` → 203
-passed. Full `pytest tests/ -q --ignore=tests/integration` was launched in background to
-confirm no other regression before this iteration is marked DONE — **not yet confirmed
-finished as of this checkpoint**.
-
-**Not yet done this iteration**: (1) wait for/confirm the full test-suite background run
-green, (2) no deploy/runtime-verification against the live cluster performed yet — this is a
-real behavior change (not docs-only) and per the skill's Definition of Done needs a rebuild +
-redeploy of `omni-fullstack`/`omni-gateway` (whichever imports `discovery_doc.py`) plus a
-runtime proof (e.g. answer a real Question for `staging-sim` or `tenant-replay-01` and observe
-`business_flow_confirmed_pct` move) before this can be labeled DONE and committed. (3)
-PRODUCT_PROOF.md / current-priority.md / AUTONOMOUS_LOOP_STATE.json / ledger not yet updated
-for this iteration.
-
-**Next step for a fresh session**: check whether the background `pytest tests/ -q
---ignore=tests/integration` finished green (rerun it if the background shell is gone), then
-continue with build/deploy/runtime-verification per the plan above, then update
-PRODUCT_PROOF.md/state/ledger/current-priority.md and commit only after runtime proof.
-
-## Iteration 16 (2026-07-02T23:45Z)
-Closed the other leftover named in iteration 15: runtime-verified `POST /onboarding/handover-doc`
-(A8) against the real cluster. Via `kubectl port-forward svc/omni-gateway 18080:80`, captured
-`staging-sim`'s diagram version before (`6747`), POSTed a real handover doc using the tenant's real
-bearer key → `200 OK`, `diagram_version=6752` (bump proves the real accumulation+diagram pipeline
-ran). `GET /onboarding/doc` afterward shows only `content_hash`/`content_length` for the uploaded
-doc — no raw content — confirming the route's `INV_DATA_RESIDENCY` docstring claim holds on the real
-pipeline, not just in the docstring. No source changed; `pytest tests/test_onboarding_pipeline.py -q
--k handover` → 3 passed. No K8s mutation. Full detail: `docs/product/PRODUCT_PROOF.md` →
-"Iteration 16".
-
-**Not done**: readiness-gate/competency wiring (iteration 15's design-decision gap — still the
-highest-value open golden-journey link, not addressed here or in iteration 15); `cust-db` agent for
-`tenant-replay-01` (3/3 host parity, lowest priority); operator portal UI.
-
-## Iteration 15 (2026-07-02T22:10Z)
-Closed the last "chưa kiểm" gap in PRODUCT_PROOF.md row 28: Unknown/Question/Human-Claim lifecycle
-(O2B) had code + unit tests but was never runtime-verified. Via `kubectl port-forward
-svc/omni-gateway 18090:80`, fetched a real PENDING question for tenant `staging-sim`
-(`bdb9bb5e66be555d1fd3dd80`, `svc:nginx`, facet `business_capability`), answered it via `POST
-/onboarding/questions/{id}/answer` → `200 OK`, question flips PENDING→ANSWERED. `GET
-/onboarding/competency?entity_type=service&entity_id=svc:nginx` then shows facet
-`business_capability: state=CLAIMED` with `evidence_refs=[human:iter15-productizer,
-question:...]` — correctly NOT auto-promoted to VERIFIED (no matching machine Fact), confirming
-the Claim-vs-Fact contract holds on the real Twin.
-
-**Gap found (documented, not fixed)**: the `UnderstandingComplete`/readiness gate
-(`compute_business_flow_pct()` in `src/pkg/onboarding/discovery_doc.py`) reads
-`service_topology.services[].described` (machine-set only) and is disconnected from
-`competency_matrix`/Human Claims — answering every open Question does not move a tenant's
-`readiness_flag` toward `true`. Needs a design decision before fixing. No source changed this
-iteration; `pytest tests/test_aoip_question_lifecycle.py
-tests/test_gateway_onboarding_competency_routes.py -q` → 19 passed. No K8s mutation. Full detail:
-`docs/product/PRODUCT_PROOF.md` → "Iteration 15".
-
-**Not done**: readiness-gate/competency wiring (next bottleneck candidate); Handover-doc path
-(`POST /onboarding/handover-doc`) has code+tests but no runtime-verification yet either.
-
-## Iterations 9-13 (2026-07-02, summarized)
-Closed all leftovers from iteration 9 ("2 agents/2 tenants on 1 VM" isolation, tenant API-key
-provisioning single-command flow + tests, `resolve_scope()` confirmed intentional not a bug).
-Full detail preserved in `docs/product/PRODUCT_PROOF.md` and
-`docs/operations/AUTONOMOUS_LOOP_LEDGER.md` (do not re-derive from conversation history).
-
-## Iteration 14 (2026-07-02T21:15Z)
-Fixed the last iteration-9 leftover: `tenant-replay-01` only had 1/1 host (`cust-edge`), no proof a
-single tenant's Twin can merge facts from multiple distinct hosts. Installed a real second Remote
-Agent for `tenant-replay-01` on VM `cust-app` (`/opt/omni-remote-agent-replay01/`, systemd unit
-`omni-remote-agent-replay01.service`, reusing the existing gateway API key), alongside the
-pre-existing `staging-sim` agent on that same VM. Runtime proof: agent log register/profile/evidence
-all 200 OK; Redis `omni:aoip:system_model:tenant-replay-01` revision 54→66, facts now span
-`{cust-edge, cust-app}` (was `{cust-edge}` only); `staging-sim` Twin on the same shared VM unaffected
-(`{cust-edge, cust-db, cust-app}`/76 facts — isolation holds); `GET
-/onboarding/competency?entity_type=host&entity_id=host:cust-app` with tenant-replay-01's bearer
-token returns live VERIFIED facets. New
-`tests/test_onboarding_pipeline.py::TestOneTenantTwoHosts` (2 tests). `pytest
-tests/test_onboarding_pipeline.py -q` → 31 passed (was 29). Regression `-k "onboarding or
-gateway_api or tenant or provision" --ignore=tests/integration` → 159 passed (was 157). Reconfirmed
-`OMNI_AUTO_EXECUTE_ENABLED=false` (VM agent install, no K8s mutation). Full detail:
-`docs/product/PRODUCT_PROOF.md` → "Iteration 14".
-
-**Not done**: `cust-db` still has no agent for `tenant-replay-01` (2/3 host parity, not 3/3) — not a
-bug, just unexplored scope. All iteration-9 leftovers are now closed. Next bottleneck TBD (candidates:
-`cust-db` for full parity, or Phase 6/7 — UnderstandingComplete, Handover, operator portal UI).
-
-## Deliverable
-Slice "Repeatable Tenant Onboarding Baseline" (Continuous Productization Loop) via skill
-`.claude/skills/omni-autonomous-productizer/`. Goal: prove a fresh lab tenant can go through
-Tenant→Agent→Discovery→Fact→Twin→Competency→Unknown→Question→Claim without manual intervention.
-Iterations 1-14 DONE (System Twin, multi-host Twin, gateway/aoip import fix, Fact provenance fix,
-evidence compaction, canonical provisioning, tenant idempotency, second Agent + isolation proofs,
-API-key provisioning). Iteration 15: closed the Human-Claim runtime-verification gap. Iteration 16:
-closed the Handover-doc runtime-verification gap.
-
-## Current state
-- Branch `main` @ `5c6d225` (iteration 15 confirmed committed; iteration 16 is docs/runtime-proof
-  only, staged for commit).
-- Safety: `OMNI_AUTO_EXECUTE_ENABLED=false` unchanged; no K8s/VM mutation in iteration 16 (2 reads +
-  one POST against gateway API using existing tenant tokens only). All core pods Running.
-- Next step: pick one of iteration 15/16's remaining candidates — (a) design+wire
-  `competency_matrix` coverage into the readiness/`UnderstandingComplete` gate (highest value,
-  carried over twice now), (b) `cust-db` agent for `tenant-replay-01` (3/3 parity, lowest
-  priority), (c) operator portal UI for competency/unknowns/diagram (API-only today). Full detail
-  in `docs/operations/AUTONOMOUS_LOOP_STATE.json` → `iteration.next_step`.
-
-## Note on unrelated commits
-`8d4c0ed` and `7689049` (provider-portal / lab-incidents work) landed on `main` outside this skill's
-tracking — confirmed unrelated to onboarding/Twin/Competency/tenant-replay-01, not a bug, just
-parallel work merged to `main`. Not re-litigated each iteration; see git log for detail if needed.
+## Branch và commit
+`main`, HEAD `5a546f1` (docs(operations): backfill iteration-17 ledger/state checkpoint, add
+tech-debt backlog). 5 commit mới trong phiên: `3d8df9b`, `8194c73`, `d5954cc`, `447e05d`, `5a546f1`.
 
 ## Working tree
-This iteration updated `docs/product/PRODUCT_PROOF.md`, `docs/operations/AUTONOMOUS_LOOP_STATE.json`,
-`docs/operations/AUTONOMOUS_LOOP_LEDGER.md`,
-`.claude/skills/omni-autonomous-productizer/references/current-priority.md`, this file. No source
-code or tests changed this iteration (runtime-verification only). Pre-existing unrelated
-modifications in `docs/post-mortems/*.md` and `.autonomous-loop/` (supervisor runtime logs, not
-source) are untouched by this iteration and not part of its commit.
+Sạch, ngoại trừ chính file handoff này đang được cập nhật (`docs/handoffs/CURRENT_SESSION.md`).
+
+## Files chính đã thay đổi
+- `docs/architecture/ADR-001-canonical-agent-runtime.md` (new)
+- `docs/architecture/TECH_DEBT_BACKLOG.md` (new)
+- `src/gateway/api.py` (route `/readyz`)
+- `k8s/deployments/omni-gateway.yaml`, `k8s/deployments/omni-fullstack-rbac.yaml`,
+  `k8s/deployments/omni-postgres.yaml`
+- `src/workers/sdk_service_tools.py`, `src/workers/proactive_observer.py`,
+  `src/workers/proactive_react_runner.py`
+- `tests/conftest.py` (fixture cô lập postmortem dir)
+- `CLAUDE.md`, `docs/vendor/OMNI_PROJECT_CANONICAL.md`
+- `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`, `docs/operations/AUTONOMOUS_LOOP_STATE.json`
+- `.github/workflows/ci.yml`, `.github/workflows/wiki.yml`
+
+## Quyết định đã chốt
+- `aoip.agent.daemon` là canonical agent runtime dài hạn; `remote_agent.agent` giữ nguyên trên VM
+  lab, KHÔNG migrate cho tới khi có ADR/kế hoạch riêng (xem ADR-001).
+- RBAC `secrets` patch/update trên worker SA là ngoại lệ có chủ đích (backing `k8s_patch_secret`),
+  KHÔNG thu hồi trừ khi có quyết định kiến trúc mới.
+- Password Postgres KHÔNG rotate trong phiên này — chỉ document, cần một lượt riêng có thời gian
+  test kỹ (restart Postgres + mọi consumer `OMNI_ADMIN_PG_DSN`).
+
+## Verification đã chạy
+- `pytest tests/ -q --ignore=tests/integration` → 5953 passed, 1 pre-existing flake không liên quan
+  (`test_register_then_real_system_metrics_emitted_through_real_pipeline`, phụ thuộc z-score máy
+  thật lúc chạy).
+- `git status docs/post-mortems/` sạch sau full suite — xác nhận fixture `conftest.py` hoạt động.
+- Runtime thật trên cluster: `curl /readyz` → `200 {"redis":"ok","postgres":"ok"}`;
+  `kubectl apply --dry-run=server` cho NetworkPolicy → hợp lệ, đã apply thật.
+
+## Deployment hiện tại
+`omni-gateway` đã rebuild+redeploy với route `/readyz` mới, đang chạy pod mới trên cluster lab
+(namespace `multi-agent`). NetworkPolicy egress Postgres đã áp thật. Không có thay đổi deploy nào
+khác treo lại.
+
+## Blockers
+None.
+
+## Next step chính xác
+Không có việc mở nào cần tiếp tục ngay. Nếu muốn làm tiếp, đọc
+`docs/architecture/TECH_DEBT_BACKLOG.md` mục "Chưa xử lý" và chọn 1 trong 4 hạng mục deferred
+(Kafka partition, VM provisioning safeguard, except-pass cleanup, dead code) để mở slice mới.
+
+## Lệnh cần chạy lại
+`.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` nếu muốn tái xác nhận trạng thái
+xanh trước khi bắt đầu việc mới.
+
+## Không được làm lại
+- Không quét lại toàn bộ tech-debt từ đầu — đã có kết quả đầy đủ trong `TECH_DEBT_BACKLOG.md`.
+- Không tự ý xoá quyền RBAC Secrets của worker SA — đã xác nhận là tính năng có chủ đích.
+- Không rotate password Postgres mà không hỏi trước — quyết định người dùng đã chọn "chỉ document".
+- Không suy diễn ADR-001 thành lệnh migrate VM lab ngay — ADR chỉ chốt hướng, không phải thực thi.
+
+## Tài liệu liên quan
+- `docs/architecture/ADR-001-canonical-agent-runtime.md`
+- `docs/architecture/TECH_DEBT_BACKLOG.md`
+- `docs/vendor/OMNI_PROJECT_CANONICAL.md`
+- `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`, `docs/operations/AUTONOMOUS_LOOP_STATE.json`
