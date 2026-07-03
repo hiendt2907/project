@@ -37,8 +37,8 @@ với E2E assert SVG render từ dữ liệu Redis thật trên pod `omni-ui`. *
   browser-fetch thay APIRequestContext, redirect chỉ assert path `/login`).
 
 ## Branch và commit
-`main`, HEAD trước iteration: `6761993`. Commit của iteration: xem `git log` (feat UI + docs
-governance, commit trong phiên, chưa push). Working tree sạch sau commit.
+`main`, HEAD `2f48e44`. Commit của iteration: `4645216` (feat portal Mermaid diagram) +
+`2f48e44` (docs governance) — đã commit trong phiên, chưa push. Working tree sạch.
 
 ## Blockers
 None.
