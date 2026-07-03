@@ -38,6 +38,10 @@ Redis/curl thủ công), có test + runtime proof. **DONE.**
 - `apps/`/`packages/` bị exclude khỏi root ui type-check là fix đúng tầng (chúng có tsconfig/
   Dockerfile riêng); lỗi thật bên trong provider-portal là TECH_DEBT #14, slice riêng.
 
+## Branch và commit
+`main`, HEAD `1d16cae`. Working tree sạch. Commit của iteration: `151662c` (feat portal) +
+`1d16cae` (docs governance) — đã commit trong phiên, chưa push.
+
 ## Blockers
 None.
 
