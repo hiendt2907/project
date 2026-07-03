@@ -50,10 +50,10 @@ thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productiza
 
 ## Known Broken Links
 
-1. **Chưa có UI đọc Twin/Competency** — chỉ có API (đã fix iteration 3), operator vẫn cần biết endpoint + cách gọi thủ công (không phải dashboard).
+1. ~~Chưa có UI đọc Twin/Competency~~ — **FIXED iteration 19**: trang `/understanding` trên omni-ui (entities/competency/unknowns/questions/readiness), xem bên dưới.
 2. Kafka `PartitionCount=1` toàn hệ thống — chưa sửa (P1 riêng, xem drift-correction post-mortem).
 3. **Chỉ `cust-app` bị thiếu discovery flag lúc provision** (`OMNI_REMOTE_DISCOVERY_ENABLED` không có trong `run.env`, trong khi cust-edge/cust-db có) — đã fix trực tiếp trên VM (`echo >> run.env` + `systemctl restart`), nhưng đây là fix runtime, CHƯA có cơ chế provisioning tự động đảm bảo VM mới không rơi vào tình trạng tương tự (gap ở `scripts/e2e_orbstack_fleet.py`/agent bundle provisioning).
-4. `entity_id` param của `/onboarding/competency` yêu cầu format nội bộ `{entity_type}:{entity_id}` (vd `host:cust-app`) thay vì chỉ `cust-app` — API dễ gây nhầm lẫn cho operator, đáng cân nhắc UX fix ở iteration sau.
+4. ~~`entity_id` format nội bộ khó đoán~~ — **MITIGATED iteration 19**: `GET /onboarding/entities` + UI entity list cung cấp sẵn đúng `entity_id`, operator không còn phải tự gõ (API contract giữ nguyên).
 5. ~~`coerce_evidence_dict()` cắt cứng `extracted_fact` ở 2000 ký tự~~ — **FIXED iteration 5**, xem bên dưới.
 6. ~~Tenant provisioning KHÔNG idempotent~~ — **FIXED iteration 6**: `create_tenant(..., idempotent=True)` opt-in param, xem bên dưới. API HTTP `POST /autonomy/tenants` (gateway) vẫn giữ nguyên semantics 409 cũ (không set `idempotent=True`) — không phá contract hiện có, chỉ mở đường cho caller nội bộ (provisioning tooling) dùng repeat-safe path.
 7. ~~Chưa có fresh-tenant runtime proof~~ — **PARTIAL iteration 7**: Phase 4 (repeat-provisioning
@@ -299,6 +299,57 @@ unrelated blocker (`open_questions_over_threshold`/gate design gap).
 Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (no code change this
 iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
 printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
+
+## Iteration 19 — Operator Understanding surface (Phase-2 Golden Journey Read-only, slice 1) VERIFIED_RUNTIME (2026-07-03)
+
+**Bottleneck đã fix**: Known Broken Link #1 + #4 — Twin/Competency/Unknowns chỉ có API, operator
+phải biết endpoint + tự đoán `entity_id` format nội bộ (`host:cust-app`). Chưa có bất kỳ UI nào
+trên official portal cho bước "Understanding Ready" của Golden Journey.
+
+**Deliverables**:
+- Gateway `GET /onboarding/entities` (mới, `src/gateway/routes/onboarding.py`) — entity index của
+  System Twin (hosts/services + revision) từ `load_system_model`/`known_nodes`; UI dùng danh sách
+  này thay vì bắt operator đoán `entity_id`. 3 test mới (TDD RED→GREEN) trong
+  `tests/test_gateway_onboarding_competency_routes.py` (empty twin, grouping host/svc, tenant
+  isolation) → 7 passed.
+- UI trang `/understanding` (mới, `ui/app/understanding/page.tsx`) — readiness card, entity list
+  (click → Competency Matrix facet table với state badge VERIFIED/CLAIMED/OBSERVED/CONTRADICTED/…,
+  confidence, evidence_refs), Open Unknowns (severity, link tới entity), Questions (PENDING/
+  ANSWERED). TenantSelector + honest per-section error (không mock fallback). Sidebar link
+  "Understanding" ở navOps/navFull/navPortal; hoạt động ở cả 2 realm (không thêm vào redirect
+  prefix của middleware, giống `/pipeline`).
+- Next proxy routes (mới): `ui/app/api/onboarding/understanding/route.ts` (aggregate song song
+  entities+unknowns+questions+readiness, mỗi section trả `{data,error}` trung thực) và
+  `ui/app/api/onboarding/competency/route.ts` (passthrough per-entity).
+- Fix phụ: root `ui/tsconfig.json` exclude `apps`/`packages` (workspace app riêng có tsconfig/
+  Dockerfile riêng làm root `next build` fail type-check từ trước — pre-existing latent break,
+  ghi TECH_DEBT_BACKLOG #14).
+
+**Tests**: full suite `pytest tests/ -q --ignore=tests/integration` → **5967 passed, 1 failed**
+(chỉ flake đã biết `test_register_then_real_system_metrics_emitted_through_real_pipeline`, đã ghi
+trong `AUTONOMOUS_LOOP_STATE.json` từ trước). `ui: npm run build` xanh, route `/understanding` xuất
+hiện trong build manifest.
+
+**Runtime proof (VERIFIED_RUNTIME, cluster lab thật)**:
+1. Rebuild `omni-gateway:latest` (`aa24b92ad3bf…`) + `omni-ui:latest` (`b0c85bbdd6d7…`), rollout
+   restart cả hai — successfully rolled out; `/readyz` → 200 redis+postgres ok;
+   `OMNI_AUTO_EXECUTE_ENABLED=false` reconfirmed.
+2. Gateway: `GET /onboarding/entities?tenant_id=staging-sim` (Bearer key thật, trong pod) →
+   revision 2793, hosts đủ 3/3 (`cust-app/cust-db/cust-edge`), 7 services thật (`svc:mariadbd`,
+   `svc:nginx`, `svc:redis-server`, …).
+3. UI end-to-end **có auth thật** (không bypass middleware): login NextAuth credentials qua
+   port-forward + Host `omni.ai-agent.local` (cookie domain `.ai-agent.local`), rồi:
+   `GET /api/onboarding/understanding?tenant_id=staging-sim` → source=gateway, entities 3 host/7 svc
+   (revision 2814 — tăng theo thời gian thực), 352 unknowns, 336 questions, readiness_flag=true;
+   `GET /api/onboarding/competency?entity_type=host&entity_id=host:cust-app` → facet thật
+   (`identity: VERIFIED conf=0.85`, `process: CONTRADICTED`, coverage 50%, evidence_refs trỏ
+   `agent:staging-sim_cust-app` + `discovery:port_scan:ra-…`); `GET /understanding?tenant=staging-sim`
+   → HTTP 200, HTML chứa "System Understanding".
+4. Unauthenticated call → 401 (middleware giữ nguyên contract).
+
+**Chưa DONE (không mở rộng trong iteration này)**: nút "Answer" cho PENDING question trên UI (API
+`POST /onboarding/questions/{id}/answer` đã có, iteration 15 runtime-verified — đây là write-action,
+để slice sau của Phase 2); diagram Mermaid chưa render trên trang; Playwright E2E cho trang mới.
 
 ## Iteration 18 — Phase-1 Product & Architecture Contract Freeze VERIFIED_RUNTIME (2026-07-03)
 

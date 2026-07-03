@@ -433,3 +433,26 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Reset at: n/a
 - Resume action: Phase 2 — Golden Journey Read-only qua official API/portal (ứng viên đầu:
   operator portal UI cho competency/unknowns, hiện API-only).
+
+### Checkpoint 2026-07-03T14:30:00+07:00
+- Timestamp: 2026-07-03T14:30:00+07:00
+- Iteration: iter19-operator-understanding-surface
+- Status: DONE (VERIFIED_RUNTIME)
+- Summary: Phase-2 Golden Journey Read-only, slice 1 — Operator Understanding surface. Gateway
+  thêm `GET /onboarding/entities` (entity index của System Twin, 3 test TDD mới); omni-ui thêm
+  trang `/understanding` (readiness + entity list + Competency Matrix facet table + Open Unknowns
+  + Questions, TenantSelector, honest per-section error, không mock fallback) qua 2 Next proxy
+  route mới; sidebar link cả 3 realm nav. Fix phụ: root `ui/tsconfig.json` exclude `apps/packages`
+  (pre-existing latent type-check break của provider-portal chặn `next build` root —
+  TECH_DEBT_BACKLOG #14). Full suite 5967 passed / 1 known flake. Runtime proof: rebuild+rollout
+  omni-gateway (`aa24b92ad3bf…`) + omni-ui (`b0c85bbdd6d7…`); `/onboarding/entities` trả 3/3 host
+  + 7 service thật (rev 2793→2814 realtime); UI proof CÓ AUTH THẬT (NextAuth login qua Host
+  omni.ai-agent.local): aggregate API trả 352 unknowns/336 questions/readiness_flag=true,
+  competency host:cust-app facet thật (identity VERIFIED 0.85, process CONTRADICTED, coverage 50%),
+  page HTML 200; unauthenticated → 401. Kill-switch false + /readyz 200 reconfirmed.
+  Chi tiết: `docs/product/PRODUCT_PROOF.md` → "Iteration 19".
+- Reset at: n/a
+- Resume action: Phase 2 slice kế tiếp — (a) nút Answer question trên UI (write-action đầu tiên
+  của portal, API đã runtime-verified iter 15), hoặc (b) render Mermaid diagram trên trang
+  Understanding, hoặc (c) Playwright E2E cho trang mới. Không mở action/billing song song
+  (PRODUCT_CONTRACT §9).

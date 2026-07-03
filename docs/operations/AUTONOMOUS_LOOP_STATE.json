@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-03T05:30:00Z",
+  "updated_at": "2026-07-03T07:35:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
   "head": "3c2c266",
   "iteration": {
-    "id": "iter18-phase1-contract-freeze",
-    "bottleneck": "Production productization plan Phase 1: chua co Product Contract canonical; command state machine bi chep tay o 3 noi (agent_runtime.py, delivery.py, Lua _CLAIM_SCRIPT) voi rui ro drift; huong hop nhat trong ADR-001 s5 sai chieu (DurableCommandChannel yeu hon ban gateway).",
+    "id": "iter19-operator-understanding-surface",
+    "bottleneck": "Golden Journey buoc Understanding Ready chi co API, khong co UI operator; entity_id format noi bo kho doan (Known Broken Links #1/#4).",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "PRODUCT_CONTRACT.md + ADR-002 tao moi; ADR-001 s5 superseded; src/aoip/protocol/ la single source of truth cho state vocabulary, ca gateway lan aoip import chung; 13 contract test moi (parse Lua chan drift); requirements.lock; full suite 5965 passed / 0 failed; rebuild+rollout gateway/fullstack/onboarding; kubectl exec verify TERMINAL_STATES identity-shared trong pod that; /readyz 200; kill-switch false reconfirmed. Chi tiet: PRODUCT_PROOF.md Iteration 18.",
+    "last_successful_step": "Gateway GET /onboarding/entities (3 test TDD); omni-ui trang /understanding + 2 proxy route + sidebar 3 realm; ui/tsconfig exclude apps/packages (TECH_DEBT #14). Full suite 5967 passed/1 known flake; npm run build xanh. Runtime: rebuild+rollout omni-gateway aa24b92ad3bf + omni-ui b0c85bbdd6d7; entities API 3/3 host+7 svc; UI proof co NextAuth login that: aggregate 352 unknowns/336 questions/readiness_flag=true, competency host:cust-app facet that, page 200, unauth 401. Chi tiet: PRODUCT_PROOF.md Iteration 19.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Phase 2 - Golden Journey Read-only qua official API/portal. Ung vien dau: operator portal UI cho competency/unknowns/diagram (hien API-only, carry-over tu iteration 17). Khong mo billing/multi-region/action moi song song (PRODUCT_CONTRACT s9)."
+    "next_step": "Phase 2 slice ke tiep: (a) Answer-question button tren UI (write-action dau tien cua portal), hoac (b) Mermaid diagram render, hoac (c) Playwright E2E cho /understanding."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,21 +24,21 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Verified 2026-07-03 iter18: omni-gateway/omni-fullstack/omni-onboarding rebuilt+rolled out thanh cong; omni-gateway sha256:f9ccdf1fe277..., multi-agent-system sha256:bfa8fe4b053f...; /readyz 200 redis+postgres ok; OMNI_AUTO_EXECUTE_ENABLED=false via kubectl exec.",
+    "health_summary": "Verified 2026-07-03 iter19: omni-gateway sha256:aa24b92ad3bf..., omni-ui sha256:b0c85bbdd6d7... rolled out; /readyz 200; OMNI_AUTO_EXECUTE_ENABLED=false.",
     "deployed_images": {}
   },
   "working_tree": {
     "owned_changes": [
-      "docs/product/PRODUCT_CONTRACT.md",
+      "src/gateway/routes/onboarding.py",
+      "tests/test_gateway_onboarding_competency_routes.py",
+      "ui/app/understanding/page.tsx",
+      "ui/app/api/onboarding/understanding/route.ts",
+      "ui/app/api/onboarding/competency/route.ts",
+      "ui/components/sidebar.tsx",
+      "ui/tsconfig.json",
       "docs/product/PRODUCT_PROOF.md",
-      "docs/architecture/ADR-001-canonical-agent-runtime.md",
-      "docs/architecture/ADR-002-command-protocol.md",
+      "docs/product/PRODUCTION_MISSON.md",
       "docs/architecture/TECH_DEBT_BACKLOG.md",
-      "src/aoip/protocol/__init__.py",
-      "src/gateway/routes/agent_runtime.py",
-      "src/aoip/agent/delivery.py",
-      "tests/test_aoip_protocol_contract.py",
-      "requirements.lock",
       "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",
       "docs/operations/AUTONOMOUS_LOOP_STATE.json",
       "docs/handoffs/CURRENT_SESSION.md"
