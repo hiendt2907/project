@@ -3,6 +3,11 @@
 **Ngày:** 2026-07-03
 **Trạng thái:** Accepted (quyết định hướng đi — chưa migrate code)
 
+> **Cập nhật 2026-07-03:** §5 (hướng "gateway import `DurableCommandChannel`") đã bị superseded
+> bởi `ADR-002-command-protocol.md` sau khi đọc kỹ cả hai implementation — `agent_runtime.py` đã
+> vượt bản aoip về an toàn (fencing/atomic claim/heartbeat), hướng hợp nhất đúng là hút state
+> machine vocabulary ra `aoip.protocol` dùng chung. Các quyết định §1-§4 giữ nguyên hiệu lực.
+
 ## Bối cảnh
 
 Repo hiện có ba entrypoint agent chạy trên host khách hàng, không có tài liệu nào chốt cái nào là
