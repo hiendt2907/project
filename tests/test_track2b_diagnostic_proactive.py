@@ -850,17 +850,6 @@ class TestUpdateLearningPatternStats:
         assert card >= 1
 
 
-class TestDbgLog:
-    def test_dbg_log_does_not_raise(self) -> None:
-        """_dbg_log writes to a file path that may or may not exist; should swallow errors."""
-        po._dbg_log(
-            run_id="test-run",
-            hypothesis_id="H0",
-            location="test_track2b.py:TestDbgLog",
-            message="unit_test_probe",
-            data={"value": 42},
-        )
-        # If we get here without exception, the function handled everything gracefully
 
 
 # ===========================================================================

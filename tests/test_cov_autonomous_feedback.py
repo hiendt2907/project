@@ -311,19 +311,19 @@ class TestWriteSuccessHotCache:
 
 
 class TestArchivePostmortem:
-    def test_does_not_raise_with_valid_data(self) -> None:
-        _archive_postmortem(
+    async def test_does_not_raise_with_valid_data(self) -> None:
+        await _archive_postmortem(
             "trace1",
             "k8s_rollout_restart",
             {"namespace": "default", "deployment": "nginx"},
             {"alertname": "HighCPU", "namespace": "default", "deployment": "nginx"},
         )
 
-    def test_does_not_raise_with_none_ctx_obj(self) -> None:
-        _archive_postmortem("trace2", "k8s_rollout_restart", {}, None)
+    async def test_does_not_raise_with_none_ctx_obj(self) -> None:
+        await _archive_postmortem("trace2", "k8s_rollout_restart", {}, None)
 
-    def test_does_not_raise_with_empty_ctx_obj(self) -> None:
-        _archive_postmortem("trace3", "k8s_rollout_restart", {"namespace": "x"}, {})
+    async def test_does_not_raise_with_empty_ctx_obj(self) -> None:
+        await _archive_postmortem("trace3", "k8s_rollout_restart", {"namespace": "x"}, {})
 
 
 # ---------------------------------------------------------------------------

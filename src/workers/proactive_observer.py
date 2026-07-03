@@ -68,28 +68,6 @@ from workers.autonomy_contract import (
 logger = logging.getLogger(__name__)
 
 
-def _dbg_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
-    # region agent log
-    try:
-        payload = {
-            "sessionId": "671fbd",
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("/Users/hiendang/project/.cursor/debug-671fbd.log", "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    try:
-        logger.info("DBG671FBD %s", json.dumps(payload, ensure_ascii=False, default=str))
-    except Exception:
-        pass
-    # endregion
-
 
 def _negative_pattern_redis_key(pattern_key: str) -> str:
     return f"omni:learning:negative:proactive:{pattern_key}"
@@ -353,34 +331,13 @@ async def _parse_fallback_tool_call(ctx: WorkerHandlerContext, user_prompt: str)
         try:
             data = json.loads(content)
         except Exception:
-            _dbg_log(
-                run_id="proactive-parse",
-                hypothesis_id="H1",
-                location="proactive_observer.py:_parse_fallback_tool_call",
-                message="fallback_parse_json_failed",
-                data={"attempt": attempt + 1, "content_len": len(content)},
-            )
             continue
         conf = float(data.get("confidence") or 0.0)
         rationale = str(data.get("reason") or "")[:500]
         try:
             call = ToolCallPayload.model_validate({"tool": data.get("tool"), "args": data.get("args") or {}})
-            _dbg_log(
-                run_id="proactive-parse",
-                hypothesis_id="H1",
-                location="proactive_observer.py:_parse_fallback_tool_call",
-                message="fallback_parse_ok",
-                data={"attempt": attempt + 1, "tool": call.tool, "confidence": conf},
-            )
             return call, conf, rationale
         except Exception:
-            _dbg_log(
-                run_id="proactive-parse",
-                hypothesis_id="H1",
-                location="proactive_observer.py:_parse_fallback_tool_call",
-                message="fallback_validate_failed",
-                data={"attempt": attempt + 1, "confidence": conf, "tool": str(data.get("tool") or "")},
-            )
             continue
     return None, conf, rationale
 
@@ -736,19 +693,6 @@ async def _proactive_event_pipeline(
             verified_mem = _quick_verify_output(mem_out_s, ws.proactive_verify_keywords_fail)
             learned_score = float(mem_meta.get("score") or 0.0)
             actionable_learning = bool(verified_mem and str(mem_tool or "") in PROACTIVE_MUTATE_TOOLS)
-            _dbg_log(
-                run_id=f"trace-{trace}",
-                hypothesis_id="H13",
-                location="proactive_observer.py:_proactive_event_pipeline",
-                message="learning_hit_evaluated",
-                data={
-                    "tool": str(mem_tool or ""),
-                    "verified_mem": verified_mem,
-                    "result_status": _result_status(mem_out_s),
-                    "score": round(learned_score, 4),
-                    "actionable_learning": actionable_learning,
-                },
-            )
             if _result_status(mem_out_s) == "empty_result":
                 learned_score = 0.0
             inc_proactive_fallback("learning_hit")
@@ -786,18 +730,6 @@ async def _proactive_event_pipeline(
             if not verified_mem:
                 inc_proactive_outcome("learning_verify_fail")
             allow_upsert = _allow_learning_upsert(str(mem_tool or ""), mem_out_s, verified_mem) and actionable_learning
-            _dbg_log(
-                run_id=f"trace-{trace}",
-                hypothesis_id="H13",
-                location="proactive_observer.py:_proactive_event_pipeline",
-                message="learning_hit_upsert_decision",
-                data={
-                    "tool": str(mem_tool or ""),
-                    "allow_upsert": bool(allow_upsert),
-                    "verified_mem": verified_mem,
-                    "actionable_learning": actionable_learning,
-                },
-            )
             if allow_upsert:
                 await _save_proactive_learning_record(
                     ctx,
@@ -822,13 +754,6 @@ async def _proactive_event_pipeline(
             )
             if allow_upsert:
                 inc_proactive_outcome("learning_resolved")
-                _dbg_log(
-                    run_id=f"trace-{trace}",
-                    hypothesis_id="H13",
-                    location="proactive_observer.py:_proactive_event_pipeline",
-                    message="learning_hit_short_circuit_return",
-                    data={"tool": str(mem_tool or ""), "verified_mem": verified_mem},
-                )
                 return
             if verified_mem and not actionable_learning:
                 inc_proactive_outcome("learning_observe")
@@ -836,13 +761,6 @@ async def _proactive_event_pipeline(
         decision, lb = await _learning_governance_decision(ctx, pattern_key)
         if ws.proactive_fallback_bypass_policy_in_god_mode and (ws.god_mode or ws.lab_unchained):
             decision, lb = "allow", 1.0
-        _dbg_log(
-            run_id=f"trace-{trace}",
-            hypothesis_id="H10",
-            location="proactive_observer.py:_process_proactive_message",
-            message="learning_governance_decision",
-            data={"decision": decision, "lb95": round(lb, 4), "god_mode": bool(ws.god_mode or ws.lab_unchained)},
-        )
         inc_learning_governance(decision)
         if decision == "deny":
             inc_proactive_outcome("governance_deny")
@@ -879,13 +797,6 @@ async def _proactive_event_pipeline(
             return
         if ctx.telegram and ws.telegram_admin_chat_id:
             try:
-                _dbg_log(
-                    run_id=f"trace-{trace}",
-                    hypothesis_id="H4",
-                    location="proactive_observer.py:_process_proactive_message",
-                    message="telegram_send_sop_miss_terminal",
-                    data={"query_len": len(ev.canonical_query[:500]), "fallback_enabled": ws.proactive_fallback_enabled},
-                )
                 await ctx.telegram.send_message(
                     int(ws.telegram_admin_chat_id),
                     f"[PROACTIVE] trace={trace} SOP miss — cần reasoning hoặc ingest v2.\nquery={ev.canonical_query[:500]}",
@@ -959,22 +870,8 @@ async def _process_proactive_message(
         prev_trace = getattr(ctx, "inbound_trace_id", "")
         ctx.inbound_proactive = True
         ctx.inbound_trace_id = trace
-        _dbg_log(
-            run_id=f"trace-{trace}",
-            hypothesis_id="H11",
-            location="proactive_observer.py:_process_proactive_message",
-            message="before_acquire_proactive_token",
-            data={"msg_id": msg_id},
-        )
         token = await ctx.semaphore.acquire_proactive()
         t0_incident = time.monotonic()
-        _dbg_log(
-            run_id=f"trace-{trace}",
-            hypothesis_id="H11",
-            location="proactive_observer.py:_process_proactive_message",
-            message="acquired_proactive_token",
-            data={"msg_id": msg_id, "token": token},
-        )
         try:
             with proactive_trace_span(trace):
                 try:
@@ -1076,13 +973,6 @@ async def kafka_proactive_incidents_loop(ctx: WorkerHandlerContext, stop: asynci
                     fields = decode_kafka_value_to_fields(msg.value, msg.headers)
                     raw = fields.get("data") or fields.get("payload") or "{}"
                     msg_id = kafka_msg_id(msg.topic, msg.partition, msg.offset)
-                    _dbg_log(
-                        run_id=f"stream-{msg_id}",
-                        hypothesis_id="H12",
-                        location="proactive_observer.py:kafka_proactive_incidents_loop",
-                        message="stream_message_received",
-                        data={"msg_id": msg_id, "raw_len": len(str(raw))},
-                    )
                     try:
                         await _process_proactive_message(ctx, msg_id, raw)
                     except Exception as e:
@@ -1097,13 +987,6 @@ async def kafka_proactive_incidents_loop(ctx: WorkerHandlerContext, stop: asynci
                         )
                     finally:
                         await consumer.commit()
-                        _dbg_log(
-                            run_id=f"stream-{msg_id}",
-                            hypothesis_id="H12",
-                            location="proactive_observer.py:kafka_proactive_incidents_loop",
-                            message="kafka_message_committed",
-                            data={"msg_id": msg_id},
-                        )
     finally:
         await consumer.stop()
 

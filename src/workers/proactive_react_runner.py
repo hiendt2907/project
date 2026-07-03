@@ -269,20 +269,6 @@ async def run_proactive_react_fallback(
             )
             observations.append(obs)
             await po._react_mem_append(ctx, trace, obs)
-            po._dbg_log(
-                run_id=f"trace-{trace}",
-                hypothesis_id="H14",
-                location="proactive_react_runner.py:run_proactive_react_fallback",
-                message="react_iteration_result",
-                data={
-                    "iteration": iteration,
-                    "phase": phase,
-                    "tool": exec_call.tool,
-                    "verified": verified,
-                    "actionable_fix": actionable_fix,
-                    "result_status": status_now,
-                },
-            )
             await po._append_audit(
                 ctx,
                 trace_id=trace,

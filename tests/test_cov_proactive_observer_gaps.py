@@ -1,7 +1,6 @@
 """Coverage gap tests for workers.proactive_observer.
 
 Targets uncovered lines (68.2% → higher):
-  85-86, 89-90:    _dbg_log (file write + logger paths)
   118-119:         _set_negative_pattern exception path
   158:             _react_mem_append exception path
   301:             _react_mem_recent
@@ -156,28 +155,6 @@ def _make_kafka():
     kafka.send_envelope_inner = AsyncMock()
     kafka.close = AsyncMock()
     return kafka
-
-
-# ---------------------------------------------------------------------------
-# _dbg_log (lines 85-90)
-# ---------------------------------------------------------------------------
-
-class TestDbgLog:
-    def test_dbg_log_handles_file_error(self):
-        """_dbg_log silently swallows file write errors."""
-        import workers.proactive_observer as po
-        with patch("builtins.open", side_effect=PermissionError("no write")):
-            po._dbg_log("run-1", "H1", "test.py", "test_msg", {"k": "v"})
-        # No exception
-
-    def test_dbg_log_logs_to_logger(self, caplog):
-        """_dbg_log writes to logger as INFO."""
-        import workers.proactive_observer as po
-        import logging
-        with caplog.at_level(logging.INFO, logger="workers.proactive_observer"):
-            with patch("builtins.open", side_effect=OSError("no file")):
-                po._dbg_log("run-2", "H2", "test.py", "msg_test", {"val": 42})
-        assert any("msg_test" in r.message or "DBG671FBD" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

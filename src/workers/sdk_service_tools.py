@@ -58,25 +58,6 @@ def is_placeholder_promql(query: str) -> bool:
     return False
 
 
-def _dbg_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
-    # region agent log
-    try:
-        payload = {
-            "sessionId": "3d50e2",
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("/Users/hiendang/project/.cursor/debug-3d50e2.log", "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # endregion
-
-
 class VMHTTPForbidden(Exception):
     """Prometheus / metrics HTTP 403 — không đưa mã trạng thái ra user-facing text."""
 
@@ -333,20 +314,6 @@ async def tool_promql_instant(ctx: Any, args: dict[str, Any]) -> str:
             "để tool tự sinh (target_type/intent/namespace/pod).\n"
             "[HINT] Cấm dùng tên biến metric_value hay threshold từ prompt.\n"
         )
-    # region agent log
-    _dbg_log(
-        run_id="promql-instant",
-        hypothesis_id="H5",
-        location="sdk_service_tools.py:tool_promql_instant",
-        message="promql_query_resolved",
-        data={
-            "source": src,
-            "target_type": str(args.get("target_type") or ""),
-            "has_explicit_query": bool(str(args.get("query") or "").strip()),
-            "query_preview": query[:180],
-        },
-    )
-    # endregion
     base = _prometheus_base_url(ctx)
     url = f"{base}/api/v1/query"
     try:
@@ -363,15 +330,6 @@ async def tool_promql_instant(ctx: Any, args: dict[str, Any]) -> str:
     rtype = (data.get("data") or {}).get("resultType", "")
     res = (data.get("data") or {}).get("result") or []
     if not res:
-        # region agent log
-        _dbg_log(
-            run_id="promql-instant",
-            hypothesis_id="H5",
-            location="sdk_service_tools.py:tool_promql_instant",
-            message="promql_empty_result",
-            data={"source": src, "result_type": rtype, "query_preview": query[:180]},
-        )
-        # endregion
         # Contract cho LLM: phân biệt rõ query hợp lệ nhưng không có data.
         return (
             "[STATUS] empty_result\n"
