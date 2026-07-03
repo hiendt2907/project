@@ -119,6 +119,13 @@ spec:
       ports:
         - protocol: TCP
           port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: omni-postgres
+      ports:
+        - protocol: TCP
+          port: 5432
     - ports:
         - protocol: UDP
           port: 53

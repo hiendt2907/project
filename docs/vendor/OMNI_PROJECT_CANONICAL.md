@@ -6,6 +6,8 @@
 
 **Label schema (Golden Link):** [OMNI_LABEL_SCHEMA.md](OMNI_LABEL_SCHEMA.md) — Resource / Signal / Telemetry / Incident / Resolution; machine-readable list: [`config/omni_label_schema.yaml`](../../config/omni_label_schema.yaml).
 
+**Agent runtime canonical:** [ADR-001](../architecture/ADR-001-canonical-agent-runtime.md) — `aoip.agent.daemon` là target dài hạn; `remote_agent.agent` vẫn là runtime thật trên VM lab (chưa migrate).
+
 ---
 
 ## 1. Chuẩn lab: split topology (Master Plan V3)

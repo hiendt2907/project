@@ -423,7 +423,45 @@ async def metrics():
 
 @app.get("/healthz")
 async def health():
+    """Liveness — process sống, KHÔNG chứng minh dependency khả dụng. Xem /readyz."""
     return {"status": "ok", "rate_limit_tps": RATE_LIMIT_TPS}
+
+
+@app.get("/readyz")
+async def readiness() -> JSONResponse:
+    """Readiness thật — kiểm tra Redis (bắt buộc) và Postgres admin store (nếu cấu hình)."""
+    checks: dict[str, str] = {}
+    ready = True
+
+    if _redis is None:
+        checks["redis"] = "unavailable"
+        ready = False
+    else:
+        try:
+            await _redis.ping()
+            checks["redis"] = "ok"
+        except Exception as exc:  # noqa: BLE001 — báo cáo lỗi thật, không nuốt
+            checks["redis"] = f"error: {exc}"
+            ready = False
+
+    _admin_dsn_check = (os.environ.get("OMNI_ADMIN_PG_DSN") or "").strip()
+    if _admin_dsn_check:
+        if getattr(app.state, "admin_pool", None) is None:
+            checks["postgres"] = "unavailable"
+            ready = False
+        else:
+            try:
+                async with app.state.admin_pool.acquire() as _conn:
+                    await _conn.fetchval("SELECT 1")
+                checks["postgres"] = "ok"
+            except Exception as exc:  # noqa: BLE001
+                checks["postgres"] = f"error: {exc}"
+                ready = False
+    else:
+        checks["postgres"] = "not configured"
+
+    status_code = 200 if ready else 503
+    return JSONResponse(status_code=status_code, content={"status": "ok" if ready else "degraded", "checks": checks})
 
 
 @app.post("/webhook/prometheus")

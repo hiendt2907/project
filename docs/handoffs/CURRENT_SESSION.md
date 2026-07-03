@@ -1,6 +1,60 @@
 # Current Session Handoff
 
-## Iteration 17 (2026-07-02, IN PROGRESS — not yet committed)
+## Session note (2026-07-03T09:55Z) — Phase 0 + quick-win DONE, runtime-verified
+Reviewed external audit (ChatGPT) of the repo; executed narrow "Phase 0 + quick-win" slice per
+plan `/Users/hiendang/.claude/plans/h-y-l-n-k-ho-ch-parallel-thompson.md`. Corrected a stale
+handoff claim: iteration 17 (below) was already committed at `cf11f1f` — not uncommitted as
+previously written.
+
+**Changes (ready to commit, not yet committed):**
+- `docs/architecture/ADR-001-canonical-agent-runtime.md` (new) — chốt `aoip.agent.daemon` là
+  target runtime dài hạn; `remote_agent.agent` giữ nguyên là runtime thật trên VM lab (không
+  migrate trong scope này). **Sửa 1 lần trong phiên**: phát hiện `Dockerfile.gateway` đã COPY
+  `src/aoip/` từ commit `409dcb2` (2026-07-02) — lý do "duplicate vì Gateway không import được
+  aoip" trong `agent_runtime.py` đã lỗi thời; ADR ghi rõ điều này và đề xuất hướng sửa rẻ hơn
+  (import trực tiếp thay vì tách package `aoip_protocol`), để một task riêng.
+- `docs/vendor/OMNI_PROJECT_CANONICAL.md` — 1 dòng trỏ tới ADR-001.
+- `src/gateway/api.py` — route `GET /readyz` mới (Redis PING + Postgres `SELECT 1` nếu
+  `OMNI_ADMIN_PG_DSN` set; 503 nếu dependency bắt buộc down). `/healthz` giữ nguyên, docstring làm
+  rõ chỉ là liveness.
+- `k8s/deployments/omni-gateway.yaml` — NetworkPolicy egress thêm rule `app: omni-postgres:5432`.
+- `.github/workflows/ci.yml`, `.github/workflows/wiki.yml` — `python-version` `3.12` → `3.13` khớp
+  `Dockerfile`/`Dockerfile.gateway`.
+
+**Runtime-verified thật trên cluster lab** (không chỉ test pass):
+- `make docker-gateway` rebuild image → `make deploy-gateway` (`kubectl apply` + rollout restart)
+  → pod mới `omni-gateway-6894b7d5f9-xcrfp` Running, 0 restart.
+- `kubectl apply --dry-run=server -f k8s/deployments/omni-gateway.yaml` → NetworkPolicy
+  `configured` (hợp lệ) trước khi apply thật; đã apply thật (user đã chọn "Deploy và
+  runtime-verify ngay" qua AskUserQuestion).
+- Port-forward `svc/omni-gateway` → `curl /readyz` → `200 {"status":"ok","checks":{"redis":"ok","postgres":"ok"}}`.
+  `/healthz` vẫn `200 {"status":"ok",...}`. Cả hai xác nhận chạy thật trên image mới, không phải
+  suy luận từ code.
+
+**Test:** `pytest tests/ -q --ignore=tests/integration` → 5956 passed, 1 failed (pre-existing
+flaky, KHÔNG liên quan quick-win — `tests/test_remote_agent_e2e.py::...test_register_then_real_system_metrics_emitted_through_real_pipeline`
+chạy `psutil` thật, assert routing phụ thuộc z-score máy tại thời điểm chạy test; máy hiện "khỏe"
+nên rẽ nhánh `omni-knowledge-evidence` thay vì `omni-diagnostic-evidence` như test kỳ vọng — lỗi
+môi trường, không phải regression từ `gateway/api.py`, `omni-gateway.yaml`, CI, hay ADR). Riêng
+`pytest tests/test_onboarding_pipeline.py -q` → 32 passed (iteration 17 không hỏng).
+
+**KHÔNG liên quan phiên này — không commit:** 10 file `docs/post-mortems/*.md` chỉ đổi
+`**Date:**` timestamp (nội dung không đổi), tác dụng phụ từ một lần chạy test/tiến trình nền
+trước đó có ghi thật ra các file post-mortem fixture. Đã `git diff` xác nhận an toàn nhưng để
+ngoài scope commit của phiên này để tránh gộp nhầm lịch sử.
+
+**Next step cho phiên mới:**
+1. `git add` + commit riêng nhóm quick-win (`ADR-001` + `OMNI_PROJECT_CANONICAL.md` +
+   `src/gateway/api.py` + `k8s/deployments/omni-gateway.yaml` + 2 workflow file) — KHÔNG gộp
+   `docs/post-mortems/*.md` hay `.autonomous-loop/logs/supervisor.log`.
+2. Cân nhắc task riêng: sửa `agent_runtime.py` import trực tiếp `aoip.agent.delivery` thay vì
+   duplicate (xem ADR-001 mục 5) — chưa làm trong scope quick-win này.
+3. `docs/product/PRODUCT_PROOF.md`/ledger cho Iteration 17 vẫn chưa cập nhật (xem block Iteration
+   17 bên dưới) — có thể gộp vào cùng lượt dọn tài liệu tiếp theo nếu muốn.
+4. Nếu muốn mở rộng sang Phase 1 (mTLS, `aoip_protocol` package, migrate VM lab), cần một
+   ADR/kế hoạch mới — không suy diễn từ ADR-001 vì nó chỉ chốt hướng, không phải lệnh thực thi.
+
+## Iteration 17 (2026-07-02, ĐÃ COMMIT ở `cf11f1f` — text "not yet committed" bên dưới SAI, xem note ở trên)
 Bottleneck: iteration 15's design-decision gap — `compute_business_flow_pct()` in
 `src/pkg/onboarding/discovery_doc.py` only read `service_topology.services[].described`
 (machine-set), so answering a Human Claim question (O2B) never moved a tenant's
