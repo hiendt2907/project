@@ -177,6 +177,30 @@ async def get_entity_competency(
     })
 
 
+@router.get("/entities")
+async def get_entities(
+    request: Request,
+    tenant_id: str | None = Query(default=None, max_length=64, pattern=_TENANT_ID_PATTERN),
+) -> JSONResponse:
+    """Entity index của System Twin — mọi host/service đã biết, kèm revision.
+
+    Điểm vào cho operator surface (Phase-2 Golden Journey Read-only): UI dùng
+    danh sách này để trỏ tiếp vào ``/onboarding/competency`` per entity, thay vì
+    bắt operator tự đoán ``entity_id`` (Known Broken Link #4 trong PRODUCT_PROOF)."""
+    from aoip.system_model_store import load_system_model
+
+    redis = _get_redis(request)
+    scope = _effective_tenant_id(request, tenant_id)
+    model, revision = await load_system_model(redis, scope)
+    nodes = model.known_nodes
+    return JSONResponse(content={
+        "tenant_id": scope,
+        "revision": revision,
+        "hosts": sorted(n for n in nodes if n.startswith("host:")),
+        "services": sorted(n for n in nodes if n.startswith("svc:")),
+    })
+
+
 @router.get("/unknowns")
 async def get_unknowns(
     request: Request,

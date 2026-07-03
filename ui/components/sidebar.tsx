@@ -42,6 +42,7 @@ type NavItem =
 
 const navOps: NavItem[] = [
   { href: "/operator", label: "Operator Console", icon: LayoutDashboard },
+  { href: "/understanding", label: "Understanding", icon: Brain },
   { href: "/incidents", label: "Incidents", icon: Bell, badge: true },
   { href: "/siem", label: "SIEM", icon: Shield },
   { href: "/playbooks", label: "Playbooks", icon: BookOpen },
@@ -65,6 +66,7 @@ const navPortal: NavItem[] = [
   { section: "Diagnostics" },
   { href: "/pipeline", label: "Pipeline", icon: Workflow },
   { href: "/simulator", label: "Simulator", icon: FlaskConical },
+  { href: "/understanding", label: "Understanding", icon: Brain },
   { href: "/admin/kb", label: "RAG Knowledge", icon: Brain },
   { section: "Help" },
   { href: "/admin/guide", label: "User Guide", icon: BookOpen },
@@ -73,6 +75,7 @@ const navPortal: NavItem[] = [
 
 const navFull: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/understanding", label: "Understanding", icon: Brain },
   { href: "/playbooks", label: "Playbooks", icon: BookOpen },
   { href: "/ledger", label: "Error Ledger", icon: AlertTriangle },
   { href: "/kpi", label: "KPI Dashboard", icon: BarChart3 },

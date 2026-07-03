@@ -98,3 +98,47 @@ class TestUnknownsAndQuestionsEndpoints:
                 json={"answered_by": "alice", "value": "x", "tenant_id": "acme"},
             )
         assert resp.status_code == 404
+
+
+class TestEntitiesEndpoint:
+    @pytest.mark.asyncio
+    async def test_empty_twin_returns_empty_lists_revision_zero(self):
+        r = _redis()
+        async with AsyncClient(transport=ASGITransport(app=_app(r)), base_url="http://test") as c:
+            resp = await c.get("/onboarding/entities", params={"tenant_id": "acme"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"tenant_id": "acme", "revision": 0, "hosts": [], "services": []}
+
+    @pytest.mark.asyncio
+    async def test_lists_hosts_and_services_from_twin(self):
+        r = _redis()
+        await fold_and_persist(
+            r, "acme",
+            [
+                Fact(subject="host:web-01", predicate="exposes_port", obj="80", confidence=0.9, provenance=("discovery:port_scan:t1", "agent:a1")),
+                Fact(subject="host:db-01", predicate="runs_service", obj="mariadb", confidence=0.9, provenance=("discovery:process_list:t2", "agent:a2")),
+                Fact(subject="host:web-01", predicate="runs_service", obj="nginx", confidence=0.9, provenance=("discovery:process_list:t1", "agent:a1")),
+            ],
+            source="s1",
+        )
+        async with AsyncClient(transport=ASGITransport(app=_app(r)), base_url="http://test") as c:
+            resp = await c.get("/onboarding/entities", params={"tenant_id": "acme"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["revision"] == 1
+        assert data["hosts"] == ["host:db-01", "host:web-01"]
+        assert data["services"] == ["svc:mariadb", "svc:nginx"]
+
+    @pytest.mark.asyncio
+    async def test_tenant_isolation_other_tenant_empty(self):
+        r = _redis()
+        await fold_and_persist(
+            r, "acme",
+            [Fact(subject="host:web-01", predicate="exposes_port", obj="80", confidence=0.9, provenance=("discovery:port_scan:t1", "agent:a1"))],
+            source="s1",
+        )
+        async with AsyncClient(transport=ASGITransport(app=_app(r)), base_url="http://test") as c:
+            resp = await c.get("/onboarding/entities", params={"tenant_id": "other"})
+        assert resp.status_code == 200
+        assert resp.json()["hosts"] == []
