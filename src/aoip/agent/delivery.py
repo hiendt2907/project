@@ -1,4 +1,8 @@
-"""Durable command delivery — Gateway side. GET is PEEK, không phải POP (fix P0).
+"""Durable command delivery — reference/legacy implementation (ADR-002: KHÔNG canonical).
+
+Canonical runtime là ``gateway/routes/agent_runtime.py`` (có fencing/atomic claim/heartbeat mà
+bản này không có). Module này chỉ còn phục vụ tests/demo; không thêm feature mới. Sunset: xoá
+cùng Phase-3 durable Control Plane (xem ADR-002). GET is PEEK, không phải POP (fix P0).
 
 Vì sao tồn tại: kênh cũ (`gateway/routes/agent_commands.py`) dùng ``RPOP`` khi agent
 GET → command BIẾN MẤT ngay khi fetch, trước bất kỳ acknowledgement terminal nào. Agent
@@ -22,24 +26,21 @@ import json
 import time
 from dataclasses import asdict, dataclass, field
 
-# ── Delivery/runtime states ──────────────────────────────────────────────────
-ST_QUEUED = "QUEUED"
-ST_DELIVERED = "DELIVERED"
-ST_ACCEPTED = "ACCEPTED"
-ST_RUNNING = "RUNNING"
-ST_RECONCILING = "RECONCILING"
-ST_COMPLETED = "COMPLETED"
-ST_FAILED = "FAILED"
-ST_ESCALATED = "ESCALATED"
-ST_EXPIRED = "EXPIRED"
-
-TERMINAL_STATES = frozenset({ST_COMPLETED, ST_FAILED, ST_ESCALATED, ST_EXPIRED})
-
-# Chuyển tiếp hợp lệ (delivery/runtime). Redelivery cho phép quay lại DELIVERED từ các
-# non-terminal state (visibility timeout) — không coi là vi phạm.
-_PROGRESS_ORDER = {
-    ST_QUEUED: 0, ST_DELIVERED: 1, ST_ACCEPTED: 2, ST_RUNNING: 3, ST_RECONCILING: 4,
-}
+# State vocabulary import từ nguồn canonical (ADR-002) — re-export giữ backward-compat
+# cho mọi caller cũ đang `from aoip.agent.delivery import ST_*`.
+from aoip.protocol import (  # noqa: F401 — re-export có chủ đích
+    PROGRESS_ORDER as _PROGRESS_ORDER,
+    ST_ACCEPTED,
+    ST_COMPLETED,
+    ST_DELIVERED,
+    ST_ESCALATED,
+    ST_EXPIRED,
+    ST_FAILED,
+    ST_QUEUED,
+    ST_RECONCILING,
+    ST_RUNNING,
+    TERMINAL_STATES,
+)
 
 _DEFAULT_VISIBILITY_S = 60      # delivered-but-not-terminal → visible lại sau 60s
 _TTL_TERMINAL_S = 604800        # record terminal giữ 7 ngày để dedup giao trùng muộn

@@ -12,9 +12,9 @@ Redis layout (tenant-embedded — INV_NAMESPACE_ISOLATION):
   omni:cmd:rec:{tenant}:{command_id}     STRING JSON record (identity+correlation+state)
   omni:cmd:ready:{tenant}:{agent_id}     ZSET member=command_id score=next_visible_at
 
-Đây là bản twin phía Gateway của ``aoip.agent.delivery.DurableCommandChannel`` — KHÔNG import
-aoip (Dockerfile.gateway không COPY src/aoip). Hợp đồng HTTP (không phải key Redis) là ranh
-giới với agent; hai bên phải giữ contract này đồng bộ.
+Đây là implementation CANONICAL của command delivery protocol (ADR-002); state vocabulary
+import từ ``aoip.protocol`` (nguồn chân lý duy nhất — bảng TERMINAL trong Lua script bên dưới
+được contract test giữ đồng bộ). Hợp đồng HTTP (không phải key Redis) là ranh giới với agent.
 
 ## Atomic claim + fencing (delivery ownership)
 
@@ -66,16 +66,17 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from aoip.protocol import (  # canonical state vocabulary — ADR-002
+    PROGRESS_STATES as _PROGRESS,
+    ST_ACCEPTED,
+    ST_EXPIRED,
+    ST_QUEUED,
+    TERMINAL_STATES as TERMINAL,
+)
 from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, require_agent_tenant
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhook/agent/rt", tags=["agent-runtime-delivery"])
-
-ST_QUEUED, ST_DELIVERED, ST_ACCEPTED = "QUEUED", "DELIVERED", "ACCEPTED"
-ST_RUNNING, ST_RECONCILING = "RUNNING", "RECONCILING"
-ST_COMPLETED, ST_FAILED, ST_ESCALATED, ST_EXPIRED = "COMPLETED", "FAILED", "ESCALATED", "EXPIRED"
-TERMINAL = frozenset({ST_COMPLETED, ST_FAILED, ST_ESCALATED, ST_EXPIRED})
-_PROGRESS = frozenset({ST_RUNNING, ST_RECONCILING})
 
 _VISIBILITY_S = 60
 _TTL_TERMINAL_S = 604800
