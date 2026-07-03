@@ -6,6 +6,7 @@ import { Sidebar } from "@/components/sidebar";
 import { TenantSelector } from "@/components/tenant-selector";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MermaidBlock, splitDiagramText } from "@/components/mermaid-diagram";
+import { DiagramHistoryPanel } from "@/components/diagram-history";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   RefreshCw,
@@ -128,6 +129,7 @@ function UnderstandingPageInner() {
   const [answerSubmitting, setAnswerSubmitting] = useState(false);
   const [answerError, setAnswerError] = useState<string | null>(null);
   const [answeredIds, setAnsweredIds] = useState<string[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
 
   if (tenant !== prevTenant) {
     setPrevTenant(tenant);
@@ -136,6 +138,7 @@ function UnderstandingPageInner() {
     setAnsweringId(null);
     setAnswerError(null);
     setAnsweredIds([]);
+    setShowHistory(false);
   }
 
   const load = useCallback(async () => {
@@ -288,9 +291,21 @@ function UnderstandingPageInner() {
                   <Workflow className="h-4 w-4 text-cyan-400" />
                   System Diagram
                 </span>
-                {diagram?.version != null && (
-                  <span className="font-mono text-[10px] text-zinc-500">v{diagram.version}</span>
-                )}
+                <span className="flex items-center gap-2">
+                  {diagram?.version != null && (
+                    <span className="font-mono text-[10px] text-zinc-500">v{diagram.version}</span>
+                  )}
+                  <button
+                    onClick={() => setShowHistory((s) => !s)}
+                    className={`rounded border px-2 py-0.5 text-[11px] transition-colors ${
+                      showHistory
+                        ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-300"
+                        : "border-zinc-700 text-zinc-400 hover:border-zinc-600 hover:text-zinc-100"
+                    }`}
+                  >
+                    History
+                  </button>
+                </span>
               </CardTitle>
             </CardHeader>
             <CardContent className="p-4 pt-0">
@@ -312,6 +327,7 @@ function UnderstandingPageInner() {
                   ))}
                 </div>
               )}
+              {showHistory && <DiagramHistoryPanel tenant={tenant} />}
             </CardContent>
           </Card>
 

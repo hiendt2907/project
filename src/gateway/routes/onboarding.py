@@ -60,22 +60,40 @@ async def get_diagram(
     return JSONResponse(content={"tenant_id": scope, "version": version, "mermaid": text})
 
 
+# Versions are append-only (INCR, no TTL) so gaps are rare; the probe cap only
+# guards against a pathological store while keeping the scan bounded.
+_HISTORY_MAX_PROBES = 200
+
+
 @router.get("/diagram/history")
 async def get_diagram_history(
     request: Request,
     tenant_id: str | None = Query(default=None, max_length=64, pattern=_TENANT_ID_PATTERN),
-    from_version: int = Query(default=1, ge=1),
-    to_version: int = Query(default=20, ge=1, le=200),
+    before: int | None = Query(default=None, ge=2),
+    limit: int = Query(default=10, ge=1, le=50),
 ) -> JSONResponse:
-    """Past diagram versions (diffable) — bounded range to avoid unbounded scans."""
+    """Past diagram versions (diffable), newest-first, anchored at the latest
+    version and walking DOWN. `before` paginates older pages (versions strictly
+    below it); `next_before` in the response feeds the next page request."""
     redis = _get_redis(request)
     scope = _effective_tenant_id(request, tenant_id)
+    raw_latest = await redis.get(dd.DIAGRAM_LATEST_KEY.format(tenant_id=scope))
+    latest = int(raw_latest) if raw_latest else None
+    if latest is None:
+        return JSONResponse(content={"tenant_id": scope, "latest": None, "versions": [], "next_before": None})
+
+    start = min(before - 1, latest) if before is not None else latest
     versions: list[dict[str, Any]] = []
-    for v in range(from_version, to_version + 1):
+    v = start
+    probes = 0
+    while v >= 1 and len(versions) < limit and probes < _HISTORY_MAX_PROBES:
         text = await dd.get_diagram_version(redis, scope, v)
         if text is not None:
             versions.append({"version": v, "mermaid": text})
-    return JSONResponse(content={"tenant_id": scope, "versions": versions})
+        v -= 1
+        probes += 1
+    next_before = versions[-1]["version"] if versions and versions[-1]["version"] > 1 else None
+    return JSONResponse(content={"tenant_id": scope, "latest": latest, "versions": versions, "next_before": next_before})
 
 
 @router.get("/doc")

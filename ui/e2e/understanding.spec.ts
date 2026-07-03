@@ -36,6 +36,26 @@ test.describe("read flow", () => {
     expect(await card.locator("svg").count()).toBeGreaterThanOrEqual(3);
   });
 
+  test("diagram history panel lists versions and diffs against the previous one", async ({ page }) => {
+    await gotoUnderstanding(page);
+    const card = page.getByTestId("diagram-card");
+    await card.getByRole("button", { name: "History" }).click();
+    const panel = page.getByTestId("diagram-history-panel");
+    await expect(panel).toBeVisible();
+    // Tenant lab đã có hàng nghìn version — panel phải neo tại latest, không phải v1..20
+    const versionBtns = panel.getByTestId("diagram-history-version");
+    await expect(versionBtns.first()).toBeVisible({ timeout: 15_000 });
+    const count = await versionBtns.count();
+    expect(count).toBeGreaterThanOrEqual(2);
+    const newestLabel = (await versionBtns.first().textContent()) ?? "";
+    expect(Number(newestLabel.replace(/^v/, ""))).toBeGreaterThan(20);
+    // Chọn version mới nhất → hoặc diff lines hoặc thông báo identical (đều hợp lệ)
+    await versionBtns.first().click();
+    await expect(
+      panel.getByTestId("diff-identical").or(panel.getByTestId("diff-added").first()).or(panel.getByTestId("diff-removed").first()),
+    ).toBeVisible({ timeout: 15_000 });
+  });
+
   test("selecting an entity loads its competency matrix", async ({ page }) => {
     await gotoUnderstanding(page);
     const entity = page.getByRole("button", { name: /^(host|svc):/ }).first();
