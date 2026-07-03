@@ -14,6 +14,7 @@ import {
   MessageCircleQuestion,
   Gauge,
   AlertTriangle,
+  Send,
 } from "lucide-react";
 
 interface SectionResult<T> {
@@ -113,11 +114,20 @@ function UnderstandingPageInner() {
   const [competency, setCompetency] = useState<CompetencyData | null>(null);
   const [competencyError, setCompetencyError] = useState<string | null>(null);
   const [prevTenant, setPrevTenant] = useState(tenant);
+  const [answeringId, setAnsweringId] = useState<string | null>(null);
+  const [answerValue, setAnswerValue] = useState("");
+  const [answeredBy, setAnsweredBy] = useState("");
+  const [answerSubmitting, setAnswerSubmitting] = useState(false);
+  const [answerError, setAnswerError] = useState<string | null>(null);
+  const [answeredIds, setAnsweredIds] = useState<string[]>([]);
 
   if (tenant !== prevTenant) {
     setPrevTenant(tenant);
     setSelected(null);
     setCompetency(null);
+    setAnsweringId(null);
+    setAnswerError(null);
+    setAnsweredIds([]);
   }
 
   const load = useCallback(async () => {
@@ -135,6 +145,39 @@ function UnderstandingPageInner() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const submitAnswer = useCallback(
+    async (questionId: string) => {
+      setAnswerSubmitting(true);
+      setAnswerError(null);
+      try {
+        const res = await fetch("/api/onboarding/answer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            question_id: questionId,
+            answered_by: answeredBy,
+            value: answerValue,
+            tenant_id: tenant,
+          }),
+        });
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        if (!res.ok) {
+          setAnswerError(body?.error ?? `HTTP ${res.status}`);
+          return;
+        }
+        setAnsweredIds((prev) => [...prev, questionId]);
+        setAnsweringId(null);
+        setAnswerValue("");
+        await load();
+      } catch {
+        setAnswerError("request failed");
+      } finally {
+        setAnswerSubmitting(false);
+      }
+    },
+    [answeredBy, answerValue, tenant, load],
+  );
 
   useEffect(() => {
     if (!selected) return;
@@ -385,10 +428,71 @@ function UnderstandingPageInner() {
                         <span className="text-zinc-300">{q.entity_id}</span>
                         <span className="text-zinc-500">{q.facet}</span>
                         <span className={`ml-auto text-[10px] ${q.status === "PENDING" ? "text-amber-400" : "text-emerald-400"}`}>
-                          {q.status}
+                          {answeredIds.includes(q.question_id) ? "ANSWERED" : q.status}
                         </span>
                       </div>
                       {q.text && <p className="mt-0.5 text-[11px] leading-snug text-zinc-500">{q.text}</p>}
+                      {q.status === "PENDING" && !answeredIds.includes(q.question_id) && (
+                        answeringId === q.question_id ? (
+                          <form
+                            className="mt-1.5 space-y-1.5"
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              submitAnswer(q.question_id);
+                            }}
+                          >
+                            <input
+                              value={answeredBy}
+                              onChange={(e) => setAnsweredBy(e.target.value)}
+                              placeholder="Your name / role"
+                              maxLength={120}
+                              required
+                              className="w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-cyan-500/50 focus:outline-none"
+                            />
+                            <textarea
+                              value={answerValue}
+                              onChange={(e) => setAnswerValue(e.target.value)}
+                              placeholder="Answer (becomes a CLAIMED fact, verified later by machine evidence)"
+                              maxLength={500}
+                              required
+                              rows={2}
+                              className="w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-cyan-500/50 focus:outline-none"
+                            />
+                            {answerError && <SectionError error={answerError} />}
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="submit"
+                                disabled={answerSubmitting || !answeredBy.trim() || !answerValue.trim()}
+                                className="flex items-center gap-1.5 rounded bg-cyan-600/90 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                <Send className="h-3 w-3" />
+                                {answerSubmitting ? "Submitting…" : "Submit answer"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAnsweringId(null);
+                                  setAnswerError(null);
+                                }}
+                                className="text-xs text-zinc-500 hover:text-zinc-300"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setAnsweringId(q.question_id);
+                              setAnswerValue("");
+                              setAnswerError(null);
+                            }}
+                            className="mt-1.5 rounded border border-cyan-500/30 px-2 py-0.5 text-[11px] text-cyan-400 transition-colors hover:bg-cyan-500/10"
+                          >
+                            Answer
+                          </button>
+                        )
+                      )}
                     </div>
                   ))}
                 </div>
