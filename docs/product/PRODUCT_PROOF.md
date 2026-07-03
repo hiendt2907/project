@@ -300,6 +300,43 @@ Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (
 iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
 printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
 
+## Iteration 20 — Answer-question trên portal (Phase-2, write-action đầu tiên) VERIFIED_RUNTIME (2026-07-03)
+
+**Mục tiêu**: đóng loop Unknown→Question→Claim ngay trên official portal — operator trả lời
+PENDING question từ trang `/understanding`, không cần curl Bearer key. Backend
+`POST /onboarding/questions/{id}/answer` đã runtime-verified iter 15, iteration này KHÔNG đổi
+Python — chỉ thêm lớp portal.
+
+**Deliverables**:
+- `ui/app/api/onboarding/answer/route.ts` (mới) — proxy POST duy nhất của portal tới gateway
+  `/onboarding/questions/{id}/answer`; validate question_id pattern + answered_by (≤120) +
+  value (≤500) trước khi forward; `source_channel="portal"`; honest error (không mock fallback),
+  forward nguyên status/detail từ gateway.
+- `ui/app/understanding/page.tsx` — nút "Answer" trên mỗi PENDING question mở form inline
+  (answered_by + value), submit → refresh data; hiển thị ANSWERED optimistic sau khi 200; lỗi
+  render qua `SectionError`; reset state khi đổi tenant.
+
+**Tests**: full suite `pytest tests/ -q --ignore=tests/integration` → **5968 passed, 0 failed**
+(cả flake đã biết cũng pass lần này). `cd ui && npm run build` xanh, route
+`/api/onboarding/answer` có trong build output.
+
+**Runtime proof (VERIFIED_RUNTIME, cluster lab thật)**:
+1. Rebuild `omni-ui:latest` (`4cdb63f6e68a…`), rollout restart — pod chạy đúng digest mới
+   (xác minh `imageID` trên pod).
+2. Login NextAuth thật qua port-forward + Host `omni.ai-agent.local` (csrf → callback/credentials
+   → session role=admin). 341 PENDING questions của `staging-sim` tại thời điểm proof.
+3. `POST /api/onboarding/answer` (cookie session, question `a96324a653fe6491b3be9fec` —
+   facet `sla` của `svc:systemd-udevd`) → 200
+   `{"status":"ok","answer":{"answer_id":"5abc1da3499876efd4bb","source_channel":"portal",…}}`.
+4. Re-fetch qua aggregate API → question đó `status=ANSWERED`, `answer_id` khớp — state
+   transition thật trong Redis, không phải optimistic UI.
+5. Unauthenticated POST → 401 (middleware); body có question_id không hợp lệ → 400
+   `{"error":"invalid question_id"}` (validate ở proxy, không đụng gateway).
+6. `GET /understanding?tenant=staging-sim` → 200; `OMNI_AUTO_EXECUTE_ENABLED=false` reconfirmed.
+
+**Chưa DONE (slice sau)**: Claim→VERIFIED promotion cần Fact máy khớp (đúng thiết kế, không phải
+gap); Mermaid diagram render; Playwright E2E cho `/understanding`.
+
 ## Iteration 19 — Operator Understanding surface (Phase-2 Golden Journey Read-only, slice 1) VERIFIED_RUNTIME (2026-07-03)
 
 **Bottleneck đã fix**: Known Broken Link #1 + #4 — Twin/Competency/Unknowns chỉ có API, operator

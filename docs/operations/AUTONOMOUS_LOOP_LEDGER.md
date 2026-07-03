@@ -456,3 +456,21 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
   của portal, API đã runtime-verified iter 15), hoặc (b) render Mermaid diagram trên trang
   Understanding, hoặc (c) Playwright E2E cho trang mới. Không mở action/billing song song
   (PRODUCT_CONTRACT §9).
+
+### Checkpoint 2026-07-03T16:15:00+07:00
+- Timestamp: 2026-07-03T16:15:00+07:00
+- Iteration: iter20-portal-answer-question
+- Status: DONE (VERIFIED_RUNTIME)
+- Summary: Phase-2 Golden Journey, write-action đầu tiên của portal — nút Answer trên trang
+  `/understanding`. Proxy mới `ui/app/api/onboarding/answer/route.ts` (validate question_id/
+  answered_by/value, source_channel=portal, honest error) + form inline trong Questions card.
+  KHÔNG đổi Python (backend answer endpoint đã verified iter 15). Full suite 5968 passed/0 fail;
+  `npm run build` xanh. Runtime proof: rebuild+rollout omni-ui (`4cdb63f6e68a…`, imageID pod khớp);
+  NextAuth login thật → POST answer question `a96324a653fe6491b3be9fec` (svc:systemd-udevd/sla)
+  → 200 answer_id `5abc1da3499876efd4bb`; re-fetch → status=ANSWERED (state thật trong Redis);
+  unauth 401; invalid body 400. Kill-switch false reconfirmed.
+  Chi tiết: `docs/product/PRODUCT_PROOF.md` → "Iteration 20".
+- Reset at: n/a
+- Resume action: Phase 2 slice kế tiếp — (a) Mermaid diagram render (`GET /onboarding/diagram`)
+  trên trang Understanding, hoặc (b) Playwright E2E cho `/understanding` (giờ có cả read + write
+  flow để test). Không mở action/billing song song (PRODUCT_CONTRACT §9).
