@@ -1,5 +1,87 @@
 # Current Session Handoff
 
+## Session note (2026-07-03T10:15Z) — Tech-debt sweep, IN PROGRESS (test verification pending)
+User asked to (1) handle the 10 post-mortem timestamp files (done, see prior session note below —
+already committed at `8194c73`), and (2) plan + fix outstanding tech debt across the whole repo.
+Chose "scan whole repo" option. Ran 3 parallel Explore subagents (TODO/FIXME/code-smell in `src/`;
+skip/xfail tests + doc gaps; CLAUDE.md invariant violations) and synthesized 10 findings, tracked in
+new `docs/architecture/TECH_DEBT_BACKLOG.md`.
+
+**Fixed this session (working tree, NOT YET COMMITTED — waiting on full test suite confirmation):**
+- `src/workers/sdk_service_tools.py`, `src/workers/proactive_observer.py`,
+  `src/workers/proactive_react_runner.py` — removed `_dbg_log()` debug-session leftover (wrote to
+  `/Users/hiendang/project/.cursor/debug-*.log`, hardcoded personal dev path). Removal from
+  `proactive_react_runner.py` was missed on the first pass, causing a real regression: 6 test
+  failures in `tests/test_cov_proactive_react_runner.py` (AttributeError swallowed silently
+  somewhere upstream). Found via `git stash`/diff comparison against pre-change baseline (18/18
+  passed before, 6 failed after) and fixed by removing the remaining call site. Re-verified
+  18/18 passed after fix.
+- `tests/test_cov_proactive_observer_gaps.py`, `tests/test_track2b_diagnostic_proactive.py` —
+  removed now-dead `TestDbgLog` test classes (function no longer exists).
+- `tests/test_cov_autonomous_feedback.py::TestArchivePostmortem` — was calling `async def
+  _archive_postmortem(...)` without `await` (RuntimeWarning: coroutine never awaited, test
+  provided false confidence, never actually exercised the function). Fixed: added `await` +
+  made the 3 test methods `async def` (pytest `asyncio_mode=auto`, no decorator needed).
+- `tests/conftest.py` — added session-scoped autouse fixture `_isolate_postmortem_dir()` setting
+  `OMNI_POSTMORTEM_DIR` to a scratch tmp dir for the whole test session. Root cause fix for a
+  recurring issue: `workers.archivist.write_incident_postmortem()` defaults to writing into the
+  REAL `docs/post-mortems/` repo dir when this env var is unset, and some tests (found via the
+  `_archive_postmortem` await bug above, plus likely other call sites not yet fully enumerated)
+  call it for real, overwriting real post-mortem timestamps on every full-suite run — this
+  happened twice in this very session (previously "handled" once by just committing the diff at
+  `8194c73`, but it recurred on the next full-suite run, proving that wasn't a real fix). After
+  adding the fixture: ran full suite once, `git status docs/post-mortems/` was clean — confirmed
+  fixed. Reverted the 10 files back to committed state with `git checkout --` before re-verifying.
+- `k8s/deployments/omni-fullstack-rbac.yaml` — corrected a stale/misleading comment claiming
+  "RBAC resources are READ-ONLY" for the whole `omni-executor-mutate-lab` ClusterRole, when in
+  fact `secrets`/`configmaps`/`deployments` etc. have `patch`/`update`. Investigated whether this
+  is a real security violation (CLAUDE.md invariant says worker SA should have no Secrets access)
+  — found it's actually a **designed, gated feature**: `k8s_patch_secret` mutate tool
+  (`src/workers/k8s_cluster_tools.py:1020`) used for credential rotation during SIEM/security
+  remediation (`src/workers/analyst_agentic_loop.py` has dedicated LLM prompt guidance for it,
+  gated by `required_evidence` + `MUTATE_TOOL_ALLOWLIST`). Did NOT revoke the RBAC (would break
+  this real capability) — fixed the misleading comment instead.
+- `CLAUDE.md` — (a) corrected the RBAC invariant line to describe the real, intentional exception
+  (see above) instead of a blanket "no Secrets" claim; (b) corrected a stale claim that "all Kafka
+  topics are PartitionCount=1" — verified `scripts/kafka_ensure_omni_topics.sh`:
+  `omni-knowledge-evidence`=3 partitions, SIEM topic=6, rest still 1 (not urgent, lab-scale).
+- `k8s/deployments/omni-postgres.yaml` — added an explicit KNOWN LAB DEBT comment documenting that
+  `POSTGRES_PASSWORD` is committed in cleartext (though via a proper K8s `Secret` object, not a
+  plaintext env in the pod spec). User explicitly chose "document only, don't rotate now" via
+  AskUserQuestion — rotating live would require restarting Postgres + every consumer of
+  `OMNI_ADMIN_PG_DSN` (gateway, worker), real downtime risk if rushed. NOT rotated this session.
+- `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`, `docs/operations/AUTONOMOUS_LOOP_STATE.json` —
+  backfilled a missing "iteration 17" checkpoint entry (the initial Explore-agent scan flagged
+  the readiness-gate/competency wiring as an open gap, but that was stale — `PRODUCT_PROOF.md` and
+  `current-priority.md` already document it as VERIFIED_RUNTIME/done from commit `cf11f1f`; only
+  the ledger + state.json were missing the corresponding entry — backfilled to match).
+- `docs/architecture/TECH_DEBT_BACKLOG.md` (new) — full record of all 10 scanned findings, which
+  were fixed vs. documented-only vs. deferred, and why. Read this file for the complete picture
+  instead of re-deriving from this handoff.
+
+**Deferred (see TECH_DEBT_BACKLOG.md for full rationale):** Kafka partition count mostly still 1
+(repartition risk on live cluster, needs its own slice); no automated safeguard against VM
+provisioning missing discovery flags (recurrence risk, needs design); ~90 silent
+`except Exception: pass` blocks across the codebase (2-3 highest-risk ones identified —
+`rollback_executor.py:135`, `deterministic_mutate_from_evidence.py:336` — not yet fixed, volume too
+large to blindly fix all); duplicate error-format pattern in `k8s_cluster_tools.py`/`k8s_tools.py`
+(18+ places, refactor candidate, low priority); suspected dead code (`AutonomyGate` etc., grep
+confidence too low to delete blindly).
+
+**NOT YET COMMITTED — blocked on this:** launched `pytest tests/ -q --ignore=tests/integration` in
+background (shell id `bny7kx1ud`, started ~10:11AM) to do a final full-suite confirmation after all
+the fixes above (especially the conftest fixture and the proactive_react_runner regression fix).
+**Output was empty / job status unclear when this handoff was written** — a Stop-hook fired mid-wait.
+**Next step for whoever resumes:** re-run `.venv/bin/python -m pytest tests/ -q
+--ignore=tests/integration` fresh (do not trust a stale background shell across a session boundary),
+confirm it's green (expect exactly 1 known pre-existing flake,
+`test_register_then_real_system_metrics_emitted_through_real_pipeline`, unrelated), confirm
+`git status docs/post-mortems/` is clean (proves the conftest fixture works), then commit all the
+changes listed above in one or more logical commits (suggest: one commit for the debug-leftover +
+regression-fix + test fixes, one for the RBAC/CLAUDE.md/Postgres doc-only fixes, one for the
+ledger/state.json backfill, plus the new TECH_DEBT_BACKLOG.md file). Do not re-run the whole
+tech-debt scan from scratch — it's already done and recorded.
+
 ## Session note (2026-07-03T09:55Z) — Phase 0 + quick-win DONE, runtime-verified
 Reviewed external audit (ChatGPT) of the repo; executed narrow "Phase 0 + quick-win" slice per
 plan `/Users/hiendang/.claude/plans/h-y-l-n-k-ho-ch-parallel-thompson.md`. Corrected a stale

@@ -383,3 +383,32 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
   (still the highest-value open golden-journey link, carried over from iteration 15), (b) `cust-db`
   agent for `tenant-replay-01` (3/3 host parity, lowest priority), (c) operator portal UI for
   competency/unknowns/diagram (currently API-only).
+
+### Checkpoint 2026-07-03T09:22:18+07:00
+- Timestamp: 2026-07-03T09:22:18+07:00 (commit `cf11f1f`)
+- Iteration: iter17-readiness-gate-competency-wiring
+- Status: DONE (VERIFIED_RUNTIME)
+- Summary: Closed the highest-value carry-over from iteration 15/16 — `compute_business_flow_pct()`
+  (`src/pkg/onboarding/discovery_doc.py`) only read `service_topology.services[].described`
+  (machine-set), so answering every open Question via O2B never moved `business_flow_confirmed_pct`
+  or `readiness_flag`. Design decision: a service now counts as "confirmed" if EITHER `described`
+  is true OR the Entity Competency Matrix reports a CLAIMED/VERIFIED `business_capability` facet.
+  Signature changed to `compute_business_flow_pct(redis, tenant_id, doc)` (async); only caller was
+  already-async `compute_readiness()`, no breaking change. `pytest tests/test_onboarding_pipeline.py
+  -q` → 32 passed (new `TestReadinessThresholds::test_answered_human_claim_counts_toward_business_flow_pct`).
+  Full suite `pytest tests/ -q --ignore=tests/integration` → 5956 passed, 1 pre-existing flake
+  (`test_register_then_real_system_metrics_emitted_through_real_pipeline`, unrelated — depends on
+  real-machine z-score at test time). Built + deployed `multi-agent-system:latest` and
+  `omni-gateway:latest`, rolled out `omni-fullstack`/`omni-onboarding`/`omni-gateway`. Confirmed new
+  signature live in running pod via `kubectl exec`. Runtime-verified end-to-end against real Redis
+  on a disposable scratch tenant (`iter17-readiness-proof`, keys deleted after):
+  `business_flow_confirmed_pct` 0.0→100.0, `readiness_flag` False→True from an answered Claim alone.
+  Both real lab tenants (`staging-sim`, `tenant-replay-01`) unaffected by the deploy.
+  `OMNI_AUTO_EXECUTE_ENABLED=false` reconfirmed throughout. Full detail: `docs/product/PRODUCT_PROOF.md`
+  → "Iteration 17".
+- Reset at: n/a
+- Resume action: this ledger entry + `AUTONOMOUS_LOOP_STATE.json` were the only two files not yet
+  updated for iteration 17 (`PRODUCT_PROOF.md` and `current-priority.md` were already current) —
+  backfilled 2026-07-03 during a tech-debt sweep, no new source change. Next bottleneck candidates:
+  (a) `cust-db` agent for `tenant-replay-01` (3/3 host parity, lowest priority), (b) operator portal
+  UI for competency/unknowns/diagram (currently API-only).

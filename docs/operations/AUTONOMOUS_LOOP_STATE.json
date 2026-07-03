@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-02T23:45:00Z",
+  "updated_at": "2026-07-03T09:22:18Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "5c6d225",
+  "head": "cf11f1f",
   "iteration": {
-    "id": "iter16-handover-doc-runtime-verify",
-    "bottleneck": "PRODUCT_PROOF.md leftover from iteration 15: POST /onboarding/handover-doc (A8) had code + unit tests but was never runtime-verified against the real cluster ('chưa runtime-verify riêng trong Continuous Productization Loop').",
+    "id": "iter17-readiness-gate-competency-wiring",
+    "bottleneck": "iteration 15/16 carry-over: compute_business_flow_pct() in src/pkg/onboarding/discovery_doc.py only read service_topology.services[].described (machine-set), so answering every open Question via O2B never moved business_flow_confirmed_pct or readiness_flag -- the highest-value remaining disconnect in the golden journey Unknown -> Question -> Human Claim -> ... -> UnderstandingComplete.",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "Via pre-existing kubectl port-forward svc/omni-gateway 18080:80, fetched staging-sim's diagram version before (GET /onboarding/diagram -> version=6747). POSTed a real handover doc via POST /onboarding/handover-doc using staging-sim's real tenant bearer key (from omni-gateway-secret/OMNI_TENANT_APIKEYS) -> 200 OK, diagram_version=6752 (bump proves dd.accumulate_probe_fact()+dd.regenerate_diagrams() ran on real Redis pipeline). Re-fetched GET /onboarding/doc?tenant_id=staging-sim -> doc_snapshot key now has {documents:[{path:iter16-runbook.md, content_hash:5429b992..., content_length:124}]} with NO raw content field -- confirms INV_DATA_RESIDENCY claim in the route docstring holds on the real pipeline, not just in the docstring. Readiness unchanged as expected (business_flow_confirmed_pct=100.0, readiness_flag=false -- unrelated to handover-doc accumulation, same known gap as iteration 15). pytest tests/test_onboarding_pipeline.py -q -k handover -> 3 passed. No code changed. Updated PRODUCT_PROOF.md (new Iteration 16 section + capability matrix row), current-priority.md item 8 struck through. Full detail: docs/product/PRODUCT_PROOF.md Iteration 16.",
+    "last_successful_step": "Design decision: a service now counts as confirmed for business_flow_confirmed_pct if EITHER described=true (existing machine-set path, unchanged) OR the Entity Competency Matrix reports a CLAIMED/VERIFIED business_capability facet for that service (answered Human Claim via O2B). Code change: compute_business_flow_pct(doc) (sync) -> compute_business_flow_pct(redis, tenant_id, doc) (async); only caller was already-async compute_readiness(), not a breaking change. New test tests/test_onboarding_pipeline.py::TestReadinessThresholds::test_answered_human_claim_counts_toward_business_flow_pct. pytest tests/test_onboarding_pipeline.py -q -> 32 passed (was 31). Full suite pytest tests/ -q --ignore=tests/integration -> 5956 passed, 1 pre-existing known flake (test_register_then_real_system_metrics_emitted_through_real_pipeline, unrelated -- depends on real-machine z-score at test time). Built+deployed multi-agent-system:latest and omni-gateway:latest, kubectl rollout restart on omni-fullstack/omni-onboarding/omni-gateway (all three import discovery_doc.py). Confirmed new signature live in running pod via kubectl exec. VERIFIED_RUNTIME proof against real Redis on a disposable scratch tenant (iter17-readiness-proof, keys deleted after): business_flow_confirmed_pct 0.0->100.0, readiness_flag False->True from an answered Claim alone (no described flag ever set true). Both real lab tenants (staging-sim, tenant-replay-01) already 100% described so the claim-based branch has no observable real undescribed service to flip today -- expected, not a gap. Re-checked both real tenants' /onboarding/readiness unaffected by the deploy. Updated PRODUCT_PROOF.md (new Iteration 17 section), current-priority.md item 7 struck through. Full detail: docs/product/PRODUCT_PROOF.md Iteration 17.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Stage docs/product/PRODUCT_PROOF.md, docs/operations/AUTONOMOUS_LOOP_STATE.json, docs/operations/AUTONOMOUS_LOOP_LEDGER.md, docs/handoffs/CURRENT_SESSION.md, .claude/skills/omni-autonomous-productizer/references/current-priority.md and commit (docs/test-run only, no source change this iteration). Next bottleneck candidates for iteration 17: (a) design + wire competency_matrix coverage into compute_business_flow_pct()/readiness gate (iteration 15's design-decision gap, still open -- highest-value remaining golden-journey link), (b) cust-db agent for tenant-replay-01 (3/3 host parity, lowest priority -- pure scope expansion, not a bug), (c) operator portal UI for competency/unknowns/diagram (currently API-only)."
+    "next_step": "This state file and AUTONOMOUS_LOOP_LEDGER.md were the only two artifacts not yet updated for iteration 17 at the time this file was last touched (PRODUCT_PROOF.md and current-priority.md were already current from the original iteration) -- backfilled 2026-07-03 during a tech-debt sweep, no new source change alongside this backfill. Next bottleneck candidates: (a) cust-db agent for tenant-replay-01 (3/3 host parity, lowest priority -- pure scope expansion, not a bug), (b) operator portal UI for competency/unknowns/diagram (currently API-only)."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,7 +24,7 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Verified 2026-07-02T23:45:00Z: all core Deployments Running (kubectl get deploy,pod -n multi-agent) -- omni-fullstack, omni-gateway, omni-onboarding, omni-brain-go, omni-ui, kafka, redis-exporter, aoip-*. Reused pre-existing kubectl port-forward svc/omni-gateway 18080:80 (already running from a prior session, PID 30744) for this iteration's HTTP calls -- no new port-forward started. Only network activity this iteration was 2 reads + 1 POST against the real gateway API using staging-sim's existing tenant bearer token -- no K8s mutation, no VM change. Reconfirmed via kubectl exec deploy/omni-gateway -- printenv OMNI_AUTO_EXECUTE_ENABLED -> false.",
+    "health_summary": "Verified 2026-07-02T~09:22-10:00 window (iteration 17 original run): all core Deployments Running (kubectl get deploy,pod -n multi-agent) -- omni-fullstack, omni-gateway, omni-onboarding, omni-brain-go, omni-ui, kafka, redis-exporter, aoip-*. Rebuilt+redeployed multi-agent-system:latest and omni-gateway:latest this iteration (rollout restart on omni-fullstack/omni-onboarding/omni-gateway), all rolled out successfully. Confirmed OMNI_AUTO_EXECUTE_ENABLED=false on omni-fullstack via kubectl exec throughout and after the deploy.",
     "deployed_images": {}
   },
   "working_tree": {
@@ -36,7 +36,7 @@
       ".claude/skills/omni-autonomous-productizer/references/current-priority.md"
     ],
     "unrelated_changes": [
-      "docs/post-mortems/*.md (pre-existing modifications, unrelated to this skill or productization work)",
+      "docs/post-mortems/*.md (archivist re-verification timestamp refresh, already committed separately 2026-07-03)",
       ".autonomous-loop/logs/*.log, *.out (supervisor runtime logs, not source)"
     ]
   },
@@ -44,7 +44,7 @@
     "git rev-parse HEAD matches this file's head, or reconcile drift",
     "OMNI_AUTO_EXECUTE_ENABLED is false on all live deployments",
     "kubectl get deploy,pod,svc -A -o wide shows omni-fullstack/omni-onboarding/omni-gateway Running",
-    "GET /onboarding/doc?tenant_id=staging-sim shows doc_snapshot.documents containing path=iter16-runbook.md (proof this iteration's handover-doc persisted)",
+    "kubectl exec deploy/omni-gateway -- python -c \"import inspect; from pkg.onboarding import discovery_doc as dd; print(inspect.signature(dd.compute_business_flow_pct))\" shows (redis, tenant_id, doc) async signature",
     "docs/product/PRODUCT_PROOF.md iteration section matches this state's last known bottleneck",
     ".venv/bin/python -m pytest tests/ -q --ignore=tests/integration is green (minus known pre-existing flake test_register_then_real_system_metrics_emitted_through_real_pipeline)"
   ],
