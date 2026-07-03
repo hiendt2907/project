@@ -300,6 +300,48 @@ Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (
 iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
 printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
 
+## Iteration 18 — Phase-1 Product & Architecture Contract Freeze VERIFIED_RUNTIME (2026-07-03)
+
+**Mục tiêu**: mở màn production productization plan — chốt Product Contract + canonical command
+protocol trước khi mở thêm AI capability (master plan Phase 1). Iteration 17 xác nhận đã đóng
+sạch (ledger/state/PROOF đồng bộ, kill-switch false xác minh trên pod) trước khi bắt đầu.
+
+**Deliverables**:
+- `docs/product/PRODUCT_CONTRACT.md` (mới) — target customer, supported platforms, Golden Journey
+  chính thức, catalog 3 remediation đầu (RestartSystemdService/RestartKubernetesWorkload/
+  RollbackKubernetesDeployment), 5 hard-zero SLO, autonomy tier gates, data boundary, non-goals,
+  pilot acceptance criteria.
+- `docs/architecture/ADR-002-command-protocol.md` (mới) — **phát hiện quan trọng**: hướng hợp nhất
+  ghi ở ADR-001 §5 ("gateway import `DurableCommandChannel`") là sai chiều. Đọc kỹ cả hai file cho
+  thấy `gateway/routes/agent_runtime.py` đã VƯỢT bản aoip về an toàn (atomic Lua claim, fencing
+  token, delivery_attempt, record_version, visibility heartbeat) trong khi `DurableCommandChannel`
+  thiếu fencing và có race non-atomic ở poll, chỉ còn dùng trong tests/demo. Canonical = HTTP
+  contract + state machine của `agent_runtime.py`; `DurableCommandChannel` = legacy có sunset
+  criteria (Phase-3 durable Control Plane). ADR-001 được đánh dấu superseded ở §5.
+- `src/aoip/protocol/__init__.py` (mới) — nguồn chân lý DUY NHẤT cho state vocabulary
+  (9 states, TERMINAL, PROGRESS, `is_legal_transition()`, PROTOCOL_VERSION=1). Trước đây bộ hằng
+  số này bị chép tay ở 3 nơi (agent_runtime.py, delivery.py, và hardcode TRONG Lua `_CLAIM_SCRIPT`).
+  Cả `agent_runtime.py` lẫn `delivery.py` giờ import từ đây (refactor import-only, hành vi không
+  đổi); Lua không import được → `tests/test_aoip_protocol_contract.py` (13 test mới) parse Lua
+  source và fail nếu bảng TERMINAL drift, kèm transition-invariant tests (terminal absorbing,
+  redelivery legality, no-backward-progress).
+- `requirements.lock` (mới) — pip freeze snapshot Python 3.13.5; Dockerfile chưa wire (ghi
+  TECH_DEBT_BACKLOG #13).
+
+**Tests**: `pytest tests/ -q --ignore=tests/integration` → **5965 passed, 0 failed** (13 test mới;
+flake đã biết cũng pass lần chạy này).
+
+**Runtime proof**: rebuild `omni-gateway:latest` (`f9ccdf1fe277…`) + `multi-agent-system:latest`
+(`bfa8fe4b053f…`), rollout restart omni-gateway/omni-fullstack/omni-onboarding — tất cả rolled out.
+`kubectl exec` xác minh trong pod thật: gateway `agent_runtime.TERMINAL is protocol.TERMINAL_STATES
+== True`, fullstack `delivery.TERMINAL_STATES is protocol.TERMINAL_STATES == True`. `/readyz` →
+200 `{"redis":"ok","postgres":"ok"}` qua port-forward. `OMNI_AUTO_EXECUTE_ENABLED=false` xác minh
+lại sau deploy.
+
+**Next bottleneck**: Golden Journey Read-only (master plan Phase 2) — hành trình create-tenant →
+export-audit qua official API/portal, không Redis/DB manual. Ứng viên đầu: operator portal UI cho
+competency/unknowns (hiện API-only, carry-over từ iteration 17).
+
 ## Iteration 17 — readiness-gate/competency wiring VERIFIED_RUNTIME (2026-07-02)
 
 **Bottleneck đã fix**: the design-decision gap found in iteration 15 —

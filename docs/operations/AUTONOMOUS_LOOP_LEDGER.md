@@ -412,3 +412,24 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
   backfilled 2026-07-03 during a tech-debt sweep, no new source change. Next bottleneck candidates:
   (a) `cust-db` agent for `tenant-replay-01` (3/3 host parity, lowest priority), (b) operator portal
   UI for competency/unknowns/diagram (currently API-only).
+
+### Checkpoint 2026-07-03T12:30:00+07:00
+- Timestamp: 2026-07-03T12:30:00+07:00
+- Iteration: iter18-phase1-contract-freeze
+- Status: DONE (VERIFIED_RUNTIME)
+- Summary: Phase-1 Product & Architecture Contract Freeze (production productization plan).
+  Tạo `docs/product/PRODUCT_CONTRACT.md` (Golden Journey chính thức, 3-action remediation catalog,
+  5 hard-zero SLO, tier gates, non-goals) và `docs/architecture/ADR-002-command-protocol.md`.
+  Phát hiện quan trọng: hướng ADR-001 §5 (gateway import `DurableCommandChannel`) là sai chiều —
+  `agent_runtime.py` đã vượt bản aoip về an toàn (fencing/atomic Lua claim/heartbeat);
+  `DurableCommandChannel` là legacy có sunset criteria. Tạo `src/aoip/protocol/` — nguồn chân lý
+  duy nhất cho command state vocabulary; `agent_runtime.py` + `delivery.py` import chung
+  (refactor import-only); contract test `tests/test_aoip_protocol_contract.py` (13 test) parse Lua
+  source chặn drift bảng TERMINAL. `requirements.lock` tạo mới (Dockerfile chưa wire —
+  TECH_DEBT_BACKLOG #13). Full suite 5965 passed / 0 failed. Runtime proof: rebuild+rollout
+  omni-gateway (`f9ccdf1fe277…`) + multi-agent-system (`bfa8fe4b053f…`), kubectl exec xác minh
+  identity-share của TERMINAL_STATES trong cả gateway lẫn fullstack pod, `/readyz` 200,
+  `OMNI_AUTO_EXECUTE_ENABLED=false` reconfirmed.
+- Reset at: n/a
+- Resume action: Phase 2 — Golden Journey Read-only qua official API/portal (ứng viên đầu:
+  operator portal UI cho competency/unknowns, hiện API-only).

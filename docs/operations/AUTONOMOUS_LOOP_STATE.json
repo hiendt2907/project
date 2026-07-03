@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-03T09:22:18Z",
+  "updated_at": "2026-07-03T05:30:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "cf11f1f",
+  "head": "3c2c266",
   "iteration": {
-    "id": "iter17-readiness-gate-competency-wiring",
-    "bottleneck": "iteration 15/16 carry-over: compute_business_flow_pct() in src/pkg/onboarding/discovery_doc.py only read service_topology.services[].described (machine-set), so answering every open Question via O2B never moved business_flow_confirmed_pct or readiness_flag -- the highest-value remaining disconnect in the golden journey Unknown -> Question -> Human Claim -> ... -> UnderstandingComplete.",
+    "id": "iter18-phase1-contract-freeze",
+    "bottleneck": "Production productization plan Phase 1: chua co Product Contract canonical; command state machine bi chep tay o 3 noi (agent_runtime.py, delivery.py, Lua _CLAIM_SCRIPT) voi rui ro drift; huong hop nhat trong ADR-001 s5 sai chieu (DurableCommandChannel yeu hon ban gateway).",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "Design decision: a service now counts as confirmed for business_flow_confirmed_pct if EITHER described=true (existing machine-set path, unchanged) OR the Entity Competency Matrix reports a CLAIMED/VERIFIED business_capability facet for that service (answered Human Claim via O2B). Code change: compute_business_flow_pct(doc) (sync) -> compute_business_flow_pct(redis, tenant_id, doc) (async); only caller was already-async compute_readiness(), not a breaking change. New test tests/test_onboarding_pipeline.py::TestReadinessThresholds::test_answered_human_claim_counts_toward_business_flow_pct. pytest tests/test_onboarding_pipeline.py -q -> 32 passed (was 31). Full suite pytest tests/ -q --ignore=tests/integration -> 5956 passed, 1 pre-existing known flake (test_register_then_real_system_metrics_emitted_through_real_pipeline, unrelated -- depends on real-machine z-score at test time). Built+deployed multi-agent-system:latest and omni-gateway:latest, kubectl rollout restart on omni-fullstack/omni-onboarding/omni-gateway (all three import discovery_doc.py). Confirmed new signature live in running pod via kubectl exec. VERIFIED_RUNTIME proof against real Redis on a disposable scratch tenant (iter17-readiness-proof, keys deleted after): business_flow_confirmed_pct 0.0->100.0, readiness_flag False->True from an answered Claim alone (no described flag ever set true). Both real lab tenants (staging-sim, tenant-replay-01) already 100% described so the claim-based branch has no observable real undescribed service to flip today -- expected, not a gap. Re-checked both real tenants' /onboarding/readiness unaffected by the deploy. Updated PRODUCT_PROOF.md (new Iteration 17 section), current-priority.md item 7 struck through. Full detail: docs/product/PRODUCT_PROOF.md Iteration 17.",
+    "last_successful_step": "PRODUCT_CONTRACT.md + ADR-002 tao moi; ADR-001 s5 superseded; src/aoip/protocol/ la single source of truth cho state vocabulary, ca gateway lan aoip import chung; 13 contract test moi (parse Lua chan drift); requirements.lock; full suite 5965 passed / 0 failed; rebuild+rollout gateway/fullstack/onboarding; kubectl exec verify TERMINAL_STATES identity-shared trong pod that; /readyz 200; kill-switch false reconfirmed. Chi tiet: PRODUCT_PROOF.md Iteration 18.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "This state file and AUTONOMOUS_LOOP_LEDGER.md were the only two artifacts not yet updated for iteration 17 at the time this file was last touched (PRODUCT_PROOF.md and current-priority.md were already current from the original iteration) -- backfilled 2026-07-03 during a tech-debt sweep, no new source change alongside this backfill. Next bottleneck candidates: (a) cust-db agent for tenant-replay-01 (3/3 host parity, lowest priority -- pure scope expansion, not a bug), (b) operator portal UI for competency/unknowns/diagram (currently API-only)."
+    "next_step": "Phase 2 - Golden Journey Read-only qua official API/portal. Ung vien dau: operator portal UI cho competency/unknowns/diagram (hien API-only, carry-over tu iteration 17). Khong mo billing/multi-region/action moi song song (PRODUCT_CONTRACT s9)."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,21 +24,26 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Verified 2026-07-02T~09:22-10:00 window (iteration 17 original run): all core Deployments Running (kubectl get deploy,pod -n multi-agent) -- omni-fullstack, omni-gateway, omni-onboarding, omni-brain-go, omni-ui, kafka, redis-exporter, aoip-*. Rebuilt+redeployed multi-agent-system:latest and omni-gateway:latest this iteration (rollout restart on omni-fullstack/omni-onboarding/omni-gateway), all rolled out successfully. Confirmed OMNI_AUTO_EXECUTE_ENABLED=false on omni-fullstack via kubectl exec throughout and after the deploy.",
+    "health_summary": "Verified 2026-07-03 iter18: omni-gateway/omni-fullstack/omni-onboarding rebuilt+rolled out thanh cong; omni-gateway sha256:f9ccdf1fe277..., multi-agent-system sha256:bfa8fe4b053f...; /readyz 200 redis+postgres ok; OMNI_AUTO_EXECUTE_ENABLED=false via kubectl exec.",
     "deployed_images": {}
   },
   "working_tree": {
     "owned_changes": [
+      "docs/product/PRODUCT_CONTRACT.md",
       "docs/product/PRODUCT_PROOF.md",
-      "docs/operations/AUTONOMOUS_LOOP_STATE.json",
+      "docs/architecture/ADR-001-canonical-agent-runtime.md",
+      "docs/architecture/ADR-002-command-protocol.md",
+      "docs/architecture/TECH_DEBT_BACKLOG.md",
+      "src/aoip/protocol/__init__.py",
+      "src/gateway/routes/agent_runtime.py",
+      "src/aoip/agent/delivery.py",
+      "tests/test_aoip_protocol_contract.py",
+      "requirements.lock",
       "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",
-      "docs/handoffs/CURRENT_SESSION.md",
-      ".claude/skills/omni-autonomous-productizer/references/current-priority.md"
+      "docs/operations/AUTONOMOUS_LOOP_STATE.json",
+      "docs/handoffs/CURRENT_SESSION.md"
     ],
-    "unrelated_changes": [
-      "docs/post-mortems/*.md (archivist re-verification timestamp refresh, already committed separately 2026-07-03)",
-      ".autonomous-loop/logs/*.log, *.out (supervisor runtime logs, not source)"
-    ]
+    "unrelated_changes": []
   },
   "resume_checks": [
     "git rev-parse HEAD matches this file's head, or reconcile drift",
