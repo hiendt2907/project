@@ -300,6 +300,31 @@ Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (
 iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
 printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
 
+## Iteration 22 — Mermaid System Diagram trên /understanding VERIFIED_RUNTIME (2026-07-03)
+
+Golden Journey visibility slice: trang `/understanding` render **System Diagram** — 3 diagram
+Mermaid (component architecture / API sequence / business flow) từ `GET /onboarding/diagram`
+(backend đã có từ step-3 onboarding plan, chưa từng có UI). KHÔNG đổi Python.
+
+- `ui/app/api/onboarding/understanding/route.ts`: thêm section `diagram` vào aggregate proxy
+  (fetch song song, honest-error per section, không mock fallback — giữ nguyên pattern iter 19).
+- `ui/components/mermaid-diagram.tsx` (mới): `MermaidBlock` render client-side qua dynamic import
+  `mermaid` (dep mới, `securityLevel: "strict"`, theme dark) — gateway chỉ phục vụ raw text, đúng
+  contract "never rendered to image" phía server; `splitDiagramText()` tách blob 3-diagram theo
+  dòng `%% <title>` (format của `render_all_diagrams` trong `pkg/onboarding/discovery_doc.py`).
+- `ui/app/understanding/page.tsx`: card "System Diagram" (full-width, badge version `v{N}`,
+  3 diagram grid xl:3-cột, skeleton/honest-error/empty-state riêng).
+- `ui/e2e/understanding.spec.ts`: test mới "renders the system diagram as Mermaid SVG" — assert
+  card + version badge + **đúng 3 SVG** render từ dữ liệu Redis thật.
+
+Runtime proof (pod thật, image `omni-ui:latest` digest `e20e6a9c1cdc` rebuild + rollout, xác minh
+`imageID` trên pod): `E2E_ALLOW_WRITE=1 npx playwright test` → **8 passed**; không flag →
+**7 passed, 1 skipped** (CI-safe giữ nguyên). Tenant `staging-sim` có diagram versioned thật trong
+Redis (`omni:onboarding:diagram:staging-sim:v*`, hàng nghìn version). `npm run build` xanh.
+
+Gotcha: assertion `getByText` trong CardTitle bị strict-mode violation vì text nằm trong 2 span
+lồng nhau — dùng `.first()`.
+
 ## Iteration 21 — Playwright E2E cho /understanding (read + write + auth boundary) VERIFIED_RUNTIME (2026-07-03)
 
 Bộ E2E browser-level đầu tiên của portal — chạy Chromium thật lên pod `omni-ui` thật (K8s) qua

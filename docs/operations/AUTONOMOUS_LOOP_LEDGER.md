@@ -493,3 +493,19 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Resume action: Phase 2 slice kế tiếp — Mermaid diagram render (`GET /onboarding/diagram`) trên
   trang Understanding (Golden Journey visibility). Không mở action/billing song song
   (PRODUCT_CONTRACT §9).
+
+### Checkpoint 2026-07-03T18:40:00+07:00
+- Timestamp: 2026-07-03T18:40:00+07:00
+- Iteration: iter22-mermaid-diagram-understanding
+- Status: DONE (VERIFIED_RUNTIME)
+- Summary: Trang `/understanding` render System Diagram — 3 Mermaid (component/API sequence/business
+  flow) từ `GET /onboarding/diagram` (endpoint có sẵn, lần đầu có UI). Aggregate proxy thêm section
+  `diagram` (honest-error, không mock); `MermaidBlock` render client-side (dynamic import mermaid,
+  securityLevel strict) + `splitDiagramText()` tách blob theo `%% <title>`; E2E mới assert đúng 3 SVG
+  từ Redis thật. Image omni-ui rebuild digest `e20e6a9c1cdc` + rollout, imageID xác minh trên pod.
+  E2E: 8 passed (E2E_ALLOW_WRITE=1) / 7 passed 1 skipped (không flag). `npm run build` xanh.
+  KHÔNG đổi Python. Chi tiết: `docs/product/PRODUCT_PROOF.md` → "Iteration 22".
+- Reset at: n/a
+- Resume action: Phase 2 slice kế tiếp — cân nhắc (a) diagram history/diff view
+  (`GET /onboarding/diagram/history` đã có), hoặc (b) wire `npm run e2e` vào quy trình release.
+  Không mở action/billing song song (PRODUCT_CONTRACT §9).
