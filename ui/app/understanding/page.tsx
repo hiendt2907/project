@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Sidebar } from "@/components/sidebar";
 import { TenantSelector } from "@/components/tenant-selector";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { MermaidBlock, splitDiagramText } from "@/components/mermaid-diagram";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   RefreshCw,
@@ -15,6 +16,7 @@ import {
   Gauge,
   AlertTriangle,
   Send,
+  Workflow,
 } from "lucide-react";
 
 interface SectionResult<T> {
@@ -49,11 +51,17 @@ interface ReadinessData {
   readiness: Record<string, unknown> | null;
 }
 
+interface DiagramData {
+  version: number | null;
+  mermaid: string | null;
+}
+
 interface UnderstandingData {
   entities: SectionResult<EntitiesData>;
   unknowns: SectionResult<{ unknowns: UnknownRecord[] }>;
   questions: SectionResult<{ questions: QuestionRecord[] }>;
   readiness: SectionResult<ReadinessData>;
+  diagram: SectionResult<DiagramData>;
 }
 
 interface FacetValueDto {
@@ -213,6 +221,8 @@ function UnderstandingPageInner() {
   const questions = data?.questions.data?.questions ?? [];
   const pendingQuestions = questions.filter((q) => q.status === "PENDING");
   const readiness = data?.readiness.data?.readiness ?? null;
+  const diagram = data?.diagram?.data ?? null;
+  const diagramSections = diagram?.mermaid ? splitDiagramText(diagram.mermaid) : [];
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -266,6 +276,41 @@ function UnderstandingPageInner() {
                 </div>
               ) : (
                 <p className="text-xs text-zinc-500">No readiness record for this tenant yet.</p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* System diagram (Mermaid) */}
+          <Card className="border-zinc-800 bg-zinc-900/60 lg:col-span-3" data-testid="diagram-card">
+            <CardHeader className="p-4 pb-2">
+              <CardTitle className="flex items-center justify-between text-sm text-zinc-100">
+                <span className="flex items-center gap-2">
+                  <Workflow className="h-4 w-4 text-cyan-400" />
+                  System Diagram
+                </span>
+                {diagram?.version != null && (
+                  <span className="font-mono text-[10px] text-zinc-500">v{diagram.version}</span>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-4 pt-0">
+              {loading && !data ? (
+                <Skeleton className="h-24 bg-zinc-800" />
+              ) : data?.diagram?.error ? (
+                <SectionError error={data.diagram.error} />
+              ) : diagramSections.length === 0 ? (
+                <p className="text-xs text-zinc-500">No diagram generated for this tenant yet.</p>
+              ) : (
+                <div className="grid gap-4 xl:grid-cols-3">
+                  {diagramSections.map((section) => (
+                    <div key={section.title}>
+                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
+                        {section.title}
+                      </p>
+                      <MermaidBlock source={section.source} />
+                    </div>
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>

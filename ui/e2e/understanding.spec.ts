@@ -24,6 +24,18 @@ test.describe("read flow", () => {
     ).toBeVisible({ timeout: 15_000 });
   });
 
+  test("renders the system diagram as Mermaid SVG", async ({ page }) => {
+    await gotoUnderstanding(page);
+    const card = page.getByTestId("diagram-card");
+    await expect(card.getByText("System Diagram").first()).toBeVisible();
+    // Tenant lab đã có diagram versioned trong Redis — thiếu SVG là regression
+    await expect(card.getByText(/^v\d+$/)).toBeVisible({ timeout: 15_000 });
+    await expect(card.getByTestId("mermaid-svg").first()).toBeVisible({ timeout: 15_000 });
+    // Cả 3 loại diagram (component / API sequence / business flow) đều render
+    await expect(card.getByTestId("mermaid-svg")).toHaveCount(3, { timeout: 15_000 });
+    expect(await card.locator("svg").count()).toBeGreaterThanOrEqual(3);
+  });
+
   test("selecting an entity loads its competency matrix", async ({ page }) => {
     await gotoUnderstanding(page);
     const entity = page.getByRole("button", { name: /^(host|svc):/ }).first();
