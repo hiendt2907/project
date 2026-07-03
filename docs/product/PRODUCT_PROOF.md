@@ -300,6 +300,62 @@ Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (
 iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
 printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
 
+## Iteration 17 — readiness-gate/competency wiring VERIFIED_RUNTIME (2026-07-02)
+
+**Bottleneck đã fix**: the design-decision gap found in iteration 15 —
+`compute_business_flow_pct()` (`src/pkg/onboarding/discovery_doc.py`) only read
+`service_topology.services[].described` (machine-set, from the agent-parsed systemd comment probe).
+It never read `competency_matrix`/Human Claims, so answering every open `Question` for a tenant
+(Slice O2B) did not move `business_flow_confirmed_pct` or `readiness_flag` — the highest-value
+remaining disconnect in the golden journey `Unknown → Question → Human Claim → ... →
+UnderstandingComplete`.
+
+**Design decision**: a service now counts as "confirmed" for `business_flow_confirmed_pct` if
+EITHER the discovery-doc `described` flag is true (existing machine-set path, unchanged) OR the
+Entity Competency Matrix (`aoip.competency_matrix.build_entity_competency()`) reports a
+CLAIMED/VERIFIED `business_capability` facet for that service (i.e. a Human Claim was answered via
+`POST /onboarding/questions/{id}/answer`, the same O2B flow iteration 15 runtime-verified). No LLM
+involved — `build_entity_competency()` is the existing pure/deterministic projection over
+`SystemModel` + claims + contradictions (already used by `GET /onboarding/competency`).
+
+**Code change**: `compute_business_flow_pct(doc)` (sync) → `compute_business_flow_pct(redis,
+tenant_id, doc)` (async) in `src/pkg/onboarding/discovery_doc.py`. Confirmed via grep the only
+caller was `compute_readiness()`, which was already `async`/already awaited by both callers
+(`src/workers/onboarding_pipeline.py::recompute_readiness`, `src/gateway/routes/onboarding.py`) —
+not a breaking change for any other code path.
+
+**Tests**: new `tests/test_onboarding_pipeline.py::TestReadinessThresholds::
+test_answered_human_claim_counts_toward_business_flow_pct` — a service with no discovery-doc
+description but an answered Claim reaches `business_flow_confirmed_pct == 100.0`.
+`pytest tests/test_onboarding_pipeline.py -q` → 32 passed (was 31). Regression `-k "onboarding or
+gateway_api or tenant or provision or competency or claim" --ignore=tests/integration` → 203
+passed. Full suite `pytest tests/ -q --ignore=tests/integration` → 5956 passed, 1 pre-existing known
+flake (`test_register_then_real_system_metrics_emitted_through_real_pipeline`, unrelated to this
+change — documented in `AUTONOMOUS_LOOP_STATE.json` resume_checks before this iteration started).
+
+**Build+deploy**: `make docker-worker` + `make docker-gateway` rebuilt `multi-agent-system:latest`
+and `omni-gateway:latest`, then `kubectl rollout restart` on `omni-fullstack`, `omni-onboarding`,
+`omni-gateway` (all three import `discovery_doc.py` — full/onboarding worker roles and the gateway's
+manual routes). All three rolled out successfully. Confirmed the new signature is live in the
+running pod: `kubectl exec deploy/omni-gateway -- python -c "import inspect; from pkg.onboarding
+import discovery_doc as dd; print(inspect.signature(dd.compute_business_flow_pct))"` →
+`(redis: 'Any', tenant_id: 'str', doc: 'dict[str, Any]') -> 'float'`.
+
+**VERIFIED_RUNTIME proof**: both real lab tenants (`staging-sim`, `tenant-replay-01`) already have
+100% of their real services `described` (systemd comment probe covers every process), so the new
+claim-based branch has no observable *real* undescribed service to flip today — expected, not a
+gap. Proved the wiring end-to-end against the live pod's real Redis instead: `kubectl exec
+deploy/omni-gateway` running a Python snippet that calls the exact same deployed
+`dd.accumulate_probe_fact`/`dd.compute_readiness`/`put_claim` functions (no test doubles) against a
+disposable scratch tenant `iter17-readiness-proof` — `business_flow_confirmed_pct` moved
+`0.0 → 100.0` and `readiness_flag` flipped `False → True` purely from an answered Claim (no
+`described` flag ever set true). Scratch tenant's Redis keys (`omni:onboarding:doc:*`,
+`omni:aoip:claims:*`) deleted immediately after — confirmed both keys `exists() == 0` post-cleanup.
+Re-checked both real tenants' `/onboarding/readiness` unaffected by the deploy
+(`staging-sim`: unchanged at `business_flow_confirmed_pct=100.0`; `tenant-replay-01`: unchanged at
+`readiness_flag=true`). `kubectl exec deploy/omni-fullstack -- printenv OMNI_AUTO_EXECUTE_ENABLED` →
+`false`, confirmed unchanged throughout.
+
 ## Iteration 13 — "2 agents/2 tenants on 1 VM" test coverage + resolve_scope() closed (2026-07-02)
 
 **Bottleneck đã fix**: iteration 9's leftover — the cross-tenant isolation proof for two Remote

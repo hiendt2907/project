@@ -195,12 +195,39 @@ def compute_mapped_pct(doc: dict[str, Any]) -> float:
     return round(100.0 * len(mapped) / len(ports), 2)
 
 
-def compute_business_flow_pct(doc: dict[str, Any]) -> float:
+async def compute_business_flow_pct(redis: Any, tenant_id: str, doc: dict[str, Any]) -> float:
+    """A service counts as "confirmed" if EITHER the tenant-authored discovery
+    doc marks it described (machine-set, see ``_sanitize_services``) OR the
+    Entity Competency Matrix (aoip.competency_matrix) has a CLAIMED/VERIFIED
+    ``business_capability`` facet for it — i.e. answering a Human Claim
+    question about a service's business purpose (Slice O2B) now moves this
+    percentage, closing the readiness-gate/competency disconnect found in
+    iteration 15 (see docs/product/PRODUCT_PROOF.md)."""
     services = (doc.get("service_topology") or {}).get("services") or []
     if not services:
         return 0.0
-    described = [s for s in services if s.get("described")]
-    return round(100.0 * len(described) / len(services), 2)
+    from aoip.claims_store import load_claims
+    from aoip.competency_matrix import FacetState, build_entity_competency
+    from aoip.system_model_store import load_contradictions, load_system_model
+
+    model, _revision = await load_system_model(redis, tenant_id)
+    contradictions = await load_contradictions(redis, tenant_id)
+    claims = await load_claims(redis, tenant_id)
+
+    confirmed = 0
+    for svc in services:
+        if svc.get("described"):
+            confirmed += 1
+            continue
+        name = svc.get("name")
+        if not name:
+            continue
+        comp = build_entity_competency(
+            model, contradictions, entity_type="service", entity_id=f"svc:{name}", claims=claims,
+        )
+        if comp.facet("business_capability").state in (FacetState.CLAIMED, FacetState.VERIFIED):
+            confirmed += 1
+    return round(100.0 * confirmed / len(services), 2)
 
 
 async def count_stale_open_questions(redis: Any, tenant_id: str, *, stale_days: float) -> int:
@@ -236,7 +263,7 @@ async def compute_readiness(redis: Any, admin_repo: Any, tenant_id: str) -> dict
     doc = await get_accumulated_doc(redis, tenant_id)
     thresholds = await resolve_readiness_thresholds(admin_repo, tenant_id)
     endpoint_mapped_pct = compute_mapped_pct(doc)
-    business_flow_confirmed_pct = compute_business_flow_pct(doc)
+    business_flow_confirmed_pct = await compute_business_flow_pct(redis, tenant_id, doc)
     stale_open = await count_stale_open_questions(
         redis, tenant_id, stale_days=float(thresholds["open_question_stale_days"]),
     )

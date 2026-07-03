@@ -1,5 +1,46 @@
 # Current Session Handoff
 
+## Iteration 17 (2026-07-02, IN PROGRESS — not yet committed)
+Bottleneck: iteration 15's design-decision gap — `compute_business_flow_pct()` in
+`src/pkg/onboarding/discovery_doc.py` only read `service_topology.services[].described`
+(machine-set), so answering a Human Claim question (O2B) never moved a tenant's
+`business_flow_confirmed_pct` / `readiness_flag`.
+
+Design decision made: a service counts as "confirmed" if EITHER the discovery-doc
+`described` flag is true OR the Entity Competency Matrix (`aoip.competency_matrix`) reports
+a CLAIMED/VERIFIED `business_capability` facet for it (i.e. a Human Claim answered via O2B).
+
+Change: `compute_business_flow_pct()` signature changed from
+`compute_business_flow_pct(doc)` (sync) to `compute_business_flow_pct(redis, tenant_id, doc)`
+(async) — only caller was `compute_readiness()` (already async, already awaited), so this is
+not a breaking change for any other code path (confirmed via grep — only one call site
+existed). Implementation loads `SystemModel` + contradictions + claims once via
+`aoip.system_model_store`/`aoip.claims_store`, then projects `business_capability` per
+service via `aoip.competency_matrix.build_entity_competency()` (pure/derived, no LLM).
+
+Tests: new `TestReadinessThresholds::test_answered_human_claim_counts_toward_business_flow_pct`
+in `tests/test_onboarding_pipeline.py` proves a service with no doc description but an
+answered Claim reaches `business_flow_confirmed_pct == 100.0`. `pytest
+tests/test_onboarding_pipeline.py -q` → 32 passed (was 31). Regression `-k "onboarding or
+gateway_api or tenant or provision or competency or claim" --ignore=tests/integration` → 203
+passed. Full `pytest tests/ -q --ignore=tests/integration` was launched in background to
+confirm no other regression before this iteration is marked DONE — **not yet confirmed
+finished as of this checkpoint**.
+
+**Not yet done this iteration**: (1) wait for/confirm the full test-suite background run
+green, (2) no deploy/runtime-verification against the live cluster performed yet — this is a
+real behavior change (not docs-only) and per the skill's Definition of Done needs a rebuild +
+redeploy of `omni-fullstack`/`omni-gateway` (whichever imports `discovery_doc.py`) plus a
+runtime proof (e.g. answer a real Question for `staging-sim` or `tenant-replay-01` and observe
+`business_flow_confirmed_pct` move) before this can be labeled DONE and committed. (3)
+PRODUCT_PROOF.md / current-priority.md / AUTONOMOUS_LOOP_STATE.json / ledger not yet updated
+for this iteration.
+
+**Next step for a fresh session**: check whether the background `pytest tests/ -q
+--ignore=tests/integration` finished green (rerun it if the background shell is gone), then
+continue with build/deploy/runtime-verification per the plan above, then update
+PRODUCT_PROOF.md/state/ledger/current-priority.md and commit only after runtime proof.
+
 ## Iteration 16 (2026-07-02T23:45Z)
 Closed the other leftover named in iteration 15: runtime-verified `POST /onboarding/handover-doc`
 (A8) against the real cluster. Via `kubectl port-forward svc/omni-gateway 18080:80`, captured

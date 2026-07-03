@@ -134,6 +134,31 @@ class TestReadinessThresholds:
         assert fields["readiness_flag"] is True
 
     @pytest.mark.asyncio
+    async def test_answered_human_claim_counts_toward_business_flow_pct(self):
+        """Closes the iteration-15 gap: a service with no discovery-doc description
+        but an answered Human Claim (competency_matrix business_capability=CLAIMED)
+        must still count as confirmed — answering Questions now moves readiness."""
+        import time as _time
+
+        from aoip.claims_store import ClaimRecord, put_claim
+
+        r = _redis()
+        repo = _FakeAdminRepo()
+        await dd.accumulate_probe_fact(r, "acme", "port_scan", {"listening_ports": [{"port": 80, "service": "http"}]})
+        await dd.accumulate_probe_fact(
+            r, "acme", "service_topology", {"services": [{"name": "api", "status": "running"}]},
+        )
+        fields_before = await dd.compute_readiness(r, repo, "acme")
+        assert fields_before["business_flow_confirmed_pct"] == 0.0
+
+        await put_claim(r, "acme", ClaimRecord(
+            subject="svc:api", predicate="serves_capability", value="checkout",
+            answered_by="human:iter17-productizer", answered_at=_time.time(), question_id="q-iter17",
+        ))
+        fields_after = await dd.compute_readiness(r, repo, "acme")
+        assert fields_after["business_flow_confirmed_pct"] == 100.0
+
+    @pytest.mark.asyncio
     async def test_stale_open_question_blocks_readiness_even_if_pct_ok(self):
         r = _redis()
         repo = _FakeAdminRepo()

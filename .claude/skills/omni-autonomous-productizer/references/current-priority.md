@@ -20,12 +20,15 @@ danh sách này.
    **VERIFIED_RUNTIME iteration 15**: `POST /onboarding/questions/{id}/answer` chạy thật trên
    `staging-sim` (câu hỏi PENDING thật → ANSWERED → competency facet CLAIMED với evidence_refs
    human:*). Xem PRODUCT_PROOF.md "Iteration 15".
-7. UnderstandingComplete — code tồn tại (`compute_readiness()` → `readiness_flag`) nhưng **gap mới
-   phát hiện iteration 15**: `business_flow_confirmed_pct` (một trong 3 điều kiện gate) chỉ đọc
-   `service_topology.described` do máy set (agent-parsed comment), KHÔNG đọc từ
-   `competency_matrix`/Human Claim — nghĩa là trả lời hết Question của tenant không đẩy
-   `readiness_flag` tiến gần `true`. Cần quyết định thiết kế trước khi sửa (đọc thêm từ
-   competency coverage hay giữ nguyên contract cũ) — chưa làm trong iteration này.
+7. ~~UnderstandingComplete — `business_flow_confirmed_pct` chỉ đọc `service_topology.described`,
+   không đọc competency/Human Claim (gap phát hiện iteration 15)~~ — **VERIFIED_RUNTIME iteration 17**:
+   `compute_business_flow_pct()` nay đếm service "confirmed" nếu `described=true` HOẶC competency
+   `business_capability` facet là CLAIMED/VERIFIED (trả lời Question thật qua O2B). Runtime proof
+   trên pod thật (scratch tenant, dọn sạch key sau đó): `business_flow_confirmed_pct` 0.0→100.0,
+   `readiness_flag` False→True chỉ từ 1 Claim. Cả 2 tenant lab thật (`staging-sim`,
+   `tenant-replay-01`) đã 100% described sẵn nên nhánh claim-based chưa có ca thật nào để quan sát
+   trên dữ liệu thật — không phải gap, chỉ là chưa có tenant thật đang thiếu description. Xem
+   PRODUCT_PROOF.md "Iteration 17".
 8. ~~Handover — thực ra đã implement (`POST /onboarding/handover-doc`, A8) nhưng CHƯA runtime-verify~~
    — **VERIFIED_RUNTIME iteration 16**: POST thật trên `staging-sim`, diagram version bump
    6747→6752, `GET /onboarding/doc` xác nhận chỉ lưu `content_hash`/`content_length` (không raw

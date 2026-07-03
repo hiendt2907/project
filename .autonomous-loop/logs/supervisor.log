@@ -117,3 +117,142 @@ You've hit your session limit · resets 4:50pm (Asia/Saigon)
 [supervisor 2026-07-02T08:40:30Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
 You've hit your session limit · resets 4:50pm (Asia/Saigon)
 [supervisor 2026-07-02T08:40:32Z] one-iteration invocation failed — backing off 1800s
+[validate_state] OK
+[supervisor 2026-07-02T09:10:43Z] current status=IDLE
+[supervisor 2026-07-02T09:10:43Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+You've hit your session limit · resets 4:50pm (Asia/Saigon)
+[supervisor 2026-07-02T09:10:45Z] one-iteration invocation failed — backing off 1800s
+[validate_state] OK
+[supervisor 2026-07-02T09:40:55Z] current status=IDLE
+[supervisor 2026-07-02T09:40:55Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+API Error: Unable to connect to API (ConnectionRefused)
+[supervisor 2026-07-02T09:43:56Z] one-iteration invocation failed — backing off 1800s
+[validate_state] OK
+[supervisor 2026-07-02T10:14:07Z] current status=IDLE
+[supervisor 2026-07-02T10:14:07Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+API Error: Unable to connect to API (ConnectionRefused)
+[supervisor 2026-07-02T10:17:06Z] one-iteration invocation failed — backing off 1800s
+[validate_state] OK
+[supervisor 2026-07-02T10:47:16Z] current status=IDLE
+[supervisor 2026-07-02T10:47:16Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+Handoff, state, and ledger are now reconciled to the real HEAD `7689049`. Summary of this iteration:
+
+- **Drift found**: two commits (`8d4c0ed`, `7689049` — provider-portal/lab-incidents work) had landed on `main` outside this loop's tracking; state.json/ledger still pointed at `8e15178`.
+- **Verified**: `OMNI_AUTO_EXECUTE_ENABLED=false` live on `omni-fullstack`, all core pods Running, 3 OrbStack VMs Running, full suite `5948 passed / 1 known pre-existing flake`.
+- **No code change** — this was reconciliation-only, since the two new commits are unrelated to the tracked "Repeatable Tenant Onboarding Baseline" slice.
+- **Updated**: `AUTONOMOUS_LOOP_STATE.json`, `AUTONOMOUS_LOOP_LEDGER.md`, `docs/handoffs/CURRENT_SESSION.md` to reflect real HEAD and restate Phase 6 (fresh-tenant `tenant-replay-01` golden journey + isolation proof) as the correct next bottleneck.
+- **Next step**: Phase 6 — provision Agent+VM for `tenant-replay-01`, run the golden journey, prove cross-tenant isolation vs `staging-sim`. Not started (too large for this iteration's budget).
+[validate_state] OK
+[supervisor 2026-07-02T10:52:44Z] current status=IDLE
+[supervisor 2026-07-02T10:52:44Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+**Iteration 9 hoàn tất** (commit `00d7908`). Tóm tắt:
+
+- **Bottleneck**: Phase 6 slice "Repeatable Tenant Onboarding Baseline" — `tenant-replay-01` chỉ có row Postgres, chưa có Agent/VM thật.
+- **Fix**: thêm API key `tenant-replay-01` vào `omni-gateway-secret`, cài agent thứ hai (`omni-remote-agent-replay01.service`) trên VM `cust-edge` chạy song song agent staging-sim sẵn có (không tạo VM mới — cả 3 VM lab đều đã dùng).
+- **Runtime proof thật**: register/evidence 200 OK, Twin `tenant-replay-01` có 41 fact/revision=6 (chỉ `host:cust-edge`), Twin `staging-sim` không đổi (78 fact/3 host) — cách ly tenant xác nhận qua Redis trực tiếp, không chỉ qua test.
+- **Phát hiện phụ**: `resolve_scope()` âm thầm bỏ qua `tenant_id` override cho non-admin key thay vì trả 403 — ban đầu tưởng là lỗ hổng cách ly (chỉ nhìn status code 200), sau khi đọc response body xác nhận không phải bug, chỉ là UX gap — đã ghi vào PRODUCT_PROOF, chưa fix.
+- Full suite: 5948 passed (1 flake cũ, không đổi).
+- Chưa làm: multi-host cho tenant-replay-01, script hoá bước thêm API key.
+
+Docs đã đồng bộ: `PRODUCT_PROOF.md`, `AUTONOMOUS_LOOP_STATE.json`, ledger, `CURRENT_SESSION.md`. Không mở iteration tiếp theo theo đúng behavior `one-iteration`.
+[validate_state] OK
+[supervisor 2026-07-02T11:03:19Z] current status=IDLE
+[supervisor 2026-07-02T11:03:19Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+Đã cập nhật `docs/handoffs/CURRENT_SESSION.md` với ghi chú reconciliation phản ánh đúng thay đổi duy nhất trong lượt này (fix `head` stale trong state.json do phát hiện supervisor nền đã tự commit `00d7908`), không mở iteration mới, next step giữ nguyên như đã ghi ở iteration 9.
+[validate_state] OK
+[supervisor 2026-07-02T11:04:37Z] current status=IDLE
+[supervisor 2026-07-02T11:04:37Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+Committed as `deb8ea8`. Iteration 10 hoàn tất theo đúng behavior `one-iteration` (không mở iteration tiếp theo).
+
+**Tóm tắt**: Đã canonical hóa bước "thêm tenant API key vào `omni-gateway-secret`" (trước đây làm tay qua `kubectl patch` ở iteration 9) thành `scripts/add_tenant_api_key.sh` — idempotent, có runtime proof đầy đủ trên cluster thật (no-op path, mutation path, idempotent re-run, revert về nguyên trạng, gateway healthy sau 3 lần rolling restart, 146 test liên quan pass). Docs (`PRODUCT_PROOF.md`, state, ledger, handoff) đã đồng bộ.
+
+Next step (để iteration sau quyết định): wire script này vào `provision_fresh_tenant.py` thành 1 lệnh duy nhất, hoặc quyết định multi-host cho `tenant-replay-01` trước khi coi Phase 6 xong hẳn.
+[validate_state] OK
+[supervisor 2026-07-02T11:09:03Z] current status=IDLE
+[supervisor 2026-07-02T11:09:03Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+**Iteration 11 hoàn thành.** Đã wire `scripts/add_tenant_api_key.sh` vào `scripts/provision_fresh_tenant.py` — một lệnh duy nhất giờ tạo cả Postgres tenant row lẫn gateway API key (trước đây là 2 bước tay). Verify trên cluster thật: chạy kết hợp thành công, idempotent re-run no-op cả 2 bước, gateway healthz OK, dọn dẹp sạch (revert secret + xóa Postgres row test), 146 test pass, không regress. Commit `df5e753`.
+
+Còn mở: chưa có pytest coverage cho `provision_api_key()` (mới verify live-cluster), quyết định multi-host cho `tenant-replay-01`, và UX gap `resolve_scope()` — để dành cho iteration sau.
+[validate_state] OK
+[supervisor 2026-07-02T11:13:53Z] current status=IDLE
+[supervisor 2026-07-02T11:13:53Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+Iteration 12 committed at `9710ffd`. Summary:
+
+- **Fixed**: `provision_api_key()` in `scripts/provision_fresh_tenant.py` only had live-cluster manual proof; added `tests/test_provision_fresh_tenant.py` (3 tests, CI-safe, mocked subprocess).
+- **Verified**: new tests 3 passed; regression sweep `-k "onboarding or gateway_api or tenant or provision"` → 155 passed; runtime safety reconfirmed (`OMNI_AUTO_EXECUTE_ENABLED=false`, all core pods 1/1 Running) — no live mutation needed.
+- **Docs synced**: PRODUCT_PROOF.md, AUTONOMOUS_LOOP_STATE.json, AUTONOMOUS_LOOP_LEDGER.md, CURRENT_SESSION.md.
+- **Next step**: choose next bottleneck from iteration 9 leftovers — multi-host for `tenant-replay-01`, "2 agents/2 tenants" coverage, or `resolve_scope()` 403 UX fix.
+[validate_state] OK
+[supervisor 2026-07-02T11:16:41Z] current status=IDLE
+[supervisor 2026-07-02T11:16:41Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+CURRENT_SESSION.md was already committed with iteration 13 content in commit `83013c2`. Remaining changes are only the pre-existing unrelated post-mortem/log drift, not part of this iteration. Handoff is already up to date — no further action needed.
+[validate_state] OK
+[supervisor 2026-07-02T11:26:18Z] current status=IDLE
+[supervisor 2026-07-02T11:26:18Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+Iteration 14 hoàn thành và đã commit (`a7c6847`).
+
+**Tóm tắt**: Cài Agent thứ hai cho `tenant-replay-01` trên VM `cust-app` (bên cạnh agent có sẵn trên `cust-edge`), đóng nốt leftover cuối cùng của iteration 9. Twin của `tenant-replay-01` nay gộp fact từ 2 host thật (revision 54→66), isolation với `staging-sim` trên cùng VM được xác nhận không đổi, API `/onboarding/competency` trả evidence thật. Thêm 2 test mới (`TestOneTenantTwoHosts`), regression suite 159/159 pass, safety `OMNI_AUTO_EXECUTE_ENABLED=false` được xác nhận lại.
+
+Còn lại chưa quyết: agent cho `cust-db` (để đạt 3/3 host) hoặc chuyển sang Phase 6/7 (UnderstandingComplete, Handover, operator portal UI) ở iteration kế tiếp.
+[validate_state] OK
+[supervisor 2026-07-02T11:33:05Z] current status=IDLE
+[supervisor 2026-07-02T11:33:05Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+**Iteration 15 hoàn tất (commit `5c6d225`).**
+
+- **Xác minh runtime thật**: chuỗi Unknown→Question→Human Claim (O2B) trước đây chỉ có code+unit test, chưa từng chạy trên cluster thật. Đã trả lời một câu hỏi PENDING thật (`svc:nginx`/`business_capability`) qua `POST /onboarding/questions/{id}/answer` trên tenant `staging-sim` sống → `competency_matrix` phản ánh đúng `state=CLAIMED` (không tự VERIFIED vì thiếu Fact máy khớp — đúng contract).
+- **Gap mới phát hiện**: cổng `UnderstandingComplete`/readiness (`business_flow_confirmed_pct`) hoàn toàn tách rời khỏi `competency_matrix`/Human Claim — trả lời hết Question không đẩy tenant tới `readiness_flag=true`. Đã ghi vào `PRODUCT_PROOF.md`, `current-priority.md`, ledger — chưa sửa (cần quyết định thiết kế).
+- Không đổi code nguồn, không mutation K8s/VM, `OMNI_AUTO_EXECUTE_ENABLED=false` không đổi, 200 test liên quan pass.
+- Handoff (`CURRENT_SESSION.md`) đã trim xuống dưới ngưỡng 8000 byte.
+
+Ứng viên iteration kế tiếp: wire readiness gate vào competency coverage, hoặc runtime-verify path Handover-doc (`/onboarding/handover-doc`).
+[validate_state] OK
+[supervisor 2026-07-02T11:39:44Z] current status=IDLE
+[supervisor 2026-07-02T11:39:44Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+**Iteration 16 hoàn thành**: runtime-verify `POST /onboarding/handover-doc` (A8) trên tenant `staging-sim` thật — diagram version bump 6747→6752, `GET /onboarding/doc` xác nhận chỉ lưu `content_hash`/`content_length` (không raw content), khẳng định `INV_DATA_RESIDENCY` giữ đúng trên pipeline thật, không chỉ trong docstring. Không sửa code nguồn, test `-k handover` 3 passed, không có K8s mutation. Commit `8777aee`.
+
+Bottleneck kế tiếp (chưa làm, cần quyết định thiết kế): wire `competency_matrix` vào readiness gate (`compute_business_flow_pct()`) để Human Claims thực sự đẩy `readiness_flag` — vấn đề này đã bị mang từ iteration 15 sang, là ứng viên ưu tiên cao nhất cho iteration 17.
+[validate_state] OK
+[supervisor 2026-07-02T11:44:10Z] current status=IDLE
+[supervisor 2026-07-02T11:44:10Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+You've hit your session limit · resets 10:40pm (Asia/Saigon)
+[supervisor 2026-07-02T11:52:26Z] one-iteration invocation failed — backing off 30s
+[validate_state] OK
+[supervisor 2026-07-02T11:53:06Z] current status=IDLE
+[supervisor 2026-07-02T11:53:06Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+You've hit your session limit · resets 10:40pm (Asia/Saigon)
+[supervisor 2026-07-02T11:53:08Z] one-iteration invocation failed — backing off 60s
+[validate_state] OK
+[supervisor 2026-07-02T11:54:18Z] current status=IDLE
+[supervisor 2026-07-02T11:54:18Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+You've hit your session limit · resets 10:40pm (Asia/Saigon)
+[supervisor 2026-07-02T11:54:21Z] one-iteration invocation failed — backing off 120s
+[validate_state] OK
+[supervisor 2026-07-02T11:56:32Z] current status=IDLE
+[supervisor 2026-07-02T11:56:32Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+You've hit your session limit · resets 10:40pm (Asia/Saigon)
+[supervisor 2026-07-02T11:56:34Z] one-iteration invocation failed — backing off 240s
+[validate_state] OK
+[supervisor 2026-07-02T12:00:44Z] current status=IDLE
+[supervisor 2026-07-02T12:00:44Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+You've hit your session limit · resets 10:40pm (Asia/Saigon)
+[supervisor 2026-07-02T12:00:46Z] one-iteration invocation failed — backing off 480s
+[validate_state] OK
+[supervisor 2026-07-02T12:08:56Z] current status=IDLE
+[supervisor 2026-07-02T12:08:56Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+You've hit your session limit · resets 10:40pm (Asia/Saigon)
+[supervisor 2026-07-02T12:08:59Z] one-iteration invocation failed — backing off 960s
+[validate_state] OK
+[supervisor 2026-07-02T12:25:09Z] current status=IDLE
+[supervisor 2026-07-02T12:25:09Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+You've hit your session limit · resets 10:40pm (Asia/Saigon)
+[supervisor 2026-07-02T12:25:11Z] one-iteration invocation failed — backing off 1800s
+[validate_state] OK
+[supervisor 2026-07-02T12:55:21Z] current status=IDLE
+[supervisor 2026-07-02T12:55:21Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+You've hit your session limit · resets 10:40pm (Asia/Saigon)
+[supervisor 2026-07-02T12:55:24Z] one-iteration invocation failed — backing off 1800s
+[validate_state] OK
+[supervisor 2026-07-02T13:25:34Z] current status=IDLE
+[supervisor 2026-07-02T13:25:34Z] status=IDLE — invoking one-iteration (--dangerously-skip-permissions)
+You've hit your session limit · resets 10:40pm (Asia/Saigon)
+[supervisor 2026-07-02T13:25:38Z] one-iteration invocation failed — backing off 1800s
