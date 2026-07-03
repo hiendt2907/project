@@ -34,7 +34,8 @@ key), có test + runtime proof. **DONE.**
   exclude apps/packages.
 
 ## Branch và commit
-`main`. Iteration 20 đã commit trong phiên (xem `git log`), chưa push.
+`main`, HEAD sau chốt handoff nằm ngay trên `26fa08d`. Commit của iteration: `3898ae5` (feat portal
+answer) + `26fa08d` (docs governance) — đã commit trong phiên, chưa push. Working tree sạch.
 
 ## Blockers
 None.
