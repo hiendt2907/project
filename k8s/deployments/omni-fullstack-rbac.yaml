@@ -268,8 +268,15 @@ rules:
     verbs: ["get", "list", "watch"]
 ---
 # (was executor-rbac-lab.yaml) LAB executor mutation rights — cluster-wide workload
-# mutation for cross-namespace remediation labs. RBAC resources are READ-ONLY
-# (2026-06-03 audit S1: write verbs removed to prevent self-escalation to cluster-admin).
+# mutation for cross-namespace remediation labs. Only the `rbac.authorization.k8s.io` group
+# below is READ-ONLY (2026-06-03 audit S1: write verbs removed there to prevent
+# self-escalation to cluster-admin). `secrets` patch/update IS intentionally granted — it
+# backs the gated `k8s_patch_secret` mutate tool (src/workers/k8s_cluster_tools.py,
+# required_evidence=["secret_ref_confirmed","credential_source_of_truth"], part of
+# MUTATE_TOOL_ALLOWLIST) used for credential rotation during SIEM/security remediation. Do
+# not narrow this without checking analyst_agentic_loop.py's security-remediation flow first
+# (2026-07-03 tech-debt sweep: corrected this comment, which previously read "RBAC resources
+# are READ-ONLY" for the whole ClusterRole — that was inaccurate for `secrets`/`configmaps`).
 # Delete this ClusterRole + the omni-fullstack-executor-mutate-lab binding before prod.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

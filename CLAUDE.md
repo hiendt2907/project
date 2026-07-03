@@ -71,7 +71,12 @@ mới rõ ràng.
 - `omni-audit-chain` topic cần message key (compact policy).
 - `INV_NO_RESTART_ON_BROKEN_SPEC` · `INV_READ_BEFORE_MUTATE` · `INV_NAMESPACE_ISOLATION` · `ERR_REA_NO_PHYSICAL_PROOF` · `ERR_GOV_UNAUTHORIZED_MUTATION`
 - `INV_KNOWLEDGE_NOT_ALERT` (xem KNOWLEDGE PIPELINE) · `INV_DATA_RESIDENCY`: tài liệu khách hàng chỉ lưu metadata trên Omni (file_id + summary ≤2000 chars).
-- RBAC: `omni-worker` SA không có Secrets. Executor: NEVER cluster-admin.
+- RBAC: worker SA (`omni-fullstack`) **không có quyền Secrets tuỳ ý** — ngoại lệ duy nhất có chủ
+  đích là `patch`/`update` qua `omni-executor-mutate-lab` ClusterRole
+  (`k8s/deployments/omni-fullstack-rbac.yaml`), backing cho tool `k8s_patch_secret` đã gate bằng
+  `required_evidence` + `MUTATE_TOOL_ALLOWLIST` (xoay vòng credential khi remediation SIEM/security
+  — xem `src/workers/analyst_agentic_loop.py`). Không mở rộng quyền Secrets ngoài phạm vi tool này.
+  Executor: NEVER cluster-admin.
 - `OMNI_LLM_NUM_CTX` default 8192. Dùng `build_llm_options(ctx)` — không inline getattr.
 - Autonomy tier: `resolve_tier` ưu tiên Redis cache `omni:cfg:tier:{tenant}` > PG > env. Đổi env phải DEL cache.
 
@@ -149,9 +154,13 @@ cho kịch bản lab này; đã annotate `omni.io/status=scaled-down-intentional
 trên cả 3 — KHÔNG coi là zombie, KHÔNG xóa.
 
 RAG `omni:rag:sop` HLEN=1019 (khớp MEMORY.md). Redis AOF enabled. Knowledge pipeline active
-(`omni-knowledge-evidence`) — nhưng Kafka mọi topic hiện `PartitionCount=1, ReplicationFactor=1`,
-KHÔNG khớp con số "3 partitions" đã ghi trước đây (P1, chưa sửa trong slice này — xem risk register
-post-mortem).
+(`omni-knowledge-evidence`). **Cập nhật 2026-07-03** (đã xác minh lại `scripts/kafka_ensure_omni_topics.sh`):
+claim "mọi topic PartitionCount=1" đã lỗi thời — `omni-knowledge-evidence` dùng 3 partitions
+(dòng ~47-52, comment "Enforcing omni-knowledge-evidence config... partitions=3"), topic SIEM dùng
+6 partitions; phần lớn topic còn lại (`omni-diagnostic-evidence`, `omni-audit-chain`, `omni-alerts`,
+...) vẫn 1 partition/1 replication-factor (lab single-broker, chưa phải rủi ro data-loss vì
+`auto_offset_reset="earliest"` + không multi-broker failover). Không còn là drift tài liệu, chỉ là
+throughput headroom thấp cho lab hiện tại — không cần sửa gấp.
 
 ### VM/Agent truth (2026-07-02, giải quyết)
 Access method đúng là `orb -m <machine> <command>` (không phải SSH thẳng tới IP). Cả 3 VM lab đã

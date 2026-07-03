@@ -4,6 +4,14 @@
 #
 # Lab credentials — KHÔNG dùng cho prod (rotate + K8s Secret riêng khi prod).
 # Apply: kubectl apply -f k8s/deployments/omni-postgres.yaml
+#
+# KNOWN LAB DEBT (2026-07-03 tech-debt sweep, chưa rotate — xem CLAUDE.md invariants):
+# POSTGRES_PASSWORD dưới đây đã dùng đúng cơ chế K8s Secret (không phải env plaintext trong pod
+# spec), nhưng giá trị bị commit thẳng vào git dưới dạng cleartext. Chấp nhận được cho cụm dev nội
+# bộ hiện tại (không expose ra ngoài), nhưng PHẢI rotate + chuyển sang secret manager ngoài
+# (sealed-secrets/external-secrets/sops) trước khi production hoặc trước khi repo này public.
+# Rotate thật cần: tạo password mới → cập nhật Secret → restart StatefulSet omni-postgres →
+# restart mọi consumer đọc OMNI_ADMIN_PG_DSN (omni-gateway, omni-fullstack) → xác nhận /readyz.
 ---
 apiVersion: v1
 kind: Secret
