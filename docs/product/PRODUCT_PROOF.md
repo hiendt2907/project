@@ -29,7 +29,7 @@ thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productiza
 | System Twin persisted | ✅ | ✅ | ✅ **3/3 host** | ❌ (chỉ đọc được qua `redis-cli`) | `HGETALL omni:aoip:system_model:staging-sim` → revision=54, 76 facts (cust-edge 38, cust-db 19, cust-app 19); `host:cust-app` → `exposes_port 8080` khớp `ss -lntp` trên VM |
 | Competency Matrix | ✅ | ✅ | ⚠️ chưa test riêng trong iteration này | ❌ | chưa kiểm trong iteration 1 |
 | Unknown/Question lifecycle (O2B) — Human Claim | ✅ | ✅ | ✅ **VERIFIED_RUNTIME iter 15** | ✅ (qua API) | `POST /onboarding/questions/{id}/answer` trên câu hỏi PENDING thật của `staging-sim` (`bdb9bb5e66be555d1fd3dd80`, facet `business_capability` của `svc:nginx`) → `status=ANSWERED`, `answer_id=a8ddaa6bd49e2f83b9cb`; `GET /onboarding/competency?...&entity_id=svc:nginx` sau đó trả facet `business_capability: state=CLAIMED, evidence_refs=["human:iter15-productizer","question:bdb9bb5e66be555d1fd3dd80"]` — đúng thiết kế (Claim KHÔNG tự thành VERIFIED, cần Fact máy khớp mới promote). Test: `tests/test_aoip_question_lifecycle.py` + `tests/test_gateway_onboarding_competency_routes.py` (19 passed) |
-| Onboarding readiness | ✅ | ✅ | ✅ | ⚠️ (đọc DB trực tiếp) | `omni_admin.tenant_readiness_state` có row `staging-sim`, `readiness_flag=false` |
+| Onboarding readiness | ✅ | ✅ | ✅ | ✅ (iter 26 — card checklist "Ready/Not ready yet" trên `/understanding`) | curl `GET /onboarding/readiness?tenant_id=staging-sim` → readiness + `thresholds`; UI hiển thị 3 check đời thường (Endpoints mapped / Business flows confirmed / Stale open questions) với progress vs target; E2E assert nội dung hiển thị |
 | Competency Matrix API (`GET /onboarding/competency`) | ✅ | ✅ (sau fix iteration 3) | ✅ | ✅ | `curl -H "Authorization: Bearer $KEY" ".../onboarding/competency?tenant_id=staging-sim&entity_type=host&entity_id=host:cust-app"` → `identity: VERIFIED`, evidence_refs trỏ `discovery:port_scan/process_list` thật |
 | Unknowns API (`GET /onboarding/unknowns`) | ✅ | ✅ (sau fix iteration 3) | ✅ | ✅ | `curl .../onboarding/unknowns?tenant_id=staging-sim` → trả Unknown thật (vd `svc:fsidd` facet `business_capability`) |
 | Mission/Command/Execution (closed-loop mutation) | ✅ code tồn tại | ✅ | ❌ chưa test | ❌ | Ngoài phạm vi golden journey hiện tại — `OMNI_AUTO_EXECUTE_ENABLED=false` cố ý |
@@ -302,6 +302,33 @@ unrelated blocker (`open_questions_over_threshold`/gate design gap).
 Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (no code change this
 iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
 printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
+
+## Iteration 26 — Onboarding readiness ⚠️→✅ (parity slice 2, ADR-003) VERIFIED_RUNTIME (2026-07-06)
+
+**Bottleneck:** Card "Understanding Readiness" trên `/understanding` render raw `Object.entries`
+(`endpoint_mapped_pct: 100`, `readiness_flag: false`…) — vi phạm chuẩn hiển thị ADR-003, capability
+kẹt ở ⚠️. Threshold (mục tiêu %) không có trong API nên UI không thể nói "đạt X% so với mục tiêu Y%".
+
+**Đã làm:**
+- `src/gateway/routes/onboarding.py`: `GET /onboarding/readiness` trả thêm `thresholds` qua
+  `dd.resolve_readiness_thresholds(repo, scope)` (per-tenant override giữ nguyên semantics; vẫn
+  chỉ import `pkg/`, không đụng import boundary). TDD: `tests/test_gateway_onboarding_readiness.py`
+  (2 test mới, RED trước GREEN sau).
+- `ui/app/understanding/page.tsx`: redesign card — badge tổng "Ready"/"Not ready yet", subtitle
+  giải thích cho người ngoài, 3 check row (`ReadinessCheck`) nhãn đời thường + verdict Done/Needs
+  work + progress bar có vạch target + "Last evaluated Xs ago"; typed `ReadinessRecord`/
+  `ReadinessThresholds` thay `Record<string, unknown>`; empty-state có hướng dẫn.
+- `ui/e2e/understanding.spec.ts`: test mới assert badge, 3 nhãn check, "target N%", đếm đúng 3
+  verdict, và assert KHÔNG còn raw key `endpoint_mapped_pct` trên UI.
+
+**Runtime proof (2026-07-06):**
+- Curl gateway thật: `GET /onboarding/readiness?tenant_id=staging-sim` → `endpoint_mapped_pct=100`,
+  `business_flow_confirmed_pct=100`, `open_questions_over_threshold=10`, `readiness_flag=false` +
+  `thresholds` đầy đủ → UI hiển thị đúng "Not ready yet" vì 10 câu hỏi stale (thật, actionable —
+  operator được chỉ thẳng "answer them below").
+- Rebuild + rollout `omni-gateway` và `omni-ui`. `E2E_ALLOW_WRITE=1 make e2e-portal` → **11 passed**
+  trên pod thật. Pytest full: 5977 passed. Gotcha strict-mode lặp lại lần 3 (nhãn xuất hiện cả trong
+  detail text) → fix `{ exact: true }`.
 
 ## Iteration 25 — Backend-Frontend Parity (ADR-003) + Remote Agents card VERIFIED_RUNTIME (2026-07-06)
 

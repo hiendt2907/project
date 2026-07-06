@@ -563,3 +563,22 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Resume action: Slice parity kế tiếp theo ADR-003 (chọn 1 capability ❌/⚠️ giá trị cao nhất,
   ứng viên: Tenant creation ⚠️ API-only, Onboarding readiness ⚠️ đọc DB, System Twin freshness).
   Không mở action/billing song song (PRODUCT_CONTRACT §9).
+
+### Checkpoint 2026-07-06T13:00:00+07:00
+- Timestamp: 2026-07-06T13:00:00+07:00
+- Iteration: iter26-parity-readiness-card
+- Status: DONE (VERIFIED_RUNTIME)
+- Summary: Parity slice 2 theo ADR-003 — Onboarding readiness ⚠️ → ✅. Backend:
+  `GET /onboarding/readiness` trả thêm `thresholds` (resolve_readiness_thresholds, per-tenant
+  override giữ nguyên; TDD 2 test mới `tests/test_gateway_onboarding_readiness.py`). UI: card
+  Readiness bỏ raw Object.entries → badge "Ready/Not ready yet" + 3 check đời thường (Endpoints
+  mapped / Business flows confirmed / Stale open questions) với verdict Done/Needs work, progress
+  bar có vạch target, "Last evaluated Xs ago", empty-state hướng dẫn. E2E mới assert nội dung
+  hiển thị + assert KHÔNG còn raw key. Runtime proof: curl gateway thật staging-sim →
+  readiness_flag=false vì 10 stale questions (thật, actionable); rebuild+rollout gateway+ui;
+  E2E_ALLOW_WRITE=1 make e2e-portal → 11 passed pod thật; pytest full 5977 passed. Chi tiết:
+  `docs/product/PRODUCT_PROOF.md` → "Iteration 26".
+- Reset at: n/a
+- Resume action: Slice parity kế tiếp (ứng viên: Tenant creation ⚠️ API-only, Continuous
+  discovery ❌, System Twin persisted ❌ — đối chiếu card Entities đã cover phần nào). Không mở
+  action/billing song song (PRODUCT_CONTRACT §9).
