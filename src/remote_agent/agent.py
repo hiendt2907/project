@@ -45,6 +45,7 @@ async def run_agent() -> None:
     from remote_agent.collectors.services import collect_haproxy_stats, collect_systemd_units
     from remote_agent.collectors.storage import collect_disk_usage, collect_nfs_health
     from remote_agent.collectors.discovery_evidence import (
+        collect_connection_scan,
         collect_doc_snapshot,
         collect_port_scan,
         collect_process_list,
@@ -224,6 +225,7 @@ async def run_agent() -> None:
                 await collect_process_list(cfg.hostname),
                 await collect_port_scan(cfg.hostname),
                 await collect_service_topology(cfg.hostname),
+                await collect_connection_scan(cfg.hostname),
                 await collect_doc_snapshot(cfg.hostname, cfg.doc_search_dirs),
             ):
                 if disc_ev:

@@ -1,7 +1,12 @@
 """Slice O1: DiscoveryEvidence envelope -> Observation -> Fact projection."""
 from __future__ import annotations
 
-from aoip.onboarding_projection import project_facts, to_observation
+import json
+
+import fakeredis
+import pytest
+
+from aoip.onboarding_projection import project_facts, resolve_ip_to_host_map, to_observation
 
 
 def _envelope(probe: str, discovery_data: dict, *, trace_id: str = "tr-1") -> dict:
@@ -87,3 +92,60 @@ class TestProjectFacts:
         ev = _envelope("process_list", {"processes": []})
         obs = to_observation(ev, tenant_id="acme", agent_id="a1", host="h")
         assert project_facts(obs) == ()
+
+    def test_connection_scan_projects_connects_to_when_ip_resolves(self):
+        ev = _envelope(
+            "connection_scan",
+            {"connections": [{"local_port": 44444, "remote_ip": "10.0.0.9", "remote_port": 6379, "process": "app"}]},
+        )
+        obs = to_observation(ev, tenant_id="acme", agent_id="a1", host="web-01")
+        facts = project_facts(obs, ip_to_host={"10.0.0.9": "db-01"})
+        assert len(facts) == 1
+        f = facts[0]
+        assert f.subject == "host:web-01"
+        assert f.predicate == "connects_to"
+        assert f.obj == "host:db-01"
+
+    def test_connection_scan_yields_no_fact_when_ip_unresolved(self):
+        """External peer (Internet/DNS/NTP) with no matching agent must not produce a fact."""
+        ev = _envelope(
+            "connection_scan",
+            {"connections": [{"local_port": 44444, "remote_ip": "8.8.8.8", "remote_port": 443, "process": "curl"}]},
+        )
+        obs = to_observation(ev, tenant_id="acme", agent_id="a1", host="web-01")
+        assert project_facts(obs, ip_to_host={"10.0.0.9": "db-01"}) == ()
+        assert project_facts(obs, ip_to_host=None) == ()
+
+    def test_connection_scan_self_connection_yields_no_fact(self):
+        ev = _envelope(
+            "connection_scan",
+            {"connections": [{"local_port": 44444, "remote_ip": "10.0.0.5", "remote_port": 6379, "process": "app"}]},
+        )
+        obs = to_observation(ev, tenant_id="acme", agent_id="a1", host="web-01")
+        assert project_facts(obs, ip_to_host={"10.0.0.5": "web-01"}) == ()
+
+
+class TestResolveIpToHostMap:
+    @pytest.mark.asyncio
+    async def test_maps_ip_to_hostname_for_same_tenant(self):
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await redis.set(
+            "omni:remote_agent:registry:agent-1",
+            json.dumps({"agent_id": "agent-1", "hostname": "db-01", "tenant_id": "acme", "remote_ip": "10.0.0.9"}),
+        )
+        await redis.set(
+            "omni:remote_agent:registry:agent-2",
+            json.dumps({"agent_id": "agent-2", "hostname": "other-01", "tenant_id": "other-tenant", "remote_ip": "10.0.0.7"}),
+        )
+        mapping = await resolve_ip_to_host_map(redis, "acme")
+        assert mapping == {"10.0.0.9": "db-01"}
+
+    @pytest.mark.asyncio
+    async def test_missing_remote_ip_is_skipped(self):
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await redis.set(
+            "omni:remote_agent:registry:agent-1",
+            json.dumps({"agent_id": "agent-1", "hostname": "db-01", "tenant_id": "acme"}),
+        )
+        mapping = await resolve_ip_to_host_map(redis, "acme")
+        assert mapping == {}

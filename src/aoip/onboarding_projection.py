@@ -8,8 +8,10 @@ satisfies continuous discovery, no new scheduler needed) into canonical
 ``pkg.onboarding.discovery_doc`` (the legacy flat-Redis pipeline keeps running
 unchanged alongside this).
 
-Scope (Slice O1): only the 4 probes the legacy pipeline already produces —
-process_list, port_scan, service_topology, doc_snapshot. INV_DATA_RESIDENCY:
+Scope (Slice O1, extended): the probes the legacy pipeline produces —
+process_list, port_scan, service_topology, connection_scan, doc_snapshot.
+connection_scan is the only probe that yields relational (host-to-host) edges;
+see ``resolve_ip_to_host_map``. INV_DATA_RESIDENCY:
 doc_snapshot never becomes a Fact carrying raw content — only a content-hash
 reference node, mirroring ``discovery_doc._sanitize_documents``.
 """
@@ -24,14 +26,50 @@ from aoip.system_graph import make_node
 
 SCHEMA_VERSION = 1
 
-SUPPORTED_PROBES = frozenset({"process_list", "port_scan", "service_topology", "doc_snapshot"})
+SUPPORTED_PROBES = frozenset(
+    {"process_list", "port_scan", "service_topology", "connection_scan", "doc_snapshot"}
+)
 
 _CONFIDENCE_BY_PROBE = {
     "process_list": 0.6,
     "port_scan": 0.85,
     "service_topology": 0.85,
+    "connection_scan": 0.7,
     "doc_snapshot": 1.0,
 }
+
+
+async def resolve_ip_to_host_map(redis: Any, tenant_id: str) -> dict[str, str]:
+    """Build a remote_ip -> host mapping from registered agents in this tenant.
+
+    Reads ``omni:remote_agent:registry:*`` (written by
+    ``gateway/routes/agent_webhook.py::register_agent``, which stamps
+    ``remote_ip`` from the registering request's client address). Only agents
+    that (a) belong to ``tenant_id`` and (b) have a recorded ``remote_ip`` are
+    included — no guessing, no DNS resolution (INV "Never assume").
+    """
+    mapping: dict[str, str] = {}
+    try:
+        keys = await redis.keys("omni:remote_agent:registry:*")
+    except Exception:
+        return mapping
+    for key in keys:
+        try:
+            raw = await redis.get(key)
+            if not raw:
+                continue
+            record = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("tenant_id") or "") != tenant_id:
+            continue
+        remote_ip = record.get("remote_ip")
+        host = record.get("hostname") or record.get("agent_id")
+        if remote_ip and host:
+            mapping[str(remote_ip)] = str(host)
+    return mapping
 
 
 def _extract_discovery_data(ev_doc: dict[str, Any]) -> dict[str, Any] | None:
@@ -79,13 +117,20 @@ def to_observation(
     )
 
 
-def project_facts(observation: Observation) -> tuple[Fact, ...]:
+def project_facts(
+    observation: Observation, *, ip_to_host: dict[str, str] | None = None,
+) -> tuple[Fact, ...]:
     """Observation → Fact candidates. Deterministic — same Observation always
     yields the same Facts (required for fold() idempotency + testability).
 
     Only structural/mapping facts are produced (INV_DATA_RESIDENCY) — no
     narrative/business-purpose text (e.g. service descriptions, doc content)
     ever lands in a Fact.obj.
+
+    ``ip_to_host`` (only consulted for ``connection_scan``) maps a peer's
+    remote_ip to the host it belongs to within the same tenant — see
+    ``resolve_ip_to_host_map``. A remote_ip with no entry produces NO fact
+    (never guessed as a host; may be an external/Internet peer).
     """
     probe = observation.data["probe"]
     host = observation.data["host"]
@@ -139,6 +184,22 @@ def project_facts(observation: Observation) -> tuple[Fact, ...]:
             facts.append(
                 Fact(
                     subject=host_node, predicate="runs_service", obj=name,
+                    confidence=confidence, provenance=provenance,
+                    observation_time=ts, verified_time=ts,
+                )
+            )
+    elif probe == "connection_scan":
+        ip_to_host = ip_to_host or {}
+        for conn in discovery_data.get("connections") or []:
+            remote_ip = str(conn.get("remote_ip") or "").strip()
+            if not remote_ip:
+                continue
+            peer_host = ip_to_host.get(remote_ip)
+            if not peer_host or peer_host == host:
+                continue  # unresolved peer (e.g. Internet/DNS/NTP) — never guessed
+            facts.append(
+                Fact(
+                    subject=host_node, predicate="connects_to", obj=make_node("host", peer_host),
                     confidence=confidence, provenance=provenance,
                     observation_time=ts, verified_time=ts,
                 )

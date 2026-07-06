@@ -62,7 +62,7 @@ async def accumulate_discovery_evidence(ctx: WorkerHandlerContext, ev_doc: dict[
 async def _project_into_system_model(
     ctx: WorkerHandlerContext, ev_doc: dict[str, Any], *, tenant_id: str, trace: str,
 ) -> None:
-    from aoip.onboarding_projection import project_facts, to_observation
+    from aoip.onboarding_projection import project_facts, resolve_ip_to_host_map, to_observation
     from aoip.system_model_store import fold_and_persist
 
     # coerce_evidence_dict() (pkg/reasoning/schema.py) promotes agent_id/hostname
@@ -84,7 +84,10 @@ async def _project_into_system_model(
         observation = to_observation(ev_doc, tenant_id=tenant_id, agent_id=agent_id, host=host)
         if observation is None:
             return  # unsupported probe / malformed evidence — not an error
-        new_facts = project_facts(observation)
+        ip_to_host = None
+        if observation.data.get("probe") == "connection_scan":
+            ip_to_host = await resolve_ip_to_host_map(ctx.redis, tenant_id)
+        new_facts = project_facts(observation, ip_to_host=ip_to_host)
         if not new_facts:
             return
         _model, _revision, contradictions = await fold_and_persist(

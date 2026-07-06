@@ -283,6 +283,10 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
         "registered_at": now,
         "last_seen": now,
         "type": "remote",
+        # Peer identity for connection_scan → connects_to projection
+        # (aoip.onboarding_projection.resolve_ip_to_host_map). Real client
+        # address only — never trusts a self-declared IP from the body.
+        "remote_ip": request.client.host if request.client else None,
     }
 
     key = f"{_REGISTRY_PREFIX}{body.agent_id}"

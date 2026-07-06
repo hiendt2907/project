@@ -133,6 +133,54 @@ async def collect_service_topology(hostname: str) -> dict[str, Any] | None:
     )
 
 
+async def collect_connection_scan(hostname: str) -> dict[str, Any] | None:
+    """Established TCP connections (remote peer IP:port + local process only).
+
+    INV_NO_DATA_EXFIL: only local_port/remote_ip/remote_port/process name are
+    collected — never connection payload or content. Uses ``ss -tnp``
+    (established connections; NOT ``-l``, which is listen-only and already
+    covered by ``collect_port_scan``). Falls back to ``netstat -tnp``.
+    """
+    out, rc = await _run(["ss", "-tnp"], timeout=8.0)
+    if rc != 0:
+        out, rc = await _run(["netstat", "-tnp"], timeout=8.0)
+    if rc != 0 or not out.strip():
+        return None
+    connections: list[dict[str, Any]] = []
+    for line in out.splitlines():
+        if "ESTAB" not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        local, remote = parts[3], parts[4]
+        local_port = local.rsplit(":", 1)[-1] if ":" in local else ""
+        remote_ip = remote.rsplit(":", 1)[0] if ":" in remote else ""
+        remote_port = remote.rsplit(":", 1)[-1] if ":" in remote else ""
+        process = ""
+        if len(parts) >= 6:
+            m = re.search(r'"([^"]+)"', parts[-1])
+            if m:
+                process = m.group(1)
+        if remote_ip and remote_port.isdigit() and local_port.isdigit():
+            connections.append({
+                "local_port": int(local_port),
+                "remote_ip": remote_ip,
+                "remote_port": int(remote_port),
+                "process": process,
+            })
+    return build_envelope(
+        probe="connection_scan",
+        lane="SYS_RESOURCE",
+        result="PASSED",
+        extracted_fact={"discovery_data": {"connections": connections[:100]}},
+        symptom_group="onboarding_discovery",
+        namespace=hostname,
+        evidence_source="DiscoveryEvidence",
+        signal_type="DISCOVERY",
+    )
+
+
 async def collect_doc_snapshot(hostname: str, search_dirs: list[str]) -> dict[str, Any] | None:
     """Read small onboarding documents verbatim (README/OpenAPI/sample config).
 

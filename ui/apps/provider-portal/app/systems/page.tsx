@@ -1,10 +1,12 @@
 import { SectionStub } from "@aoip/ui-kit";
-import { PROVIDER_NAV, stubReason } from "@/lib/nav";
 
-// Route khung production nhưng CHƯA triển khai ở Sub-slice A — đánh dấu unavailable + lý do
-// khe hở (sub-slice sẽ lấp). KHÔNG dữ liệu giả. Backend chưa expose API tương ứng.
-const ITEM = PROVIDER_NAV.find((n) => n.href === "/systems")!;
-
+// KHÔNG có trong PROVIDER_NAV (xem lib/nav.ts GOVERNING RULE 2026-07-01) — System Twin đã hiển thị
+// một phần ở Understanding (entity graph); route riêng này chưa có nav slot xác nhận.
 export default function Page() {
-  return <SectionStub title={ITEM.label} reason={stubReason(ITEM)} />;
+  return (
+    <SectionStub
+      title="Systems"
+      reason="System Twin đã có ở Understanding (entity graph); route riêng chưa có nav slot xác nhận. Xem docs/plans/aoip-provider-portal-slices.md."
+    />
+  );
 }

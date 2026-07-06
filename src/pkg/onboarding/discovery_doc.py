@@ -18,9 +18,21 @@ import hashlib
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Sequence
 
 logger = logging.getLogger(__name__)
+
+# Mermaid node shape (open, close) by entity-type prefix — see aoip.system_graph
+# NODE_TYPE_PREFIX for the canonical type->prefix mapping. Distinct shapes make
+# the topology diagram readable at a glance (host vs service vs api vs db vs doc).
+_TOPOLOGY_NODE_SHAPES: dict[str, tuple[str, str]] = {
+    "host": ("([", "])"),  # stadium
+    "svc": ("[", "]"),  # rectangle
+    "api": ("{{", "}}"),  # hexagon
+    "db": ("[(", ")]"),  # cylinder
+    "doc": ("(", ")"),  # rounded
+}
+_TOPOLOGY_DEFAULT_SHAPE = ("[", "]")
 
 DOC_KEY = "omni:onboarding:doc:{tenant_id}"
 DIAGRAM_KEY = "omni:onboarding:diagram:{tenant_id}:v{version}"
@@ -147,7 +159,39 @@ def render_business_flow_diagram(doc: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_all_diagrams(doc: dict[str, Any]) -> str:
+def _topology_node_shape(entity_id: str) -> tuple[str, str]:
+    node_type = entity_id.split(":", 1)[0] if ":" in entity_id else ""
+    return _TOPOLOGY_NODE_SHAPES.get(node_type, _TOPOLOGY_DEFAULT_SHAPE)
+
+
+def _topology_node_id(entity_id: str) -> str:
+    return f"n_{abs(hash(entity_id)) % 100000}"
+
+
+def render_system_topology_diagram(edges: Sequence[Any]) -> str:
+    """Render relational Facts (connects_to/proxies_to/depends_on/... — see
+    ``aoip.objects.RELATIONAL_PREDICATES``) as a cross-host/cross-entity Mermaid
+    graph. The other three diagrams (component/API-sequence/business-flow) only
+    ever draw per-host node facts — this is the only one with real edges."""
+    lines = ["graph LR"]
+    if not edges:
+        lines.append('  empty(["no relational facts yet — waiting for connection_scan"])')
+        return "\n".join(lines)
+    seen: dict[str, str] = {}
+    for fact in edges[:200]:
+        for entity_id in (fact.subject, fact.obj):
+            if entity_id in seen:
+                continue
+            node_id = _topology_node_id(entity_id)
+            seen[entity_id] = node_id
+            open_shape, close_shape = _topology_node_shape(entity_id)
+            label = str(entity_id).replace('"', "'")
+            lines.append(f'  {node_id}{open_shape}"{label}"{close_shape}')
+        lines.append(f"  {seen[fact.subject]} -->|{fact.predicate}| {seen[fact.obj]}")
+    return "\n".join(lines)
+
+
+def render_all_diagrams(doc: dict[str, Any], edges: Sequence[Any] = ()) -> str:
     return "\n\n".join(
         [
             "%% component architecture",
@@ -156,15 +200,21 @@ def render_all_diagrams(doc: dict[str, Any]) -> str:
             render_api_sequence_diagram(doc),
             "%% business flow",
             render_business_flow_diagram(doc),
+            "%% system topology (cross-host/cross-entity relational facts)",
+            render_system_topology_diagram(edges),
         ]
     )
 
 
 async def regenerate_diagrams(redis: Any, tenant_id: str) -> int:
-    """A3: render 3 Mermaid diagram types from the accumulated doc, save as a new
-    immutable version (never overwrite — diffable history). Returns the new version."""
+    """A3: render 4 Mermaid diagram types from the accumulated doc + persisted
+    SystemModel relational facts, save as a new immutable version (never
+    overwrite — diffable history). Returns the new version."""
     doc = await get_accumulated_doc(redis, tenant_id)
-    rendered = render_all_diagrams(doc)
+    from aoip.system_model_store import load_system_model
+
+    model, _revision = await load_system_model(redis, tenant_id)
+    rendered = render_all_diagrams(doc, edges=model.edges)
     latest_key = DIAGRAM_LATEST_KEY.format(tenant_id=tenant_id)
     version = await redis.incr(latest_key)
     await redis.set(DIAGRAM_KEY.format(tenant_id=tenant_id, version=version), rendered)

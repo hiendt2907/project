@@ -1,0 +1,110 @@
+/* Scoped to the understanding page — local additions on top of @aoip/ui-kit
+   aoip-* primitives (readiness progress bar + mermaid diagram container). */
+
+.aoip-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.aoip-check-body { flex: 1; min-width: 0; }
+
+.aoip-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.aoip-check-status { font-size: var(--text-2xs); font-weight: 600; font-family: var(--font-mono); }
+.aoip-check-status.pass { color: var(--color-ok); }
+.aoip-check-status.fail { color: var(--color-warn); }
+
+.aoip-progress {
+  position: relative;
+  margin-top: var(--space-2);
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.aoip-progress-bar {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--color-ok);
+}
+
+.aoip-progress-bar.fail { background: var(--color-warn); }
+
+.aoip-progress-target {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 1px;
+  background: var(--line-strong);
+}
+
+.aoip-diagram {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  padding: var(--space-2);
+}
+
+.aoip-diagram svg { max-width: 100%; margin: 0 auto; display: block; }
+
+.aoip-diagram-title {
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: var(--space-2);
+}
+
+/* Node-shape legend for the system topology diagram — Mermaid shapes carry no
+   inherent meaning to a first-time reader, so we spell it out once per card. */
+.aoip-diagram-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.aoip-diagram-legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.aoip-diagram-legend-shape {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--accent);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+
+.aoip-diagram-legend-shape.host { border-radius: var(--radius-pill); }
+.aoip-diagram-legend-shape.svc { border-radius: 2px; }
+.aoip-diagram-legend-shape.api {
+  border-radius: 3px;
+  transform: scaleX(1.15) rotate(45deg);
+}
+.aoip-diagram-legend-shape.db { border-radius: 3px 3px 6px 6px; }
+.aoip-diagram-legend-shape.doc { border-radius: var(--radius-lg); }

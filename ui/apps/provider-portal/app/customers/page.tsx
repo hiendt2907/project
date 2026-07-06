@@ -1,10 +1,13 @@
 import { SectionStub } from "@aoip/ui-kit";
-import { PROVIDER_NAV, stubReason } from "@/lib/nav";
 
-// Route khung production nhưng CHƯA triển khai ở Sub-slice A — đánh dấu unavailable + lý do
-// khe hở (sub-slice sẽ lấp). KHÔNG dữ liệu giả. Backend chưa expose API tương ứng.
-const ITEM = PROVIDER_NAV.find((n) => n.href === "/customers")!;
-
+// KHÔNG có trong PROVIDER_NAV (xem lib/nav.ts GOVERNING RULE 2026-07-01) — CRM/tenant-registry
+// domain bị loại trừ khỏi provider portal có chủ đích cho tới khi có backend contract tenant-scoped
+// cho write-action (issue/revoke API key, suspend tenant). Ứng viên mạnh cho slice kế tiếp.
 export default function Page() {
-  return <SectionStub title={ITEM.label} reason={stubReason(ITEM)} />;
+  return (
+    <SectionStub
+      title="Customers"
+      reason="Tenant registry cần thiết kế bảo mật riêng cho write-action (issue API key, suspend) trước khi triển khai — ngoài phạm vi slice hiện tại. Xem docs/plans/aoip-provider-portal-slices.md."
+    />
+  );
 }

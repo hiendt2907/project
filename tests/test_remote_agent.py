@@ -1174,6 +1174,59 @@ class TestCollectServiceTopology:
         assert result is None
 
 
+class TestCollectConnectionScan:
+    @pytest.mark.asyncio
+    async def test_ss_success_parses_established_connections(self):
+        from remote_agent.collectors import discovery_evidence as disc
+
+        ss_out = (
+            "State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
+            'ESTAB  0      0      10.0.0.5:44444      10.0.0.9:6379     users:(("app",pid=123,fd=7))\n'
+        )
+        with patch.object(disc, "_run", AsyncMock(return_value=(ss_out, 0))):
+            result = await disc.collect_connection_scan("host1")
+
+        assert result is not None
+        assert result["probe"] == "connection_scan"
+        conns = result["extracted_fact"]["discovery_data"]["connections"]
+        assert {
+            "local_port": 44444, "remote_ip": "10.0.0.9", "remote_port": 6379, "process": "app",
+        } in conns
+
+    @pytest.mark.asyncio
+    async def test_listen_only_lines_are_ignored(self):
+        """connection_scan must not double-count port_scan's LISTEN rows."""
+        from remote_agent.collectors import discovery_evidence as disc
+
+        ss_out = 'LISTEN 0 128 0.0.0.0:8080 0.0.0.0:*\n'
+        with patch.object(disc, "_run", AsyncMock(return_value=(ss_out, 0))):
+            result = await disc.collect_connection_scan("host1")
+
+        assert result is not None
+        assert result["extracted_fact"]["discovery_data"]["connections"] == []
+
+    @pytest.mark.asyncio
+    async def test_ss_fails_falls_back_to_netstat(self):
+        from remote_agent.collectors import discovery_evidence as disc
+
+        netstat_out = "tcp 0 0 10.0.0.5:44444 10.0.0.9:6379 ESTABLISHED 123/app\n"
+        with patch.object(disc, "_run", AsyncMock(side_effect=[("", 1), (netstat_out, 0)])):
+            result = await disc.collect_connection_scan("host1")
+
+        assert result is not None
+        conns = result["extracted_fact"]["discovery_data"]["connections"]
+        assert any(c["remote_ip"] == "10.0.0.9" and c["remote_port"] == 6379 for c in conns)
+
+    @pytest.mark.asyncio
+    async def test_both_unavailable_returns_none(self):
+        from remote_agent.collectors import discovery_evidence as disc
+
+        with patch.object(disc, "_run", AsyncMock(return_value=("", 1))):
+            result = await disc.collect_connection_scan("host1")
+
+        assert result is None
+
+
 class TestCollectDocSnapshot:
     @pytest.mark.asyncio
     async def test_finds_readme_returns_discovery_evidence(self, tmp_path):
