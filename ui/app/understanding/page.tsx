@@ -19,6 +19,8 @@ import {
   Send,
   Workflow,
   Radio,
+  CheckCircle2,
+  AlertCircle,
 } from "lucide-react";
 
 interface SectionResult<T> {
@@ -49,8 +51,24 @@ interface QuestionRecord {
   status: string;
 }
 
+interface ReadinessRecord {
+  endpoint_mapped_pct: number | null;
+  business_flow_confirmed_pct: number | null;
+  open_questions_over_threshold: number;
+  readiness_flag: boolean;
+  updated_at: string | null;
+}
+
+interface ReadinessThresholds {
+  endpoint_mapped_pct_min: number;
+  business_flow_confirmed_pct_min: number;
+  open_questions_max: number;
+  open_question_stale_days: number;
+}
+
 interface ReadinessData {
-  readiness: Record<string, unknown> | null;
+  readiness: ReadinessRecord | null;
+  thresholds?: ReadinessThresholds;
 }
 
 interface DiagramData {
@@ -127,6 +145,56 @@ function formatAge(seconds: number): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+interface ReadinessCheckProps {
+  label: string;
+  detail: string;
+  pass: boolean;
+  progressPct?: number | null;
+  targetPct?: number;
+}
+
+function ReadinessCheck({ label, detail, pass, progressPct, targetPct }: ReadinessCheckProps) {
+  const hasBar = progressPct !== undefined && progressPct !== null && targetPct !== undefined;
+  return (
+    <div className="flex items-start gap-2.5 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+      {pass ? (
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" aria-hidden />
+      ) : (
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" aria-hidden />
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-zinc-200">{label}</span>
+          <span className={`text-[11px] font-semibold ${pass ? "text-emerald-400" : "text-amber-400"}`}>
+            {pass ? "Done" : "Needs work"}
+          </span>
+        </div>
+        <p className="text-[11px] leading-snug text-zinc-500">{detail}</p>
+        {hasBar && (
+          <div className="relative mt-1.5 h-1.5 overflow-hidden rounded-full bg-zinc-800">
+            <div
+              className={`h-full rounded-full ${pass ? "bg-emerald-500/70" : "bg-amber-500/70"}`}
+              style={{ width: `${Math.min(100, Math.max(0, progressPct))}%` }}
+            />
+            <div
+              className="absolute top-0 h-full w-px bg-zinc-400/60"
+              style={{ left: `${Math.min(100, Math.max(0, targetPct))}%` }}
+              title={`Target ${targetPct}%`}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatUpdatedAt(iso: string | null): string | null {
+  if (!iso) return null;
+  const ts = Date.parse(iso.endsWith("Z") || iso.includes("+") ? iso : `${iso}Z`);
+  if (Number.isNaN(ts)) return null;
+  return formatAge(Math.max(0, Math.floor((Date.now() - ts) / 1000)));
 }
 
 function entityTypeOf(entityId: string): string {
@@ -244,6 +312,7 @@ function UnderstandingPageInner() {
   const questions = data?.questions.data?.questions ?? [];
   const pendingQuestions = questions.filter((q) => q.status === "PENDING");
   const readiness = data?.readiness.data?.readiness ?? null;
+  const thresholds = data?.readiness.data?.thresholds ?? null;
   const agents = data?.agents?.data?.agents ?? [];
   const onlineAgents = agents.filter((a) => a.online);
   const diagram = data?.diagram?.data ?? null;
@@ -276,31 +345,71 @@ function UnderstandingPageInner() {
 
         <div className="grid gap-4 p-6 lg:grid-cols-3">
           {/* Readiness */}
-          <Card className="border-zinc-800 bg-zinc-900/60 lg:col-span-3">
+          <Card className="border-zinc-800 bg-zinc-900/60 lg:col-span-3" data-testid="readiness-card">
             <CardHeader className="p-4 pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm text-zinc-100">
-                <Gauge className="h-4 w-4 text-cyan-400" />
-                Understanding Readiness
+              <CardTitle className="flex items-center justify-between text-sm text-zinc-100">
+                <span className="flex items-center gap-2">
+                  <Gauge className="h-4 w-4 text-cyan-400" />
+                  Understanding Readiness
+                </span>
+                {readiness && (
+                  <span className={`inline-flex rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ring-1 ring-inset ${
+                    readiness.readiness_flag
+                      ? "bg-emerald-500/10 text-emerald-400 ring-emerald-500/30"
+                      : "bg-amber-500/10 text-amber-400 ring-amber-500/30"
+                  }`}>
+                    {readiness.readiness_flag ? "Ready" : "Not ready yet"}
+                  </span>
+                )}
               </CardTitle>
+              <p className="text-[11px] leading-snug text-zinc-500">
+                Whether Omni understands this tenant&apos;s system well enough to assist with
+                confidence. Each check below must pass before the tenant is considered onboarded.
+              </p>
             </CardHeader>
-            <CardContent className="p-4 pt-0">
+            <CardContent className="p-4 pt-1">
               {loading && !data ? (
-                <Skeleton className="h-10 bg-zinc-800" />
+                <Skeleton className="h-16 bg-zinc-800" />
               ) : data?.readiness.error ? (
                 <SectionError error={data.readiness.error} />
-              ) : readiness ? (
-                <div className="flex flex-wrap gap-x-6 gap-y-2 font-mono text-xs">
-                  {Object.entries(readiness).map(([k, v]) => (
-                    <div key={k} className="flex items-center gap-2">
-                      <span className="text-zinc-500">{k}</span>
-                      <span className={v === true ? "text-emerald-400" : v === false ? "text-amber-400" : "text-zinc-200"}>
-                        {String(v)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+              ) : readiness && thresholds ? (
+                <>
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                    <ReadinessCheck
+                      label="Endpoints mapped"
+                      detail={`${Math.round(readiness.endpoint_mapped_pct ?? 0)}% of discovered endpoints understood — target ${Math.round(thresholds.endpoint_mapped_pct_min)}%`}
+                      pass={(readiness.endpoint_mapped_pct ?? 0) >= thresholds.endpoint_mapped_pct_min}
+                      progressPct={readiness.endpoint_mapped_pct}
+                      targetPct={thresholds.endpoint_mapped_pct_min}
+                    />
+                    <ReadinessCheck
+                      label="Business flows confirmed"
+                      detail={`${Math.round(readiness.business_flow_confirmed_pct ?? 0)}% of business flows confirmed by a human — target ${Math.round(thresholds.business_flow_confirmed_pct_min)}%`}
+                      pass={(readiness.business_flow_confirmed_pct ?? 0) >= thresholds.business_flow_confirmed_pct_min}
+                      progressPct={readiness.business_flow_confirmed_pct}
+                      targetPct={thresholds.business_flow_confirmed_pct_min}
+                    />
+                    <ReadinessCheck
+                      label="Stale open questions"
+                      detail={
+                        readiness.open_questions_over_threshold === 0
+                          ? `No question has waited longer than ${thresholds.open_question_stale_days} days`
+                          : `${readiness.open_questions_over_threshold} question(s) unanswered for over ${thresholds.open_question_stale_days} days — answer them below`
+                      }
+                      pass={readiness.open_questions_over_threshold <= thresholds.open_questions_max}
+                    />
+                  </div>
+                  {formatUpdatedAt(readiness.updated_at) && (
+                    <p className="mt-2 text-[10px] text-zinc-600">
+                      Last evaluated {formatUpdatedAt(readiness.updated_at)}
+                    </p>
+                  )}
+                </>
               ) : (
-                <p className="text-xs text-zinc-500">No readiness record for this tenant yet.</p>
+                <p className="text-xs text-zinc-500">
+                  No readiness record for this tenant yet. It appears after the first discovery
+                  cycle or handover-doc upload triggers a readiness evaluation.
+                </p>
               )}
             </CardContent>
           </Card>

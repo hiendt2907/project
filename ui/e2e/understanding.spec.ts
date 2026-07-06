@@ -24,6 +24,22 @@ test.describe("read flow", () => {
     ).toBeVisible({ timeout: 15_000 });
   });
 
+  test("readiness card shows plain-language checklist with targets", async ({ page }) => {
+    await gotoUnderstanding(page);
+    const card = page.getByTestId("readiness-card");
+    // Badge tổng thể đời thường — không phải readiness_flag=true/false thô
+    await expect(card.getByText(/^(Ready|Not ready yet)$/)).toBeVisible({ timeout: 15_000 });
+    // Từng check có nhãn người ngoài đọc hiểu + so với target
+    await expect(card.getByText("Endpoints mapped", { exact: true })).toBeVisible();
+    await expect(card.getByText("Business flows confirmed", { exact: true })).toBeVisible();
+    await expect(card.getByText("Stale open questions", { exact: true })).toBeVisible();
+    await expect(card.getByText(/target \d+%/).first()).toBeVisible();
+    const verdicts = card.getByText(/^(Done|Needs work)$/);
+    expect(await verdicts.count()).toBe(3);
+    // Không còn raw key kiểu endpoint_mapped_pct trên UI (ADR-003)
+    await expect(card.getByText("endpoint_mapped_pct")).toHaveCount(0);
+  });
+
   test("remote agents card shows enrolled agents with heartbeat status", async ({ page }) => {
     await gotoUnderstanding(page);
     const card = page.getByTestId("agents-card");

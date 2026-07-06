@@ -113,11 +113,15 @@ async def get_readiness(
     request: Request,
     tenant_id: str | None = Query(default=None, max_length=64, pattern=_TENANT_ID_PATTERN),
 ) -> JSONResponse:
-    """Readiness checklist (Postgres source-of-truth via AdminConfigRepo)."""
+    """Readiness checklist (Postgres source-of-truth via AdminConfigRepo).
+
+    Trả kèm `thresholds` để portal hiển thị "đạt X% so với mục tiêu Y%" (ADR-003 —
+    operator không cần biết config nội bộ mới đọc được checklist)."""
     repo = _get_admin_repo(request)
     scope = _effective_tenant_id(request, tenant_id)
     readiness = await repo.get_tenant_readiness(scope)
-    return JSONResponse(content={"tenant_id": scope, "readiness": readiness})
+    thresholds = await dd.resolve_readiness_thresholds(repo, scope)
+    return JSONResponse(content={"tenant_id": scope, "readiness": readiness, "thresholds": thresholds})
 
 
 class HandoverDocUpload(BaseModel):
