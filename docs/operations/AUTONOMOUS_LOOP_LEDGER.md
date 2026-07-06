@@ -528,3 +528,20 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Resume action: Phase 2 slice kế tiếp — cân nhắc (b) wire `npm run e2e` vào quy trình release
   (cần pod + port-forward), hoặc slice Golden Journey đọc tiếp theo. Không mở action/billing song
   song (PRODUCT_CONTRACT §9).
+
+### Checkpoint 2026-07-06T09:40:00+07:00
+- Timestamp: 2026-07-06T09:40:00+07:00
+- Iteration: iter24-portal-e2e-release-gate
+- Status: DONE (VERIFIED_RUNTIME)
+- Summary: Wire portal Playwright E2E vào quy trình release — `make e2e-portal` mới gọi
+  `scripts/e2e_portal_release_gate.sh`: preflight rollout-status omni-ui, credentials từ secret
+  omni-ui-secrets (không hardcode), port-forward svc/omni-ui tự dọn (trap), chờ /login qua đúng
+  Host header, chạy `npm run e2e` exit-code passthrough; write-flow opt-in E2E_ALLOW_WRITE=1.
+  KHÔNG đổi Python/app code. Runtime proof trên cluster lab: `make e2e-portal` → 8 passed 1
+  skipped exit 0; `E2E_ALLOW_WRITE=1` → 9 passed; port bận → fail exit 2 (không silent-pass).
+  Gotcha: `${VAR:+X=Y}` expansion không được shell coi là assignment prefix → dùng export.
+  Pytest baseline 5972 passed / 1 fail env-dependent đã biết. Chi tiết:
+  `docs/product/PRODUCT_PROOF.md` → "Iteration 24".
+- Reset at: n/a
+- Resume action: Slice Golden Journey đọc tiếp theo, hoặc cân nhắc wire `e2e-portal` vào
+  `omni-death-loop`. Không mở action/billing song song (PRODUCT_CONTRACT §9).

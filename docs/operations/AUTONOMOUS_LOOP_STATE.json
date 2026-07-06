@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-03T16:55:00Z",
+  "updated_at": "2026-07-06T02:45:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
-  "head": "c808189",
+  "head": "50be3bf",
   "iteration": {
-    "id": "iter23-diagram-history-diff",
-    "bottleneck": "GET /onboarding/diagram/history cap to_version<=200 khong bao gio tra duoc version gan day (latest=10058) + chua co UI history/diff.",
+    "id": "iter24-portal-e2e-release-gate",
+    "bottleneck": "Portal E2E chi chay duoc bang chuoi lenh thu cong trong handoff, khong phai release gate lap lai duoc.",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "Endpoint history redesign ?before=&limit= neo tai latest (curl that: latest=10058, [10058,10057,10056]; before=10057 -> [10056,10055]). 5 pytest moi. UI DiagramHistoryPanel + diffLines LCS + proxy diagram-history. E2E 8 passed 1 skipped tren pod that. Rebuild+rollout omni-gateway va omni-ui. Chi tiet: PRODUCT_PROOF.md Iteration 23.",
+    "last_successful_step": "make e2e-portal (scripts/e2e_portal_release_gate.sh): 8 passed 1 skipped exit 0; E2E_ALLOW_WRITE=1 -> 9 passed; port ban -> fail exit 2. Pytest baseline 5972 passed / 1 known env fail. Chi tiet: PRODUCT_PROOF.md Iteration 24.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Phase 2 slice ke tiep: (b) wire npm run e2e vao quy trinh release, hoac slice Golden Journey doc tiep theo."
+    "next_step": "Slice Golden Journey doc tiep theo, hoac wire e2e-portal vao omni-death-loop."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,17 +24,13 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Verified 2026-07-03 iter22: omni-ui Running image e20e6a9c1cdc (rebuild co mermaid); /understanding render 3 SVG qua E2E; OMNI_AUTO_EXECUTE_ENABLED=false (auth boundary 401 reconfirmed qua E2E).",
+    "health_summary": "Verified 2026-07-06 iter24: omni-ui/omni-gateway 1/1 sau orb start; make e2e-portal xanh tren pod that; OMNI_AUTO_EXECUTE_ENABLED=false (mac dinh manifest, khong doi trong iter nay).",
     "deployed_images": {}
   },
   "working_tree": {
     "owned_changes": [
-      "ui/app/api/onboarding/understanding/route.ts",
-      "ui/components/mermaid-diagram.tsx",
-      "ui/app/understanding/page.tsx",
-      "ui/e2e/understanding.spec.ts",
-      "ui/package.json",
-      "ui/package-lock.json",
+      "scripts/e2e_portal_release_gate.sh",
+      "Makefile",
       "docs/product/PRODUCT_PROOF.md",
       "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",
       "docs/operations/AUTONOMOUS_LOOP_STATE.json",

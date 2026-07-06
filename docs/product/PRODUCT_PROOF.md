@@ -300,6 +300,32 @@ Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (
 iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
 printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
 
+## Iteration 24 — Portal E2E release gate (`make e2e-portal`) VERIFIED_RUNTIME (2026-07-06)
+
+**Bottleneck:** Bộ Playwright E2E của portal (iter 21-23, 9 test lên pod thật) chỉ chạy được bằng
+chuỗi lệnh thủ công trong handoff (port-forward tay, lấy secret tay, export env tay) — không phải
+một release gate lặp lại được, dễ bỏ sót trước khi rollout omni-ui/omni-gateway.
+
+**Đã làm (KHÔNG đổi Python/app code — chỉ tooling):**
+- `scripts/e2e_portal_release_gate.sh` (mới): tự động hoá toàn bộ — preflight kubectl +
+  `rollout status deploy/omni-ui`; credentials đọc từ secret `omni-ui-secrets`
+  (`ADMIN_USERNAME`/`ADMIN_PASSWORD`, không hardcode); check port bận trước khi port-forward
+  `svc/omni-ui $LOCAL_PORT:80` (default 18081, trap cleanup); chờ `/login` trả lời qua đúng
+  `Host: omni.ai-agent.local`; chạy `npm run e2e` với exit code truyền thẳng ra gate.
+  Write-flow mặc định skip, opt-in `E2E_ALLOW_WRITE=1` (giữ nguyên gate iter 21).
+- `Makefile`: target mới `e2e-portal` (`NS=$(NS) bash scripts/e2e_portal_release_gate.sh`).
+- Gotcha đã fix trong phiên: assignment prefix sinh từ `${VAR:+X=Y}` expansion KHÔNG được shell
+  coi là assignment (chạy như command → `command not found`); fix bằng `export` trong subshell.
+
+**Runtime proof (chạy thật trên cluster lab 2026-07-06):**
+- `make e2e-portal` → `8 passed, 1 skipped` (write-flow skip mặc định), exit 0,
+  log `PASS: portal E2E gate xanh`, port-forward tự dọn.
+- `E2E_ALLOW_WRITE=1 make e2e-portal` → **9 passed** (bao gồm answer-question mutation thật).
+- Negative check: chiếm port 18081 trước → gate fail exit 2 với message rõ (không silent-pass).
+
+**Chưa làm / giới hạn ghi nhận:** gate cần cluster thật + `ui/node_modules` — không chạy trong CI
+thuần (đúng quyết định handoff iter 23); chưa wire vào `omni-death-loop` (cân nhắc iteration sau).
+
 ## Iteration 23 — Diagram History/Diff view + fix history endpoint không chạm được version gần đây VERIFIED_RUNTIME (2026-07-03)
 
 Golden Journey slice tiếp theo của iter 22 (đúng "Next step (a)" trong handoff): operator xem được
