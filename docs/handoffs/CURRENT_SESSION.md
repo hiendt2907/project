@@ -23,8 +23,8 @@ nâng từ ❌ lên ✅ theo nguyên tắc đó. **DONE cả hai.**
 - `ui/e2e/understanding.spec.ts`: test mới assert nội dung hiển thị (badge, "Last report … ago").
 
 ## Verification đã chạy
-- TDD RED→GREEN; `tests/test_agent_update.py` 20 passed. Pytest full: xem ledger checkpoint
-  (chạy nền cuối phiên — nếu chưa ghi, chạy lại lệnh bên dưới).
+- TDD RED→GREEN; `tests/test_agent_update.py` 20 passed. Pytest full: **5974 passed / 1 fail
+  env-dependent đã biết** (`test_register_then_real...`).
 - Rebuild + rollout cả `omni-gateway` (`make docker-gateway deploy-gateway`) lẫn `omni-ui`.
 - Curl gateway thật: `?tenant_id=staging-sim` → 3 agent online (v1.1.3, age vài giây);
   `?tenant_id=tenant-replay-01` → đúng 2 agent (cách ly tenant giữ nguyên).
@@ -39,7 +39,8 @@ nâng từ ❌ lên ✅ theo nguyên tắc đó. **DONE cả hai.**
 - Mọi quyết định iter 19-24 giữ nguyên.
 
 ## Branch và commit
-`main`. Iteration 25 commit trong phiên (feat + docs governance), chưa push.
+`main`, HEAD `84d30fc`. Commit của iteration: `1cb75dd` (feat portal Remote Agents + tenant filter) +
+`84d30fc` (docs governance ADR-003) — đã commit trong phiên, chưa push. Working tree sạch.
 
 ## Blockers
 None.
