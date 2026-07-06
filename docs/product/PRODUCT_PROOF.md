@@ -15,11 +15,14 @@ thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productiza
 
 ## Capability Matrix
 
+> Thang Operator-visible (ADR-003, từ iteration 25): ❌ không có UI · ⚠️ có UI nhưng phải hiểu
+> hệ thống mới đọc được · ✅ người ngoài đọc hiểu được (persona test).
+
 | Capability | Code | Deployed | Runtime verified | Operator-visible | Evidence |
 |---|---:|---:|---:|---:|---|
 | Tenant creation | ✅ | ✅ | ✅ | ⚠️ (API only, không UI) | `omni_admin.tenant` row `staging-sim` — `psql -c "SELECT * FROM omni_admin.tenant"` |
-| Agent enrollment | ✅ | ✅ | ✅ | ❌ | `/var/log/omni-agent.log` trên cả 3 VM: `POST .../webhook/agent/register "HTTP/1.1 200 OK"` |
-| Agent heartbeat | ✅ | ✅ | ✅ | ❌ | Log trên `cust-app`: `register` lặp lại mỗi ~2 phút (ttl=120), `GET .../commands/...` mỗi ~5s |
+| Agent enrollment | ✅ | ✅ | ✅ | ✅ (iter 25 — card "Remote Agents" trên `/understanding`) | `/var/log/omni-agent.log` trên cả 3 VM: `POST .../webhook/agent/register "HTTP/1.1 200 OK"`; E2E assert card hiển thị agent + badge Online |
+| Agent heartbeat | ✅ | ✅ | ✅ | ✅ (iter 25 — "N/N online", "Last report Xs ago") | Log trên `cust-app`: `register` lặp lại mỗi ~2 phút (ttl=120); curl `/webhook/agent/versions?tenant_id=staging-sim` → 3 agent online, age_seconds đơn vị giây |
 | Continuous discovery (cust-edge, cust-db, cust-app) | ✅ | ✅ | ✅ **3/3 host** | ❌ | `omni:evrl:p:staging-sim_{cust-edge,cust-db,cust-app}:{process_list,port_scan,service_topology}:PASSED` tồn tại cho cả 3 host trong Redis |
 | Discovery evidence transport (Kafka) | ✅ | ✅ | ✅ | ❌ | `kafka-consumer-groups.sh --describe --group omni-onboarding-discovery` → lag=0, offset tăng liên tục |
 | Observation → Fact projection | ✅ (code từ `1bc6292`) | ✅ (sau redeploy iteration 1) | ✅ | ❌ | log `onboarding_pipeline: system_model contradiction tenant=staging-sim` + Redis `omni:aoip:system_model:staging-sim` |
@@ -299,6 +302,42 @@ unrelated blocker (`open_questions_over_threshold`/gate design gap).
 Verify: `pytest tests/test_onboarding_pipeline.py -q -k handover` → 3 passed (no code change this
 iteration, runtime-verification only). No K8s mutation — `kubectl exec deploy/omni-gateway --
 printenv OMNI_AUTO_EXECUTE_ENABLED` → `false`, confirmed unchanged.
+
+## Iteration 25 — Backend-Frontend Parity (ADR-003) + Remote Agents card VERIFIED_RUNTIME (2026-07-06)
+
+**Bottleneck:** Agent enrollment/heartbeat đã VERIFIED_RUNTIME từ lâu nhưng operator-visible = ❌
+(chỉ xem được qua log VM/`redis-cli`). Rộng hơn: chưa có nguyên tắc governance nào bắt buộc
+capability backend phải hiển thị được cho người không hiểu hệ thống.
+
+**Governance (Bước 1):**
+- `docs/architecture/ADR-003-backend-frontend-parity.md` (mới): parity rule + tiêu chuẩn hiển thị
+  (nhãn đời thường, badge ngữ nghĩa, không raw key/JSON, empty-state có hướng dẫn) + thang
+  ❌/⚠️/✅ + nhịp 1 capability/iteration.
+- `PRODUCT_CONTRACT.md` §10 (mới, qua ADR đúng quy trình contract): tham chiếu ADR-003.
+- Capability matrix có legend thang 3 mức.
+
+**Slice (Bước 2) — Agent enrollment/heartbeat ❌ → ✅:**
+- `src/gateway/routes/agent_commands.py`: `GET /webhook/agent/versions` nhận `?tenant_id=` với
+  đúng semantics `resolve_scope` (admin override, non-admin bị scope về tenant của key); mỗi item
+  trả thêm `tenant_id`. TDD: 2 test mới trong `tests/test_agent_update.py` (RED trước, GREEN sau).
+- `ui/app/api/onboarding/understanding/route.ts`: aggregate proxy thêm section `agents`
+  (honest-error, không mock).
+- `ui/app/understanding/page.tsx`: card "Remote Agents" — subtitle giải thích cho người ngoài
+  ("Collectors installed on this tenant's hosts… if an agent goes offline, Omni stops learning
+  about that host"), badge tổng `N/N online` (emerald khi đủ, amber khi thiếu), mỗi agent: dot
+  trạng thái + badge Online/Offline + hostname + agent_id + "Last report Xs ago" + version;
+  empty-state hướng dẫn cài agent.
+- `ui/e2e/understanding.spec.ts`: test mới assert card + badge `N/N online` + nhãn
+  "Last report … ago" (đúng ADR-003: assert nội dung hiển thị, không chỉ 200).
+
+**Runtime proof (2026-07-06):**
+- Curl gateway thật qua port-forward: `?tenant_id=staging-sim` → 3 agent online (cust-edge/app/db,
+  v1.1.3, age_seconds một chữ số); `?tenant_id=tenant-replay-01` → đúng 2 agent của tenant đó
+  (cách ly tenant giữ nguyên).
+- Rebuild + rollout cả `omni-gateway` lẫn `omni-ui`.
+- `E2E_ALLOW_WRITE=1 make e2e-portal` → **10 passed** trên pod thật (gate iteration 24 dùng ngay
+  cho release này). Gotcha lặp lại từ iter 22: CardTitle lồng span → strict mode, cần `.first()`.
+- Pytest: `tests/test_agent_update.py` 20 passed; full suite xem checkpoint ledger.
 
 ## Iteration 24 — Portal E2E release gate (`make e2e-portal`) VERIFIED_RUNTIME (2026-07-06)
 

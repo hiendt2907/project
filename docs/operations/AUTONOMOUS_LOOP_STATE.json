@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "status": "IDLE",
-  "updated_at": "2026-07-06T02:45:00Z",
+  "updated_at": "2026-07-06T04:35:00Z",
   "project_root": "/Users/hiendang/project",
   "branch": "main",
   "head": "50be3bf",
   "iteration": {
-    "id": "iter24-portal-e2e-release-gate",
-    "bottleneck": "Portal E2E chi chay duoc bang chuoi lenh thu cong trong handoff, khong phai release gate lap lai duoc.",
+    "id": "iter25-backend-frontend-parity-agents-card",
+    "bottleneck": "Agent enrollment/heartbeat VERIFIED_RUNTIME nhung operator-visible=❌; chua co nguyen tac governance bat buoc parity backend-frontend.",
     "phase": "DONE",
     "acceptance_passed": true,
-    "last_successful_step": "make e2e-portal (scripts/e2e_portal_release_gate.sh): 8 passed 1 skipped exit 0; E2E_ALLOW_WRITE=1 -> 9 passed; port ban -> fail exit 2. Pytest baseline 5972 passed / 1 known env fail. Chi tiet: PRODUCT_PROOF.md Iteration 24.",
+    "last_successful_step": "ADR-003 + CONTRACT §10 + matrix legend; /webhook/agent/versions?tenant_id= (resolve_scope, 2 test TDD); card Remote Agents tren /understanding; curl that 3 agent staging-sim / 2 agent tenant-replay-01; rollout gateway+ui; E2E_ALLOW_WRITE=1 make e2e-portal -> 10 passed. Chi tiet: PRODUCT_PROOF.md Iteration 25.",
     "last_failed_step": null,
     "hypothesis": null,
-    "next_step": "Slice Golden Journey doc tiep theo, hoac wire e2e-portal vao omni-death-loop."
+    "next_step": "Slice parity ke tiep theo ADR-003: 1 capability ❌/⚠️ -> ✅ (ung vien: Tenant creation, Onboarding readiness, Twin freshness)."
   },
   "quota": {
     "usage_percent_reported": null,
@@ -24,13 +24,18 @@
   "runtime": {
     "safety_verified": true,
     "auto_execute_enabled": false,
-    "health_summary": "Verified 2026-07-06 iter24: omni-ui/omni-gateway 1/1 sau orb start; make e2e-portal xanh tren pod that; OMNI_AUTO_EXECUTE_ENABLED=false (mac dinh manifest, khong doi trong iter nay).",
+    "health_summary": "Verified 2026-07-06 iter25: gateway+ui rebuild/rollout xanh; e2e-portal 10 passed; OMNI_AUTO_EXECUTE_ENABLED=false reconfirmed iter24.",
     "deployed_images": {}
   },
   "working_tree": {
     "owned_changes": [
-      "scripts/e2e_portal_release_gate.sh",
-      "Makefile",
+      "src/gateway/routes/agent_commands.py",
+      "tests/test_agent_update.py",
+      "ui/app/api/onboarding/understanding/route.ts",
+      "ui/app/understanding/page.tsx",
+      "ui/e2e/understanding.spec.ts",
+      "docs/architecture/ADR-003-backend-frontend-parity.md",
+      "docs/product/PRODUCT_CONTRACT.md",
       "docs/product/PRODUCT_PROOF.md",
       "docs/operations/AUTONOMOUS_LOOP_LEDGER.md",
       "docs/operations/AUTONOMOUS_LOOP_STATE.json",

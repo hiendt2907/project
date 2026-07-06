@@ -545,3 +545,21 @@ iteration DONE/PARTIAL/BLOCKED) thêm một entry mới ở CUỐI file. Không 
 - Reset at: n/a
 - Resume action: Slice Golden Journey đọc tiếp theo, hoặc cân nhắc wire `e2e-portal` vào
   `omni-death-loop`. Không mở action/billing song song (PRODUCT_CONTRACT §9).
+
+### Checkpoint 2026-07-06T11:30:00+07:00
+- Timestamp: 2026-07-06T11:30:00+07:00
+- Iteration: iter25-backend-frontend-parity-agents-card
+- Status: DONE (VERIFIED_RUNTIME)
+- Summary: Chuẩn hoá nguyên tắc Backend-Frontend Parity thành governance (ADR-003 +
+  PRODUCT_CONTRACT §10 + thang ❌/⚠️/✅ trong capability matrix) và thực hiện slice đầu tiên:
+  Agent enrollment/heartbeat ❌ → ✅ qua card "Remote Agents" trên /understanding. Backend:
+  `GET /webhook/agent/versions` nhận `?tenant_id=` (resolve_scope semantics, TDD 2 test mới,
+  20 passed file). UI: aggregate proxy thêm section agents; card badge N/N online +
+  Online/Offline + "Last report Xs ago" + empty-state hướng dẫn. Runtime proof: curl thật
+  staging-sim → 3 agent online / tenant-replay-01 → 2 agent (cách ly giữ nguyên); rebuild+rollout
+  gateway+ui; E2E_ALLOW_WRITE=1 make e2e-portal → 10 passed pod thật. Chi tiết:
+  `docs/product/PRODUCT_PROOF.md` → "Iteration 25".
+- Reset at: n/a
+- Resume action: Slice parity kế tiếp theo ADR-003 (chọn 1 capability ❌/⚠️ giá trị cao nhất,
+  ứng viên: Tenant creation ⚠️ API-only, Onboarding readiness ⚠️ đọc DB, System Twin freshness).
+  Không mở action/billing song song (PRODUCT_CONTRACT §9).

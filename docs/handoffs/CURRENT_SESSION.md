@@ -1,51 +1,59 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-**Iteration 24 — Portal E2E release gate `make e2e-portal`: DONE (VERIFIED_RUNTIME).**
+**Iteration 25 — Backend-Frontend Parity (ADR-003) + card Remote Agents: DONE (VERIFIED_RUNTIME).**
 
 ## Definition of Done
-Bộ Playwright E2E của portal chạy được bằng MỘT lệnh lặp lại được (không cần port-forward tay,
-lấy secret tay, export env tay), exit code phản ánh trung thực kết quả. **DONE.**
+(1) Nguyên tắc "backend làm được gì thì frontend phải hiển thị được cho người không hiểu hệ
+thống" trở thành governance chính thức; (2) capability đầu tiên (agent enrollment/heartbeat)
+nâng từ ❌ lên ✅ theo nguyên tắc đó. **DONE cả hai.**
 
 ## Đã hoàn thành
-- `scripts/e2e_portal_release_gate.sh` (mới): preflight kubectl + `rollout status deploy/omni-ui`;
-  credentials từ secret `omni-ui-secrets` (`ADMIN_USERNAME`/`ADMIN_PASSWORD`); check port bận;
-  port-forward `svc/omni-ui $LOCAL_PORT:80` (default 18081) với trap cleanup; chờ `/login` qua
-  đúng `Host: omni.ai-agent.local`; `npm run e2e` exit-code passthrough; write-flow opt-in
-  `E2E_ALLOW_WRITE=1`.
-- `Makefile`: target `e2e-portal` (+ .PHONY).
-- KHÔNG đổi Python/app code trong iteration này.
+- `docs/architecture/ADR-003-backend-frontend-parity.md` (mới) + `PRODUCT_CONTRACT.md` §10:
+  parity rule, tiêu chuẩn hiển thị (nhãn đời thường + badge ngữ nghĩa, không raw key/JSON,
+  empty-state có hướng dẫn), thang Operator-visible ❌/⚠️/✅ (persona test), nhịp 1 capability/
+  iteration. Capability matrix trong PRODUCT_PROOF có legend mới.
+- `src/gateway/routes/agent_commands.py`: `GET /webhook/agent/versions` nhận `?tenant_id=`
+  (semantics `resolve_scope` — admin override, non-admin scope về tenant của key); item trả thêm
+  `tenant_id`. TDD: 2 test mới trong `tests/test_agent_update.py`.
+- `ui/app/api/onboarding/understanding/route.ts`: aggregate thêm section `agents` (honest-error).
+- `ui/app/understanding/page.tsx`: card "Remote Agents" — subtitle giải thích cho người ngoài,
+  badge `N/N online`, mỗi agent dot + Online/Offline + hostname + "Last report Xs ago" + version,
+  empty-state hướng dẫn cài agent. Helper `formatAge()`.
+- `ui/e2e/understanding.spec.ts`: test mới assert nội dung hiển thị (badge, "Last report … ago").
 
 ## Verification đã chạy
-- `make e2e-portal` trên cluster lab → **8 passed, 1 skipped**, exit 0, port-forward tự dọn.
-- `E2E_ALLOW_WRITE=1 make e2e-portal` → **9 passed** (answer-question mutation thật).
-- Negative: chiếm port 18081 → gate **fail exit 2** (không silent-pass).
-- Pytest baseline: **5972 passed / 1 fail env-dependent đã biết** (`test_register_then_real...`).
-- Kill-switch reconfirmed: `OMNI_AUTO_EXECUTE_ENABLED=false` trên pod omni-fullstack.
+- TDD RED→GREEN; `tests/test_agent_update.py` 20 passed. Pytest full: xem ledger checkpoint
+  (chạy nền cuối phiên — nếu chưa ghi, chạy lại lệnh bên dưới).
+- Rebuild + rollout cả `omni-gateway` (`make docker-gateway deploy-gateway`) lẫn `omni-ui`.
+- Curl gateway thật: `?tenant_id=staging-sim` → 3 agent online (v1.1.3, age vài giây);
+  `?tenant_id=tenant-replay-01` → đúng 2 agent (cách ly tenant giữ nguyên).
+- `E2E_ALLOW_WRITE=1 make e2e-portal` → **10 passed** trên pod thật; `npm run build` xanh.
 
 ## Quyết định đã chốt (KHÔNG re-litigate)
-- Gate cần cluster thật + `ui/node_modules` — KHÔNG chạy trong CI thuần (đúng quyết định iter 23).
-- Credentials luôn đọc từ secret, không hardcode, không cache ra file.
-- Write-flow mặc định skip; chỉ bật qua `E2E_ALLOW_WRITE=1`.
-- Gotcha shell: `${VAR:+X=Y}` expansion không được coi là assignment prefix — dùng `export`.
-- Mọi quyết định iter 19-23 giữ nguyên (honest-error, không mock, Mermaid client-side,
-  history `?before=&limit=`).
+- ADR-003 là canonical cho parity; sửa nguyên tắc = ADR mới, không sửa ngầm.
+- `/webhook/agent/versions` dùng `resolve_scope` giống onboarding routes; lab mode (ctx=None)
+  bỏ qua override — ĐÚNG semantics, không "sửa".
+- Portal giữ tiếng Anh (ngôn ngữ portal hiện hành); "đời thường" ≠ bắt buộc tiếng Việt.
+- Gotcha lặp: CardTitle lồng span → Playwright strict mode, getByText cần `.first()`.
+- Mọi quyết định iter 19-24 giữ nguyên.
 
 ## Branch và commit
-`main`. Iteration 24 commit trong phiên (feat tooling + docs governance), chưa push.
+`main`. Iteration 25 commit trong phiên (feat + docs governance), chưa push.
 
 ## Blockers
-None. Lưu ý vận hành: OrbStack k8s có thể ở trạng thái Stopped đầu phiên — `orb start` rồi chờ
-deploy Ready trước khi chạy gate.
+None.
 
 ## Next step chính xác
-Slice Golden Journey đọc tiếp theo, hoặc cân nhắc wire `e2e-portal` vào `omni-death-loop`.
-Không mở action/billing song song (PRODUCT_CONTRACT §9).
+Slice parity kế tiếp theo ADR-003 — chọn MỘT capability ❌/⚠️ giá trị Golden Journey cao nhất.
+Ứng viên: Tenant creation (⚠️ API only), Onboarding readiness (⚠️ đọc DB trực tiếp), System Twin
+persisted (⚠️ chỉ redis-cli — card Entities đã cover một phần, cần đối chiếu matrix). Không mở
+action/billing song song (PRODUCT_CONTRACT §9).
 
 ## Không được làm lại
 - Không thêm mock fallback vào proxy route.
-- Không hardcode credentials trong script/Makefile.
-- Không biến gate thành CI-thuần (cần pod thật — đã chốt).
+- Không hiển thị raw Redis key/state code/JSON thô làm UI chính (ADR-003).
+- Không mở nhiều capability parity trong một iteration.
 - Không mở remediation/billing/multi-region (PRODUCT_CONTRACT §9).
 - Không "sửa" test env-dependent `test_register_then_real...`.
 
@@ -56,5 +64,5 @@ Không mở action/billing song song (PRODUCT_CONTRACT §9).
 - Deploy gateway (nếu đổi Python): `make docker-gateway deploy-gateway`.
 
 ## Tài liệu liên quan
-- `docs/product/PRODUCT_PROOF.md` (Iteration 24) · `docs/product/PRODUCT_CONTRACT.md`
-- `docs/operations/AUTONOMOUS_LOOP_LEDGER.md` / `AUTONOMOUS_LOOP_STATE.json`
+- `docs/architecture/ADR-003-backend-frontend-parity.md` · `docs/product/PRODUCT_CONTRACT.md` §10
+- `docs/product/PRODUCT_PROOF.md` (Iteration 25) · `docs/operations/AUTONOMOUS_LOOP_LEDGER.md`

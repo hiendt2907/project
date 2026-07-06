@@ -1,4 +1,4 @@
-# PRODUCT CONTRACT — Omni Autonomous SRE (v1, frozen 2026-07-03)
+# PRODUCT CONTRACT — Omni Autonomous SRE (v1, frozen 2026-07-03; §10 added 2026-07-06 per ADR-003)
 
 > Tài liệu canonical chốt phạm vi sản phẩm cho giai đoạn productization. Mọi feature mới phải map
 > được vào một bước Golden Journey bên dưới; nếu không map được, nó nằm ngoài scope v1.
@@ -129,3 +129,12 @@ Pilot được coi là thành công khi, trên một tenant thật:
 
 Không mở đồng thời với productization core: billing, multi-region, marketplace, full UI redesign,
 agent persona mới. Portal không được hiển thị plan/quota nếu backend chưa enforce chúng.
+
+## 10. Backend-Frontend Parity (ADR-003)
+
+Capability backend VERIFIED_RUNTIME trên Golden Journey phải operator-visible trên portal, hiển
+thị sao cho người không hiểu hệ thống vẫn đọc được (nhãn đời thường + giải thích ngắn + badge ngữ
+nghĩa; không raw key/state code/JSON thô; empty-state có hướng dẫn). Capability matrix trong
+`PRODUCT_PROOF.md` dùng thang ❌ (không UI) / ⚠️ (có UI nhưng phải hiểu hệ thống) / ✅ (người
+ngoài hiểu được — persona test). Mỗi iteration nâng đúng một capability lên ✅.
+Chi tiết: `docs/architecture/ADR-003-backend-frontend-parity.md`.
