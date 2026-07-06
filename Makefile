@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: agent-bundle agent-bundle-offline agent-keygen tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
+.PHONY: agent-bundle agent-bundle-offline agent-keygen tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap e2e-portal chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
 
 NS ?= multi-agent
 
@@ -170,6 +170,11 @@ e2e-proactive:
 
 e2e-incident-matrix:
 	NS=multi-agent RBAC_NEGATIVE_NAMESPACE=kube-system bash scripts/e2e_incident_matrix.sh
+
+# Portal E2E release gate — Playwright ui/e2e lên pod omni-ui thật (cần cluster,
+# không chạy trong CI thuần). Write-flow: E2E_ALLOW_WRITE=1 make e2e-portal.
+e2e-portal:
+	NS=$(NS) bash scripts/e2e_portal_release_gate.sh
 
 # Death loop: build -> deploy -> optional pytest_unit -> product_e2e (gateway Loki strict, proactive e2e, incident matrix). Pytest is secondary; override NS via env.
 NS ?= multi-agent
