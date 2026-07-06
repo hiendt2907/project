@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   Send,
   Workflow,
+  Radio,
 } from "lucide-react";
 
 interface SectionResult<T> {
@@ -57,12 +58,23 @@ interface DiagramData {
   mermaid: string | null;
 }
 
+interface AgentRecord {
+  agent_id: string;
+  tenant_id: string;
+  hostname: string;
+  version: string;
+  last_seen: number;
+  age_seconds: number;
+  online: boolean;
+}
+
 interface UnderstandingData {
   entities: SectionResult<EntitiesData>;
   unknowns: SectionResult<{ unknowns: UnknownRecord[] }>;
   questions: SectionResult<{ questions: QuestionRecord[] }>;
   readiness: SectionResult<ReadinessData>;
   diagram: SectionResult<DiagramData>;
+  agents: SectionResult<{ agents: AgentRecord[]; total: number }>;
 }
 
 interface FacetValueDto {
@@ -107,6 +119,14 @@ function SectionError({ error }: { error: string }) {
       {error}
     </div>
   );
+}
+
+function formatAge(seconds: number): string {
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
 }
 
 function entityTypeOf(entityId: string): string {
@@ -224,6 +244,8 @@ function UnderstandingPageInner() {
   const questions = data?.questions.data?.questions ?? [];
   const pendingQuestions = questions.filter((q) => q.status === "PENDING");
   const readiness = data?.readiness.data?.readiness ?? null;
+  const agents = data?.agents?.data?.agents ?? [];
+  const onlineAgents = agents.filter((a) => a.online);
   const diagram = data?.diagram?.data ?? null;
   const diagramSections = diagram?.mermaid ? splitDiagramText(diagram.mermaid) : [];
 
@@ -279,6 +301,80 @@ function UnderstandingPageInner() {
                 </div>
               ) : (
                 <p className="text-xs text-zinc-500">No readiness record for this tenant yet.</p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Remote agents — enrollment & heartbeat, operator-visible */}
+          <Card className="border-zinc-800 bg-zinc-900/60 lg:col-span-3" data-testid="agents-card">
+            <CardHeader className="p-4 pb-2">
+              <CardTitle className="flex items-center justify-between text-sm text-zinc-100">
+                <span className="flex items-center gap-2">
+                  <Radio className="h-4 w-4 text-cyan-400" />
+                  Remote Agents
+                </span>
+                {agents.length > 0 && (
+                  <span className={`inline-flex rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ring-1 ring-inset ${
+                    onlineAgents.length === agents.length
+                      ? "bg-emerald-500/10 text-emerald-400 ring-emerald-500/30"
+                      : "bg-amber-500/10 text-amber-400 ring-amber-500/30"
+                  }`}>
+                    {onlineAgents.length}/{agents.length} online
+                  </span>
+                )}
+              </CardTitle>
+              <p className="text-[11px] leading-snug text-zinc-500">
+                Collectors installed on this tenant&apos;s hosts. Each one reports what it sees back to
+                Omni — if an agent goes offline, Omni stops learning about that host.
+              </p>
+            </CardHeader>
+            <CardContent className="p-4 pt-1">
+              {loading && !data ? (
+                <Skeleton className="h-16 bg-zinc-800" />
+              ) : data?.agents?.error ? (
+                <SectionError error={data.agents.error} />
+              ) : agents.length === 0 ? (
+                <p className="text-xs text-zinc-500">
+                  No agents enrolled for this tenant yet. Install the remote agent on a host to start
+                  discovery — Omni cannot observe a host without one.
+                </p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  {agents.map((a) => (
+                    <div
+                      key={a.agent_id}
+                      className="flex items-start gap-2.5 rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2"
+                    >
+                      <span
+                        className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                          a.online ? "bg-emerald-400" : "bg-rose-400"
+                        }`}
+                        aria-hidden
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs font-medium text-zinc-200">
+                            {a.hostname || a.agent_id}
+                          </span>
+                          <span
+                            className={`inline-flex shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ring-1 ring-inset ${
+                              a.online
+                                ? "bg-emerald-500/10 text-emerald-400 ring-emerald-500/30"
+                                : "bg-rose-500/10 text-rose-400 ring-rose-500/30"
+                            }`}
+                          >
+                            {a.online ? "Online" : "Offline"}
+                          </span>
+                        </div>
+                        <p className="truncate font-mono text-[10px] text-zinc-600">{a.agent_id}</p>
+                        <p className="text-[10px] text-zinc-500">
+                          Last report {formatAge(a.age_seconds)}
+                          {a.version && a.version !== "unknown" ? ` · v${a.version}` : ""}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>

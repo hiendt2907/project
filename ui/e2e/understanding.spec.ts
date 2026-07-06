@@ -24,6 +24,18 @@ test.describe("read flow", () => {
     ).toBeVisible({ timeout: 15_000 });
   });
 
+  test("remote agents card shows enrolled agents with heartbeat status", async ({ page }) => {
+    await gotoUnderstanding(page);
+    const card = page.getByTestId("agents-card");
+    await expect(card.getByText("Remote Agents").first()).toBeVisible();
+    // Tenant lab có 3 VM chạy agent systemd — card trống là regression enrollment/heartbeat
+    await expect(card.getByText(/\d+\/\d+ online/)).toBeVisible({ timeout: 15_000 });
+    const badges = card.getByText(/^(Online|Offline)$/);
+    expect(await badges.count()).toBeGreaterThanOrEqual(1);
+    // Ngôn ngữ đời thường cho người không hiểu hệ thống: "Last report … ago"
+    await expect(card.getByText(/Last report .*(ago|just now)/).first()).toBeVisible();
+  });
+
   test("renders the system diagram as Mermaid SVG", async ({ page }) => {
     await gotoUnderstanding(page);
     const card = page.getByTestId("diagram-card");

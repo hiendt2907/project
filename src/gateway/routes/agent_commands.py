@@ -27,7 +27,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, require_agent_tenant
+from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, require_agent_tenant, resolve_scope
 
 logger = logging.getLogger(__name__)
 
@@ -308,13 +308,16 @@ async def enqueue_agent_update(body: UpdateAgentRequest, request: Request) -> JS
 
 
 @router.get("/versions")
-async def list_agent_versions(request: Request) -> JSONResponse:
+async def list_agent_versions(request: Request, tenant_id: str | None = None) -> JSONResponse:
     """Return registered agents with their current version and last_seen timestamp.
 
     Non-admin callers only see agents registered under their own tenant.
+    Admin callers may narrow the list with ``?tenant_id=`` (same resolve_scope
+    semantics as the onboarding routes).
     """
     redis = _get_redis(request)
     ctx = get_tenant_ctx(request)
+    scope = resolve_scope(ctx, tenant_id)
     try:
         keys = await redis.keys(f"{_REGISTRY_PREFIX}*")
     except Exception as exc:
@@ -330,11 +333,12 @@ async def list_agent_versions(request: Request) -> JSONResponse:
             rec = json.loads(raw)
         except Exception:
             continue
-        if not is_admin_ctx(ctx) and rec.get("tenant_id") != ctx.tenant_id:
+        if scope is not None and rec.get("tenant_id") != scope:
             continue
         age_s = now - int(rec.get("last_seen", 0))
         agents.append({
             "agent_id": rec.get("agent_id", ""),
+            "tenant_id": rec.get("tenant_id", ""),
             "hostname": rec.get("hostname", ""),
             "version": rec.get("version", "unknown"),
             "capabilities": rec.get("capabilities", []),

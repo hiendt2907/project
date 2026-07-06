@@ -425,3 +425,62 @@ def test_validate_update_url_foreign_host_blocked():
         ok, reason = agent_commands._validate_update_url("https://attacker.evil.io/agent.tar.gz")
         assert not ok
         assert "host_not_whitelisted" in reason
+
+
+@pytest.mark.asyncio
+async def test_list_agent_versions_admin_filters_by_tenant_id_override():
+    from gateway.routes.agent_commands import list_agent_versions, _REGISTRY_PREFIX
+    from fakeredis.aioredis import FakeRedis
+
+    redis = FakeRedis(decode_responses=True)
+    now = int(time.time())
+    for tenant, agent in (("t-a", "agent-a"), ("t-b", "agent-b")):
+        rec = {
+            "agent_id": agent,
+            "tenant_id": tenant,
+            "hostname": f"{agent}.example.com",
+            "version": "1.0.0",
+            "capabilities": [],
+            "last_seen": now,
+        }
+        await redis.set(f"{_REGISTRY_PREFIX}{agent}", json.dumps(rec))
+
+    from gateway.tenant_context import TenantContext
+
+    req = _make_request(redis)
+    req.state.tenant = TenantContext(tenant_id="admin", is_admin=True)
+
+    resp = await list_agent_versions(req, tenant_id="t-a")
+    data = json.loads(resp.body)
+    assert data["total"] == 1
+    assert data["agents"][0]["agent_id"] == "agent-a"
+    assert data["agents"][0]["tenant_id"] == "t-a"
+
+
+@pytest.mark.asyncio
+async def test_list_agent_versions_non_admin_ignores_tenant_override():
+    from gateway.routes.agent_commands import list_agent_versions, _REGISTRY_PREFIX
+    from gateway.tenant_context import TenantContext
+    from fakeredis.aioredis import FakeRedis
+
+    redis = FakeRedis(decode_responses=True)
+    now = int(time.time())
+    for tenant, agent in (("t-a", "agent-a"), ("t-b", "agent-b")):
+        rec = {
+            "agent_id": agent,
+            "tenant_id": tenant,
+            "hostname": f"{agent}.example.com",
+            "version": "1.0.0",
+            "capabilities": [],
+            "last_seen": now,
+        }
+        await redis.set(f"{_REGISTRY_PREFIX}{agent}", json.dumps(rec))
+
+    req = _make_request(redis)
+    req.state.tenant = TenantContext(tenant_id="t-b", is_admin=False)
+
+    # override bị bỏ qua cho non-admin — chỉ thấy tenant của chính mình
+    resp = await list_agent_versions(req, tenant_id="t-a")
+    data = json.loads(resp.body)
+    assert data["total"] == 1
+    assert data["agents"][0]["tenant_id"] == "t-b"

@@ -34,12 +34,13 @@ export async function GET(request: NextRequest) {
   }
   const tenantId = request.nextUrl.searchParams.get("tenant_id");
   const q = tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : "";
-  const [entities, unknowns, questions, readiness, diagram] = await Promise.all([
+  const [entities, unknowns, questions, readiness, diagram, agents] = await Promise.all([
     fetchSection(`/onboarding/entities${q}`),
     fetchSection(`/onboarding/unknowns${q}`),
     fetchSection(`/onboarding/questions${q}`),
     fetchSection(`/onboarding/readiness${q}`),
     fetchSection(`/onboarding/diagram${q}`),
+    fetchSection(`/webhook/agent/versions${q}`),
   ]);
-  return NextResponse.json({ source: "gateway", entities, unknowns, questions, readiness, diagram });
+  return NextResponse.json({ source: "gateway", entities, unknowns, questions, readiness, diagram, agents });
 }
