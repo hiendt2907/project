@@ -5,48 +5,16 @@
 # Hosts mapped in /etc/hosts → OrbStack LB IP (run: make hosts-update)
 #
 # Domain map:
-#   portal.ai-agent.local     → multi-agent/omni-ui:80 (Omni admin / config)
-#   omni.ai-agent.local       → multi-agent/omni-ui:80 (Omni ops / HITL / monitor)
+#   provider.ai-agent.local / tenant.ai-agent.local → see k8s/ingress/aoip-portals.yaml
 #   gateway.ai-agent.local    → multi-agent/omni-gateway:80   (SSE streaming)
 #   soc.ai-agent.local        → smart-siem/siem-ui:80
 #   soc.ai-agent.local/api    → smart-siem/siem-ui-api:8080
 #   finguard.ai-agent.local   → finguard-customer/finguard-ui-frontend:80
 #   finguard.ai-agent.local/api → finguard-customer/finguard-ui-api:8080
+#
+# omni.ai-agent.local / portal.ai-agent.local (legacy omni-ui) retired 2026-07-06
+# — superseded by provider/tenant portals (k8s/ingress/aoip-portals.yaml).
 # ─────────────────────────────────────────────────────────────────────────────
-
-# ── multi-agent: Omni UI ──────────────────────────────────────────────────────
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: omni-ui
-  namespace: multi-agent
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web
-    traefik.ingress.kubernetes.io/router.middlewares: multi-agent-body-limit-10m@kubernetescrd
-spec:
-  ingressClassName: traefik
-  rules:
-    - host: portal.ai-agent.local
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: omni-ui
-                port:
-                  number: 80
-    - host: omni.ai-agent.local
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: omni-ui
-                port:
-                  number: 80
 
 # ── multi-agent: Omni Gateway (SSE / long-polling) ───────────────────────────
 ---
@@ -98,39 +66,6 @@ spec:
             backend:
               service:
                 name: omni-gateway
-                port:
-                  number: 80
-
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: omni-ui-sse
-  namespace: multi-agent
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web
-    traefik.ingress.kubernetes.io/router.middlewares: multi-agent-sse-buffering-off@kubernetescrd
-spec:
-  ingressClassName: traefik
-  rules:
-    - host: portal.ai-agent.local
-      http:
-        paths:
-          - path: /api/trace/stream
-            pathType: Prefix
-            backend:
-              service:
-                name: omni-ui
-                port:
-                  number: 80
-    - host: omni.ai-agent.local
-      http:
-        paths:
-          - path: /api/trace/stream
-            pathType: Prefix
-            backend:
-              service:
-                name: omni-ui
                 port:
                   number: 80
 

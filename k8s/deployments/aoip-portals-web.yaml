@@ -22,6 +22,11 @@ spec:
             - {name: HOSTNAME, value: "0.0.0.0"}
             - {name: PORT, value: "3001"}
             - {name: AOIP_BACKEND_URL, value: "http://aoip-provider-portal:8081"}
+            # Understanding readiness + System Diagram cards (lib/gateway.ts) call
+            # the omni gateway directly, separate from AOIP_BACKEND_URL above.
+            - {name: OMNI_GATEWAY_URL, value: "http://omni-gateway:80"}
+            - name: OMNI_GATEWAY_API_KEY
+              valueFrom: {secretKeyRef: {name: omni-gateway-secret, key: OMNI_GATEWAY_API_KEY}}
           readinessProbe:
             httpGet: {path: /, port: 3001}
             initialDelaySeconds: 5

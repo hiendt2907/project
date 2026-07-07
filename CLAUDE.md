@@ -123,8 +123,19 @@ NS=multi-agent make omni-death-loop                                # chaos loop
 
 ### Declared target topology
 `omni-fullstack` (role=full) là workload lõi duy nhất được `make deploy-worker` deploy mặc định.
-`omni-gateway`, `omni-onboarding`, `omni-brain-go`, `omni-ui` là các Deployment RIÊNG BIỆT, có
+`omni-gateway`, `omni-onboarding`, `omni-brain-go` là các Deployment RIÊNG BIỆT, có
 manifest/target Makefile riêng — không phải "instance phụ của omni-fullstack".
+
+**2026-07-06: `omni-ui` (Deployment/Service/Ingress, domain `omni.ai-agent.local` +
+`portal.ai-agent.local`) đã RETIRED theo yêu cầu trực tiếp của user** — portal thật duy nhất
+nay là provider/tenant Next.js apps (`aoip-provider-web`/`aoip-tenant-web` + BFF
+`aoip-provider-portal`/`aoip-tenant-portal`, domain `provider.ai-agent.local` /
+`tenant.ai-agent.local`). Manifest `k8s/deployments/omni-ui.yaml` đã xoá; ingress rules omni/portal
+đã gỡ khỏi `k8s/ingress/ai-agent-local.yaml`. `make e2e-portal` đã trỏ lại
+`tests/e2e_portals` (13 test thật, xanh) thay vì `ui/e2e` (omni-ui cũ). Root `ui/` (Next app cũ,
+~25 route: pipeline/ledger/siem/workers/admin/...) CHƯA bị xoá khỏi source — không còn deploy
+route nào tới nó nhưng code vẫn còn trong repo vì chưa xác nhận 100% feature-parity đã port hết
+sang provider/tenant; xoá source tree là quyết định riêng cần xác nhận thêm.
 
 ### Current deployed topology (đã kubectl describe/exec xác minh trực tiếp)
 | Deployment | Role/chức năng | Trạng thái |
@@ -133,7 +144,7 @@ manifest/target Makefile riêng — không phải "instance phụ của omni-ful
 | `omni-gateway` | FastAPI HTTP ingress (không import `workers/`) | 1/1 Running (restart do race Kafka-chưa-ready lúc pod khởi động — dependency outage, tự phục hồi, không phải bug) |
 | `omni-onboarding` | `OMNI_WORKER_ROLE=onboarding` — discovery-evidence worker | 1/1 Running |
 | `omni-brain-go` | SIEM correlation engine THẬT (image `finguard/brain-go:siem-v2-corr`, consume `omni-siem-raw`→produce `omni-siem-incidents`/`omni-siem-chains`, consumer group `brain-go-kafka` không trùng lặp) — **không liên quan onboarding** | 1/1 Running |
-| `omni-ui`, `redis-0`, `kafka`, `omni-postgres-0`, `redis-exporter`, `aoip-dex`, `aoip-provider-*`, `aoip-tenant-*` | portal/hạ tầng phụ trợ | Running |
+| `redis-0`, `kafka`, `omni-postgres-0`, `redis-exporter`, `aoip-dex`, `aoip-provider-*`, `aoip-tenant-*` | portal/hạ tầng phụ trợ (provider/tenant portal là portal thật duy nhất, `omni-ui` đã retired) | Running |
 
 ### Kill-switch — effective value đã xác minh trên pod thật
 `OMNI_AUTO_EXECUTE_ENABLED=false` (đã revert 2026-07-02; trước đó bị override thành `true` từ phiên

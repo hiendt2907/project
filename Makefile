@@ -44,7 +44,7 @@ nginx-uninstall:
 hosts-update:
 	@TRAEFIK_IP=$$(kubectl get svc -n traefik traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}'); \
 	echo "Traefik IP: $$TRAEFIK_IP"; \
-	sudo sed -i '' "s|.*ai-agent\.local.*|$$TRAEFIK_IP portal.ai-agent.local omni.ai-agent.local finguard.ai-agent.local gateway.ai-agent.local soc.ai-agent.local|" /etc/hosts && \
+	sudo sed -i '' "s|.*ai-agent\.local.*|$$TRAEFIK_IP dex.ai-agent.local provider.ai-agent.local tenant.ai-agent.local finguard.ai-agent.local gateway.ai-agent.local soc.ai-agent.local|" /etc/hosts && \
 	grep ai-agent /etc/hosts
 
 test-evidence:
@@ -171,8 +171,8 @@ e2e-proactive:
 e2e-incident-matrix:
 	NS=multi-agent RBAC_NEGATIVE_NAMESPACE=kube-system bash scripts/e2e_incident_matrix.sh
 
-# Portal E2E release gate — Playwright ui/e2e lên pod omni-ui thật (cần cluster,
-# không chạy trong CI thuần). Write-flow: E2E_ALLOW_WRITE=1 make e2e-portal.
+# Portal E2E release gate — Playwright tests/e2e_portals lên provider/tenant portal
+# thật (cần cluster, không chạy trong CI thuần).
 e2e-portal:
 	NS=$(NS) bash scripts/e2e_portal_release_gate.sh
 

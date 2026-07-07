@@ -48,9 +48,10 @@ test("Nav: chỉ 7 vùng runtime-backed; Agents projection hiển thị bảng t
   await expect(page.getByTestId("agents-table")).toBeVisible();
 
   await page.goto(PROVIDER + "/understanding");
-  await expect(page.getByTestId("understanding-staging-sim")).toBeVisible();
-  await expect(page.getByTestId("facts-table")).toBeVisible();
-  await expect(page.getByTestId("competency-table")).toBeVisible();
+  const stagingSim = page.getByTestId("understanding-staging-sim");
+  await expect(stagingSim).toBeVisible();
+  await expect(stagingSim.getByTestId("facts-table")).toBeVisible();
+  await expect(stagingSim.getByTestId("competency-table")).toBeVisible();
 });
 
 test("Account: identity/roles/permissions tách khỏi trang chủ", async ({ page }) => {
