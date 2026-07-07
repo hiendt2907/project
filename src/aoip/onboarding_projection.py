@@ -176,6 +176,18 @@ def project_facts(
                         observation_time=ts, verified_time=ts,
                     )
                 )
+                # Same (host, service) pair, ALSO as a relational "hosts" Fact —
+                # runs_service is NOT in RELATIONAL_PREDICATES (competency_matrix/
+                # understanding/known_nodes all key off that exact predicate name,
+                # so it stays untouched), but the architecture diagram needs a real
+                # graph edge to place this service under its host's subgraph.
+                facts.append(
+                    Fact(
+                        subject=host_node, predicate="hosts", obj=make_node("service", service),
+                        confidence=confidence, provenance=provenance,
+                        observation_time=ts, verified_time=ts,
+                    )
+                )
     elif probe == "service_topology":
         for svc in discovery_data.get("services") or []:
             name = str(svc.get("name") or "").strip()
@@ -184,6 +196,13 @@ def project_facts(
             facts.append(
                 Fact(
                     subject=host_node, predicate="runs_service", obj=name,
+                    confidence=confidence, provenance=provenance,
+                    observation_time=ts, verified_time=ts,
+                )
+            )
+            facts.append(
+                Fact(
+                    subject=host_node, predicate="hosts", obj=make_node("service", name),
                     confidence=confidence, provenance=provenance,
                     observation_time=ts, verified_time=ts,
                 )

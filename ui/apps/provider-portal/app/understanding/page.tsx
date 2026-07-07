@@ -4,7 +4,8 @@ import type { ProviderTenantUnderstanding, ProviderTwinFact } from "@aoip/shared
 import { fetchUnderstanding } from "@/lib/understanding";
 import { fetchReadiness, type ReadinessResponse } from "@/lib/readiness";
 import { fetchDiagram, type DiagramResponse } from "@/lib/diagram";
-import { MermaidBlock, splitDiagramText } from "@/components/mermaid-diagram";
+import { MermaidBlock } from "@/components/mermaid-diagram";
+import { splitDiagramText } from "@/lib/diagram-utils";
 import "./understanding.css";
 
 export default async function ProviderUnderstandingPage() {

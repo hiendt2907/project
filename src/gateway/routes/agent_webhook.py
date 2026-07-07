@@ -61,6 +61,10 @@ class AgentRegisterRequest(BaseModel):
     platform: str = Field(default="linux", max_length=64)
     k8s_namespace: str = Field(default="", max_length=256)
     tenant_id: str = Field(default="default", pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    # Self-reported LAN-facing IP (see remote_agent.emitter._detect_local_ip) —
+    # preferred over request.client.host, which collapses to one shared NAT
+    # egress IP when multiple agent hosts sit behind the same gateway.
+    local_ip: str = Field(default="", max_length=64)
 
 
 class EvidenceItem(BaseModel):
@@ -284,9 +288,15 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
         "last_seen": now,
         "type": "remote",
         # Peer identity for connection_scan → connects_to projection
-        # (aoip.onboarding_projection.resolve_ip_to_host_map). Real client
-        # address only — never trusts a self-declared IP from the body.
-        "remote_ip": request.client.host if request.client else None,
+        # (aoip.onboarding_projection.resolve_ip_to_host_map). Prefer the
+        # agent's self-reported LAN-facing IP (body.local_ip) over
+        # request.client.host: multiple agent hosts behind one NAT egress
+        # (e.g. OrbStack's shared gateway) all present the SAME client IP to
+        # this endpoint, making host resolution ambiguous by construction —
+        # not a spoofing risk here since onboarding/discovery data is already
+        # fully self-reported by the agent (process names, ports, etc.), same
+        # trust boundary as the rest of this probe family.
+        "remote_ip": body.local_ip or (request.client.host if request.client else None),
     }
 
     key = f"{_REGISTRY_PREFIX}{body.agent_id}"

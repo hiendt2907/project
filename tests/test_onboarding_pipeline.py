@@ -90,7 +90,7 @@ class TestAccumulateAndDiagram:
         rendered = dd.render_all_diagrams(doc)
         assert rendered.startswith("%%")
         assert "graph TD" in rendered
-        assert "sequenceDiagram" in rendered
+        assert "graph LR" in rendered
         assert "flowchart LR" in rendered
 
 

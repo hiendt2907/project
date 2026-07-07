@@ -6,10 +6,29 @@ import logging
 import platform as _sys_platform
 import socket
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 _RETRY_DELAYS = (1.0, 2.0, 4.0)
+
+
+def _detect_local_ip(gateway_url: str) -> str:
+    """Best-effort local (LAN-facing) IP — used server-side to resolve
+    cross-host `connects_to` facts from connection_scan remote_ip. UDP
+    connect() never sends a packet; it only asks the kernel to pick the
+    route/source-interface it would use to reach `host`, which is the same
+    interface `ss -tnp` reports for real outbound connections to peer hosts.
+    request.client.host is NOT reliable here — multiple VMs behind the same
+    NAT egress (e.g. OrbStack shared gateway) all appear as one IP to the
+    Omni gateway, making host resolution ambiguous."""
+    host = urlparse(gateway_url).hostname or "8.8.8.8"
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((host, 80))
+            return s.getsockname()[0]
+    except OSError:
+        return ""
 
 
 def _make_transport() -> Any:
@@ -77,6 +96,7 @@ class OmniEmitter:
             "platform": _sys_platform.system().lower(),
             "k8s_namespace": k8s_namespace,
             "tenant_id": self._tenant_id,
+            "local_ip": _detect_local_ip(self._base),
         }
         async with _make_client(self._headers, self._base) as client:
             result = await _with_retry(client, "/webhook/agent/register", payload)

@@ -72,10 +72,16 @@ class TestProjectFacts:
         )
         obs = to_observation(ev, tenant_id="acme", agent_id="a1", host="app-01")
         facts = project_facts(obs)
-        assert len(facts) == 1
-        assert facts[0].obj == "billing"
+        # runs_service (legacy, non-relational — competency_matrix/understanding key
+        # off this exact predicate) + hosts (relational twin — powers the diagram's
+        # host-subgraph placement via model.edges) for the same (host, service) pair.
+        assert len(facts) == 2
+        runs_service = next(f for f in facts if f.predicate == "runs_service")
+        hosts_edge = next(f for f in facts if f.predicate == "hosts")
+        assert runs_service.obj == "billing"
+        assert hosts_edge.obj == "svc:billing"
         # INV_DATA_RESIDENCY: narrative description text must never leak into a Fact
-        assert all("handles invoices" not in v for v in (facts[0].subject, facts[0].obj))
+        assert all("handles invoices" not in v for f in facts for v in (f.subject, f.obj))
 
     def test_doc_snapshot_projects_hash_reference_not_raw_content(self):
         ev = _envelope("doc_snapshot", {"documents": [{"path": "README.md", "content": "SECRET internals"}]})
