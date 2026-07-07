@@ -65,6 +65,9 @@ class AgentRegisterRequest(BaseModel):
     # preferred over request.client.host, which collapses to one shared NAT
     # egress IP when multiple agent hosts sit behind the same gateway.
     local_ip: str = Field(default="", max_length=64)
+    # Self-hash of the running bundle (remote_agent.bundle_hash) — compared
+    # against the published release manifest for drift detection (IT-2).
+    bundle_sha256: str = Field(default="", max_length=64)
 
 
 class EvidenceItem(BaseModel):
@@ -297,6 +300,7 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
         # fully self-reported by the agent (process names, ports, etc.), same
         # trust boundary as the rest of this probe family.
         "remote_ip": body.local_ip or (request.client.host if request.client else None),
+        "bundle_sha256": body.bundle_sha256,
     }
 
     key = f"{_REGISTRY_PREFIX}{body.agent_id}"

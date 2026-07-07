@@ -37,6 +37,9 @@ _CMD_QUEUE_PREFIX = "omni:agent:cmd:"
 _CMD_RESULT_PREFIX = "omni:diag:cmdresult:"
 _PROFILE_KEY_PREFIX = "omni:agent:profile:"
 _REGISTRY_PREFIX = "omni:remote_agent:registry:"
+# Expected release (version + bundle sha256), published by
+# scripts/publish_agent_release.py — drift detection (Sprint NV-SRE IT-2).
+_RELEASE_MANIFEST_KEY = "omni:agent:release_manifest"
 _CMD_QUEUE_TTL = 300
 _CMD_RESULT_TTL = 3600
 _PROFILE_TTL = 86400
@@ -307,9 +310,38 @@ async def enqueue_agent_update(body: UpdateAgentRequest, request: Request) -> JS
     })
 
 
+def _classify_drift(rec: dict[str, Any], manifest: dict[str, Any] | None) -> str:
+    """current | drifted | unknown — pure so tests can pin the contract.
+
+    unknown = no published manifest, or the agent predates bundle-hash
+    reporting; it must NEVER silently read as current."""
+    if not manifest or not manifest.get("bundle_sha256"):
+        return "unknown"
+    reported = str(rec.get("bundle_sha256") or "")
+    if not reported:
+        return "unknown"
+    if reported == manifest.get("bundle_sha256") and rec.get("version") == manifest.get("version"):
+        return "current"
+    return "drifted"
+
+
+async def _load_release_manifest(redis: Any) -> dict[str, Any] | None:
+    raw = await redis.get(_RELEASE_MANIFEST_KEY)
+    if not raw:
+        return None
+    try:
+        manifest = json.loads(raw)
+        return manifest if isinstance(manifest, dict) else None
+    except Exception:
+        return None
+
+
 @router.get("/versions")
 async def list_agent_versions(request: Request, tenant_id: str | None = None) -> JSONResponse:
-    """Return registered agents with their current version and last_seen timestamp.
+    """Return registered agents with version, bundle hash and drift status.
+
+    Drift = agent's self-reported bundle sha256 / version differs from the
+    published release manifest ("nhân viên chạy kiến thức cũ").
 
     Non-admin callers only see agents registered under their own tenant.
     Admin callers may narrow the list with ``?tenant_id=`` (same resolve_scope
@@ -323,7 +355,10 @@ async def list_agent_versions(request: Request, tenant_id: str | None = None) ->
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Redis error: {exc}") from exc
 
+    manifest = await _load_release_manifest(redis)
+
     agents: list[dict] = []
+    drifted_count = 0
     now = int(time.time())
     for key in sorted(keys):
         raw = await redis.get(key)
@@ -336,15 +371,32 @@ async def list_agent_versions(request: Request, tenant_id: str | None = None) ->
         if scope is not None and rec.get("tenant_id") != scope:
             continue
         age_s = now - int(rec.get("last_seen", 0))
+        drift_status = _classify_drift(rec, manifest)
+        if drift_status == "drifted":
+            drifted_count += 1
+            logger.warning(
+                "[agent-drift] agent=%s version=%s bundle=%s… expected version=%s bundle=%s…",
+                rec.get("agent_id"), rec.get("version"),
+                str(rec.get("bundle_sha256") or "")[:12],
+                manifest.get("version") if manifest else "?",
+                str((manifest or {}).get("bundle_sha256") or "")[:12],
+            )
         agents.append({
             "agent_id": rec.get("agent_id", ""),
             "tenant_id": rec.get("tenant_id", ""),
             "hostname": rec.get("hostname", ""),
             "version": rec.get("version", "unknown"),
+            "bundle_sha256": rec.get("bundle_sha256", ""),
+            "drift_status": drift_status,
             "capabilities": rec.get("capabilities", []),
             "last_seen": rec.get("last_seen", 0),
             "age_seconds": age_s,
             "online": age_s < 120,
         })
 
-    return JSONResponse(content={"agents": agents, "total": len(agents)})
+    return JSONResponse(content={
+        "agents": agents,
+        "total": len(agents),
+        "drifted": drifted_count,
+        "release_manifest": manifest,
+    })

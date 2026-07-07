@@ -848,3 +848,46 @@ HEAD sạch qua `git stash`** — pre-existing, KHÔNG do iteration này; cần 
 
 Verify lại: `.venv/bin/python -m pytest tests/test_remote_agent.py -k DocSnapshot tests/test_onboarding_pipeline.py tests/test_aoip_onboarding_projection.py -q`; runtime:
 `orb -m cust-edge grep -c content_hash /opt/omni-remote-agent/remote_agent/collectors/discovery_evidence.py`.
+
+## Iteration 28 (Sprint NV-SRE, IT-2) — Drift detection: bundle hash vs release manifest (2026-07-07)
+
+**Bottleneck đã fix**: không có cơ chế phát hiện "agent chạy kiến thức cũ" (class bug bundle-drift
+từng cắn ≥2 lần). Baseline metric #2: VERSION khớp là tình cờ, không phải nhờ hệ thống.
+
+**Cơ chế**:
+1. `src/remote_agent/bundle_hash.py` (MỚI) — sha256 canonical trên (*.py + VERSION, bỏ
+   `__pycache__`), CÙNG thuật toán chạy 2 nơi: agent self-hash lúc startup và
+   `scripts/publish_agent_release.py` hash `src/remote_agent` trong repo.
+2. Agent gửi `bundle_sha256` trong mọi register/heartbeat (`emitter.py`, `agent.py`);
+   gateway lưu vào registry record (`agent_webhook.py`).
+3. `make publish-agent-release` → Redis `omni:agent:release_manifest`
+   (`{version, bundle_sha256, published_at}`).
+4. `/webhook/agent/versions` phân loại từng agent `current | drifted | unknown`
+   (`_classify_drift` pure function — agent không report hash KHÔNG BAO GIỜ được coi là
+   current, chỉ unknown), trả `drifted` count + manifest; drifted → WARNING log `[agent-drift]`.
+
+**VERIFIED_TEST**: `tests/test_agent_drift_detection.py` (MỚI, 13 test) — bundle hash
+deterministic/sensitivity/ignore-pycache, publisher≡package parity, contract `_classify_drift`
+5 case, endpoint surfacing 2 case. Full suite: **6012 passed, 1 failed** (fail = routing E2E
+pre-existing đã chứng minh trên HEAD sạch ở Iteration 27, không liên quan).
+
+**VERIFIED_RUNTIME** (cluster + 3 VM thật):
+- Rebuild `make docker-gateway` + `make deploy-gateway` (tránh drift image — bài học Iter 27).
+- `make publish-agent-release` → manifest `1.2.0 / 5b7968ac728d…`.
+- Sync bundle 3 VM (fresh-copy, dọn `__pycache__`) + restart: cả 3 agent staging-sim báo
+  `current`, hash tự tính trên VM **khớp chính xác** hash publisher tính từ repo — chứng minh
+  thuật toán canonical đồng nhất 2 phía. Agent cũ 1.1.3 (loyalty_*, tenant-replay-01_*) →
+  `unknown` đúng thiết kế.
+- **DoD drill thật**: thêm 1 dòng vào `settings.py` trên cust-db + restart → heartbeat ĐẦU TIÊN
+  đã báo `drifted` (hash `f3fe179098d0…` ≠ manifest), `drifted: 1`, WARNING
+  `[agent-drift] agent=staging-sim_cust-db … expected … 5b7968ac728d…` trong gateway log.
+  Restore file gốc + restart → `current`, `drifted: 0`.
+
+**Sprint baseline metric #2: ❌ → ✅** (phát hiện trong ≤1 heartbeat).
+
+**Chưa làm (ghi nhận)**: Telegram advisory cho drift (mới có API status + WARNING log) — gộp vào
+IT-5 khi update/rollback tự động dùng chung manifest; readiness card hiển thị drift là việc
+portal (ngoài scope backend sprint).
+
+Verify lại: `.venv/bin/python -m pytest tests/test_agent_drift_detection.py -q`; runtime:
+`make publish-agent-release` rồi curl `/webhook/agent/versions` trong gateway pod.

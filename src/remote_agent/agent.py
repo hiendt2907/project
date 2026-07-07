@@ -130,9 +130,19 @@ async def run_agent() -> None:
     # the first successful register; collectors fall back to safe defaults.
     thresholds: dict[str, float] | None = None
 
+    # Self-hash of the running bundle — computed once; drift detection compares
+    # this against the published release manifest on the Omni side (IT-2).
+    from remote_agent.bundle_hash import self_bundle_hash
+    try:
+        bundle_sha256 = self_bundle_hash()
+    except Exception as exc:
+        logger.warning("omni-agent: bundle self-hash failed: %s", exc)
+        bundle_sha256 = ""
+
     # Initial registration + profile upload
     thresholds = await emitter.register(
-        capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace
+        capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace,
+        bundle_sha256=bundle_sha256,
     )
     if profile:
         await emitter.upload_profile(profile)
@@ -145,7 +155,8 @@ async def run_agent() -> None:
         # Re-register every _REGISTER_INTERVAL seconds (must be < gateway TTL 120s)
         if time.monotonic() - last_register_ts >= _REGISTER_INTERVAL:
             new_thresholds = await emitter.register(
-                capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace
+                capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace,
+                bundle_sha256=bundle_sha256,
             )
             if new_thresholds is not None:
                 thresholds = new_thresholds

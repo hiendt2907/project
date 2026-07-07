@@ -80,7 +80,11 @@ class OmniEmitter:
         self._tenant_id = tenant_id
 
     async def register(
-        self, capabilities: list[str], version: str = "1.0.0", k8s_namespace: str = ""
+        self,
+        capabilities: list[str],
+        version: str = "1.0.0",
+        k8s_namespace: str = "",
+        bundle_sha256: str = "",
     ) -> dict[str, float] | None:
         """Register/heartbeat with the gateway.
 
@@ -97,6 +101,7 @@ class OmniEmitter:
             "k8s_namespace": k8s_namespace,
             "tenant_id": self._tenant_id,
             "local_ip": _detect_local_ip(self._base),
+            "bundle_sha256": bundle_sha256,
         }
         async with _make_client(self._headers, self._base) as client:
             result = await _with_retry(client, "/webhook/agent/register", payload)

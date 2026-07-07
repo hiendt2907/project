@@ -1,11 +1,15 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-**Sprint "Nhân viên SRE" ĐÃ DUYỆT + IT-1 ĐÃ HOÀN THÀNH (VERIFIED_RUNTIME).**
+**Sprint "Nhân viên SRE": IT-1 + IT-2 ĐÃ HOÀN THÀNH (VERIFIED_RUNTIME).**
 - Plan + baseline: `docs/plans/sprint-agent-sre-employee-production.md` (commit `1e28e85`).
-- IT-1 (data-residency tại nguồn) DONE: agent 1.2.0 hash sha256+length+mtime ngay trên VM,
-  field `content` không còn rời VM khách. Chi tiết + evidence đầy đủ: PRODUCT_PROOF
-  **Iteration 27**. Sprint metric #1: ❌ → ✅.
+- IT-1 (data-residency tại nguồn) DONE — commit `e64e338`, PRODUCT_PROOF **Iteration 27**.
+  Sprint metric #1: ❌ → ✅.
+- IT-2 (drift detection) DONE — PRODUCT_PROOF **Iteration 28**. Bundle hash canonical
+  (`src/remote_agent/bundle_hash.py`) 2 phía agent/publisher; manifest Redis
+  `omni:agent:release_manifest` (`make publish-agent-release`); `/webhook/agent/versions`
+  trả `drift_status current|drifted|unknown` + WARNING `[agent-drift]`. Drill thật cust-db:
+  tamper → drifted heartbeat đầu → restore → current. Sprint metric #2: ❌ → ✅.
 
 ## Bối cảnh quyết định (user chốt trong phiên này)
 - User chuyển hướng ưu tiên: **backend production**, tập trung hoàn thiện backend + ý tưởng gốc.
@@ -85,12 +89,30 @@ Kết quả đầy đủ ghi trong section "Baseline TRƯỚC sprint" của file
 ## Blockers
 Không có. Finding mở (ngoài scope IT-1): E2E test routing fail pre-existing (xem trên).
 
+## IT-2 — files changed (code)
+- `src/remote_agent/bundle_hash.py` (MỚI) — canonical bundle hash
+- `src/remote_agent/emitter.py`, `agent.py` — gửi `bundle_sha256` trong register
+- `src/gateway/routes/agent_webhook.py` — nhận + lưu vào registry record
+- `src/gateway/routes/agent_commands.py` — `_classify_drift` + `/versions` surfacing
+- `scripts/publish_agent_release.py` (MỚI) + Makefile `publish-agent-release`
+- `tests/test_agent_drift_detection.py` (MỚI, 13 test)
+Full suite sau IT-2: 6012 passed, 1 failed (routing E2E pre-existing, xem IT-1).
+
+## Ghi chú vận hành quan trọng (IT-2)
+- **Sau MỌI lần sửa code agent + deploy VM: phải chạy lại `make publish-agent-release`**,
+  nếu không cả 3 agent sẽ báo `drifted` (đúng thiết kế — manifest là source of truth).
+- Deploy bundle VM: fresh-copy + dọn `__pycache__` (rsync không có trên cust-edge/app).
+- Agent khác trong lab (loyalty_*, tenant-replay-01_*) chạy 1.1.3 không report hash →
+  `unknown` (đúng thiết kế, KHÔNG phải bug). Nâng cấp chúng ngoài scope IT-2.
+- Telegram advisory cho drift CHƯA làm (chỉ API + WARNING log) — gộp vào IT-5.
+
 ## Next step chính xác
-1. Commit IT-1 (code + tests + PRODUCT_PROOF + plan + handoff) — đang làm cuối phiên này.
-2. Bắt đầu **IT-2 (drift detection)**: release manifest (version + bundle sha256 expected),
-   agent gửi bundle hash trong heartbeat, gateway so sánh → `current|drifted|unknown` trên
-   `/webhook/agent/versions` + Telegram advisory. Chi tiết trong sprint plan.
-3. (Tuỳ chọn, nếu rảnh) Điều tra fail pre-existing `test_remote_agent_e2e.py` routing.
+1. Commit IT-2 — đang làm cuối phiên này.
+2. Bắt đầu **IT-3 (enrollment + identity per-agent, nền AOIP)**: enroll token 1 lần qua
+   Admin API → credential per-agent → tenant binding PG (gotcha FK: tenant phải tồn tại
+   trước); gateway endpoint enroll/revoke; installer dùng canonical provisioning module.
+   Chi tiết trong sprint plan IT-3.
+3. (Tuỳ chọn) Điều tra fail pre-existing `test_remote_agent_e2e.py` routing.
 
 ## Không được làm lại
 - Đừng re-audit ADR-002/protocol vocabulary — đã xong, có contract test.

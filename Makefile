@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: agent-bundle agent-bundle-offline agent-keygen tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap e2e-portal chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
+.PHONY: agent-bundle agent-bundle-offline agent-keygen publish-agent-release tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap e2e-portal chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
 
 NS ?= multi-agent
 
@@ -12,6 +12,12 @@ agent-bundle-offline:
 
 agent-keygen:
 	bash scripts/omni-agent-keygen.sh
+
+# Publish expected agent release (version + bundle sha256) → Redis manifest.
+# Gateway compares every registered agent against it (drift detection, IT-2).
+publish-agent-release:
+	.venv/bin/python scripts/publish_agent_release.py | kubectl -n $(NS) exec -i redis-0 -- redis-cli -x SET omni:agent:release_manifest
+	kubectl -n $(NS) exec redis-0 -- redis-cli GET omni:agent:release_manifest
 
 tunnel-setup:
 	@test -n "$(DOMAIN)" || (echo "Usage: make tunnel-setup DOMAIN=omni-gateway.yourdomain.com"; exit 1)
