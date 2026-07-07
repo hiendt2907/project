@@ -51,10 +51,31 @@ DEFAULT_READINESS_THRESHOLDS = {
 
 def _sanitize_documents(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Data residency: handover/doc content stays on the customer's system —
-    Omni keeps only a reference (hash + length), never the text itself."""
+    Omni keeps only a reference (hash + length), never the text itself.
+
+    Agents ≥1.2.0 hash at the source and send content_hash/content_length
+    directly (no raw content). Legacy agents still send raw ``content``: keep
+    hashing it here as a defensive fallback during the transition window, but
+    flag it — raw content crossing the wire violates INV_DATA_RESIDENCY."""
     out: list[dict[str, Any]] = []
     for doc in documents:
+        if "content" not in doc and doc.get("content_hash"):
+            entry = {
+                "path": doc.get("path"),
+                "content_hash": doc.get("content_hash"),
+                "content_length": int(doc.get("content_length") or 0),
+            }
+            if doc.get("mtime") is not None:
+                entry["mtime"] = doc.get("mtime")
+            out.append(entry)
+            continue
         content = str(doc.get("content") or "")
+        if content:
+            logger.warning(
+                "[residency] legacy agent sent raw doc content path=%s len=%d — "
+                "hashed on arrival; upgrade agent to hash at source",
+                doc.get("path"), len(content),
+            )
         out.append(
             {
                 "path": doc.get("path"),

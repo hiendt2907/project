@@ -1,12 +1,11 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-**Kế hoạch full sprint "Nhân viên SRE" — Remote Agent Production Lifecycle** (phiên planning,
-KHÔNG code). File: `docs/plans/sprint-agent-sre-employee-production.md` (mới, chưa commit).
-Trạng thái: **PROPOSED — đang chờ user duyệt** trước khi bắt đầu IT-1.
-**Đã bổ sung theo yêu cầu user: section "Baseline TRƯỚC sprint" đo thật trên 3 VM + cluster**
-(2026-07-07) để so sánh trước/sau — mỗi thước đo sprint có trạng thái ❌/⚠️/❓ kèm lệnh bằng
-chứng chạy lại được ở IT-7.
+**Sprint "Nhân viên SRE" ĐÃ DUYỆT + IT-1 ĐÃ HOÀN THÀNH (VERIFIED_RUNTIME).**
+- Plan + baseline: `docs/plans/sprint-agent-sre-employee-production.md` (commit `1e28e85`).
+- IT-1 (data-residency tại nguồn) DONE: agent 1.2.0 hash sha256+length+mtime ngay trên VM,
+  field `content` không còn rời VM khách. Chi tiết + evidence đầy đủ: PRODUCT_PROOF
+  **Iteration 27**. Sprint metric #1: ❌ → ✅.
 
 ## Bối cảnh quyết định (user chốt trong phiên này)
 - User chuyển hướng ưu tiên: **backend production**, tập trung hoàn thiện backend + ý tưởng gốc.
@@ -63,17 +62,35 @@ Chưa commit gì trong phiên này. HEAD vẫn `359d7c1` (main, đã push từ p
 - `migrations/omni_admin/0001-0004`: không có bảng command/outcome nào trong PG.
 Kết quả đầy đủ ghi trong section "Baseline TRƯỚC sprint" của file plan.
 
+## IT-1 — files changed (code)
+- `src/remote_agent/collectors/discovery_evidence.py` — hash tại nguồn, bỏ raw content
+- `src/remote_agent/VERSION` — 1.1.3 → 1.2.0
+- `src/pkg/onboarding/discovery_doc.py::_sanitize_documents` — dual-format + WARNING legacy
+- `src/aoip/onboarding_projection.py` — doc node id từ `content_hash[:16]` (id ổn định, chống
+  collapse về hash-rỗng)
+- Tests: `test_remote_agent.py`, `test_onboarding_pipeline.py`, `test_aoip_onboarding_projection.py`
+
+## IT-1 — verification đã chạy
+- Full suite: 5999 passed, 1 failed — fail `test_remote_agent_e2e.py::...system_metrics...`
+  (topic routing knowledge vs diagnostic) **pre-existing trên HEAD sạch, chứng minh bằng
+  `git stash` + rerun**. KHÔNG do IT-1. Cần điều tra riêng (finding mở).
+- Runtime: bundle deploy 3 VM (VERSION 1.2.0, service active); rebuild `make docker-worker` +
+  rollout omni-fullstack/omni-onboarding (bắt được drift image cũ giữa chừng — bản ghi đầu
+  hash-of-empty trước rollout, đúng bài học iteration 1); canary `/srv/README.md` (marker
+  XYZZY) trên cust-edge → `HGET omni:onboarding:doc:staging-sim doc_snapshot` = hash khớp
+  `sha256sum` trên VM + mtime + không `content`; sweep toàn Redis: 0 leak.
+- Gotcha tái xác nhận: gateway `dedup_skip` fingerprint 5-min window — envelope doc không đổi
+  sẽ bị chặn; muốn re-test phải đổi nội dung file canary.
+
 ## Blockers
-Không có blocker kỹ thuật. **Chờ 1 input duy nhất từ user: duyệt sprint plan** (hoặc chỉnh
-thứ tự/phạm vi).
+Không có. Finding mở (ngoài scope IT-1): E2E test routing fail pre-existing (xem trên).
 
 ## Next step chính xác
-1. User duyệt `docs/plans/sprint-agent-sre-employee-production.md`.
-2. Commit plan + handoff (khi user cho phép commit).
-3. Bắt đầu **IT-1**: sửa `collect_doc_snapshot` hash/sanitize ngay trên VM (payload chỉ còn
-   `path/sha256/length/mtime`, bỏ field `content` thô); Omni-side `_sanitize_documents` giữ
-   tolerant dual-format; test payload schema; redeploy bundle 3 VM (gotcha: VM bundle từng cũ
-   hơn repo); verify bằng Kafka message thật trên topic `omni-knowledge-evidence`.
+1. Commit IT-1 (code + tests + PRODUCT_PROOF + plan + handoff) — đang làm cuối phiên này.
+2. Bắt đầu **IT-2 (drift detection)**: release manifest (version + bundle sha256 expected),
+   agent gửi bundle hash trong heartbeat, gateway so sánh → `current|drifted|unknown` trên
+   `/webhook/agent/versions` + Telegram advisory. Chi tiết trong sprint plan.
+3. (Tuỳ chọn, nếu rảnh) Điều tra fail pre-existing `test_remote_agent_e2e.py` routing.
 
 ## Không được làm lại
 - Đừng re-audit ADR-002/protocol vocabulary — đã xong, có contract test.

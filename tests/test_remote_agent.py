@@ -1229,17 +1229,45 @@ class TestCollectConnectionScan:
 
 class TestCollectDocSnapshot:
     @pytest.mark.asyncio
-    async def test_finds_readme_returns_discovery_evidence(self, tmp_path):
+    async def test_finds_readme_returns_hash_reference_not_content(self, tmp_path):
+        """INV_DATA_RESIDENCY: raw text never enters the envelope — hash at source."""
+        import hashlib
+        import json
+
         from remote_agent.collectors import discovery_evidence as disc
 
-        (tmp_path / "README.md").write_text("# My Service\nDoes things.")
+        text = "# My Service\nDoes things."
+        (tmp_path / "README.md").write_text(text)
 
         result = await disc.collect_doc_snapshot("host1", [str(tmp_path)])
 
         assert result is not None
         docs = result["extracted_fact"]["discovery_data"]["documents"]
         assert len(docs) == 1
-        assert "My Service" in docs[0]["content"]
+        assert "content" not in docs[0]
+        assert docs[0]["content_hash"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+        assert docs[0]["content_length"] == len(text)
+        assert isinstance(docs[0]["mtime"], int)
+        # Belt-and-braces: the raw text must not appear ANYWHERE in the envelope.
+        assert "My Service" not in json.dumps(result)
+
+    @pytest.mark.asyncio
+    async def test_hash_matches_legacy_server_side_truncation_window(self, tmp_path):
+        """Files larger than _DOC_MAX_BYTES hash the same truncated window the
+        legacy Omni-side sanitizer hashed — hashes stay comparable across versions."""
+        import hashlib
+
+        from remote_agent.collectors import discovery_evidence as disc
+
+        big = "x" * (disc._DOC_MAX_BYTES + 500)
+        (tmp_path / "README.md").write_text(big)
+
+        result = await disc.collect_doc_snapshot("host1", [str(tmp_path)])
+
+        docs = result["extracted_fact"]["discovery_data"]["documents"]
+        truncated = big[: disc._DOC_MAX_BYTES]
+        assert docs[0]["content_hash"] == hashlib.sha256(truncated.encode("utf-8")).hexdigest()
+        assert docs[0]["content_length"] == disc._DOC_MAX_BYTES
 
     @pytest.mark.asyncio
     async def test_no_docs_found_returns_none(self, tmp_path):

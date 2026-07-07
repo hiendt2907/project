@@ -225,9 +225,13 @@ def project_facts(
             )
     elif probe == "doc_snapshot":
         for doc in discovery_data.get("documents") or []:
-            content = str(doc.get("content") or "")
-            doc_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
-            doc_node = make_node("document", doc_hash)
+            # Agents ≥1.2.0 hash at source (INV_DATA_RESIDENCY); same sha256 the
+            # legacy path computed here, so document node ids stay stable.
+            full_hash = str(doc.get("content_hash") or "")
+            if not full_hash:
+                content = str(doc.get("content") or "")
+                full_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            doc_node = make_node("document", full_hash[:16])
             facts.append(
                 Fact(
                     subject=doc_node, predicate="observed_from", obj=host_node,

@@ -1,9 +1,8 @@
 """Onboarding discovery probes — process_list/port_scan/service_topology/doc-snapshot.
 
-INVARIANT INV_NO_DATA_EXFIL: only names/ports/paths/metadata collected here;
-the doc-snapshot probe reads small text files verbatim (README/OpenAPI/sample
-config/sample log) for the onboarding worker to summarize server-side — this
-agent never runs an LLM locally (it is a sensor, not an analyst).
+INVARIANT INV_NO_DATA_EXFIL + INV_DATA_RESIDENCY: only names/ports/paths/metadata
+leave this host. The doc-snapshot probe hashes document content IN PLACE (sha256 +
+length + mtime) — raw text never enters the envelope, so it never crosses Kafka.
 
 Each probe stamps evidence_source="DiscoveryEvidence" so evidence_consumer.py
 routes it straight to the onboarding pipeline without touching K8s-specific
@@ -12,6 +11,7 @@ diagnostic logic.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -182,10 +182,12 @@ async def collect_connection_scan(hostname: str) -> dict[str, Any] | None:
 
 
 async def collect_doc_snapshot(hostname: str, search_dirs: list[str]) -> dict[str, Any] | None:
-    """Read small onboarding documents verbatim (README/OpenAPI/sample config).
+    """Reference small onboarding documents (README/OpenAPI/sample config) by hash.
 
-    Raw content only — no parsing, no LLM call. The onboarding worker
-    (analyst-side) is responsible for any summarization.
+    INV_DATA_RESIDENCY: content is read and hashed HERE, on the customer host —
+    the envelope carries only path + sha256 + length + mtime, never the text.
+    The truncation window (_DOC_MAX_BYTES) matches the legacy server-side hash
+    so hashes stay comparable across agent versions.
     """
     found: list[dict[str, Any]] = []
     seen_inodes: set[tuple[int, int]] = set()
@@ -207,7 +209,12 @@ async def collect_doc_snapshot(hostname: str, search_dirs: list[str]) -> dict[st
                     continue
                 seen_inodes.add(inode_key)
                 content = path.read_text(errors="replace")[:_DOC_MAX_BYTES]
-                found.append({"path": str(path), "content": content})
+                found.append({
+                    "path": str(path),
+                    "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    "content_length": len(content),
+                    "mtime": int(st.st_mtime),
+                })
             except Exception as exc:
                 logger.debug("[collector.discovery] doc read failed path=%s err=%s", path, exc)
     if not found:

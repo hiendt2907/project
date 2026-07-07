@@ -94,6 +94,26 @@ class TestProjectFacts:
         assert "SECRET internals" not in f.subject
         assert "SECRET internals" not in f.obj
 
+    def test_doc_snapshot_prehashed_agent_yields_same_node_id_as_legacy(self):
+        """Agents ≥1.2.0 send content_hash instead of raw content — the document
+        node id must be identical to what the legacy raw-content path produced,
+        and distinct docs must not collapse onto one node."""
+        import hashlib as _hashlib
+
+        legacy = _envelope("doc_snapshot", {"documents": [{"path": "README.md", "content": "SECRET internals"}]})
+        legacy_fact = project_facts(to_observation(legacy, tenant_id="acme", agent_id="a1", host="app-01"))[0]
+
+        h1 = _hashlib.sha256(b"SECRET internals").hexdigest()
+        h2 = _hashlib.sha256(b"other doc").hexdigest()
+        prehashed = _envelope("doc_snapshot", {"documents": [
+            {"path": "README.md", "content_hash": h1, "content_length": 16},
+            {"path": "openapi.json", "content_hash": h2, "content_length": 9},
+        ]})
+        facts = project_facts(to_observation(prehashed, tenant_id="acme", agent_id="a1", host="app-01"))
+        assert len(facts) == 2
+        assert facts[0].subject == legacy_fact.subject
+        assert facts[0].subject != facts[1].subject
+
     def test_empty_discovery_data_yields_no_facts(self):
         ev = _envelope("process_list", {"processes": []})
         obs = to_observation(ev, tenant_id="acme", agent_id="a1", host="h")

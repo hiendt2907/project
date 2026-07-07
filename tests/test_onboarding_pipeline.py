@@ -586,6 +586,30 @@ class TestHandoverDocUpload:
         assert stored["content_length"] == len("internal runbook details")
 
     @pytest.mark.asyncio
+    async def test_prehashed_doc_from_agent_passes_through_unchanged(self):
+        """Agents ≥1.2.0 hash at the source (INV_DATA_RESIDENCY) — the sanitizer
+        must keep their reference as-is, not re-hash an empty string over it."""
+        docs = dd._sanitize_documents([
+            {"path": "/srv/app/README.md", "content_hash": "ab" * 32,
+             "content_length": 1234, "mtime": 1751900000},
+        ])
+        assert docs == [
+            {"path": "/srv/app/README.md", "content_hash": "ab" * 32,
+             "content_length": 1234, "mtime": 1751900000},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_legacy_raw_content_still_hashed_on_arrival(self):
+        """Transition window: an old agent sending raw content must still end up
+        as hash+length only (defensive fallback, never persisted raw)."""
+        docs = dd._sanitize_documents([
+            {"path": "README.md", "content": "internal runbook details"},
+        ])
+        assert "content" not in docs[0]
+        assert docs[0]["content_hash"] == hashlib.sha256(b"internal runbook details").hexdigest()
+        assert docs[0]["content_length"] == len("internal runbook details")
+
+    @pytest.mark.asyncio
     async def test_service_description_text_never_persisted_only_described_flag(self):
         """Data residency: tenant-authored business-purpose text stays local —
         Omni only keeps a described/not-described mapping per service."""

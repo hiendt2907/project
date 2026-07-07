@@ -805,3 +805,46 @@ tại được trả về nguyên trạng, không tạo dòng trùng, không t�
 (`tests/test_admin_config_store.py`) verify: gọi 2 lần idempotent=True → cùng kết quả, đúng 1 row,
 đúng 1 audit event. `VERIFIED_TEST` — CHƯA runtime-verify trên Postgres thật (chỉ FakePgPool), CHƯA
 wire vào bất kỳ caller thật nào (đang chờ Phase 4 dùng).
+
+## Iteration 27 (Sprint NV-SRE, IT-1) — Doc snapshot hash TẠI NGUỒN, đóng vi phạm INV_DATA_RESIDENCY cuối (2026-07-07)
+
+**Bottleneck đã fix**: `collect_doc_snapshot` (agent, `discovery_evidence.py:209-210`) gửi raw
+`content` (≤8000B × ≤20 file) qua Kafka; Omni hash sau khi nhận — raw data đã rời VM khách.
+Vi phạm `INV_DATA_RESIDENCY` [CONSTITUTIONAL] duy nhất còn sót (baseline sprint, metric #1).
+
+**Fix 3 lớp**:
+1. Agent (`src/remote_agent/collectors/discovery_evidence.py`): hash sha256 + length + mtime ngay
+   trên VM, field `content` bị loại khỏi envelope. Cửa sổ truncation `_DOC_MAX_BYTES` giữ nguyên
+   nên hash tương thích ngược với hash server-side cũ. VERSION agent 1.1.3 → **1.2.0**.
+2. Omni (`src/pkg/onboarding/discovery_doc.py::_sanitize_documents`): dual-format — pre-hashed
+   pass-through (giữ mtime); legacy raw content vẫn hash tại chỗ (transition window) + WARNING log.
+3. `src/aoip/onboarding_projection.py`: doc node id dùng `content_hash[:16]` (giá trị y hệt
+   sha256 cũ → node id ổn định qua version; tránh mọi doc sập về node-rỗng khi thiếu `content`).
+
+**VERIFIED_TEST**: 5 test mới/sửa (`test_remote_agent.py::TestCollectDocSnapshot` — assert
+`content` absent + canary text absent toàn envelope + truncation-window hash;
+`test_onboarding_pipeline.py` — pre-hashed pass-through + legacy fallback;
+`test_aoip_onboarding_projection.py` — node id parity legacy vs pre-hashed, 2 doc không collapse).
+Full suite: **5999 passed, 1 failed** — fail là
+`test_remote_agent_e2e.py::test_register_then_real_system_metrics_emitted_through_real_pipeline`
+(routing `omni-knowledge-evidence` vs `omni-diagnostic-evidence`), **đã chứng minh fail sẵn trên
+HEAD sạch qua `git stash`** — pre-existing, KHÔNG do iteration này; cần điều tra riêng.
+
+**VERIFIED_RUNTIME** (end-to-end trên hạ tầng thật):
+- Deploy bundle mới lên cả 3 VM (`/opt/omni-remote-agent`, restart systemd, VERSION 1.2.0 xác nhận).
+- Trồng canary `/srv/README.md` chứa marker `RESIDENCY_CANARY_XYZZY` trên cust-edge.
+- **Bắt được deployment drift thật giữa chừng**: bản ghi đầu về Redis với hash-of-empty
+  (`e3b0c44...`, mất mtime) vì pod Omni còn chạy image cũ — đúng bài học iteration 1. Rebuild
+  `make docker-worker` + rollout omni-fullstack/omni-onboarding, xác nhận code mới trong pod bằng grep.
+- **Gotcha dedup tái xác nhận**: envelope doc y hệt bị `dedup_skip` ở gateway (fingerprint 5-min
+  window) — đổi nội dung canary (v2) để tạo fingerprint mới.
+- Kết quả cuối: `HGET omni:onboarding:doc:staging-sim doc_snapshot` =
+  `{"path": "/srv/README.md", "content_hash": "8fef5d6b...", "content_length": 82, "mtime": 1783415643}`
+  — hash **khớp chính xác** `sha256sum /srv/README.md` tính trên VM; có `mtime` = đi qua nhánh
+  pre-hashed; không field `content`.
+- Sweep toàn bộ Redis keyspace (string/hash/list) tìm `XYZZY`: **0 leak** (`SWEEP_DONE`).
+
+**Sprint baseline metric #1: ❌ → ✅.**
+
+Verify lại: `.venv/bin/python -m pytest tests/test_remote_agent.py -k DocSnapshot tests/test_onboarding_pipeline.py tests/test_aoip_onboarding_projection.py -q`; runtime:
+`orb -m cust-edge grep -c content_hash /opt/omni-remote-agent/remote_agent/collectors/discovery_evidence.py`.
