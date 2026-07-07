@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from typing import Any, Sequence
 
@@ -114,12 +115,91 @@ async def get_accumulated_doc(redis: Any, tenant_id: str) -> dict[str, Any]:
     return out
 
 
+# OS/init-system noise — always present on any Linux host, never part of the
+# customer's actual system architecture. Filtered from diagram rendering only
+# (raw evidence/residency storage is untouched — this is a display concern).
+_NOISE_NAME_PATTERN = re.compile(
+    r"^(systemd.*|dbus.*|rpc[-.].*|rpcbind|nfs.*|cron|rsyslog.*|console-getty|"
+    r"agetty|user@\d+|\(sd-pam\)|orbstack-agent:?|omni-remote-agent.*|ps)$",
+    re.IGNORECASE,
+)
+
+
+def _is_noise_component(name: str) -> bool:
+    return bool(_NOISE_NAME_PATTERN.match(name.strip()))
+
+
+# Kernel-owned ports with no resolvable userspace process name in `ss` output
+# (e.g. NFS server/rpcbind's ephemeral callback ports) — same noise, no name to match on.
+_NOISE_PORTS = {111, 2049}
+
+
+def _is_noise_port(port: dict[str, Any]) -> bool:
+    if _is_noise_component(str(port.get("service") or "")):
+        return True
+    return port.get("port") in _NOISE_PORTS
+
+
+# Architecture-tier classification by real process/service name — never guessed
+# per-tenant, just a fixed vocabulary of well-known edge/data daemons so the
+# topology/API diagrams can lay out as Edge -> Application -> Data (the
+# convention system/network architects actually draw), same tiers a human
+# reviewing `ss -tnp` output would assign by binary name alone.
+_EDGE_TIER_NAMES = {
+    "nginx", "haproxy", "traefik", "envoy", "httpd", "apache2", "caddy", "kong",
+}
+_DATA_TIER_NAMES = {
+    "mariadbd", "mysqld", "mysql", "postgres", "postgresql", "redis-server",
+    "redis", "mongod", "mongodb", "memcached", "valkey", "cassandra",
+}
+
+
+def _service_tier(name: str) -> str:
+    base = name.strip().lower()
+    if base in _EDGE_TIER_NAMES:
+        return "edge"
+    if base in _DATA_TIER_NAMES:
+        return "data"
+    return "app"
+
+
+_TIER_ORDER = ("edge", "app", "data", "unclassified")
+_TIER_TITLE = {
+    "edge": "Edge / Gateway",
+    "app": "Application",
+    "data": "Data",
+    "unclassified": "Unclassified",
+}
+
+# Mermaid classDef per tier — draw.io-style colour-coded boxes so a reader
+# tells Edge/App/Data apart at a glance instead of every node rendering as the
+# same undifferentiated dark rectangle. Muted `_TIER_CLUSTER_STYLE` tints the
+# subgraph container itself; the brighter `_TIER_NODE_STYLE` is the node fill,
+# so a node visibly "sits inside" its tier's cluster colour.
+_TIER_NODE_STYLE = {
+    "edge": "fill:#123c4d,stroke:#4fc3f7,stroke-width:2px,color:#e0f7fa",
+    "app": "fill:#2b1f45,stroke:#b388ff,stroke-width:2px,color:#ede7f6",
+    "data": "fill:#402712,stroke:#ffb74d,stroke-width:2px,color:#fff3e0",
+    "unclassified": "fill:#262626,stroke:#9e9e9e,stroke-width:2px,color:#eeeeee",
+}
+_TIER_CLUSTER_STYLE = {
+    "edge": "fill:#0d232b,stroke:#1f5a6e,stroke-width:1.5px,color:#7fd8f0",
+    "app": "fill:#1c1430,stroke:#4527a0,stroke-width:1.5px,color:#cbb6ff",
+    "data": "fill:#2b1a0c,stroke:#8d5524,stroke-width:1.5px,color:#ffcc80",
+    "unclassified": "fill:#1a1a1a,stroke:#555555,stroke-width:1.5px,color:#bbbbbb",
+}
+# Clear, high-contrast connector line — draw.io-style edges instead of
+# Mermaid's near-invisible default 1px light-grey line on a dark background.
+_LINK_STYLE = "stroke:#8ecae6,stroke-width:2px"
+
+
 def render_component_diagram(doc: dict[str, Any]) -> str:
     services = (doc.get("service_topology") or {}).get("services") or []
     lines = ["graph TD"]
-    if not services:
+    real_services = [s for s in services if not _is_noise_component(str(s.get("name") or ""))]
+    if not real_services:
         lines.append("  host[\"host\"]")
-    for svc in services[:50]:
+    for svc in real_services[:50]:
         name = str(svc.get("name") or "svc").replace('"', "'")
         node_id = f"svc_{abs(hash(name)) % 100000}"
         lines.append(f'  {node_id}["{name}"]')
@@ -127,26 +207,79 @@ def render_component_diagram(doc: dict[str, Any]) -> str:
 
 
 def render_api_sequence_diagram(doc: dict[str, Any]) -> str:
-    ports = (doc.get("port_scan") or {}).get("listening_ports") or []
-    lines = ["sequenceDiagram", "  participant Client"]
+    """Client -> [Gateway ->] exposed-port fan-out. Deliberately a `graph LR`,
+    not a `sequenceDiagram`: this data has no real temporal/causal order (it's
+    a flat port_scan snapshot), and Mermaid draws every sequence-diagram actor
+    box twice (top + bottom of the lifeline) — for 10+ ports that renders as
+    a wall of duplicated boxes with no information gain over a plain graph.
+
+    When one of the discovered ports is a known edge/gateway process (nginx,
+    haproxy, ...) the diagram draws the real API-gateway pattern architects
+    expect: Client -> Gateway -> backend services, gateway inferred from the
+    actual discovered process name — never asserted when nothing edge-tier
+    was observed (falls back to a flat Client fan-out)."""
+    all_ports = (doc.get("port_scan") or {}).get("listening_ports") or []
+    ports = [p for p in all_ports if not _is_noise_port(p)]
+    lines = ["graph LR", '  client(["Client"])']
+    style_lines = [f"  classDef clientNode {_TIER_CLUSTER_STYLE['unclassified']}", "  class client clientNode"]
     if not ports:
-        lines.append("  participant Server")
-        lines.append("  Client->>Server: (no listening ports discovered yet)")
-        return "\n".join(lines)
-    for p in ports[:20]:
+        lines.append('  none["(no listening ports discovered yet)"]')
+        lines.append("  client --> none")
+        return "\n".join(lines + style_lines)
+
+    deduped: list[dict[str, Any]] = []
+    seen_ports: set[int] = set()
+    for p in ports:
+        port = p.get("port")
+        if port in seen_ports:
+            continue
+        seen_ports.add(port)
+        deduped.append(p)
+        if len(seen_ports) > 20:
+            break
+
+    gateway = next(
+        (p for p in deduped if _service_tier(str(p.get("service") or "")) == "edge"), None,
+    )
+    style_lines.append(f"  classDef appNode {_TIER_NODE_STYLE['app']}")
+    style_lines.append(f"  linkStyle default {_LINK_STYLE}")
+    if gateway is None:
+        svc_ids = []
+        for p in deduped:
+            port = p.get("port")
+            service = str(p.get("service") or f"port-{port}").replace('"', "'")
+            node_id = f"svc_{port}"
+            lines.append(f'  {node_id}["{service} ({port})"]')
+            lines.append(f"  client --> {node_id}")
+            svc_ids.append(node_id)
+        style_lines.append(f"  class {','.join(svc_ids)} appNode")
+        return "\n".join(lines + style_lines)
+
+    gw_port = gateway.get("port")
+    gw_service = str(gateway.get("service") or f"port-{gw_port}").replace('"', "'")
+    gw_id = f"svc_{gw_port}"
+    lines.append(f'  {gw_id}{{{{"{gw_service} ({gw_port}) — Gateway"}}}}')
+    lines.append(f"  client --> {gw_id}")
+    svc_ids = []
+    for p in deduped:
+        if p is gateway:
+            continue
         port = p.get("port")
         service = str(p.get("service") or f"port-{port}").replace('"', "'")
-        participant = f"Server_{port}"
-        lines.append(f"  participant {participant} as {service} ({port})")
-    for p in ports[:20]:
-        port = p.get("port")
-        service = str(p.get("service") or f"port-{port}")
-        lines.append(f"  Client->>Server_{port}: request ({service})")
-    return "\n".join(lines)
+        node_id = f"svc_{port}"
+        lines.append(f'  {node_id}["{service} ({port})"]')
+        lines.append(f"  {gw_id} --> {node_id}")
+        svc_ids.append(node_id)
+    style_lines.append(f"  classDef gatewayNode {_TIER_NODE_STYLE['edge']}")
+    style_lines.append(f"  class {gw_id} gatewayNode")
+    if svc_ids:
+        style_lines.append(f"  class {','.join(svc_ids)} appNode")
+    return "\n".join(lines + style_lines)
 
 
 def render_business_flow_diagram(doc: dict[str, Any]) -> str:
-    processes = (doc.get("process_list") or {}).get("processes") or []
+    all_processes = (doc.get("process_list") or {}).get("processes") or []
+    processes = [p for p in all_processes if not _is_noise_component(str(p.get("name") or ""))]
     lines = ["flowchart LR", "  start([\"Request\"])"]
     prev = "start"
     for proc in processes[:15]:
@@ -168,26 +301,173 @@ def _topology_node_id(entity_id: str) -> str:
     return f"n_{abs(hash(entity_id)) % 100000}"
 
 
+def _entity_label(entity_id: str) -> str:
+    return entity_id.split(":", 1)[-1] if ":" in entity_id else entity_id
+
+
+def _majority_tier(services: list[str]) -> str:
+    tiers = [_service_tier(_entity_label(svc)) for svc in services]
+    if not tiers:
+        return "unclassified"
+    counts = {t: tiers.count(t) for t in set(tiers)}
+    best = max(counts.values())
+    for tier in _TIER_ORDER:
+        if counts.get(tier) == best:
+            return tier
+    return "unclassified"
+
+
 def render_system_topology_diagram(edges: Sequence[Any]) -> str:
-    """Render relational Facts (connects_to/proxies_to/depends_on/... — see
-    ``aoip.objects.RELATIONAL_PREDICATES``) as a cross-host/cross-entity Mermaid
-    graph. The other three diagrams (component/API-sequence/business-flow) only
-    ever draw per-host node facts — this is the only one with real edges."""
-    lines = ["graph LR"]
+    """Render relational Facts (connects_to/hosts/proxies_to/depends_on/... —
+    see ``aoip.objects.RELATIONAL_PREDICATES``) as a layered architecture
+    diagram — the convention system/network architects actually draw: one
+    subgraph per tier (Edge/Gateway -> Application -> Data, top to bottom),
+    each real (non-noise) service placed under its tier with the host it runs
+    on in the label, and cross-host ``connects_to``/other predicate edges
+    drawn straight to the specific real service(s) on each side — never to a
+    placeholder node duplicating a group label (Mermaid does not need one: an
+    edge can target a subgraph id directly, landing on its cluster boundary),
+    so a single glance shows which tier talks to which."""
+    lines = ["graph TB"]
     if not edges:
         lines.append('  empty(["no relational facts yet — waiting for connection_scan"])')
         return "\n".join(lines)
-    seen: dict[str, str] = {}
+
+    host_services: dict[str, list[str]] = {}
+    cross_edges: list[Any] = []
     for fact in edges[:200]:
-        for entity_id in (fact.subject, fact.obj):
-            if entity_id in seen:
+        if fact.predicate == "hosts" and fact.subject.startswith("host:"):
+            svc = fact.obj
+            if _is_noise_component(_entity_label(svc)):
                 continue
-            node_id = _topology_node_id(entity_id)
-            seen[entity_id] = node_id
+            host_services.setdefault(fact.subject, [])
+            if svc not in host_services[fact.subject]:
+                host_services[fact.subject].append(svc)
+        else:
+            cross_edges.append(fact)
+
+    seen: dict[str, str] = {}
+
+    def node_for(entity_id: str) -> str:
+        if entity_id not in seen:
+            seen[entity_id] = _topology_node_id(entity_id)
+        return seen[entity_id]
+
+    all_hosts = sorted({*host_services.keys(), *(f.subject for f in cross_edges if f.subject.startswith("host:")),
+                         *(f.obj for f in cross_edges if f.obj.startswith("host:"))})
+    declared: set[str] = set()
+    # entity_id (host, or ambiguous-host's group) -> id of the node/subgraph an
+    # edge should actually touch.
+    endpoint_id_of: dict[str, str] = {}
+    host_tier: dict[str, str] = {}
+    tier_bodies: dict[str, list[str]] = {tier: [] for tier in _TIER_ORDER}
+    # node ids placed inside each tier — used below to emit a `classDef` +
+    # `class` colour assignment per tier (draw.io-style colour-coded boxes),
+    # separate from `tier_bodies` (raw Mermaid node/subgraph declaration text).
+    tier_node_ids: dict[str, list[str]] = {tier: [] for tier in _TIER_ORDER}
+
+    for host in all_hosts:
+        services = host_services.get(host, [])
+        host_label = _entity_label(host)
+        if not services:
+            host_id = node_for(host)
+            open_shape, close_shape = _topology_node_shape(host)
+            tier_bodies["unclassified"].append(f'    {host_id}{open_shape}"{host_label}"{close_shape}')
+            endpoint_id_of[host] = host_id
+            host_tier[host] = "unclassified"
+            tier_node_ids["unclassified"].append(host_id)
+        elif len(services) == 1:
+            svc = services[0]
+            svc_id = node_for(svc)
+            declared.add(svc)
+            tier = _service_tier(_entity_label(svc))
+            open_shape, close_shape = _topology_node_shape(svc)
+            tier_bodies[tier].append(f'    {svc_id}{open_shape}"{_entity_label(svc)} ({host_label})"{close_shape}')
+            endpoint_id_of[host] = svc_id
+            host_tier[host] = tier
+            tier_node_ids[tier].append(svc_id)
+        else:
+            # 2+ services, ambiguous which one a host-level connects_to edge
+            # belongs to — group them under one sub-cluster (never fan out
+            # the edge to every service: that would assert "all of them talk
+            # to the peer", which connection_scan never actually told us).
+            host_id = node_for(host)
+            group_id = f"{host_id}_group"
+            endpoint_id_of[host] = group_id
+            tier = _majority_tier(services)
+            body = [f'    subgraph {group_id} ["{host_label}"]']
+            for svc in services:
+                svc_id = node_for(svc)
+                declared.add(svc)
+                open_shape, close_shape = _topology_node_shape(svc)
+                body.append(f'      {svc_id}{open_shape}"{_entity_label(svc)}"{close_shape}')
+                tier_node_ids[tier].append(svc_id)
+            body.append("    end")
+            tier_bodies[tier].append("\n".join(body))
+            host_tier[host] = tier
+
+    cluster_ids: dict[str, list[str]] = {tier: [] for tier in _TIER_ORDER}
+    for tier in _TIER_ORDER:
+        body = tier_bodies[tier]
+        if not body:
+            continue
+        cluster_id = f"tier_{tier}"
+        cluster_ids[tier].append(cluster_id)
+        lines.append(f'  subgraph {cluster_id} ["{_TIER_TITLE[tier]}"]')
+        lines.extend(body)
+        lines.append("  end")
+
+    def endpoint(entity_id: str) -> str:
+        return endpoint_id_of.get(entity_id, node_for(entity_id))
+
+    def tier_rank(entity_id: str) -> int:
+        tier = host_tier.get(entity_id, "unclassified")
+        return _TIER_ORDER.index(tier) if tier in _TIER_ORDER else len(_TIER_ORDER)
+
+    # connection_scan observes each TCP connection from both ends, so the
+    # same logical link often arrives twice as reciprocal facts (A connects_to
+    # B, and B connects_to A). Rendering both would draw a 2-cycle between the
+    # same pair of nodes, which breaks Mermaid's dagre top-to-bottom ranking
+    # and silently flips the Edge->App->Data tier order. Collapse each
+    # unordered (subject, obj, predicate) pair to one edge, oriented from the
+    # lower tier rank to the higher one so the layered layout stays intact —
+    # this discards no information: both facts already assert the same link.
+    seen_pairs: set[tuple[frozenset[str], str]] = set()
+    for fact in cross_edges:
+        pair_key = (frozenset((fact.subject, fact.obj)), fact.predicate)
+        if pair_key in seen_pairs:
+            continue
+        seen_pairs.add(pair_key)
+
+        subject, obj = fact.subject, fact.obj
+        if tier_rank(subject) > tier_rank(obj):
+            subject, obj = obj, subject
+
+        src = endpoint(subject) if subject.startswith("host:") else node_for(subject)
+        dst = endpoint(obj) if obj.startswith("host:") else node_for(obj)
+        for entity_id, node_id in ((subject, src), (obj, dst)):
+            # Entities referenced only by a cross-edge (never placed in a
+            # tier subgraph — e.g. an external/unresolved peer, or a document
+            # node) still need their own node declared exactly once.
+            if entity_id.startswith("host:") or entity_id in declared:
+                continue
+            declared.add(entity_id)
             open_shape, close_shape = _topology_node_shape(entity_id)
-            label = str(entity_id).replace('"', "'")
-            lines.append(f'  {node_id}{open_shape}"{label}"{close_shape}')
-        lines.append(f"  {seen[fact.subject]} -->|{fact.predicate}| {seen[fact.obj]}")
+            lines.append(f'  {node_id}{open_shape}"{_entity_label(entity_id)}"{close_shape}')
+        lines.append(f"  {src} -->|{fact.predicate}| {dst}")
+
+    # draw.io-style colour coding: each tier's cluster boundary gets a muted
+    # tint, its nodes a brighter fill of the same hue, and connectors a
+    # clearly visible line — instead of every box rendering as the same
+    # undifferentiated dark rectangle.
+    lines.append(f"  linkStyle default {_LINK_STYLE}")
+    for tier in _TIER_ORDER:
+        if cluster_ids[tier]:
+            lines.append(f"  style {cluster_ids[tier][0]} {_TIER_CLUSTER_STYLE[tier]}")
+        if tier_node_ids[tier]:
+            class_name = f"tierNode{tier.capitalize()}"
+            lines.append(f"  classDef {class_name} {_TIER_NODE_STYLE[tier]}")
+            lines.append(f"  class {','.join(tier_node_ids[tier])} {class_name}")
     return "\n".join(lines)
 
 
