@@ -1,14 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// CSP dựa trên NONCE mỗi request (không unsafe-inline/eval). Next tự gắn nonce vào
-// script bootstrap của nó khi thấy CSP trong request header. CSS là file ngoài same-origin
-// nên style-src 'self' là đủ. Đây là CSP RIÊNG của Provider Portal.
+// CSP dựa trên NONCE mỗi request cho SCRIPT (không unsafe-inline/eval). Next tự
+// gắn nonce vào script bootstrap của nó khi thấy CSP trong request header.
+// style-src cần 'unsafe-inline': mermaid.js (dùng để render sơ đồ /understanding,
+// xem components/mermaid-diagram.tsx) tự sinh <style> + style="" inline lúc
+// render client-side và KHÔNG hỗ trợ CSP nonce — style-src 'self' đơn thuần
+// khiến trình duyệt âm thầm bỏ qua toàn bộ style đó (không có lỗi console rõ
+// ràng), sơ đồ render ra hộp đen mặc định SVG (fill:black), không viền, không
+// màu — đã xác minh qua getComputedStyle thật (computed fill luôn rgb(0,0,0)
+// dù style attribute đúng giá trị mong muốn). 'unsafe-inline' chỉ nới style,
+// script-src vẫn strict-nonce — theo đúng khuyến nghị CSP chuẩn
+// (~/.claude/rules/web/security.md: `style-src 'self' 'unsafe-inline' ...`).
+// Đây là CSP RIÊNG của Provider Portal.
 export function middleware(request: NextRequest) {
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
   const csp = [
     `default-src 'self'`,
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
-    `style-src 'self'`,
+    `style-src 'self' 'unsafe-inline'`,
     `img-src 'self' data:`,
     `connect-src 'self'`,
     `frame-ancestors 'none'`,
