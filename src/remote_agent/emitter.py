@@ -85,12 +85,17 @@ class OmniEmitter:
         version: str = "1.0.0",
         k8s_namespace: str = "",
         bundle_sha256: str = "",
+        extra_fields: dict[str, str] | None = None,
     ) -> dict[str, float] | None:
         """Register/heartbeat with the gateway.
 
         Returns the anomaly-threshold bundle pushed by Omni (resolved from
         omni_admin runtime flags), or None on failure. Tuning thresholds
         server-side avoids redeploying the agent on customer hosts.
+
+        ``extra_fields`` is a migration seam for the canonical AOIP runtime
+        (IT-4): extra top-level register fields (e.g. aoip_bundle_sha256)
+        merged into the payload. This module stays aoip-agnostic.
         """
         payload = {
             "agent_id": self._agent_id,
@@ -103,6 +108,8 @@ class OmniEmitter:
             "local_ip": _detect_local_ip(self._base),
             "bundle_sha256": bundle_sha256,
         }
+        if extra_fields:
+            payload.update(extra_fields)
         async with _make_client(self._headers, self._base) as client:
             result = await _with_retry(client, "/webhook/agent/register", payload)
             if result:

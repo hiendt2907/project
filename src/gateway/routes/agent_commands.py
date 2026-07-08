@@ -314,15 +314,24 @@ def _classify_drift(rec: dict[str, Any], manifest: dict[str, Any] | None) -> str
     """current | drifted | unknown — pure so tests can pin the contract.
 
     unknown = no published manifest, or the agent predates bundle-hash
-    reporting; it must NEVER silently read as current."""
+    reporting; it must NEVER silently read as current.
+
+    IT-4: agents running the AOIP employee runtime additionally report
+    aoip_bundle_sha256; it must match the manifest's too. Legacy agents that
+    don't report it are judged on bundle_sha256 alone (transition-safe). An
+    agent reporting aoip against a manifest without it reads drifted — the
+    running set differs from the published set; re-publish the manifest."""
     if not manifest or not manifest.get("bundle_sha256"):
         return "unknown"
     reported = str(rec.get("bundle_sha256") or "")
     if not reported:
         return "unknown"
-    if reported == manifest.get("bundle_sha256") and rec.get("version") == manifest.get("version"):
-        return "current"
-    return "drifted"
+    if reported != manifest.get("bundle_sha256") or rec.get("version") != manifest.get("version"):
+        return "drifted"
+    reported_aoip = str(rec.get("aoip_bundle_sha256") or "")
+    if reported_aoip and reported_aoip != str(manifest.get("aoip_bundle_sha256") or ""):
+        return "drifted"
+    return "current"
 
 
 async def _load_release_manifest(redis: Any) -> dict[str, Any] | None:
@@ -387,6 +396,7 @@ async def list_agent_versions(request: Request, tenant_id: str | None = None) ->
             "hostname": rec.get("hostname", ""),
             "version": rec.get("version", "unknown"),
             "bundle_sha256": rec.get("bundle_sha256", ""),
+            "aoip_bundle_sha256": rec.get("aoip_bundle_sha256", ""),
             "drift_status": drift_status,
             "capabilities": rec.get("capabilities", []),
             "last_seen": rec.get("last_seen", 0),

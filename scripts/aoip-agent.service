@@ -1,0 +1,36 @@
+# AOIP employee unit (Sprint NV-SRE IT-4) — thay thế omni-remote-agent.service trên
+# VM pilot. Mẫu theo unit THẬT đang chạy (KHÔNG phải omni-agent.service lý thuyết):
+# WorkingDirectory=/opt/omni-remote-agent, EnvironmentFile=run.env, chạy root,
+# log append /var/log/omni-agent.log.
+#
+# Khác biệt duy nhất so với unit cũ:
+# - ExecStart chạy aoip.agent.employee (1 process 2 vòng: telemetry reuse
+#   remote_agent + durable command daemon).
+# - StateDirectory=aoip → /var/lib/aoip cho inbox durable (mặc định
+#   AOIP_AGENT_INBOX=/var/lib/aoip/inbox).
+# - AOIP_AGENT_MODE=observe_only tường minh (fail-safe, KHÔNG mutation).
+#
+# Rollback drill: systemctl disable --now aoip-agent && systemctl enable --now
+# omni-remote-agent — unit cũ giữ nguyên trên VM, không xóa trong pilot.
+
+[Unit]
+Description=AOIP Agent (employee: telemetry + durable command daemon)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/omni-remote-agent
+EnvironmentFile=/opt/omni-remote-agent/run.env
+Environment=AOIP_AGENT_MODE=observe_only
+ExecStart=/opt/omni-remote-agent/venv/bin/python -m aoip.agent.employee
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+StateDirectory=aoip
+StandardOutput=append:/var/log/omni-agent.log
+StandardError=append:/var/log/omni-agent.log
+SyslogIdentifier=aoip-agent
+
+[Install]
+WantedBy=multi-user.target

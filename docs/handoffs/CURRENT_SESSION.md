@@ -1,63 +1,65 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-**Sprint "Nhân viên SRE" (`docs/plans/sprint-agent-sre-employee-production.md`):
-IT-1 + IT-2 + IT-3 DONE (VERIFIED_RUNTIME). Kế tiếp: IT-4 pilot migration `cust-app` → AOIP daemon.**
-- IT-1 residency — commit `e64e338`, PRODUCT_PROOF Iteration 27. Metric #1 ✅.
-- IT-2 drift detection — commit `cebd84b`, PRODUCT_PROOF Iteration 28. Metric #2 ✅.
-- IT-3 enrollment per-agent — PRODUCT_PROOF Iteration 29. Metric #3 ✅. **CHƯA push** (user chưa yêu cầu).
+**Sprint "Nhân viên SRE" (`docs/plans/sprint-agent-sre-employee-production.md`): IT-4 pilot
+migration `cust-app` → AOIP employee — CODE + DEPLOY + DRILL DONE, chưa commit.**
+- IT-1/IT-2/IT-3 DONE (commit `e64e338`/`cebd84b`/`a364fc2`) — đừng re-verify.
+- Branch `main` tại `a364fc2`, working tree DIRTY (toàn bộ IT-4, xem dưới). CHƯA commit/push —
+  user chưa yêu cầu.
 
-## Bối cảnh quyết định (user đã chốt — KHÔNG re-litigate)
-- Ưu tiên: **backend production** — "remote agent là nhân viên SRE của công ty Omni".
-- ADR-001: agent runtime canonical = `aoip.agent.daemon`; feature mới trên `src/aoip/agent/`.
-- ADR-002 protocol ĐÃ xong — đừng re-audit.
+## Đã hoàn thành trong phiên (IT-4 task 2-4)
+1. **`src/aoip/agent/employee.py` (MỚI)** — 1 process 2 vòng: `run_employee()` =
+   `asyncio.wait(FIRST_COMPLETED)` trên telemetry (`run_agent(extra_register_fields=
+   {"aoip_bundle_sha256": aoip_self_bundle_hash()})`) + daemon (`run_daemon` observe_only).
+   Vòng nào xong → cancel vòng kia → propagate result (crash → systemd restart).
+2. **`scripts/publish_agent_release.py`**: manifest thêm `aoip_bundle_sha256`.
+3. **`scripts/aoip-agent.service` (MỚI)** — theo unit THẬT trên VM (WorkingDirectory=
+   /opt/omni-remote-agent, EnvironmentFile=run.env, StateDirectory=aoip, log append).
+   **`scripts/omni-agent-bundle.sh`**: rsync thêm `src/aoip` + copy unit mới.
+4. **Tests**: `tests/test_aoip_employee_pilot.py` 14/14 GREEN. Full suite **6039 passed,
+   2 failed pre-existing/flaky** (routing E2E env-dependent + `test_track2a_k8s_sdk`
+   flaky-isolation, pass khi chạy riêng).
+5. **Deploy THẬT + verify runtime** (chi tiết PRODUCT_PROOF Iteration 30):
+   - Gateway rebuild+rollout, verify code trong pod.
+   - cust-app chạy `aoip-agent.service` (employee), 2 vòng poll sống, inbox /var/lib/aoip/inbox.
+   - cust-edge/cust-db: ship remote_agent mới (giữ unit legacy) — trước đó drifted THẬT vì
+     release 1.2.0 chứa seam IT-4.
+   - `make publish-agent-release` → fleet **3/3 current, drifted=0**; cust-app record mang 2 hash.
+   - **Rollback drill 2 chiều PASS** (legacy↔employee, record rớt/lấy lại aoip hash đúng).
 
-## Cơ chế IT-3 phiên mới cần biết (VERIFIED_RUNTIME 2026-07-08, đừng re-verify)
-- PG: migration `0005_agent_enrollment.sql` — `omni_admin.agent_enroll_token` (one-time, sha256)
-  + `omni_admin.agent_credential` (per-agent, unique-active per (tenant,agent)).
-- Repo: `AdminConfigRepo.consume_enroll_token_and_issue_credential` — 1 TX atomic, UPDATE
-  điều kiện `status='issued'` = single-use (chống race); `revoke_agent_credentials` trả
-  key_hash để DEL cache `omni:agentcred:cache:{hash}` → 401 tức thì.
-- Gateway: `POST /webhook/agent/enroll` (router riêng, KHÔNG bearer guard, rate-limit 10/min/IP);
-  Admin API `/autonomy/tenants/{tid}/enroll-tokens` + `agent-credentials` — **admin-only**
-  (`_require_admin_ctx` trong autonomy.py; per-agent key → 403).
-- `_require_api_key` fallback: sha256(key) → Redis cache 60s → PG → TenantContext(is_admin=False).
-- Client: `src/aoip/agent/enrollment.py` (ADR-001). Installer: `scripts/enroll_remote_agent.py`
-  (canonical `remote_agent_provisioning`, orb push chmod 600, idempotent rewrite skip).
-- **Trạng thái VM**: cust-app chạy per-agent credential (`J-LIR3jl…`, PG id=1, agent_id
-  `staging-sim_cust-app`); cust-edge/cust-db VẪN key tenant-shared cũ qua env
-  `OMNI_TENANT_APIKEYS` (transition có chủ đích — chuyển khi IT-4/IT-5). Credential rotation
-  = non-goal (risk register).
-- run.env cust-app nay có `OMNI_AGENT_TENANT_ID=staging-sim` tường minh (trước đây thiếu).
+## Next step chính xác
+1. (Nếu user yêu cầu) commit IT-4: toàn bộ file dirty + untracked hiện tại là 1 commit
+   `feat(agent): AOIP employee pilot cust-app — 1 process 2 vòng, drift dual-hash (IT-4)`.
+2. **So Twin fact cust-app sau ~24h** chạy employee (mốc: migration 2026-07-08 ~14:23 giờ máy):
+   `omni:aoip:system_model:staging-sim` — fact cust-app phải tiếp tục tươi (discovery/metrics
+   qua employee y như legacy). Nếu tươi → đóng IT-4 hẳn, mở IT-5 (UPDATE_AGENT/updater —
+   ACCEPT-GAP duy nhất của parity checklist).
 
-## Sprint còn lại (plan file = nguồn chân lý)
-4. **IT-4** Pilot migration `cust-app` → `aoip.agent.daemon` ← **NEXT** (parity checklist
-   collectors TRƯỚC khi chạm VM; unit song song, rollback = switch unit cũ; so Twin fact 24h)
-5. **IT-5** Update/rollback qua command channel + health-gate + N-1; migrate nốt 2 VM;
-   Telegram advisory cho drift
-6. **IT-6** Command outcome durability PG + chaos proof
-7. **IT-7** Soak/offline recovery + đóng sprint · 8. IT-8 (stretch) Mission contract
+## Gotcha mới phiên này
+- **Ship code lên VM PHẢI `COPYFILE_DISABLE=1 tar`** — macOS tar tạo AppleDouble `._*.py`
+  trên VM làm lệch bundle hash (đã dính 1 lần, hash lệch hoàn toàn).
+- Transfer pattern: tar qua stdin `orb -m <vm> sudo tar -x`, extract vào `remote_agent.new`
+  rồi swap (giữ `remote_agent.old` để rollback).
+- Endpoint `/webhook/agent/versions` auth bằng Bearer per-agent key (lấy từ run.env cust-app).
 
-## Ghi chú vận hành
-- Sau MỌI lần sửa code agent + deploy VM: `make publish-agent-release` (không thì cả 3 báo drifted).
-- VM access `orb -m <machine>`; install dir `/opt/omni-remote-agent`; unit `omni-remote-agent.service`.
-- Gateway image: `make docker-gateway && make deploy-gateway`; verify code TRONG pod trước khi
-  coi runtime proof hợp lệ. Admin key: secret `omni-gateway-secret` field `OMNI_ADMIN_API_KEYS`.
-- Kill-switch `OMNI_AUTO_EXECUTE_ENABLED=false` giữ nguyên toàn sprint.
+## Không được làm lại
+- Đừng re-verify IT-1..IT-3, đừng redesign employee/checklist (đã chốt + đã chạy thật).
+- Đừng mở rộng `src/remote_agent/` — seam `extra_fields` là ngoại lệ migration duy nhất.
+- Kill-switch `OMNI_AUTO_EXECUTE_ENABLED=false` giữ nguyên; employee chạy observe_only.
+- Test fail routing E2E (`test_remote_agent_e2e.py::…real_pipeline`) là pre-existing
+  env-dependent; `test_track2a_k8s_sdk::…no_snapshot` flaky isolation — đừng "fix".
+
+## Ghi chú vận hành (giữ)
+- Sau MỌI lần sửa code agent + deploy VM: `make publish-agent-release`.
+- VM access `orb -m <machine>`; unit cust-app nay là `aoip-agent.service`
+  (cust-edge/cust-db vẫn `omni-remote-agent.service`).
 - Gateway evidence dedup 5-min: re-test phải đổi nội dung envelope.
-
-## Verification snapshot
-Full suite sau IT-3: **6026 passed, 0 failed** (fail routing E2E pre-existing của phiên trước
-không tái hiện lần chạy này). `tests/test_agent_enrollment.py` 14/14.
 
 ## Blockers
 Không có.
 
-## Không được làm lại
-- Đừng re-audit ADR-002 / re-verify IT-1..IT-3.
-- Đừng mở rộng `src/remote_agent/` cho feature mới (ADR-001).
-
 ## Tài liệu liên quan
-- `docs/plans/sprint-agent-sre-employee-production.md` — plan + baseline 6 metrics (3/6 ✅)
-- `docs/product/PRODUCT_PROOF.md` — Iteration 27/28/29
-- Memory: `project_autonomous_sre_vision_v2.md`, `project_onboarding_audit_verdict.md`
+- `docs/product/PRODUCT_PROOF.md` — Iteration 30 (bằng chứng đầy đủ phiên này)
+- `docs/plans/it4-collector-parity-checklist.md` — checklist parity đã chốt
+- `docs/plans/sprint-agent-sre-employee-production.md` — plan sprint (IT-4 dòng 115-131)
+- Memory: `project_sprint_nvsre_it4_employee_pilot.md`

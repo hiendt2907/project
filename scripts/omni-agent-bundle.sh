@@ -11,8 +11,10 @@
 #   omni-agent-<version>/
 #   ├── install.sh           ← run this on the target server
 #   ├── omni-agent.service   ← systemd unit (install.sh uses it)
+#   ├── aoip-agent.service   ← systemd unit employee (IT-4, deploy thủ công pilot)
 #   ├── requirements.txt     ← Python deps list
 #   ├── wheels/              ← pre-downloaded wheels (only with --offline)
+#   ├── aoip/                ← Python package AOIP (employee + durable daemon)
 #   └── remote_agent/        ← Python package
 #       ├── __init__.py
 #       ├── agent.py
@@ -55,9 +57,15 @@ mkdir -p "$STAGE_DIR"
 rsync -a --exclude='__pycache__' --exclude='*.pyc' \
   "$REPO_ROOT/src/remote_agent" "$STAGE_DIR/"
 
+# IT-4: ship FULL package aoip (employee entrypoint + daemon) — phải nguyên vẹn
+# để aoip_self_bundle_hash() trên VM khớp aoip_bundle_sha256 của publisher.
+rsync -a --exclude='__pycache__' --exclude='*.pyc' \
+  "$REPO_ROOT/src/aoip" "$STAGE_DIR/"
+
 # Copy installer files
 cp "$REPO_ROOT/scripts/omni-agent-install.sh" "$STAGE_DIR/install.sh"
 cp "$REPO_ROOT/scripts/omni-agent.service"     "$STAGE_DIR/omni-agent.service"
+cp "$REPO_ROOT/scripts/aoip-agent.service"     "$STAGE_DIR/aoip-agent.service"
 cp "$REPO_ROOT/requirements-agent.txt"         "$STAGE_DIR/requirements.txt"
 chmod +x "$STAGE_DIR/install.sh"
 

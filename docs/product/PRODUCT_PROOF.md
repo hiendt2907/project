@@ -946,3 +946,46 @@ có chủ đích, không phải sót).
 
 Verify lại: `.venv/bin/python -m pytest tests/test_agent_enrollment.py -q`; runtime: psql
 `SELECT * FROM omni_admin.agent_credential;` + drill curl như trên.
+
+## Iteration 30 (Sprint NV-SRE, IT-4) — Pilot migration cust-app → AOIP employee: 1 process 2 vòng (2026-07-08)
+
+**CLAIM**: cust-app chạy entrypoint mới `python -m aoip.agent.employee` — MỘT process gom
+telemetry (reuse NGUYÊN VẸN `remote_agent.agent.run_agent()` làm library, không copy 1.400
+dòng collectors) + durable command daemon (`aoip.agent.daemon`, ADR-001, observe_only).
+Drift IT-2 mở rộng: employee tự hash package `aoip` và báo `aoip_bundle_sha256` khi register;
+manifest publish cả 2 hash; agent legacy chỉ báo hash cũ → KHÔNG bị drifted oan.
+
+**VERIFIED_TEST**: `tests/test_aoip_employee_pilot.py` (MỚI, 14 test, TDD) — self-hash cùng
+thuật toán publisher; manifest 2 hash; register mang extra field qua wire thật (ASGITransport
+→ real routers) vào registry record; legacy register không đổi; `_classify_drift` 5 case
+(legacy judged hash cũ / employee khớp 2 hash / lệch aoip / manifest stale / lệch remote_agent);
+`/versions` mixed fleet 2 legacy + 1 employee; orchestration 3 case (daemon exit sạch → cancel
+telemetry, telemetry crash → propagate cho systemd restart, daemon crash → propagate).
+Full suite: **6039 passed, 2 failed đều pre-existing/flaky-isolation** (routing E2E env-dependent
++ `test_track2a_k8s_sdk` pass khi chạy riêng — không phải regression IT-4).
+
+**VERIFIED_RUNTIME** (cluster + 3 VM thật, 2026-07-08):
+- Gateway rebuild + rollout; verify TRONG pod: `aoip_bundle_sha256` có trong
+  `agent_webhook.py`/`agent_commands.py`.
+- Ship code qua orb (gotcha: PHẢI `COPYFILE_DISABLE=1` — macOS tar tạo AppleDouble `._*.py`
+  làm lệch bundle hash; lần đầu hash lệch, dọn + ship lại thì khớp). Hash trên VM ==
+  hash publisher: remote_agent `a0986d73…`, aoip `1f5e2c4b…`.
+- Unit mới `/etc/systemd/system/aoip-agent.service` (mẫu `scripts/aoip-agent.service`, theo
+  layout THẬT: WorkingDirectory=/opt/omni-remote-agent, EnvironmentFile=run.env,
+  StateDirectory=aoip, AOIP_AGENT_MODE=observe_only). Log: bootstrap
+  `executor_mode=observe_only executor_status=DISABLED`, register 200, evidence 200, CẢ 2 vòng
+  poll sống (`/commands` telemetry + `/rt/commands` daemon), inbox `/var/lib/aoip/inbox` tồn tại.
+- Registry record cust-app mang đủ 2 hash khớp repo; `make publish-agent-release` → manifest
+  2 hash; cust-edge/cust-db bị drifted THẬT (chạy remote_agent cũ hơn release 1.2.0 seam IT-4)
+  → ship bản mới (giữ unit legacy) → fleet **3/3 current, drifted=0**.
+- **Rollback drill 2 chiều**: disable aoip-agent → enable omni-remote-agent → active, emit 200,
+  record rớt aoip hash về `''` mà vẫn current (đúng backward-compat); roll-forward → employee
+  active lại, record mang lại aoip hash, drifted=0.
+
+**Sprint baseline metric #4 (command durable qua restart/reboot): pilot ✅ trên cust-app.**
+
+**Còn lại IT-4**: so Twin fact cust-app sau 24h chạy employee (mốc so sánh: fact mới nhất
+trước migration); ACCEPT-GAP UPDATE_AGENT/updater dời sang IT-5.
+
+Verify lại: `.venv/bin/python -m pytest tests/test_aoip_employee_pilot.py -q`;
+`orb -m cust-app sudo systemctl is-active aoip-agent`; curl `/webhook/agent/versions`.

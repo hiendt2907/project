@@ -29,6 +29,8 @@ def build_manifest() -> dict:
     return {
         "version": version,
         "bundle_sha256": compute_bundle_hash(package_root),
+        # IT-4: employee ship thêm package aoip — publish hash để gateway xét drift
+        "aoip_bundle_sha256": compute_bundle_hash(REPO_ROOT / "src" / "aoip"),
         "published_at": int(time.time()),
     }
 

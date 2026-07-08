@@ -33,7 +33,13 @@ _REGISTER_INTERVAL = 30
 _CMD_POLL_INTERVAL = 5
 
 
-async def run_agent() -> None:
+async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None:
+    """Main telemetry loop.
+
+    ``extra_register_fields``: migration seam for the canonical AOIP runtime
+    (IT-4) — extra register payload fields (e.g. aoip_bundle_sha256), threaded
+    verbatim to every register/keepalive. This package stays aoip-agnostic.
+    """
     from remote_agent.settings import AgentSettings
     from remote_agent.emitter import OmniEmitter
     from remote_agent.discovery import run_vm_discovery, derive_enabled_collectors
@@ -142,7 +148,7 @@ async def run_agent() -> None:
     # Initial registration + profile upload
     thresholds = await emitter.register(
         capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace,
-        bundle_sha256=bundle_sha256,
+        bundle_sha256=bundle_sha256, extra_fields=extra_register_fields,
     )
     if profile:
         await emitter.upload_profile(profile)
@@ -156,7 +162,7 @@ async def run_agent() -> None:
         if time.monotonic() - last_register_ts >= _REGISTER_INTERVAL:
             new_thresholds = await emitter.register(
                 capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace,
-                bundle_sha256=bundle_sha256,
+                bundle_sha256=bundle_sha256, extra_fields=extra_register_fields,
             )
             if new_thresholds is not None:
                 thresholds = new_thresholds
