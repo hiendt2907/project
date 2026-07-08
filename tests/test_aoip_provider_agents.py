@@ -49,17 +49,21 @@ def _auth(sid):
 
 
 async def _seed_agent(r, agent_id: str, *, tenant: str, hostname: str, last_seen: int,
-                      capabilities: list[str] | None = None, evidence_count: int = 0):
+                      capabilities: list[str] | None = None, evidence_count: int = 0,
+                      version: str = "1.1.3", bundle_sha256: str = "",
+                      aoip_bundle_sha256: str = ""):
     await r.set(f"omni:remote_agent:registry:{agent_id}", json.dumps({
         "agent_id": agent_id,
         "tenant_id": tenant,
         "hostname": hostname,
-        "version": "1.1.3",
+        "version": version,
         "platform": "linux",
         "capabilities": capabilities or ["metrics", "discovery"],
         "last_seen": last_seen,
         "registered_at": last_seen - 60,
         "evidence_count": evidence_count,
+        "bundle_sha256": bundle_sha256,
+        "aoip_bundle_sha256": aoip_bundle_sha256,
     }))
 
 
@@ -78,14 +82,38 @@ async def test_provider_agents_projection_reads_real_registry_and_checks():
 
     result = await build_provider_agents(r, now=NOW)
 
-    assert result["summary"] == {"total": 3, "online": 1, "stale": 1, "offline": 1}
+    assert result["summary"] == {
+        "total": 3, "online": 1, "stale": 1, "offline": 1, "drifted": 0,
+    }
     by_id = {a["agent_id"]: a for a in result["agents"]}
     assert by_id["acme-edge"]["status"] == "online"
     assert by_id["acme-edge"]["discovery_enabled"] is True
     assert by_id["acme-edge"]["last_discovery_result"]["result"] == "PASSED"
     assert by_id["acme-edge"]["command_state"] == "active"
     assert by_id["acme-app"]["status"] == "stale"
-    assert by_id["globex-db"]["status"] == "offline"
+
+
+async def test_provider_agents_projection_reports_drift_and_runtime():
+    r = _redis()
+    await r.set("omni:agent:release_manifest", json.dumps({
+        "version": "1.2.0", "bundle_sha256": "cafe" * 16, "aoip_bundle_sha256": "beef" * 16,
+    }))
+    await _seed_agent(r, "acme-employee", tenant="acme", hostname="cust-app", last_seen=999,
+                      version="1.2.0", bundle_sha256="cafe" * 16, aoip_bundle_sha256="beef" * 16)
+    await _seed_agent(r, "acme-legacy-current", tenant="acme", hostname="cust-edge",
+                      last_seen=999, version="1.2.0", bundle_sha256="cafe" * 16)
+    await _seed_agent(r, "acme-drifted", tenant="acme", hostname="cust-db", last_seen=999,
+                      version="1.1.3", bundle_sha256="stale" * 12)
+
+    result = await build_provider_agents(r, now=NOW)
+
+    assert result["summary"]["drifted"] == 1
+    by_id = {a["agent_id"]: a for a in result["agents"]}
+    assert by_id["acme-employee"]["runtime"] == "employee"
+    assert by_id["acme-employee"]["drift_status"] == "current"
+    assert by_id["acme-legacy-current"]["runtime"] == "legacy"
+    assert by_id["acme-legacy-current"]["drift_status"] == "current"
+    assert by_id["acme-drifted"]["drift_status"] == "drifted"
 
 
 async def test_provider_agents_endpoint_enforces_provider_rbac():

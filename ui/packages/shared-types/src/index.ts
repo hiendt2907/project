@@ -89,12 +89,23 @@ export interface ProviderAgent {
   last_discovery_result: ProviderAgentLastCheck | null;
   command_state: string;
   pending_commands: number;
+  runtime: "employee" | "legacy" | string;
+  bundle_sha256: string;
+  aoip_bundle_sha256: string;
+  drift_status: "current" | "drifted" | "unknown" | string;
+}
+
+export interface ProviderReleaseManifest {
+  version: string;
+  bundle_sha256: string;
+  aoip_bundle_sha256?: string;
 }
 
 export interface ProviderAgentsResponse {
   generated_at: number;
-  summary: { total: number; online: number; stale: number; offline: number };
+  summary: { total: number; online: number; stale: number; offline: number; drifted: number };
   agents: ProviderAgent[];
+  release_manifest: ProviderReleaseManifest | null;
 }
 
 export interface ProviderTwinFact {

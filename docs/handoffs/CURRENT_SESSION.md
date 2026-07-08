@@ -1,65 +1,80 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-**Sprint "Nhân viên SRE" (`docs/plans/sprint-agent-sre-employee-production.md`): IT-4 pilot
-migration `cust-app` → AOIP employee — CODE + DEPLOY + DRILL DONE, chưa commit.**
-- IT-1/IT-2/IT-3 DONE (commit `e64e338`/`cebd84b`/`a364fc2`) — đừng re-verify.
-- Branch `main` tại `a364fc2`, working tree DIRTY (toàn bộ IT-4, xem dưới). CHƯA commit/push —
-  user chưa yêu cầu.
+**Provider Portal UI gap-fill (4 gap): drift/runtime trên `/agents`, `/settings`
+enrollment/credential admin, `/audit` CRAT hash-chain, diagram history/diff trên
+`/understanding` — CODE + build + test DONE, chưa commit.**
+- Sprint "Nhân viên SRE" IT-1..4 DONE (commit `e64e338`/`cebd84b`/`a364fc2`/`8fc5aa3`, pushed) —
+  đừng re-verify.
+- `aoip-agent.service` trên `cust-app` chạy employee từ `2026-07-08 14:25:56 +07`. Mốc so Twin
+  24h là **~2026-07-09 14:23 +07** — CHƯA tới, đừng kết luận sớm (việc UI này chạy song song
+  trong lúc chờ mốc đó).
 
-## Đã hoàn thành trong phiên (IT-4 task 2-4)
-1. **`src/aoip/agent/employee.py` (MỚI)** — 1 process 2 vòng: `run_employee()` =
-   `asyncio.wait(FIRST_COMPLETED)` trên telemetry (`run_agent(extra_register_fields=
-   {"aoip_bundle_sha256": aoip_self_bundle_hash()})`) + daemon (`run_daemon` observe_only).
-   Vòng nào xong → cancel vòng kia → propagate result (crash → systemd restart).
-2. **`scripts/publish_agent_release.py`**: manifest thêm `aoip_bundle_sha256`.
-3. **`scripts/aoip-agent.service` (MỚI)** — theo unit THẬT trên VM (WorkingDirectory=
-   /opt/omni-remote-agent, EnvironmentFile=run.env, StateDirectory=aoip, log append).
-   **`scripts/omni-agent-bundle.sh`**: rsync thêm `src/aoip` + copy unit mới.
-4. **Tests**: `tests/test_aoip_employee_pilot.py` 14/14 GREEN. Full suite **6039 passed,
-   2 failed pre-existing/flaky** (routing E2E env-dependent + `test_track2a_k8s_sdk`
-   flaky-isolation, pass khi chạy riêng).
-5. **Deploy THẬT + verify runtime** (chi tiết PRODUCT_PROOF Iteration 30):
-   - Gateway rebuild+rollout, verify code trong pod.
-   - cust-app chạy `aoip-agent.service` (employee), 2 vòng poll sống, inbox /var/lib/aoip/inbox.
-   - cust-edge/cust-db: ship remote_agent mới (giữ unit legacy) — trước đó drifted THẬT vì
-     release 1.2.0 chứa seam IT-4.
-   - `make publish-agent-release` → fleet **3/3 current, drifted=0**; cust-app record mang 2 hash.
-   - **Rollback drill 2 chiều PASS** (legacy↔employee, record rớt/lấy lại aoip hash đúng).
+## Đã hoàn thành trong phiên (audit gap → 4 gap → implement cả 4)
+Audit ban đầu (agent Explore) so backend/Productization Iter 1-26 + sprint IT-1..4 với route
+thật trên `ui/apps/provider-portal` → 5 gap, làm 4/5 (bỏ `/missions` vì chưa xác nhận backend).
+
+1. **Gap 1 — Agent drift + runtime trên `/agents`**: `src/aoip/console/agents.py` đọc thêm
+   `omni:agent:release_manifest`, tính `drift_status`/`runtime` (mirror `_classify_drift` ở
+   `gateway/routes/agent_commands.py`, KHÔNG import chéo — console BFF tự đọc Redis riêng).
+   `AgentsTable.tsx` thêm cột Runtime/Drift; `page.tsx` thêm tile "Fleet drifted". CSS pill mới
+   `.current/.drifted/.unknown`. Test: `tests/test_aoip_provider_agents.py` (+1 test mới).
+
+2. **Gap 2 — Settings (enroll-token issue + credential revoke)**: `src/aoip/console/settings.py`
+   (mới) gọi thẳng `AdminConfigRepo` (IT-3 store) qua `request.app.state.pool` — KHÔNG proxy qua
+   gateway. 3 endpoint mới trong `app.py` (`GET /settings`, `POST .../enroll-tokens`,
+   `DELETE .../agent-credentials/{tenant}/{agent}`), gate bằng `P_CHANGE_POLICY`.
+   **Gotcha kiến trúc**: `nav.ts` có GOVERNING RULE cấm "policy-editor" domain trên portal — đã
+   hỏi user, được duyệt thêm NGOẠI LỆ ghi rõ trong comment (enrollment là vận hành thiết yếu,
+   RBAC + audit đầy đủ, không phải billing/CRM). `/settings` cũ thực ra **crash** (route không
+   có trong `PROVIDER_NAV`, `find()!` trả `undefined`) — không phải "stub đang chờ", là orphan.
+   UI: `lib/settings.ts`, `app/settings/SettingsPanel.tsx` (client, issue+revoke), `page.tsx`.
+   Test: `tests/test_aoip_provider_settings.py` (4 test, fake asyncpg pool riêng).
+
+3. **Gap 3 — `/audit` chiếu CRAT hash-chain thật**: `src/aoip/console/audit.py` (mới) đọc
+   `audit_chain:blocks` (default) + `audit_chain:*:blocks` (named tenant) — nguồn
+   `services.audit_ledger.chain_writer`, KHÔNG source thứ hai. Gate `P_RAW_EVIDENCE` (audit là
+   evidence nhạy cảm, không phải mọi provider viewer role). Phân biệt với `/incidents` (SIEM-only
+   verdict view) — `/audit` là toàn bộ event type (ADVISORY_DECISION/MUTATION_TRAPPED/...).
+   Test: `tests/test_aoip_provider_audit.py` (3 test).
+
+4. **Gap 4 — Diagram History/Diff panel trên `/understanding`**: port từ `ui/app` cũ (Iter 23,
+   Tailwind) sang provider-portal (aoip-* CSS). `lib/diagram-diff.ts` (LCS diff, pure), route
+   proxy `app/api/onboarding/diagram-history/route.ts` (server-side gateway call — cần vì panel
+   client-side interactive, `lib/gateway.ts` chỉ dùng được ở server component), component
+   `DiagramHistoryPanel.tsx`. **Gotcha lint**: `react-hooks/set-state-in-effect` chặn setState
+   đồng bộ ngay đầu effect body — phải viết IIFE + cancelled-guard (mirror
+   `components/mermaid-diagram.tsx`), KHÔNG gọi thẳng hàm `load()` có `setLoading` ở đầu.
+
+## Verify đã chạy
+- `.venv/bin/python -m pytest tests/ -q -k "aoip_provider or console or agent_enrollment or
+  onboarding" --ignore=tests/integration --ignore=tests/e2e_portals` → 110 passed.
+- `npx tsc --noEmit -p apps/provider-portal/tsconfig.json` → sạch.
+- `npx next build` (trong `ui/apps/provider-portal`) → sạch, cả 4 route mới (`/agents` cột mới,
+  `/settings`, `/audit`, `/understanding` panel) build thành công.
+- **CHƯA chạy** `make e2e-portal` (Playwright thật trên pod) — nên chạy trước khi coi UI work là
+  production-verified, không chỉ build-verified.
 
 ## Next step chính xác
-1. (Nếu user yêu cầu) commit IT-4: toàn bộ file dirty + untracked hiện tại là 1 commit
-   `feat(agent): AOIP employee pilot cust-app — 1 process 2 vòng, drift dual-hash (IT-4)`.
-2. **So Twin fact cust-app sau ~24h** chạy employee (mốc: migration 2026-07-08 ~14:23 giờ máy):
-   `omni:aoip:system_model:staging-sim` — fact cust-app phải tiếp tục tươi (discovery/metrics
-   qua employee y như legacy). Nếu tươi → đóng IT-4 hẳn, mở IT-5 (UPDATE_AGENT/updater —
-   ACCEPT-GAP duy nhất của parity checklist).
-
-## Gotcha mới phiên này
-- **Ship code lên VM PHẢI `COPYFILE_DISABLE=1 tar`** — macOS tar tạo AppleDouble `._*.py`
-  trên VM làm lệch bundle hash (đã dính 1 lần, hash lệch hoàn toàn).
-- Transfer pattern: tar qua stdin `orb -m <vm> sudo tar -x`, extract vào `remote_agent.new`
-  rồi swap (giữ `remote_agent.old` để rollback).
-- Endpoint `/webhook/agent/versions` auth bằng Bearer per-agent key (lấy từ run.env cust-app).
+1. (Nếu user yêu cầu) commit + push toàn bộ UI gap-fill này — 1 hoặc nhiều commit theo gap.
+2. Chạy `make e2e-portal` để verify thật trên pod (build/tsc chỉ chứng minh compile, không chứng
+   minh chạy đúng — theo bài học Iteration 1 "test pass + push KHÔNG chứng minh đã deploy").
+3. Deploy `omni-gateway`/`aoip-provider-portal` nếu muốn thấy thay đổi trên môi trường lab thật.
+4. Sau đó quay lại theo dõi mốc Twin 24h cho IT-4 (~2026-07-09 14:23 +07) — xem
+   `omni:aoip:system_model:staging-sim` cho `cust-app`.
+5. Gap còn lại chưa làm: `/missions` (SectionStub) — cần xác nhận có backend API đứng sau chưa
+   trước khi động vào (không bịa UI cho capability chưa tồn tại).
 
 ## Không được làm lại
-- Đừng re-verify IT-1..IT-3, đừng redesign employee/checklist (đã chốt + đã chạy thật).
-- Đừng mở rộng `src/remote_agent/` — seam `extra_fields` là ngoại lệ migration duy nhất.
-- Kill-switch `OMNI_AUTO_EXECUTE_ENABLED=false` giữ nguyên; employee chạy observe_only.
-- Test fail routing E2E (`test_remote_agent_e2e.py::…real_pipeline`) là pre-existing
-  env-dependent; `test_track2a_k8s_sdk::…no_snapshot` flaky isolation — đừng "fix".
+- Đừng re-verify IT-1..IT-4 (sprint Nhân viên SRE) — đã DONE, đã push.
+- Đừng gỡ NGOẠI LỆ Settings khỏi `nav.ts` — đã được user duyệt tường minh trong phiên này.
+- Đừng đổi `/audit` thành duplicate của `/incidents` — hai trang có nguồn/phạm vi khác nhau
+  (toàn bộ CRAT chain vs SIEM-only verdict).
 
-## Ghi chú vận hành (giữ)
-- Sau MỌI lần sửa code agent + deploy VM: `make publish-agent-release`.
-- VM access `orb -m <machine>`; unit cust-app nay là `aoip-agent.service`
-  (cust-edge/cust-db vẫn `omni-remote-agent.service`).
-- Gateway evidence dedup 5-min: re-test phải đổi nội dung envelope.
+## Tài liệu liên quan
+- Memory: sẽ ghi `project_provider_portal_ui_gapfill_2026_07_08` sau khi checkpoint xong.
+- `docs/plans/aoip-provider-portal-slices.md` — governing rule gốc (đã có ngoại lệ mới trong
+  `ui/apps/provider-portal/lib/nav.ts`, chưa đồng bộ ngược vào doc này — có thể cần làm ở lần sau).
 
 ## Blockers
 Không có.
-
-## Tài liệu liên quan
-- `docs/product/PRODUCT_PROOF.md` — Iteration 30 (bằng chứng đầy đủ phiên này)
-- `docs/plans/it4-collector-parity-checklist.md` — checklist parity đã chốt
-- `docs/plans/sprint-agent-sre-employee-production.md` — plan sprint (IT-4 dòng 115-131)
-- Memory: `project_sprint_nvsre_it4_employee_pilot.md`

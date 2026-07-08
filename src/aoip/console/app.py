@@ -21,11 +21,17 @@ from pydantic import BaseModel, Field
 
 from aoip.console import assets, identity, identity_store, oidc
 from aoip.console.agents import build_provider_agents
-from aoip.console.authz import KIND_PROVIDER, KIND_TENANT, P_RAW_EVIDENCE, P_VIEW, Principal
+from aoip.console.audit import build_provider_audit
+from aoip.console.authz import (
+    KIND_PROVIDER, KIND_TENANT, P_CHANGE_POLICY, P_RAW_EVIDENCE, P_VIEW, Principal,
+)
 from aoip.console.human_inbox import build_provider_human_inbox
 from aoip.console.lab_incidents import create_lab_incident, list_provider_lab_incidents
 from aoip.console.overview import build_provider_overview
 from aoip.console.projections import provider_incident, tenant_incident
+from aoip.console.settings import (
+    build_provider_settings, issue_enroll_token, revoke_agent_credential,
+)
 from aoip.console.understanding import build_provider_understanding
 from aoip.question_lifecycle import submit_answer
 from aoip.agent.trace import RuntimeTrace
@@ -42,6 +48,12 @@ class AnswerQuestionBody(BaseModel):
     value: str = Field(..., min_length=1, max_length=500)
     answered_by: str | None = Field(default=None, max_length=120)
     confidence: float = Field(default=0.6, ge=0.0, le=1.0)
+
+
+class EnrollTokenBody(BaseModel):
+    tenant_id: str = Field(..., min_length=1, max_length=120)
+    label: str | None = Field(default=None, max_length=120)
+    ttl_seconds: int | None = Field(default=None, ge=60)
 
 
 class CreateLabIncidentBody(BaseModel):
@@ -259,6 +271,55 @@ def create_provider_app(redis, *, oidc_http=None) -> FastAPI:
         if answer is None:
             raise HTTPException(404, "question not found or not pending")
         return {"tenant_id": tenant, "question_id": question_id, "answer": answer}
+
+    @app.get("/api/provider/v1/settings")
+    async def settings(request: Request, p: Principal = Depends(provider)) -> dict:
+        # Enrollment/credential admin — IT-3 store surfaced in-product instead of curl.
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        return await build_provider_settings(pool)
+
+    @app.post("/api/provider/v1/settings/enroll-tokens")
+    async def create_enroll_token_route(
+        request: Request, body: EnrollTokenBody, p: Principal = Depends(provider),
+    ) -> dict:
+        if not p.can(P_CHANGE_POLICY):
+            raise HTTPException(403, "insufficient permission to issue enroll tokens")
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        try:
+            return await issue_enroll_token(
+                pool, tenant_id=body.tenant_id, actor=p.subject, label=body.label,
+                ttl_seconds=body.ttl_seconds,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.delete("/api/provider/v1/settings/agent-credentials/{tenant_id}/{agent_id}")
+    async def revoke_agent_credential_route(
+        request: Request, tenant_id: str, agent_id: str, p: Principal = Depends(provider),
+    ) -> dict:
+        if not p.can(P_CHANGE_POLICY):
+            raise HTTPException(403, "insufficient permission to revoke credentials")
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        redis_state = getattr(request.app.state, "redis", None) or redis
+        revoked = await revoke_agent_credential(
+            pool, redis_state, tenant_id=tenant_id, agent_id=agent_id, actor=p.subject,
+        )
+        return {"status": "ok", "revoked": revoked}
+
+    @app.get("/api/provider/v1/audit")
+    async def audit_chain(request: Request, p: Principal = Depends(provider)) -> dict:
+        # CRAT hash-chain projection — sensitive audit evidence, gated same as
+        # raw-evidence viewing (not every provider viewer role).
+        if not p.can(P_RAW_EVIDENCE):
+            raise HTTPException(403, "insufficient permission to view audit chain")
+        tenant_id = request.query_params.get("tenant_id")
+        return await build_provider_audit(redis, tenant_id=tenant_id)
 
     @app.get("/api/provider/v1/tenants")
     async def tenants(p: Principal = Depends(provider)) -> dict:

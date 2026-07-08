@@ -59,6 +59,7 @@ export function AgentsTable({ agents }: { agents: ProviderAgent[] }) {
                 <th>Tenant</th>
                 <th>Host</th>
                 <th>Status</th>
+                <th>Runtime</th>
                 <th>Discovery</th>
                 <th>Latest check</th>
                 <th>Command</th>
@@ -89,6 +90,12 @@ function AgentRow({ agent }: { agent: ProviderAgent }) {
         <div className="aoip-muted">{formatAge(agent.age_seconds)} ago</div>
       </td>
       <td>
+        <span className={`aoip-pill ${agent.drift_status}`}>{agent.drift_status}</span>
+        <div className="aoip-muted">
+          {agent.runtime === "employee" ? "employee" : "legacy"} · {shortHash(agent.bundle_sha256)}
+        </div>
+      </td>
+      <td>
         <span className={agent.discovery_enabled ? "aoip-ok" : "aoip-muted"}>
           {agent.discovery_enabled ? "enabled" : "disabled"}
         </span>
@@ -110,6 +117,10 @@ function AgentRow({ agent }: { agent: ProviderAgent }) {
       </td>
     </tr>
   );
+}
+
+function shortHash(hash: string): string {
+  return hash ? hash.slice(0, 8) : "no hash";
 }
 
 function formatAge(seconds: number): string {

@@ -6,6 +6,7 @@ import { fetchReadiness, type ReadinessResponse } from "@/lib/readiness";
 import { fetchDiagram, type DiagramResponse } from "@/lib/diagram";
 import { MermaidBlock } from "@/components/mermaid-diagram";
 import { splitDiagramText } from "@/lib/diagram-utils";
+import { DiagramHistoryPanel } from "./DiagramHistoryPanel";
 import "./understanding.css";
 
 export default async function ProviderUnderstandingPage() {
@@ -70,7 +71,7 @@ function TenantUnderstanding({ tenant, readiness, diagram }: {
       </div>
 
       <ReadinessCard readiness={readiness} testid={`readiness-${tenant.tenant_id}`} />
-      <DiagramCard diagram={diagram} testid={`diagram-${tenant.tenant_id}`} />
+      <DiagramCard diagram={diagram} tenantId={tenant.tenant_id} testid={`diagram-${tenant.tenant_id}`} />
 
       <Card>
         <div className="aoip-k">Entities</div>
@@ -307,8 +308,9 @@ function DiagramLegend() {
   );
 }
 
-function DiagramCard({ diagram, testid }: {
+function DiagramCard({ diagram, tenantId, testid }: {
   diagram: { data: DiagramResponse | null; error: string | null };
+  tenantId: string;
   testid: string;
 }) {
   const sections = diagram.data?.mermaid ? splitDiagramText(diagram.data.mermaid) : [];
@@ -335,6 +337,7 @@ function DiagramCard({ diagram, testid }: {
               <MermaidBlock source={section.source} />
             </div>
           ))}
+          <DiagramHistoryPanel tenant={tenantId} />
         </div>
       )}
     </Card>

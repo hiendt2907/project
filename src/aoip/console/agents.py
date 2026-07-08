@@ -13,6 +13,7 @@ _REMOTE_PREFIX = "omni:remote_agent:registry:"
 _CHECKS_PREFIX = "omni:remote_agent:checks:"
 _METRICS_PREFIX = "omni:remote_agent:metrics:"
 _READY_PREFIX = "omni:cmd:ready:"
+_RELEASE_MANIFEST_KEY = "omni:agent:release_manifest"
 
 _ONLINE_SEC = 120
 _STALE_SEC = 15 * 60
@@ -60,6 +61,28 @@ async def _latest_check(redis: Any, agent_id: str) -> dict[str, Any] | None:
     return checks[0]
 
 
+async def _load_release_manifest(redis: Any) -> dict[str, Any] | None:
+    manifest = _loads(await redis.get(_RELEASE_MANIFEST_KEY))
+    return manifest or None
+
+
+def _classify_drift(rec: dict[str, Any], manifest: dict[str, Any] | None) -> str:
+    """current | drifted | unknown — mirrors gateway/routes/agent_commands.py
+    _classify_drift() so the provider portal and the admin API never disagree
+    on the same registry record."""
+    if not manifest or not manifest.get("bundle_sha256"):
+        return "unknown"
+    reported = str(rec.get("bundle_sha256") or "")
+    if not reported:
+        return "unknown"
+    if reported != manifest.get("bundle_sha256") or rec.get("version") != manifest.get("version"):
+        return "drifted"
+    reported_aoip = str(rec.get("aoip_bundle_sha256") or "")
+    if reported_aoip and reported_aoip != str(manifest.get("aoip_bundle_sha256") or ""):
+        return "drifted"
+    return "current"
+
+
 async def _command_state(redis: Any, tenant_id: str, agent_id: str) -> dict[str, Any]:
     ready_key = f"{_READY_PREFIX}{tenant_id}:{agent_id}"
     try:
@@ -74,6 +97,7 @@ async def _command_state(redis: Any, tenant_id: str, agent_id: str) -> dict[str,
 async def build_provider_agents(redis: Any, *, now: float) -> dict[str, Any]:
     keys = await redis.keys(f"{_REMOTE_PREFIX}*")
     agents: list[dict[str, Any]] = []
+    manifest = await _load_release_manifest(redis)
 
     for key in sorted(keys):
         raw = await redis.get(key)
@@ -91,6 +115,7 @@ async def build_provider_agents(redis: Any, *, now: float) -> dict[str, Any]:
         command = await _command_state(redis, tenant_id, agent_id)
 
         metrics = _loads(await redis.get(f"{_METRICS_PREFIX}{agent_id}"))
+        aoip_bundle_sha256 = str(rec.get("aoip_bundle_sha256") or "")
         agents.append({
             "agent_id": agent_id,
             "tenant_id": tenant_id,
@@ -108,6 +133,10 @@ async def build_provider_agents(redis: Any, *, now: float) -> dict[str, Any]:
             "command_state": command["state"],
             "pending_commands": command["pending"],
             "metrics": metrics or None,
+            "runtime": "employee" if aoip_bundle_sha256 else "legacy",
+            "bundle_sha256": str(rec.get("bundle_sha256") or ""),
+            "aoip_bundle_sha256": aoip_bundle_sha256,
+            "drift_status": _classify_drift(rec, manifest),
         })
 
     summary = {
@@ -115,5 +144,6 @@ async def build_provider_agents(redis: Any, *, now: float) -> dict[str, Any]:
         "online": sum(1 for a in agents if a["status"] == "online"),
         "stale": sum(1 for a in agents if a["status"] == "stale"),
         "offline": sum(1 for a in agents if a["status"] == "offline"),
+        "drifted": sum(1 for a in agents if a["drift_status"] == "drifted"),
     }
-    return {"generated_at": now, "summary": summary, "agents": agents}
+    return {"generated_at": now, "summary": summary, "agents": agents, "release_manifest": manifest}

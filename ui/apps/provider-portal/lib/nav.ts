@@ -11,6 +11,12 @@ import type { NavItem } from "@aoip/shared-types";
 // phải product domain giả. Route product-domain cũ giữ trên đĩa nhưng KHÔNG liệt kê (dọn sau):
 // omni-ui /config/autonomy (policy write, global scope, no per-tenant auth) và /deploy
 // (deployment-center, cluster-wide) — KHÔNG port, excluded above by design.
+//
+// NGOẠI LỆ (2026-07-08): Settings (agent enroll-token issue + credential revoke, IT-3 store)
+// LÀ write/policy action nhưng KHÔNG bị loại theo rule trên — nó là thao tác vận hành thiết yếu
+// per-tenant (không phải billing/CRM/global policy), scoped đúng RBAC (P_CHANGE_POLICY), audit
+// đầy đủ qua config_change_log/CRAT. Portal không thêm domain "giả"; đây là surface thật cho
+// một store đã production (AdminConfigRepo) mà trước đây chỉ curl tay được.
 export const PROVIDER_NAV: NavItem[] = [
   { label: "Overview", href: "/", implemented: true },
   { label: "Agents", href: "/agents", implemented: true },
@@ -18,7 +24,8 @@ export const PROVIDER_NAV: NavItem[] = [
   { label: "Missions", href: "/missions", implemented: false, slice: "Mission projection" },
   { label: "Incidents", href: "/incidents", implemented: true },
   { label: "Human Inbox", href: "/human-inbox", implemented: true },
-  { label: "Audit", href: "/audit", implemented: false, slice: "Audit & trace projection" },
+  { label: "Settings", href: "/settings", implemented: true },
+  { label: "Audit", href: "/audit", implemented: true },
 ];
 
 /** Lý do khe hở cho một read-projection chưa expose (nêu rõ nguồn runtime backing). */

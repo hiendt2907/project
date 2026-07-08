@@ -27,6 +27,7 @@ export default async function ProviderAgentsPage() {
         <MetricStat label="Agents online" value={summary.online} />
         <MetricStat label="Agents stale" value={summary.stale} />
         <MetricStat label="Agents offline" value={summary.offline} />
+        <MetricStat label="Fleet drifted" value={summary.drifted} />
       </div>
 
       <Card>

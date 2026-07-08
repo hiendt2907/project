@@ -226,9 +226,9 @@ a { color: inherit; }
   padding: 1px 9px; font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .04em;
   font-family: var(--font-mono);
 }
-.aoip-pill.online, .aoip-pill.idle { color: var(--color-ok); border-color: var(--color-ok-line); background: var(--color-ok-dim); }
-.aoip-pill.stale, .aoip-pill.active { color: var(--color-warn); border-color: var(--color-warn-line); background: var(--color-warn-dim); }
-.aoip-pill.offline, .aoip-pill.failed { color: var(--color-critical); border-color: var(--color-critical-line); background: var(--color-critical-dim); }
+.aoip-pill.online, .aoip-pill.idle, .aoip-pill.current { color: var(--color-ok); border-color: var(--color-ok-line); background: var(--color-ok-dim); }
+.aoip-pill.stale, .aoip-pill.active, .aoip-pill.unknown { color: var(--color-warn); border-color: var(--color-warn-line); background: var(--color-warn-dim); }
+.aoip-pill.offline, .aoip-pill.failed, .aoip-pill.drifted { color: var(--color-critical); border-color: var(--color-critical-line); background: var(--color-critical-dim); }
 
 .aoip-question { border-top: 1px solid var(--line); padding: var(--space-3) 0; }
 .aoip-question:first-of-type { border-top: none; }
@@ -247,3 +247,16 @@ a { color: inherit; }
 }
 .aoip-select:focus { outline: none; border-color: var(--accent); }
 .aoip-filter-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; }
+
+.aoip-history { margin-top: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-3); }
+.aoip-history-versions { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.aoip-history-version {
+  border: 1px solid var(--line); border-radius: var(--radius-pill); padding: 1px 9px;
+  font: var(--text-2xs) var(--font-mono); background: var(--surface-2); color: var(--muted);
+  cursor: pointer;
+}
+.aoip-history-version.selected { color: var(--accent); border-color: var(--accent); background: var(--color-ok-dim); }
+.aoip-diff { max-height: 288px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-2); font: var(--text-2xs) var(--font-mono); margin-top: var(--space-2); }
+.aoip-diff-line.added { color: var(--color-ok); background: var(--color-ok-dim); }
+.aoip-diff-line.removed { color: var(--color-critical); background: var(--color-critical-dim); }
+.aoip-diff-line.same { color: var(--muted); }
