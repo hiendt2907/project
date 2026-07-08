@@ -242,7 +242,57 @@ async def _require_api_key(
             request.state.tenant = ctx
             return ctx
 
+    # Per-agent credential (IT-3): PG omni_admin.agent_credential, cache Redis 60s.
+    # Revoke DEL cache key → 401 hiệu lực tức thì (autonomy.revoke_agent_credentials).
+    if incoming:
+        ctx = await _resolve_agent_credential(request, incoming)
+        if ctx is not None:
+            request.state.tenant = ctx
+            return ctx
+
     raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+_AGENT_CRED_CACHE_PREFIX = "omni:agentcred:cache:"
+_AGENT_CRED_CACHE_TTL = 60  # seconds
+
+
+async def _resolve_agent_credential(request: Request, incoming: str) -> "TenantContext | None":
+    """Tra per-agent credential (sha256) trong PG qua app.state.admin_repo.
+
+    Cache positive-hit vào Redis 60s để agent push mỗi 20s không đập PG mỗi
+    request. KHÔNG cache negative (key sai hiếm, tránh che khuất enroll mới).
+    Trả None khi không có repo / key không khớp — caller quyết định 401.
+    """
+    repo = getattr(request.app.state, "admin_repo", None)
+    if repo is None:
+        return None
+    key_hash = hashlib.sha256(incoming.encode()).hexdigest()
+    redis = getattr(request.app.state, "redis", None)
+    cache_key = f"{_AGENT_CRED_CACHE_PREFIX}{key_hash}"
+    if redis is not None:
+        try:
+            cached = await redis.get(cache_key)
+            if cached:
+                rec = json.loads(cached)
+                return TenantContext(tenant_id=rec["tenant_id"], is_admin=False)
+        except Exception:
+            logger.warning("[GATEWAY] agent credential cache read failed", exc_info=True)
+    try:
+        rec = await repo.lookup_agent_credential(key_hash)
+    except Exception:
+        logger.error("[GATEWAY] agent credential PG lookup failed", exc_info=True)
+        return None
+    if rec is None:
+        return None
+    if redis is not None:
+        try:
+            await redis.setex(cache_key, _AGENT_CRED_CACHE_TTL, json.dumps(
+                {"tenant_id": rec["tenant_id"], "agent_id": rec["agent_id"]},
+            ))
+        except Exception:
+            logger.warning("[GATEWAY] agent credential cache write failed", exc_info=True)
+    return TenantContext(tenant_id=rec["tenant_id"], is_admin=False)
 
 
 def _is_chaos_lab_prometheus_webhook(body: Any) -> bool:
@@ -360,6 +410,7 @@ from gateway.routes.trace import router as _trace_router  # noqa: E402
 from gateway.routes.simulate import router as _simulate_router  # noqa: E402
 from gateway.routes.kb import router as _kb_router  # noqa: E402
 from gateway.routes.onboarding import router as _onboarding_router  # noqa: E402
+from gateway.routes.agent_enroll import router as _agent_enroll_router  # noqa: E402
 
 app.include_router(_kpi_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_playbooks_router, dependencies=[_Depends(_require_api_key)])
@@ -375,6 +426,8 @@ app.include_router(_simulate_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_kb_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_onboarding_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_agent_push_router)  # agent_push has its own auth — no gateway API key guard
+# Enroll: token trong body chính là credential (one-time) — không gắn API key guard (IT-3).
+app.include_router(_agent_enroll_router)
 
 
 class GatewayTraceMiddleware(BaseHTTPMiddleware):

@@ -891,3 +891,58 @@ portal (ngoài scope backend sprint).
 
 Verify lại: `.venv/bin/python -m pytest tests/test_agent_drift_detection.py -q`; runtime:
 `make publish-agent-release` rồi curl `/webhook/agent/versions` trong gateway pod.
+
+## Iteration 29 (Sprint NV-SRE, IT-3) — Enrollment + identity per-agent: "tuyển dụng" chính thức (2026-07-08)
+
+**Bottleneck đã fix**: credential tĩnh dùng chung (`OMNI_AGENT_API_KEY` render sẵn trong
+`run.env`, map qua env `OMNI_TENANT_APIKEYS` trên gateway) — không enroll token, không revoke
+per-agent, không tenant binding bền vững. Baseline metric #3: ❌ enroll VM mới phải sửa tay.
+
+**Cơ chế**:
+1. Migration `0005_agent_enrollment.sql` — `omni_admin.agent_enroll_token` (one-time, lưu
+   sha256, status issued→used/revoked, expires_at) + `omni_admin.agent_credential` (per-agent
+   key hash, unique-active per (tenant, agent), FK tenant — gotcha post-mortem FK giữ nguyên).
+2. `AdminConfigRepo`: `create_enroll_token` / `consume_enroll_token_and_issue_credential`
+   (MỘT TX atomic — UPDATE có điều kiện `status='issued'` là cơ chế single-use, chống cả race)
+   / `lookup_agent_credential` / `revoke_agent_credentials` (trả key_hash để DEL auth-cache)
+   / `list_agent_credentials`. Tất cả ghi `config_change_log` + `crat_outbox` cùng TX.
+3. Gateway: `POST /webhook/agent/enroll` (router riêng KHÔNG gắn bearer guard — token là
+   credential; rate-limit 10/min/IP); Admin API `POST /autonomy/tenants/{tid}/enroll-tokens`,
+   `GET/DELETE .../agent-credentials[/{agent_id}]` — **admin-only** (`_require_admin_ctx`:
+   per-agent key bị 403, không tự phát token/revoke lẫn nhau).
+4. `_require_api_key` fallback per-agent credential: sha256(key) → Redis cache 60s →
+   PG `agent_credential` → `TenantContext(tenant_id, is_admin=False)`. Revoke DEL cache →
+   401 tức thì. KHÔNG cache negative.
+5. `src/aoip/agent/enrollment.py` (ADR-001 — feature mới trên nền AOIP): client đổi token lấy
+   credential, dùng được từ installer lẫn `aoip.agent.daemon` sau này.
+6. `scripts/enroll_remote_agent.py`: ensure tenant (idempotent) → phát token → enroll →
+   render `run.env` qua canonical `remote_agent_provisioning` (không f-string tay) → orb push
+   (chmod 600) + restart unit; skip nếu `is_idempotent_rewrite`.
+
+**VERIFIED_TEST**: `tests/test_agent_enrollment.py` (MỚI, 14 test) — repo single-use/expiry/
+re-enroll-revoke/audit, endpoint enroll 2 lần → 401, rate-limit 429, per-agent auth qua
+`_require_api_key` + revoked → 401 ngay, admin gate 403, AOIP client happy-path + rejection.
+Full suite: **6026 passed, 0 failed** (fail routing E2E pre-existing của Iter 27/28 không tái hiện).
+
+**VERIFIED_RUNTIME** (cluster + VM thật, 2026-07-08):
+- Rebuild + deploy gateway; verify TRONG pod: route enroll + repo methods + migration 0005
+  (bảng `agent_enroll_token`/`agent_credential` đã tạo qua `run_migrations` lúc startup).
+- **DoD re-provision cust-app KHÔNG sửa tay**: `scripts/enroll_remote_agent.py --machine
+  cust-app --tenant staging-sim --agent-id staging-sim_cust-app …` → tenant idempotent, token
+  `nVt9Ezcx…` phát + dùng, credential `J-LIR3jl…` active trong PG, run.env 600 ghi qua orb,
+  unit active. Agent log: evidence POST + commands GET đều 200 với key per-agent.
+  Twin staging-sim: fact cust-app mới nhất 09:38:07 (SAU re-enroll 09:36:13) — discovery chảy
+  qua credential mới. Drift status `current`, online.
+- **Drill live trên gateway thật**: enroll lần 2 cùng token → **401**; key drill gọi guarded
+  endpoint → 200; key drill thử phát enroll-token → **403** (admin gate); revoke qua Admin API
+  → gọi lại → **401 tức thì** (cache DEL).
+
+**Sprint baseline metric #3: ❌ → ✅** (enroll không sửa tay, single-use, revoke được).
+
+**Non-goal ghi risk register**: credential rotation tự động (ngoài phạm vi sprint — plan IT-3);
+2 VM còn lại (cust-edge/cust-db) vẫn chạy key tenant-shared cũ, sẽ chuyển per-agent khi migrate
+AOIP daemon (IT-4/IT-5) — key cũ vẫn hợp lệ qua env `OMNI_TENANT_APIKEYS` (transition window
+có chủ đích, không phải sót).
+
+Verify lại: `.venv/bin/python -m pytest tests/test_agent_enrollment.py -q`; runtime: psql
+`SELECT * FROM omni_admin.agent_credential;` + drill curl như trên.

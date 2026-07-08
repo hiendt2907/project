@@ -356,6 +356,80 @@ async def revoke_api_key(request: Request, tenant_id: str, key_id: int) -> JSONR
     return JSONResponse(content={"status": "ok", **result})
 
 
+# ── Agent enrollment (IT-3) — one-time token + per-agent credential ────────────
+def _require_admin_ctx(request: Request) -> None:
+    """Enroll-token/revoke là thao tác provisioning (Admin API theo plan IT-3).
+    Per-agent credential từ VM khách cũng pass _require_api_key (is_admin=False)
+    — phải chặn ở đây để agent bị lộ key không tự phát token/revoke lẫn nhau."""
+    from gateway.tenant_context import get_tenant_ctx, is_admin_ctx
+
+    if not is_admin_ctx(get_tenant_ctx(request)):
+        raise HTTPException(status_code=403, detail="Admin API key required")
+
+
+class EnrollTokenRequest(BaseModel):
+    label: str | None = None
+    actor: str = "admin_ui"
+    ttl_seconds: int | None = Field(
+        default=None, ge=60, description="Hạn dùng token (giây); None = không hết hạn (lab)",
+    )
+
+
+@router.post("/tenants/{tenant_id}/enroll-tokens")
+async def create_enroll_token(
+    request: Request, tenant_id: str, body: EnrollTokenRequest,
+) -> JSONResponse:
+    """Phát one-time enroll token. Plaintext trả đúng MỘT lần — PG chỉ lưu sha256."""
+    _require_admin_ctx(request)
+    import hashlib
+    import secrets
+    from datetime import datetime, timedelta, timezone
+
+    repo = _get_admin_repo(request)
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=body.ttl_seconds)
+        if body.ttl_seconds else None
+    )
+    try:
+        result = await repo.create_enroll_token(
+            tenant_id=tenant_id, token_hash=token_hash, token_prefix=raw_token[:8],
+            actor=body.actor, label=body.label, expires_at=expires_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # plaintext CHỈ trả lần này.
+    return JSONResponse(content={"status": "ok", "enroll_token": raw_token, **result})
+
+
+@router.get("/tenants/{tenant_id}/agent-credentials")
+async def get_agent_credentials(request: Request, tenant_id: str) -> JSONResponse:
+    repo = _get_admin_repo(request)
+    return JSONResponse(
+        content={"agent_credentials": await repo.list_agent_credentials(tenant_id)},
+    )
+
+
+@router.delete("/tenants/{tenant_id}/agent-credentials/{agent_id}")
+async def revoke_agent_credentials(
+    request: Request, tenant_id: str, agent_id: str,
+) -> JSONResponse:
+    """Revoke mọi credential active của agent + xoá auth-cache → 401 tức thì."""
+    _require_admin_ctx(request)
+    repo = _get_admin_repo(request)
+    revoked_hashes = await repo.revoke_agent_credentials(
+        tenant_id=tenant_id, agent_id=agent_id, actor="admin_ui",
+    )
+    redis = getattr(request.app.state, "redis", None)
+    if redis is not None and revoked_hashes:
+        try:
+            await redis.delete(*[f"omni:agentcred:cache:{h}" for h in revoked_hashes])
+        except Exception:
+            logger.warning("autonomy.revoke_agent_credentials: cache DEL failed", exc_info=True)
+    return JSONResponse(content={"status": "ok", "revoked": len(revoked_hashes)})
+
+
 # ── HITL Queue (MASTER_PLAN §4/§6.7) — duyệt UI song song Telegram ──────────────
 class HitlDecideRequest(BaseModel):
     decision: str = Field(..., description="APPROVED|REJECTED")

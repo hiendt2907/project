@@ -684,6 +684,145 @@ class AdminConfigRepo:
                 )
         return {"id": key_id, "status": "revoked"}
 
+    # ---- agent enrollment (IT-3): one-time token → per-agent credential ----
+
+    async def create_enroll_token(
+        self, *, tenant_id: str, token_hash: str, token_prefix: str, actor: str,
+        label: str | None = None, expires_at: Any = None,
+    ) -> dict[str, Any]:
+        """Phát one-time enroll token cho tenant. Gotcha FK: tenant phải tồn tại
+        trước (post-mortem drift-correction-2026-07-02) — check tường minh để trả
+        lỗi rõ ràng thay vì FK violation."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM omni_admin.tenant WHERE tenant_id = $1", tenant_id,
+                )
+                if not exists:
+                    raise ValueError(f"tenant {tenant_id!r} không tồn tại")
+                token_id = await conn.fetchval(
+                    "INSERT INTO omni_admin.agent_enroll_token "
+                    "(tenant_id, token_hash, token_prefix, label, created_by, expires_at) "
+                    "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+                    tenant_id, token_hash, token_prefix, label, actor, expires_at,
+                )
+                await self._log_and_enqueue(
+                    conn, tenant_id=tenant_id, entity="agent_enroll_token",
+                    entity_key=str(token_id), action="create", old_value={},
+                    new_value={"token_prefix": token_prefix},
+                    actor=actor, event_type=CRAT_EVENT_CONFIG_CHANGED,
+                    dedup_key=f"enroll_token:{tenant_id}:{token_id}:create",
+                    payload={"entity": "agent_enroll_token", "tenant_id": tenant_id,
+                             "token_id": token_id, "token_prefix": token_prefix,
+                             "actor": actor},
+                )
+        return {"id": token_id, "token_prefix": token_prefix, "tenant_id": tenant_id}
+
+    async def consume_enroll_token_and_issue_credential(
+        self, *, token_hash: str, agent_id: str, hostname: str,
+        key_hash: str, key_prefix: str,
+    ) -> dict[str, Any] | None:
+        """Đổi enroll token lấy per-agent credential — MỘT transaction atomic.
+
+        UPDATE có điều kiện status='issued' là cơ chế single-use: request thứ hai
+        cùng token (kể cả race song song) không match được row nào → None → 401.
+        Re-enroll cùng (tenant, agent) revoke credential active cũ trước khi cấp
+        mới (unique partial index ux_agent_credential_active).
+        Trả None khi token không tồn tại / đã dùng / revoked / hết hạn.
+        """
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "UPDATE omni_admin.agent_enroll_token "
+                    "SET status='used', used_at=now(), used_by_agent=$2 "
+                    "WHERE token_hash = $1 AND status = 'issued' "
+                    "AND (expires_at IS NULL OR expires_at > now()) "
+                    "RETURNING id, tenant_id",
+                    token_hash, agent_id,
+                )
+                if row is None:
+                    return None
+                token_id, tenant_id = row["id"], row["tenant_id"]
+                await conn.execute(
+                    "UPDATE omni_admin.agent_credential "
+                    "SET status='revoked', revoked_at=now() "
+                    "WHERE tenant_id=$1 AND agent_id=$2 AND status='active'",
+                    tenant_id, agent_id,
+                )
+                cred_id = await conn.fetchval(
+                    "INSERT INTO omni_admin.agent_credential "
+                    "(tenant_id, agent_id, hostname, key_hash, key_prefix, enrolled_via_token) "
+                    "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+                    tenant_id, agent_id, hostname, key_hash, key_prefix, token_id,
+                )
+                await self._log_and_enqueue(
+                    conn, tenant_id=tenant_id, entity="agent_credential",
+                    entity_key=str(cred_id), action="create", old_value={},
+                    new_value={"agent_id": agent_id, "key_prefix": key_prefix,
+                               "enrolled_via_token": token_id},
+                    actor=f"enroll:{agent_id}", event_type=CRAT_EVENT_CONFIG_CHANGED,
+                    dedup_key=f"agent_credential:{tenant_id}:{cred_id}:create",
+                    payload={"entity": "agent_credential", "tenant_id": tenant_id,
+                             "agent_id": agent_id, "credential_id": cred_id,
+                             "key_prefix": key_prefix, "token_id": token_id},
+                )
+        return {"credential_id": cred_id, "tenant_id": tenant_id,
+                "agent_id": agent_id, "key_prefix": key_prefix}
+
+    async def lookup_agent_credential(self, key_hash: str) -> dict[str, Any] | None:
+        """Auth hot-path: hash → (tenant_id, agent_id) nếu credential active."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT tenant_id, agent_id FROM omni_admin.agent_credential "
+                "WHERE key_hash = $1 AND status = 'active'",
+                key_hash,
+            )
+        if row is None:
+            return None
+        return {"tenant_id": row["tenant_id"], "agent_id": row["agent_id"]}
+
+    async def revoke_agent_credentials(
+        self, *, tenant_id: str, agent_id: str, actor: str,
+    ) -> list[str]:
+        """Revoke mọi credential active của (tenant, agent). Trả list key_hash
+        vừa revoke để caller xoá Redis auth-cache (401 hiệu lực tức thì)."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    "UPDATE omni_admin.agent_credential "
+                    "SET status='revoked', revoked_at=now() "
+                    "WHERE tenant_id=$1 AND agent_id=$2 AND status='active' "
+                    "RETURNING id, key_hash",
+                    tenant_id, agent_id,
+                )
+                for row in rows:
+                    await self._log_and_enqueue(
+                        conn, tenant_id=tenant_id, entity="agent_credential",
+                        entity_key=str(row["id"]), action="delete",
+                        old_value={"status": "active"}, new_value={"status": "revoked"},
+                        actor=actor, event_type=CRAT_EVENT_CONFIG_CHANGED,
+                        dedup_key=f"agent_credential:{tenant_id}:{row['id']}:revoke",
+                        payload={"entity": "agent_credential", "tenant_id": tenant_id,
+                                 "agent_id": agent_id, "credential_id": row["id"],
+                                 "actor": actor},
+                    )
+        return [row["key_hash"] for row in rows]
+
+    async def list_agent_credentials(self, tenant_id: str) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, agent_id, hostname, key_prefix, status, created_at, revoked_at "
+                "FROM omni_admin.agent_credential WHERE tenant_id = $1 ORDER BY id",
+                tenant_id,
+            )
+        return [
+            {"id": r["id"], "agent_id": r["agent_id"], "hostname": r["hostname"],
+             "key_prefix": r["key_prefix"], "status": r["status"],
+             "created_at": str(r["created_at"] or ""),
+             "revoked_at": str(r["revoked_at"] or "")}
+            for r in rows
+        ]
+
     # ---- shared TX tail: config_change_log + crat_outbox ------------------
 
     async def _log_and_enqueue(
