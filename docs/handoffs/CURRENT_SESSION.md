@@ -1,37 +1,57 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-**Hoàn tất sản phẩm theo sprint "Nhân viên SRE": IT-4 ĐÓNG (2026-07-13) → đang làm IT-5
-(safe update/rollback qua command channel).**
+**Provider portal dễ hiểu cho người không kỹ thuật — đợt 1 DONE (commit `c27c86a`, deployed,
+E2E 18/18 xanh trên cluster).** User đã đổi ưu tiên giữa phiên (2026-07-13): "mọi thứ rõ ràng
+chính xác trên UI, người không rành kỹ thuật vẫn hiểu, tất cả backend phải hiển thị, tập trung
+provider trước" — sprint IT-5 backend TẠM DỪNG (xem dưới).
 
-## IT-4 — ĐÓNG, đừng re-verify
-- Bằng chứng soak: employee chạy liên tục `2026-07-09 07:05:39 → 2026-07-10 16:25:46 +07`
-  (~33h > 24h), dừng do VM shutdown chủ động; Twin staging-sim đo 2026-07-13 10:00 tươi,
-  93 facts / 25 fact cust-app, không mất so baseline 76. Rollback drill 2 chiều PASS từ trước.
-- Đã ghi VERIFIED_SOAK vào `docs/product/PRODUCT_PROOF.md` (Iteration 30, cuối section).
+## Đã làm phiên này
+1. **IT-4 ĐÓNG** (commit `fe4d7a7`): soak 33h liên tục (2026-07-09 07:05→07-10 16:25 +07),
+   Twin 93 facts không mất so baseline 76 — VERIFIED_SOAK ghi vào PRODUCT_PROOF Iteration 30.
+2. **Portal đợt 1** (commit `c27c86a`, image aoip-provider-web:latest rebuilt + rollout,
+   `make e2e-portal` 18 passed):
+   - `components/PageIntro.tsx` — mô tả đời thường + chú giải thuật ngữ, đã gắn vào
+     Overview/Agents/Understanding/Human-Inbox/Incidents/Settings/Audit.
+   - Nav 12 mục nhãn tiếng Việt (`lib/nav.ts`, GOVERNING RULE giữ nguyên + comment cập nhật).
+   - Trang mới: `/pipeline` (+`/pipeline/[traceId]` — 12 bước STAGE_VI khớp
+     `pkg/observability/pipeline_stages.py`, đèn ok/fail/skip/pending), `/kpi`
+     (gateway `/kpi/summary|trend`), `/operations`, `/tenants` (console BFF có sẵn).
+   - `lib/pipeline.ts` chứa STAGE_VI/LANE_VI — bản dịch dùng chung, đổi stage backend PHẢI sửa đây.
+   - E2E spec `tests/e2e_portals/specs/provider_overview.spec.ts`: sửa test nav count 7→12
+     (stale từ trước), thêm 5 test mới (PageIntro/pipeline/kpi/operations+tenants).
 
-## IT-5 — scope (theo docs/plans/sprint-agent-sre-employee-production.md)
-- Update = durable command trên AOIP daemon: download → verify sha256 vs release manifest
-  (IT-2, `make publish-agent-release`) → swap → health-check window → fail thì tự rollback
-  về bundle N-1 giữ trên VM.
-- Outcome `updated/rolled_back` + version báo về command channel, ghi CRAT event.
-- DoD: trên cust-app (a) update thành công lên version mới; (b) cố ý ship bundle hỏng →
-  health-gate fail → tự rollback, Omni nhận outcome `rolled_back`. Sau đó migrate nốt
-  cust-edge/cust-db sang AOIP daemon bằng chính cơ chế update này (fleet 3/3 employee).
-- Nền có sẵn: `remote_agent/updater.py` (download+sha256+extract+restart, KHÔNG health-gate),
-  durable inbox/lease/fencing/idempotency ở `aoip/agent/` (`daemon.py`, `delivery_loop.py`,
-  `inbox.py`), release manifest 2 hash (IT-2/IT-4).
-- Gotcha ship bundle: `COPYFILE_DISABLE=1` khi tar trên macOS (AppleDouble phá hash).
-- Feature mới viết ở `src/aoip/agent/` (ADR-001); `remote_agent/` chỉ compat tối thiểu.
+## Gap portal còn lại (đợt 2 — theo audit Explore agent phiên này)
+- Drill-down sự cố dùng console `/incident/{tenant}/{cid}` (đã có endpoint, chưa có trang).
+- Advisory/brain card ngôn ngữ tự nhiên (gateway `/trace/{id}/advisory|brain`).
+- `/support-access/{tenant}` (lịch sử phiên support) chưa lên UI.
+- Platform/Worker health (port `/workers` app cũ), RAG/KB stats (gateway `/kb`).
+- Việt hoá nốt nhãn bảng trong `/understanding` (Competency/Facts headers còn Anh),
+  `/incidents` MetricStat labels còn Anh.
+- Tenant portal chưa đụng (user nói provider trước).
 
-## Sau IT-5 (kế hoạch đã duyệt với user 2026-07-13)
-IT-6 (command outcome durability PG + chaos proof) → IT-7 (soak + offline recovery + sprint
-review, điền cột SAU 6 metric) → IT-8 stretch (mission skeleton) → `/missions` portal +
-Playwright cho 4 trang portal mới → quyết định xoá root `ui/` (cần user).
+## IT-5 TẠM DỪNG — code lõi ĐÃ VIẾT, chưa test, đang trong working tree (KHÔNG commit)
+Files: `src/aoip/agent/updater.py` (mới — apply_update/startup_gate/make_update_executor/
+make_update_reconciler), `src/aoip/agent/omni_client.py` (+download_release_bundle),
+`src/aoip/agent/daemon.py` (+reconciler param), `src/aoip/agent/employee.py` (startup_gate
+trong main + wire update executor/reconciler), `src/gateway/routes/agent_commands.py`
+(+GET /webhook/agent/release/bundle, Redis `omni:agent:release_bundle` base64),
+`scripts/publish_agent_release.py` (build tar deterministic + release_tar_sha256),
+`Makefile` (publish-agent-release đẩy cả bundle), `scripts/aoip-agent-guard.sh` (mới —
+crash-loop guard ExecStartPre), `scripts/aoip-agent.service` (+ExecStartPre).
+Thiết kế: update = durable command verb UPDATE_AGENT; agent tải bundle TỪ GATEWAY (không URL
+ngoài); executor block-forever chờ restart chết giữa RUNNING (chủ ý); health-gate ở
+startup_gate boot mới (self-hash vs expected); rollback N-1 `/var/lib/aoip/releases/`;
+bundle hỏng không boot nổi Python → guard shell restore sau 3 boot; reconciler đọc result
+marker báo outcome đúng 1 lần.
+**Còn thiếu khi resume IT-5**: tests (updater unit + gateway route + guard shell qua bash),
+pytest full, deploy gateway, VM drill (a) update thành công (b) bundle hỏng tự rollback,
+migrate cust-edge/cust-db, PRODUCT_PROOF.
 
 ## Không được làm lại
-- IT-1..IT-4 DONE (commit e64e338/cebd84b/a364fc2/8fc5aa3 + đóng sổ phiên này).
-- 4 gap UI provider portal DONE, user đã click-through verify (36ee34d).
+- IT-1..IT-4 DONE + đóng sổ (`fe4d7a7`). Portal đợt 1 DONE (`c27c86a`), 18/18 E2E xanh.
+- Đừng re-audit portal — bảng gap ở trên là kết quả audit 2026-07-13 rồi.
 
-## Ghi chú phụ
-- `.claude/launch.json` (dev tooling, untracked) — 4 config dev server, không đụng code sản phẩm.
+## Next step chính xác
+1. Portal đợt 2 theo bảng gap trên (ưu tiên: incident drill-down + advisory card VI).
+2. Khi user cho quay lại backend: resume IT-5 theo mục "Còn thiếu" ở trên.
