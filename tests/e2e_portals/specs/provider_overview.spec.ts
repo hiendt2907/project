@@ -34,11 +34,13 @@ test("Overview: metric chưa có nguồn hiển thị 'chưa khả dụng' (khô
   await expect(page.getByTestId("stat-Missions")).toContainText("chưa khả dụng");
 });
 
-test("Nav: chỉ 7 vùng runtime-backed; Agents projection hiển thị bảng thật", async ({ page }) => {
+test("Nav: chỉ vùng runtime-backed (12 mục, nhãn VI); Agents projection hiển thị bảng thật", async ({ page }) => {
   await login(page, "owner@aoip.dev");
   const links = page.locator(".aoip-side-link");
-  // Governing rule: nav chỉ phản ánh capability runtime (Overview + 6 read-projection).
-  await expect(links).toHaveCount(7);
+  // Governing rule: nav chỉ phản ánh capability runtime. 2026-07-13: 12 mục nhãn tiếng Việt
+  // (thêm Khách hàng/Pipeline/Số liệu/Vận hành — đều read-projection nguồn thật).
+  await expect(links).toHaveCount(12);
+  await expect(page.locator(".aoip-side-link", { hasText: "Xử lý sự cố" })).toHaveCount(1);
   await expect(page.locator(".aoip-side-link.soon").first()).toBeVisible();
   // KHÔNG còn product-domain trong nav (license/onboarding/deployments…).
   await expect(page.locator(".aoip-side-link", { hasText: "Licenses" })).toHaveCount(0);
@@ -60,6 +62,60 @@ test("Account: identity/roles/permissions tách khỏi trang chủ", async ({ pa
   await expect(page.getByTestId("subject")).toHaveText("owner@aoip.dev");
   await expect(page.getByTestId("roles")).toContainText("platform_owner");
   await expect(page.getByTestId("logout")).toBeVisible();
+});
+
+// 2026-07-13 — lớp giải thích phi kỹ thuật + 4 read-projection mới (Pipeline/KPI/
+// Vận hành/Khách hàng). Mỗi trang phải có PageIntro (mô tả đời thường) và render
+// dữ liệu thật hoặc empty-state có giải thích — KHÔNG trắng trang, KHÔNG số giả.
+
+test("PageIntro: mọi trang chính có mô tả đời thường + chú giải thuật ngữ", async ({ page }) => {
+  await login(page, "owner@aoip.dev");
+  for (const path of ["/", "/agents", "/understanding", "/human-inbox", "/audit"]) {
+    await page.goto(PROVIDER + path);
+    await expect(page.getByTestId("page-intro"), `intro on ${path}`).toBeVisible();
+  }
+});
+
+test("Pipeline: danh sách lượt xử lý hoặc empty-state có giải thích", async ({ page }) => {
+  await login(page, "owner@aoip.dev");
+  await page.goto(PROVIDER + "/pipeline");
+  await expect(page.getByTestId("page-intro")).toBeVisible();
+  const table = page.getByTestId("pipeline-table");
+  const empty = page.getByTestId("pipeline-empty");
+  await expect(table.or(empty).first()).toBeVisible();
+});
+
+test("Pipeline: chi tiết một lượt xử lý hiển thị 12 bước tiếng Việt", async ({ page }) => {
+  await login(page, "owner@aoip.dev");
+  await page.goto(PROVIDER + "/pipeline");
+  const firstTrace = page.locator(".aoip-trace-link").first();
+  if ((await firstTrace.count()) === 0) {
+    test.skip(true, "không có trace nào trong 1h gần đây — bỏ qua drill-down");
+    return;
+  }
+  await firstTrace.click();
+  const stages = page.getByTestId("stage-list").locator(".aoip-stage");
+  await expect(stages).toHaveCount(12);
+  await expect(page.getByText("Tiếp nhận")).toBeVisible();
+});
+
+test("KPI: số liệu 24h thật, không số giả", async ({ page }) => {
+  await login(page, "owner@aoip.dev");
+  await page.goto(PROVIDER + "/kpi");
+  await expect(page.getByTestId("page-intro")).toBeVisible();
+  await expect(page.getByTestId("kpi-summary")).toBeVisible();
+});
+
+test("Vận hành + Khách hàng: render projection console thật", async ({ page }) => {
+  await login(page, "owner@aoip.dev");
+  await page.goto(PROVIDER + "/operations");
+  await expect(
+    page.getByTestId("operations-empty").or(page.locator(".aoip-card").first()).first(),
+  ).toBeVisible();
+  await page.goto(PROVIDER + "/tenants");
+  await expect(
+    page.getByTestId("tenants-grid").or(page.getByTestId("tenants-empty")).first(),
+  ).toBeVisible();
 });
 
 test("Human Inbox: operator answers one runtime question", async ({ page }) => {

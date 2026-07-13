@@ -4,6 +4,7 @@ import type {
   ComponentHealth, Metric, RecentActivity,
 } from "@aoip/shared-types";
 import { fetchOverview } from "@/lib/overview";
+import { PageIntro } from "@/components/PageIntro";
 
 // Provider Control Tower — số THẬT từ backend /overview (Trace Spine + agent registry + PG +
 // liveness). Metric thiếu nguồn → <Unavailable reason/> (không số giả). Layout đã gate auth;
@@ -26,6 +27,15 @@ export default async function ProviderOverviewPage() {
   const ov = result.overview;
   return (
     <>
+      <PageIntro
+        title="Tổng quan"
+        lead="Bức tranh toàn cảnh: đang phục vụ bao nhiêu khách hàng, các máy giám sát (agent) còn hoạt động không, có bao nhiêu sự cố đang mở và bao nhiêu việc đang chờ con người quyết định. Mọi con số đều lấy từ hệ thống thật — mục nào thiếu nguồn dữ liệu sẽ ghi rõ «chưa khả dụng» thay vì hiển thị số giả."
+        terms={[
+          { term: "Agent", meaning: "Phần mềm nhỏ cài trên máy chủ của khách hàng, chỉ quan sát và báo cáo về — không tự ý can thiệp." },
+          { term: "Cần reconcile", meaning: "Việc mà trạng thái thực tế và sổ sách chưa khớp — cần đối soát trước khi làm gì tiếp." },
+          { term: "Chờ phê duyệt", meaning: "Thao tác nhạy cảm đang đợi con người bấm đồng ý mới được thực hiện." },
+        ]}
+      />
       <div className="aoip-k">Provider Control Tower</div>
       <div className="aoip-grid" data-testid="overview-grid">
         <Stat label="Tenants" m={ov.tenants} render={(v) => v.total}

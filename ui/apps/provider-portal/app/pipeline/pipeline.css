@@ -1,0 +1,104 @@
+.aoip-pipeline-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.aoip-pipeline-table th {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.45rem 0.75rem;
+  border-bottom: 2px solid var(--aoip-border, #e5e7eb);
+  white-space: nowrap;
+}
+
+.aoip-pipeline-table td {
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid var(--aoip-border, #e5e7eb);
+  vertical-align: top;
+}
+
+.aoip-trace-link {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  color: var(--aoip-accent, #2563eb);
+  text-decoration: none;
+}
+
+.aoip-trace-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Chi tiết 12 bước ─────────────────────────────────────────────────────── */
+.aoip-stage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.aoip-stage {
+  display: grid;
+  grid-template-columns: 2rem minmax(11rem, max-content) 1fr max-content;
+  gap: 0.35rem 0.9rem;
+  align-items: baseline;
+  padding: 0.5rem 0.25rem;
+  border-bottom: 1px solid var(--aoip-border, #e5e7eb);
+}
+
+.aoip-stage:last-child {
+  border-bottom: none;
+}
+
+.aoip-stage-light {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  align-self: center;
+  justify-self: center;
+}
+
+.aoip-stage-light[data-status="ok"] { background: #16a34a; }
+.aoip-stage-light[data-status="fail"] { background: #dc2626; }
+.aoip-stage-light[data-status="skip"] { background: #9ca3af; }
+.aoip-stage-light[data-status="pending"] {
+  background: transparent;
+  border: 2px dashed #9ca3af;
+}
+
+.aoip-stage-name {
+  font-weight: 600;
+}
+
+.aoip-stage-name small {
+  display: block;
+  font-weight: 400;
+  color: var(--aoip-muted, #6b7280);
+}
+
+.aoip-stage-explain {
+  color: var(--aoip-muted, #6b7280);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.aoip-stage-detail {
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--aoip-muted, #6b7280);
+  word-break: break-word;
+}
+
+.aoip-stage-status {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.aoip-stage-status[data-status="ok"] { color: #16a34a; }
+.aoip-stage-status[data-status="fail"] { color: #dc2626; font-weight: 600; }
+
+@media (max-width: 720px) {
+  .aoip-stage {
+    grid-template-columns: 2rem 1fr max-content;
+  }
+  .aoip-stage-explain { grid-column: 2 / -1; }
+}

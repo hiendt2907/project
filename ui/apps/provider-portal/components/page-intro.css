@@ -1,0 +1,58 @@
+.aoip-intro {
+  margin: 0 0 1.25rem;
+  max-width: 72ch;
+}
+
+.aoip-intro-title {
+  font-size: 1.35rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.35rem;
+}
+
+.aoip-intro-lead {
+  margin: 0;
+  color: var(--aoip-muted, #6b7280);
+  line-height: 1.55;
+}
+
+.aoip-intro-glossary {
+  margin-top: 0.6rem;
+  font-size: 0.9rem;
+}
+
+.aoip-intro-glossary > summary {
+  cursor: pointer;
+  color: var(--aoip-accent, #2563eb);
+  user-select: none;
+}
+
+.aoip-intro-glossary dl {
+  margin: 0.5rem 0 0;
+  padding: 0.65rem 0.85rem;
+  border-left: 3px solid var(--aoip-accent, #2563eb);
+  background: color-mix(in srgb, var(--aoip-accent, #2563eb) 6%, transparent);
+  border-radius: 0 6px 6px 0;
+}
+
+.aoip-intro-term {
+  display: grid;
+  grid-template-columns: minmax(9rem, max-content) 1fr;
+  gap: 0.25rem 0.9rem;
+  padding: 0.2rem 0;
+}
+
+.aoip-intro-term dt {
+  font-weight: 600;
+}
+
+.aoip-intro-term dd {
+  margin: 0;
+  color: var(--aoip-muted, #6b7280);
+}
+
+@media (max-width: 640px) {
+  .aoip-intro-term {
+    grid-template-columns: 1fr;
+  }
+}

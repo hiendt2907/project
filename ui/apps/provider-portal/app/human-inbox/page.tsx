@@ -3,6 +3,7 @@ import { Card, MetricStat } from "@aoip/ui-kit";
 import type { ProviderQuestion } from "@aoip/shared-types";
 import { fetchHumanInbox } from "@/lib/human-inbox";
 import { AnswerForm } from "./AnswerForm";
+import { PageIntro } from "@/components/PageIntro";
 
 export default async function ProviderHumanInboxPage() {
   const cookieHeader = (await headers()).get("cookie") ?? "";
@@ -22,11 +23,19 @@ export default async function ProviderHumanInboxPage() {
   const { summary, tenants } = result.data;
   return (
     <>
-      <div className="aoip-k">Human Inbox</div>
+      <PageIntro
+        title="Hộp thư chờ người duyệt"
+        lead="Khi Omni gặp điều chưa hiểu về hệ thống của khách hàng, nó không đoán bừa — nó đặt câu hỏi và chờ con người trả lời tại đây. Trả lời câu hỏi giúp Omni hiểu hệ thống nhanh hơn và chẩn đoán chính xác hơn."
+        terms={[
+          { term: "Unknown", meaning: "Một khoảng trống trong hiểu biết của Omni về hệ thống — chưa thành câu hỏi cụ thể." },
+          { term: "Câu hỏi PENDING", meaning: "Câu hỏi đang chờ bạn trả lời. Gõ câu trả lời ngay bên dưới câu hỏi." },
+          { term: "Claim", meaning: "Câu trả lời của bạn được ghi nhận là «lời khai» — Omni sẽ tự kiểm chứng thêm trước khi tin hoàn toàn." },
+        ]}
+      />
       <div className="aoip-grid" data-testid="human-inbox-summary">
-        <MetricStat label="Tenants with gaps" value={summary.tenants} />
-        <MetricStat label="Unknown records" value={summary.unknowns} />
-        <MetricStat label="Pending questions" value={summary.pending_questions} />
+        <MetricStat label="Khách hàng có khoảng trống" value={summary.tenants} hint="Số khách hàng đang có điều Omni chưa hiểu" />
+        <MetricStat label="Khoảng trống hiểu biết" value={summary.unknowns} hint="Điều Omni biết là mình chưa biết" />
+        <MetricStat label="Câu hỏi chờ trả lời" value={summary.pending_questions} hint="Cần con người trả lời để Omni học tiếp" />
       </div>
 
       {tenants.length === 0 ? (

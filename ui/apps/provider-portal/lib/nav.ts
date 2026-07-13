@@ -17,15 +17,25 @@ import type { NavItem } from "@aoip/shared-types";
 // per-tenant (không phải billing/CRM/global policy), scoped đúng RBAC (P_CHANGE_POLICY), audit
 // đầy đủ qua config_change_log/CRAT. Portal không thêm domain "giả"; đây là surface thật cho
 // một store đã production (AdminConfigRepo) mà trước đây chỉ curl tay được.
+// CẬP NHẬT (2026-07-13, theo yêu cầu user): nhãn nav chuyển tiếng Việt đời thường —
+// người không rành kỹ thuật phải hiểu ngay mục đó dùng để làm gì. 4 mục mới đều là
+// read-projection của nguồn runtime THẬT (đúng GOVERNING RULE):
+// Pipeline(gateway /trace/recent + /trace/{id}/pipeline — omni:trace:stages) ·
+// Số liệu(gateway /kpi/summary + /kpi/trend) · Khách hàng(console /tenants) ·
+// Vận hành(console /operations).
 export const PROVIDER_NAV: NavItem[] = [
-  { label: "Overview", href: "/", implemented: true },
-  { label: "Agents", href: "/agents", implemented: true },
-  { label: "Understanding", href: "/understanding", implemented: true },
-  { label: "Missions", href: "/missions", implemented: false, slice: "Mission projection" },
-  { label: "Incidents", href: "/incidents", implemented: true },
-  { label: "Human Inbox", href: "/human-inbox", implemented: true },
-  { label: "Settings", href: "/settings", implemented: true },
-  { label: "Audit", href: "/audit", implemented: true },
+  { label: "Tổng quan", href: "/", implemented: true },
+  { label: "Khách hàng", href: "/tenants", implemented: true },
+  { label: "Xử lý sự cố (Pipeline)", href: "/pipeline", implemented: true },
+  { label: "Số liệu 24h", href: "/kpi", implemented: true },
+  { label: "Agents tại khách hàng", href: "/agents", implemented: true },
+  { label: "Hiểu biết hệ thống", href: "/understanding", implemented: true },
+  { label: "Nhiệm vụ (Missions)", href: "/missions", implemented: false, slice: "Mission projection" },
+  { label: "Sự cố bảo mật", href: "/incidents", implemented: true },
+  { label: "Việc cần xử lý", href: "/operations", implemented: true },
+  { label: "Hộp thư chờ người duyệt", href: "/human-inbox", implemented: true },
+  { label: "Cài đặt kết nối", href: "/settings", implemented: true },
+  { label: "Sổ kiểm toán", href: "/audit", implemented: true },
 ];
 
 /** Lý do khe hở cho một read-projection chưa expose (nêu rõ nguồn runtime backing). */

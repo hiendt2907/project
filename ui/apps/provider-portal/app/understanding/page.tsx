@@ -7,6 +7,7 @@ import { fetchDiagram, type DiagramResponse } from "@/lib/diagram";
 import { MermaidBlock } from "@/components/mermaid-diagram";
 import { splitDiagramText } from "@/lib/diagram-utils";
 import { DiagramHistoryPanel } from "./DiagramHistoryPanel";
+import { PageIntro } from "@/components/PageIntro";
 import "./understanding.css";
 
 export default async function ProviderUnderstandingPage() {
@@ -34,7 +35,17 @@ export default async function ProviderUnderstandingPage() {
 
   return (
     <>
-      <div className="aoip-k">System Understanding</div>
+      <PageIntro
+        title="Hiểu biết hệ thống"
+        lead="Trước khi trông coi hệ thống của khách hàng, Omni phải «học» hệ thống đó: có những máy nào, chạy dịch vụ gì, cái nào nối với cái nào. Trang này cho thấy Omni đã hiểu tới đâu — bao gồm sơ đồ hệ thống tự vẽ, mức độ sẵn sàng, và cả những điều Omni thừa nhận là CHƯA biết."
+        terms={[
+          { term: "System Twin", meaning: "«Bản sao hiểu biết» của hệ thống khách hàng trong đầu Omni — gồm các thực thể và sự thật đã thu thập được." },
+          { term: "Fact / Provenance", meaning: "Một điều Omni biết, kèm nguồn gốc: biết từ đâu, do agent nào báo, lúc nào." },
+          { term: "Unknown", meaning: "Điều Omni biết là mình chưa biết — sẽ chuyển thành câu hỏi gửi con người ở Hộp thư chờ duyệt." },
+          { term: "Readiness", meaning: "Thước đo Omni đã hiểu hệ thống đủ sâu để hỗ trợ tự tin chưa (đạt/chưa đạt từng tiêu chí)." },
+          { term: "Contradiction", meaning: "Hai nguồn thông tin nói ngược nhau — cần con người phân xử." },
+        ]}
+      />
       {tenants.length === 0 ? (
         <Card>
           <div className="aoip-state" data-testid="understanding-empty">

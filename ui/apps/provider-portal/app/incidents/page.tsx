@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { Card, MetricStat } from "@aoip/ui-kit";
 import { fetchUnderstanding } from "@/lib/understanding";
 import { fetchSiemOverview, type SiemOverviewResponse } from "@/lib/siem";
+import { PageIntro } from "@/components/PageIntro";
 
 // Read-only projection of src/gateway/routes/siem.py `/siem/overview` — CRAT audit-chain
 // summary (verdict distribution, recent blocks), tenant-scoped. No write-action here:
@@ -29,7 +30,15 @@ export default async function ProviderIncidentsPage() {
 
   return (
     <>
-      <div className="aoip-k">Incidents</div>
+      <PageIntro
+        title="Sự cố bảo mật"
+        lead="Mỗi khách hàng có một sổ ghi các quyết định an ninh mà hệ thống đã đưa ra (phát hiện tấn công, chặn thao tác nguy hiểm...). Sổ này được khoá bằng mật mã — đã ghi là không sửa được, nên số liệu ở đây là bằng chứng tin cậy, không phải báo cáo tự khai."
+        terms={[
+          { term: "Audit block", meaning: "Một trang trong sổ ghi — mỗi quyết định của hệ thống là một trang, nối nhau bằng mã khoá." },
+          { term: "Chain integrity", meaning: "Kết quả kiểm tra sổ có bị sửa trộm hay không. «ok/valid» = nguyên vẹn." },
+          { term: "Verdict", meaning: "Phán quyết của hệ thống cho mỗi sự việc: cảnh báo, chặn lại, hay cho phép." },
+        ]}
+      />
       {tenants.length === 0 ? (
         <Card>
           <div className="aoip-state" data-testid="incidents-empty">
