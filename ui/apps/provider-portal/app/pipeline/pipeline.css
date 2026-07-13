@@ -102,3 +102,38 @@
   }
   .aoip-stage-explain { grid-column: 2 / -1; }
 }
+
+/* ── Tín hiệu học hỏi ─────────────────────────────────────────────────────── */
+.aoip-learning-note {
+  margin: 0 0 0.6rem;
+  line-height: 1.5;
+}
+
+.aoip-learning-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.aoip-learning-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.4rem 0.25rem;
+  border-bottom: 1px solid var(--aoip-border, #e5e7eb);
+  font-size: 0.92rem;
+}
+
+.aoip-learning-row:last-child {
+  border-bottom: none;
+}
+
+.aoip-learning-check {
+  color: #16a34a;
+  font-weight: 700;
+}
+
+.aoip-learning-link {
+  margin-left: auto;
+  white-space: nowrap;
+}

@@ -61,6 +61,22 @@ export const LANE_VI: Record<string, string> = {
   SIEM_SECURITY: "An ninh — dấu hiệu tấn công",
 };
 
+// Tín hiệu KHÔNG phải sự cố (INV_KNOWLEDGE_NOT_ALERT): discovery/knowledge chỉ chạm
+// đúng 1 bước EVIDENCE rồi rẽ vào knowledge pipeline — KHÔNG BAO GIỜ đi 12 bước chẩn
+// đoán. Hiển thị chúng như sự cố "đang xử lý" là sai bản chất (đã gây hiểu nhầm
+// "đứng hàng loạt" — 2026-07-13). Chỉ 4 lane trong LANE_VI mới là pipeline chẩn đoán.
+export function isDiagnosticLane(lane: string): boolean {
+  return lane in LANE_VI;
+}
+
+export const LEARNING_LANE_VI: Record<string, string> = {
+  ONBOARDING_DISCOVERY: "Khám phá hệ thống (agent rà quét định kỳ)",
+};
+
+export function learningLaneVI(lane: string): string {
+  return LEARNING_LANE_VI[lane] ?? `Tín hiệu học hỏi (${lane || "không rõ loại"})`;
+}
+
 export function stageStatusVI(status: string): string {
   switch (status) {
     case "ok": return "Xong";

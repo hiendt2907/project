@@ -1,7 +1,14 @@
 import Link from "next/link";
 import { Card, KeyVal } from "@aoip/ui-kit";
 import { PageIntro } from "@/components/PageIntro";
-import { fetchTracePipeline, LANE_VI, STAGE_VI, stageStatusVI } from "@/lib/pipeline";
+import {
+  fetchTracePipeline,
+  isDiagnosticLane,
+  LANE_VI,
+  learningLaneVI,
+  STAGE_VI,
+  stageStatusVI,
+} from "@/lib/pipeline";
 import "../pipeline.css";
 
 function timeVI(ts: number): string {
@@ -35,6 +42,25 @@ export default async function TraceDetailPage({
             {result.error?.includes("404")
               ? "Lượt xử lý không còn trong bộ nhớ (dữ liệu chi tiết chỉ giữ 1 giờ)."
               : `Nguồn dữ liệu (${result.error ?? "không phản hồi"}). Thử tải lại trang.`}
+          </div>
+        </Card>
+      ) : !isDiagnosticLane(result.data.lane) ? (
+        // Tín hiệu học hỏi (INV_KNOWLEDGE_NOT_ALERT): theo thiết kế chỉ có 1 bước —
+        // KHÔNG vẽ 12 bước chẩn đoán, tránh cảm giác "kẹt ở bước 2" sai bản chất.
+        <Card>
+          <KeyVal label="Mã lượt xử lý">{result.data.trace_id}</KeyVal>
+          <KeyVal label="Loại tín hiệu">{learningLaneVI(result.data.lane)}</KeyVal>
+          <KeyVal label="Thời điểm">{timeVI(result.data.updated_at)}</KeyVal>
+          <KeyVal label="Trạng thái" testid="learning-status">
+            ✓ Đã ghi nhận vào kho hiểu biết — hoàn thành
+          </KeyVal>
+          <div className="aoip-muted" data-testid="learning-explain">
+            Đây không phải sự cố. Agent gửi bản rà quét định kỳ để Omni hiểu hệ thống sâu
+            hơn; loại tín hiệu này theo thiết kế chỉ có MỘT bước (ghi nhận bằng chứng) và
+            không đi qua 12 bước chẩn đoán — không có gì đang chờ xử lý ở đây.
+            {result.data.stages.find((s) => s.stage === "EVIDENCE")?.detail && (
+              <> Chi tiết ghi nhận: <code>{result.data.stages.find((s) => s.stage === "EVIDENCE")?.detail}</code></>
+            )}
           </div>
         </Card>
       ) : (

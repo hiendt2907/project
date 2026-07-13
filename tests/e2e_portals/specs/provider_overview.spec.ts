@@ -76,27 +76,44 @@ test("PageIntro: mọi trang chính có mô tả đời thường + chú giải 
   }
 });
 
-test("Pipeline: danh sách lượt xử lý hoặc empty-state có giải thích", async ({ page }) => {
+test("Pipeline: tách Sự cố vs Tín hiệu học hỏi (INV_KNOWLEDGE_NOT_ALERT trên UI)", async ({ page }) => {
   await login(page, "owner@aoip.dev");
   await page.goto(PROVIDER + "/pipeline");
   await expect(page.getByTestId("page-intro")).toBeVisible();
-  const table = page.getByTestId("pipeline-table");
-  const empty = page.getByTestId("pipeline-empty");
-  await expect(table.or(empty).first()).toBeVisible();
+  // Khu sự cố: bảng 12 bước HOẶC empty-state có giải thích.
+  await expect(
+    page.getByTestId("pipeline-table").or(page.getByTestId("pipeline-empty")).first(),
+  ).toBeVisible();
+  // Khu học hỏi luôn hiện (list hoặc empty) — discovery KHÔNG được hiển thị như sự cố kẹt.
+  await expect(
+    page.getByTestId("learning-list").or(page.getByTestId("learning-empty")).first(),
+  ).toBeVisible();
+  // Không dòng học hỏi nào mang chữ "đang xử lý".
+  const learningRows = page.locator(".aoip-learning-row");
+  if ((await learningRows.count()) > 0) {
+    await expect(learningRows.first()).toContainText("đã ghi nhận");
+  }
 });
 
-test("Pipeline: chi tiết một lượt xử lý hiển thị 12 bước tiếng Việt", async ({ page }) => {
+test("Pipeline: drill-down SỰ CỐ hiển thị 12 bước; tín hiệu học hỏi hiển thị giải thích 1 bước", async ({ page }) => {
   await login(page, "owner@aoip.dev");
   await page.goto(PROVIDER + "/pipeline");
-  const firstTrace = page.locator(".aoip-trace-link").first();
-  if ((await firstTrace.count()) === 0) {
-    test.skip(true, "không có trace nào trong 1h gần đây — bỏ qua drill-down");
-    return;
+  // Sự cố thật (nếu có) → 12 bước.
+  const incidentLink = page.getByTestId("pipeline-table").locator(".aoip-trace-link").first();
+  if ((await incidentLink.count()) > 0) {
+    await incidentLink.click();
+    await expect(page.getByTestId("stage-list").locator(".aoip-stage")).toHaveCount(12);
+    await expect(page.getByText("Tiếp nhận")).toBeVisible();
+    await page.goBack();
   }
-  await firstTrace.click();
-  const stages = page.getByTestId("stage-list").locator(".aoip-stage");
-  await expect(stages).toHaveCount(12);
-  await expect(page.getByText("Tiếp nhận")).toBeVisible();
+  // Tín hiệu học hỏi (nếu có) → KHÔNG vẽ 12 bước, có giải thích "không phải sự cố".
+  const learningLink = page.getByTestId("learning-list").locator(".aoip-trace-link").first();
+  if ((await learningLink.count()) > 0) {
+    await learningLink.click();
+    await expect(page.getByTestId("learning-status")).toContainText("hoàn thành");
+    await expect(page.getByTestId("learning-explain")).toContainText("không phải sự cố");
+    await expect(page.getByTestId("stage-list")).toHaveCount(0);
+  }
 });
 
 test("KPI: số liệu 24h thật, không số giả", async ({ page }) => {
