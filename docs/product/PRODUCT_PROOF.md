@@ -1042,3 +1042,39 @@ nguồn heartbeat của tenant replay ở iteration sau, không chặn IT-5.
 Verify lại: `.venv/bin/python -m pytest tests/test_aoip_agent_updater.py -q`;
 `kubectl exec redis-0 -- redis-cli GET omni:cmd:rec:staging-sim:upd-1-3-0-drill-a`;
 curl `/webhook/agent/versions` → 3/3 current 1.3.0.
+
+## Iteration 32 (Sprint NV-SRE, IT-6) — Command outcome durability PG + chaos proof (2026-07-13)
+
+**Claim**: mọi mutating recovery command có bản ghi outcome BỀN VỮNG trong PostgreSQL
+(`omni_admin.agent_command_outcome`, migration `0006`), sống lâu hơn TTL Redis / Redis flush /
+gateway restart, với bất biến **đúng MỘT terminal outcome mỗi (tenant, command_id)**.
+
+**Cơ chế** (`src/services/agent_command_ledger/ledger.py`):
+- Hot path: `agent_runtime.py` ghi PG best-effort ở enqueue (INSERT ON CONFLICT DO NOTHING),
+  terminal report, heartbeat-expire và claim-expire (mirror EXPIRED do Lua set). PG lỗi →
+  log + tiếp tục ACK agent (Redis vẫn durable) — KHÔNG để agent retry vô hạn vì thiếu PG.
+- First-writer-wins: UPSERT chỉ UPDATE khi `terminal_at IS NULL` — duplicate report/replay
+  không ghi đè outcome đã chốt.
+- Safety net: `reconcile_commands_from_redis()` chạy mỗi lần gateway startup, SCAN
+  `omni:cmd:rec:*` backfill mọi record PG thiếu (bù khoảng PG down đúng lúc agent report).
+- KHÔNG FK tới `omni_admin.tenant` (khác 0005, chủ ý): ledger sự-kiện-đã-xảy-ra phải ghi
+  được kể cả khi tenant registry drift.
+
+**VERIFIED_RUNTIME** (cluster + VM thật, 2026-07-13):
+- Gateway rebuild (kèm fix Dockerfile.gateway COPY module mới — gotcha Iteration 3 lặp lại)
+  + rollout; boot đầu reconcile backfill trọn lịch sử IT-5:
+  `{'scanned': 7, 'recorded': 7, ...}` → PG 7 dòng đúng (3× upd-1-3-0, 3× upd-1-3-1 COMPLETED/
+  updated, upd-broken-drill-b FAILED/rolled_back), mỗi command đúng 1 dòng.
+- **Chaos drill (đề bài IT-6)**: enqueue `upd-it6-chaos` (UPDATE_AGENT re-install 1.3.1,
+  cust-app) → state RUNNING (agent chết giữa chừng by design: executor block-forever + systemd
+  KILL) → `kubectl rollout restart deploy/omni-gateway` NGAY lúc RUNNING → gateway mới
+  reconcile thấy 1 record mid-flight (`inserted_open: 1`, 7 `already_terminal` không bị đè) →
+  agent boot lại, health-gate pass, report terminal → PG:
+  `count=1, state=COMPLETED, update_status=updated, source=gateway`. Agent `active`, không
+  duplicate row, không duplicate mutation.
+- CI: `tests/test_agent_command_pg_ledger.py` (9 test: first-writer-wins, PG-down best-effort,
+  reconcile idempotent không ghi đè, HTTP e2e qua ASGITransport, claim-expired mirror);
+  regression nhóm gateway/runtime/ledger/enroll/updater: 316 passed.
+
+**Verify lại**: `psql ... "SELECT * FROM omni_admin.agent_command_outcome"`;
+`.venv/bin/python -m pytest tests/test_agent_command_pg_ledger.py -q`.

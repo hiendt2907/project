@@ -74,6 +74,7 @@ from aoip.protocol import (  # canonical state vocabulary — ADR-002
     TERMINAL_STATES as TERMINAL,
 )
 from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, require_agent_tenant
+from services.agent_command_ledger import pg_record_enqueue, pg_record_terminal
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhook/agent/rt", tags=["agent-runtime-delivery"])
@@ -137,6 +138,11 @@ def _rec_key(tenant: str, command_id: str) -> str:
 
 def _ready_key(tenant: str, agent_id: str) -> str:
     return f"omni:cmd:ready:{tenant}:{agent_id}"
+
+
+def _get_pg_pool(request: Request) -> Any:
+    """PG ledger pool (durability IT-6). None = degraded, reconciler backfill sau."""
+    return getattr(request.app.state, "admin_pool", None)
 
 
 def _get_redis(request: Request) -> Any:
@@ -221,11 +227,13 @@ async def enqueue_command(body: EnqueueRuntimeCommand, request: Request) -> JSON
     if now >= expires_at:
         base.update(state=ST_EXPIRED, terminal_at=now, outcome={"reason": "expired_before_delivery"})
         await redis.set(rkey, json.dumps(base), ex=_TTL_TERMINAL_S)
+        await pg_record_terminal(_get_pg_pool(request), base)
         return JSONResponse(content={"command_id": body.command_id, "state": ST_EXPIRED})
 
     base["state"] = ST_QUEUED
     await redis.set(rkey, json.dumps(base), ex=_TTL_ACTIVE_S)
     await redis.zadd(_ready_key(tenant, body.agent_id), {body.command_id: now})
+    await pg_record_enqueue(_get_pg_pool(request), base)
     return JSONResponse(content={"command_id": body.command_id, "state": ST_QUEUED})
 
 
@@ -249,7 +257,7 @@ async def poll_commands(agent_id: str, request: Request) -> JSONResponse:
 
     out: list[dict] = []
     for cid in due:
-        claimed = await _claim(redis, tenant, agent_id, cid)
+        claimed = await _claim(redis, tenant, agent_id, cid, pg_pool=_get_pg_pool(request))
         if claimed is not None:
             out.append(claimed)
         # not claimed (terminal/expired/still_visible/lost race) → skip silently,
@@ -257,7 +265,8 @@ async def poll_commands(agent_id: str, request: Request) -> JSONResponse:
     return JSONResponse(content={"commands": out})
 
 
-async def _claim(redis, tenant: str, agent_id: str, command_id: str) -> dict | None:
+async def _claim(redis, tenant: str, agent_id: str, command_id: str,
+                 pg_pool: Any = None) -> dict | None:
     """Atomic claim: một Lua round-trip, chỉ một caller thắng một delivery attempt.
 
     Trả record đã claim (state=DELIVERED, attempt/token mới) hoặc None nếu không claim được
@@ -271,6 +280,11 @@ async def _claim(redis, tenant: str, agent_id: str, command_id: str) -> dict | N
         reason = result.get("reason", "unknown")
         event = "expired_claim_rejected" if reason == "expired" else "claim_conflict"
         logger.info("agent_runtime.%s command_id=%s reason=%s", event, command_id, reason)
+        if reason == "expired":
+            # Lua vừa set EXPIRED terminal trong Redis — mirror sang PG ledger (IT-6)
+            raw_rec = await redis.get(_rec_key(tenant, command_id))
+            if raw_rec is not None:
+                await pg_record_terminal(pg_pool, json.loads(raw_rec))
         return None
     record = result["record"]
     event = "redelivery" if record.get("delivery_attempt", 1) > 1 else "claim_success"
@@ -389,6 +403,7 @@ async def heartbeat_command(body: AckDelivered, request: Request) -> JSONRespons
         rec["record_version"] = rec.get("record_version", 0) + 1
         await redis.set(_rec_key(tenant, body.command_id), json.dumps(rec), ex=_TTL_TERMINAL_S)
         await redis.zrem(_ready_key(tenant, body.agent_id), body.command_id)
+        await pg_record_terminal(_get_pg_pool(request), rec)
         logger.info("agent_runtime.visibility_heartbeat_failed command_id=%s reason=expired",
                    body.command_id)
         return JSONResponse(status_code=409, content={
@@ -453,6 +468,10 @@ async def terminal_command(body: Terminal, request: Request) -> JSONResponse:
     rec["record_version"] = rec.get("record_version", 0) + 1
     await redis.set(_rec_key(tenant, body.command_id), json.dumps(rec), ex=_TTL_TERMINAL_S)
     await redis.zrem(_ready_key(tenant, body.agent_id), body.command_id)
+    # PG ledger (IT-6): best-effort — Redis đã durable, reconciler backfill nếu PG down.
+    pg_result = await pg_record_terminal(_get_pg_pool(request), rec)
+    logger.info("agent_runtime.terminal_pg_ledger command_id=%s result=%s",
+               body.command_id, pg_result)
     return JSONResponse(content={"acknowledged": True, "command_id": body.command_id,
                                  "state": body.state, "idempotent": False})
 

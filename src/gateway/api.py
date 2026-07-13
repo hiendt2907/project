@@ -379,6 +379,14 @@ async def lifespan(app: FastAPI):
                 app.state.admin_pool = _admin_pool
                 app.state.admin_repo = AdminConfigRepo(_admin_pool, redis=_redis)
                 logger.info("omni-gateway: admin config store ready (omni_admin)")
+                # IT-6: backfill PG command ledger từ Redis (bù outcome ghi hụt lúc PG down)
+                try:
+                    from services.agent_command_ledger import reconcile_commands_from_redis
+
+                    _rc = await reconcile_commands_from_redis(_admin_pool, _redis)
+                    logger.info("omni-gateway: cmd ledger reconcile %s", _rc)
+                except Exception as _rc_exc:  # noqa: BLE001 — safety net, không chặn gateway
+                    logger.error("omni-gateway: cmd ledger reconcile fail: %s", _rc_exc)
         except Exception as _admin_exc:  # noqa: BLE001 — store optional, không chặn gateway
             logger.error("omni-gateway: admin store init fail: %s", _admin_exc)
     yield
