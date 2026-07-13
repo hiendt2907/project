@@ -173,6 +173,14 @@ class HTTPOmniClient:
         resp.raise_for_status()
         return True
 
+    async def download_release_bundle(self) -> bytes:
+        """Tải release bundle từ CHÍNH gateway (IT-5). Kênh đã xác thực Bearer —
+        không URL ngoài, không cần host-whitelist/SSRF guard. Caller verify
+        sha256 vs release manifest trước khi cài."""
+        resp = await self._client.get(f"{self._BASE}/release/bundle", timeout=120.0)
+        resp.raise_for_status()
+        return resp.content
+
     async def _post_rt(self, path: str, payload: dict) -> dict:
         resp = await self._client.post(f"/webhook/agent/rt{path}", json=payload)
         resp.raise_for_status()

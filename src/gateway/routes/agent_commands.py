@@ -14,6 +14,7 @@ INVARIANT INV_HOST_WHITELIST: download host validated against OMNI_AGENT_UPDATE_
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -24,7 +25,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, require_agent_tenant, resolve_scope
@@ -40,6 +41,9 @@ _REGISTRY_PREFIX = "omni:remote_agent:registry:"
 # Expected release (version + bundle sha256), published by
 # scripts/publish_agent_release.py — drift detection (Sprint NV-SRE IT-2).
 _RELEASE_MANIFEST_KEY = "omni:agent:release_manifest"
+# IT-5: release tarball (base64) do make publish-agent-release đẩy lên — agent
+# tải qua kênh gateway đã xác thực (không URL ngoài, không SSRF).
+_RELEASE_BUNDLE_KEY = "omni:agent:release_bundle"
 _CMD_QUEUE_TTL = 300
 _CMD_RESULT_TTL = 3600
 _PROFILE_TTL = 86400
@@ -343,6 +347,23 @@ async def _load_release_manifest(redis: Any) -> dict[str, Any] | None:
         return manifest if isinstance(manifest, dict) else None
     except Exception:
         return None
+
+
+@router.get("/release/bundle")
+async def download_release_bundle(request: Request) -> Response:
+    """Agent tải release tarball (IT-5 safe update). Nguồn: Redis base64 do
+    ``make publish-agent-release`` đẩy cùng lúc với manifest. Agent PHẢI verify
+    sha256 vs ``release_tar_sha256`` trong command payload trước khi cài."""
+    redis = _get_redis(request)
+    raw = await redis.get(_RELEASE_BUNDLE_KEY)
+    if not raw:
+        raise HTTPException(status_code=404, detail="No release bundle published")
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Corrupt release bundle: {exc}") from exc
+    return Response(content=data, media_type="application/gzip",
+                    headers={"Content-Disposition": "attachment; filename=omni-agent-release.tar.gz"})
 
 
 @router.get("/versions")

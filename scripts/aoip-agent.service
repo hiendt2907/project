@@ -23,6 +23,9 @@ Type=simple
 WorkingDirectory=/opt/omni-remote-agent
 EnvironmentFile=/opt/omni-remote-agent/run.env
 Environment=AOIP_AGENT_MODE=observe_only
+# IT-5 crash-loop guard — shell NGOÀI bundle: bundle hỏng không boot nổi Python
+# thì guard restore N-1 sau 3 lần boot fail (xem scripts/aoip-agent-guard.sh).
+ExecStartPre=/usr/bin/env bash /opt/omni-remote-agent/aoip-agent-guard.sh
 ExecStart=/opt/omni-remote-agent/venv/bin/python -m aoip.agent.employee
 Restart=always
 RestartSec=10

@@ -74,12 +74,14 @@ class TestPublisherScript:
         from pathlib import Path
 
         from remote_agent.bundle_hash import compute_bundle_hash
-        from scripts.publish_agent_release import REPO_ROOT, build_manifest
+        from scripts.publish_agent_release import REPO_ROOT, build_manifest, build_release_tar
 
-        manifest = build_manifest()
+        release_tar = build_release_tar()  # IT-5: manifest nay kèm sha256 của tarball release
+        manifest = build_manifest(release_tar)
         pkg = REPO_ROOT / "src" / "remote_agent"
         assert manifest["version"] == (pkg / "VERSION").read_text().strip()
         assert manifest["bundle_sha256"] == compute_bundle_hash(Path(pkg))
+        assert len(manifest["release_tar_sha256"]) == 64
         assert isinstance(manifest["published_at"], int)
 
 

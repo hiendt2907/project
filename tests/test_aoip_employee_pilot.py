@@ -76,9 +76,9 @@ class TestAoipSelfBundleHash:
 
 class TestPublisherManifestCoversAoip:
     def test_manifest_contains_both_hashes(self):
-        from scripts.publish_agent_release import REPO_ROOT, build_manifest
+        from scripts.publish_agent_release import REPO_ROOT, build_manifest, build_release_tar
 
-        manifest = build_manifest()
+        manifest = build_manifest(build_release_tar())  # IT-5: manifest cần tarball
         assert manifest["bundle_sha256"] == compute_bundle_hash(
             REPO_ROOT / "src" / "remote_agent")
         assert manifest["aoip_bundle_sha256"] == compute_bundle_hash(

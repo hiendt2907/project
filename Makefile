@@ -16,7 +16,9 @@ agent-keygen:
 # Publish expected agent release (version + bundle sha256) → Redis manifest.
 # Gateway compares every registered agent against it (drift detection, IT-2).
 publish-agent-release:
-	.venv/bin/python scripts/publish_agent_release.py | kubectl -n $(NS) exec -i redis-0 -- redis-cli -x SET omni:agent:release_manifest
+	.venv/bin/python scripts/publish_agent_release.py --bundle-b64 /tmp/omni-agent-release.b64 | kubectl -n $(NS) exec -i redis-0 -- redis-cli -x SET omni:agent:release_manifest
+	kubectl -n $(NS) exec -i redis-0 -- redis-cli -x SET omni:agent:release_bundle < /tmp/omni-agent-release.b64
+	rm -f /tmp/omni-agent-release.b64
 	kubectl -n $(NS) exec redis-0 -- redis-cli GET omni:agent:release_manifest
 
 tunnel-setup:

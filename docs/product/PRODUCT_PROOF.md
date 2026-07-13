@@ -997,3 +997,48 @@ ACCEPT-GAP duy nhất còn lại: UPDATE_AGENT/updater → IT-5.
 Verify lại: `.venv/bin/python -m pytest tests/test_aoip_employee_pilot.py -q`;
 `orb -m cust-app sudo systemctl is-active aoip-agent`; curl `/webhook/agent/versions`;
 `orb -m cust-app sudo journalctl -u aoip-agent.service --no-pager | grep -E 'Started|Stopped'`.
+
+## Iteration 31 (Sprint NV-SRE, IT-5) — Safe update/rollback qua durable command channel (2026-07-13)
+
+**CLAIM**: Agent tự "đào tạo lại" an toàn: UPDATE_AGENT là durable command trên AOIP daemon —
+tải bundle TỪ CHÍNH GATEWAY (kênh Bearer sẵn có, không URL ngoài → không SSRF/host-whitelist),
+verify sha256 tarball vs manifest, backup N-1 bền (`/var/lib/aoip/releases/previous.tar.gz`),
+extract, restart; **health-gate chạy trên process MỚI** (self-hash 2 package vs expected) —
+pass thì commit, fail thì restore N-1 + restart lại; bundle hỏng đến mức Python không boot →
+guard shell NGOÀI bundle (`aoip-agent-guard.sh`, ExecStartPre) restore sau 3 boot fail.
+Outcome (`updated`/`rolled_back`) báo về đúng 1 lần qua reconciler đọc result marker
+(process chết giữa RUNNING là chủ ý — inbox durable + resume lo phần còn lại).
+
+**VERIFIED_TEST**: `tests/test_aoip_agent_updater.py` (MỚI, 21 test): checksum fail-closed
+không đụng install dir; backup+extract+pending marker; startup_gate commit/rollback; executor
+verb-routing + download-fail là outcome không crash + block-forever sau restart; reconciler
+4 case (updated/rolled_back/mất marker suy từ đĩa/verb khác → ESCALATED không blind-retry);
+gateway `/webhook/agent/release/bundle` 404/stream bytes; publisher tarball deterministic
+(sha256 ổn định, bung ra tái tạo đúng bundle hash); guard shell chạy bash THẬT: 3 boot đầu
+chỉ đếm, boot 4 restore N-1 + result rolled_back. Full suite 6068+ pass (2 fail pre-existing
+flaky-isolation, pass khi chạy riêng).
+
+**VERIFIED_RUNTIME** (cluster + 3 VM thật, 2026-07-13):
+- Gateway rebuild + rollout; verify TRONG pod: route `/release/bundle` có thật.
+- `make publish-agent-release` nay đẩy CẢ manifest (`release_tar_sha256` mới) + bundle base64
+  (`omni:agent:release_bundle`, ~226KB) vào Redis.
+- **Drill (a) — update thành công**: cust-app 1.2.0 → enqueue `/rt/commands/enqueue` verb
+  UPDATE_AGENT → agent tải bundle, apply, restart → log `[updater] health-gate: updated v1.3.0`
+  → record `state=COMPLETED outcome={update_status: updated, version: 1.3.0}` delivery_count=1,
+  inbox archive sạch, registry 1.3.0.
+- **Drill (b) — bundle hỏng tự rollback**: enqueue expected-hash cố ý sai (mô phỏng release
+  hỏng) → health-gate boot mới FAIL → restore N-1 + restart → record `state=FAILED
+  outcome={update_status: rolled_back, detail: hash_mismatch... restored=True}`; VM về bản
+  lành 1.3.0, service active, inbox rỗng. Metric sprint #4 ĐẠT.
+- **Migrate nốt fleet bằng chính cơ chế này**: cust-edge + cust-db enable `aoip-agent.service`
+  (employee, unit cũ giữ disabled) với code 1.2.0 → enqueue update → CẢ HAI `COMPLETED/updated`
+  → `/versions`: staging-sim 3/3 `1.3.0 current, drifted=0, online`.
+
+**Known behavior**: executor block-forever chờ restart → systemd SIGTERM không đủ (daemon kẹt
+trong executor) → KILL sau TimeoutStopSec=30 (+30s/lần update, vô hại vì inbox đã persist).
+Quan sát phụ: registry tenant-replay-01 (2 record 1.1.3, unknown) vẫn báo online — cần xem
+nguồn heartbeat của tenant replay ở iteration sau, không chặn IT-5.
+
+Verify lại: `.venv/bin/python -m pytest tests/test_aoip_agent_updater.py -q`;
+`kubectl exec redis-0 -- redis-cli GET omni:cmd:rec:staging-sim:upd-1-3-0-drill-a`;
+curl `/webhook/agent/versions` → 3/3 current 1.3.0.

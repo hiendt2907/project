@@ -55,6 +55,7 @@ def _default_executor(*, redis, transport, audit_log, gate, holder: str,
 
 async def run_daemon(*, agent_id: str, tenant: str, gateway: str, api_key: str,
                      inbox_root: str, interval_s: int, executor=None,
+                     reconciler=None,
                      max_ticks: int | None = None, client=None,
                      redis=None, transport=None, audit_log=None, gate=None,
                      env_auto_execute: bool = False, now=None) -> int:
@@ -71,7 +72,7 @@ async def run_daemon(*, agent_id: str, tenant: str, gateway: str, api_key: str,
         redis=redis, transport=transport, audit_log=audit_log, gate=gate,
         holder=agent_id, env_auto_execute=env_auto_execute, now=now)
     loop = DeliveryLoop(agent_id=agent_id, client=client, inbox=inbox,
-                        executor=resolved_executor)
+                        executor=resolved_executor, reconciler=reconciler)
 
     stopping = asyncio.Event()
 
