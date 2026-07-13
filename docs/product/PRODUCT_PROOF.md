@@ -984,8 +984,16 @@ Full suite: **6039 passed, 2 failed đều pre-existing/flaky-isolation** (routi
 
 **Sprint baseline metric #4 (command durable qua restart/reboot): pilot ✅ trên cust-app.**
 
-**Còn lại IT-4**: so Twin fact cust-app sau 24h chạy employee (mốc so sánh: fact mới nhất
-trước migration); ACCEPT-GAP UPDATE_AGENT/updater dời sang IT-5.
+**VERIFIED_SOAK 24h — IT-4 ĐÓNG (2026-07-13)**: `journalctl -u aoip-agent.service` trên
+cust-app cho thấy employee chạy **liên tục 2026-07-09 07:05:39 → 2026-07-10 16:25:46 +07
+(~33h > 24h DoD)**, dừng do VM shutdown chủ động (không phải crash — "Deactivated
+successfully"); sau reboot 2026-07-13 service tự start lại 09:07:13 và đang active.
+Twin `staging-sim` đo lúc 2026-07-13 10:00: `updated_at=2026-07-13 10:00:42 +07` (tươi
+vài giây), **93 facts tổng / 25 fact cust-app** — KHÔNG mất fact so baseline 76 facts
+(Productization Iteration 2), tăng ròng. Kết hợp rollback drill 2 chiều đã PASS ở trên →
+đủ 4/4 điều kiện DoD IT-4 (≥24h · Twin không mất fact · parity report · rollback drill).
+ACCEPT-GAP duy nhất còn lại: UPDATE_AGENT/updater → IT-5.
 
 Verify lại: `.venv/bin/python -m pytest tests/test_aoip_employee_pilot.py -q`;
-`orb -m cust-app sudo systemctl is-active aoip-agent`; curl `/webhook/agent/versions`.
+`orb -m cust-app sudo systemctl is-active aoip-agent`; curl `/webhook/agent/versions`;
+`orb -m cust-app sudo journalctl -u aoip-agent.service --no-pager | grep -E 'Started|Stopped'`.
