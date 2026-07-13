@@ -185,12 +185,21 @@ async def collect_systemd_units(
 
     failed: list[str] = []
     critical_failed: list[str] = []
+    ignored_disabled: list[str] = []
 
     for line in out.splitlines():
         parts = line.split()
         if not parts:
             continue
-        unit = parts[0].rstrip(".service")
+        unit_full = parts[0]
+        unit = unit_full.rstrip(".service")
+        # Migration residue guard: a unit that is BOTH disabled AND failed was
+        # stopped intentionally (e.g. agent migration) — systemd keeps the
+        # failed state until reset-failed. Not an incident; report separately.
+        out_en, _, _ = await _run(["systemctl", "is-enabled", unit_full], timeout=5.0)
+        if out_en.strip() in ("disabled", "masked"):
+            ignored_disabled.append(unit)
+            continue
         failed.append(unit)
         unit_lower = unit.lower()
         if any(unit_lower == c or unit_lower.startswith(c) for c in known_critical):
@@ -202,6 +211,7 @@ async def collect_systemd_units(
         "failed_units": failed,
         "failed_count": len(failed),
         "critical_failed_units": critical_failed,
+        "ignored_disabled_units": ignored_disabled,
     }
     hint = (
         f"[{hostname}] systemd: {len(failed)} units failed/activating"

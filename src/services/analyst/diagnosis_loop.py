@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -116,17 +117,30 @@ OUTPUT FORMAT (strict JSON, no markdown):
   "remediation_steps": []
 }
 
-When diagnosis_complete=true, set root_cause to a single concrete sentence (e.g. "Disk /var is 99% full
-due to log accumulation in /var/log — inode exhaustion confirmed"), list affected_components, and
-provide 3-5 remediation_steps.
+GROUNDING — NON-NEGOTIABLE (INV_DIAG_GROUNDED):
+- Every number, percentage, file path, mount point, and service name in root_cause,
+  impact_summary, and remediation_steps MUST appear VERBATIM in the evidence facts or in a
+  command output from THIS session. If you did not see it, do not write it.
+- NEVER write "confirmed" about a quantity you did not measure with the matching tool
+  (inode claim requires a df -i output in this session; disk % requires a df output).
+- If evidence is insufficient, say so and lower confidence — do not fill gaps from memory.
+
+SCOPE — HOST-SHARED MOUNTS ARE OFF-LIMITS:
+- Mounts of the hypervisor host filesystem (e.g. /mnt/mac, fstype virtiofs/9p/vboxsf/prl_fs)
+  belong to the HOST machine, not this VM. Never diagnose them as this VM's problem and
+  never propose remediation that touches files under them.
+
+When diagnosis_complete=true, set root_cause to a single concrete sentence naming the exact
+component and the measured value you saw in evidence (cite the number verbatim), list
+affected_components, and provide 3-5 remediation_steps.
 
 REMEDIATION FORMAT — each step MUST be a concrete, copy-pasteable shell command, NOT prose.
 The operator runs these by hand, so vague advice is useless.
-- WRONG (prose): "Archive or delete unnecessary log files in /var/log"
+- WRONG (prose): "Archive or delete unnecessary log files"
 - RIGHT (command): "sudo journalctl --vacuum-size=500M  # truncate journal to 500M"
-- RIGHT (command): "sudo truncate -s 0 /var/log/vmware/hostd.log  # zero the largest offender"
-Reference the EXACT paths/files/services you found in the command output. If you saw
-/var/log/vmware/*.log is the biggest, name that path in the remediation — do not say "VMware logs"."""
+- RIGHT (command): "sudo truncate -s 0 <exact-path-you-saw-in-ls-or-du-output>  # zero the largest offender"
+Reference ONLY the exact paths/files/services that appeared in this session's command
+output — never a path from general knowledge or from these format examples."""
 
 
 _TRUNCATED_NOTE = "\n…[truncated for context budget]"
@@ -173,6 +187,69 @@ def _format_command(cmd: dict[str, Any]) -> str:
     name = str(cmd.get("command", "")).strip()
     args = [str(a) for a in cmd.get("args", [])]
     return " ".join([name, *args]).strip()
+
+
+# ── Grounding gate (INV_DIAG_GROUNDED) ──────────────────────────────────────
+# The 7B model has been observed parroting concrete paths/numbers from its own
+# prompt examples into conclusions (e.g. "/var/log/vmware/hostd.log", "inode
+# exhaustion confirmed" with no df -i in session). Post-hoc gate: any absolute
+# path or percentage in the final conclusion must appear verbatim somewhere in
+# this session's evidence (facts + alert + command outputs), else the claim is
+# flagged, the offending remediation step dropped, and confidence capped.
+_GROUND_PATH_RE = re.compile(r"(?:/[\w.@+-]+){2,}")
+_GROUND_PCT_RE = re.compile(r"\b\d{1,3}(?:\.\d+)?%")
+_UNGROUNDED_CONFIDENCE_CAP = 0.3
+_GATE_DROP_NOTE = "[grounding-gate] dropped {n} step(s) referencing paths/numbers absent from evidence"
+
+
+def _extract_groundable_claims(text: str) -> set[str]:
+    return set(_GROUND_PATH_RE.findall(text)) | set(_GROUND_PCT_RE.findall(text))
+
+
+def _apply_grounding_gate(
+    final: dict[str, Any], evidence_corpus: str
+) -> dict[str, Any]:
+    """Return a NEW final dict with ungrounded claims flagged and neutralized."""
+    root_cause = str(final.get("root_cause", "") or "")
+    ungrounded_rc = sorted(
+        c for c in _extract_groundable_claims(root_cause) if c not in evidence_corpus
+    )
+
+    kept_steps: list[str] = []
+    dropped_steps: list[str] = []
+    ungrounded_step_claims: list[str] = []
+    for step in final.get("remediation_steps", []) or []:
+        step_s = str(step)
+        bad = sorted(
+            c for c in _extract_groundable_claims(step_s) if c not in evidence_corpus
+        )
+        if bad:
+            dropped_steps.append(step_s)
+            ungrounded_step_claims.extend(bad)
+        else:
+            kept_steps.append(step_s)
+    if dropped_steps:
+        kept_steps.append(_GATE_DROP_NOTE.format(n=len(dropped_steps)))
+
+    ungrounded = sorted(set(ungrounded_rc) | set(ungrounded_step_claims))
+    if not ungrounded:
+        return dict(final)
+
+    logger.warning(
+        "[diag-loop] grounding gate: ungrounded claims %s — confidence capped", ungrounded
+    )
+    new_root_cause = (
+        f"[UNVERIFIED: {', '.join(ungrounded_rc)}] {root_cause}"
+        if ungrounded_rc else root_cause
+    )
+    return {
+        **final,
+        "root_cause": new_root_cause,
+        "remediation_steps": kept_steps,
+        "confidence": min(float(final.get("confidence", 0.0) or 0.0), _UNGROUNDED_CONFIDENCE_CAP),
+        "ungrounded_claims": ungrounded,
+        "dropped_remediation_steps": dropped_steps,
+    }
 
 
 _FALLBACK_LABEL = "[generic fallback — not host-specific; verify before running]"
@@ -567,6 +644,12 @@ async def run_diagnosis_loop(
         {"role": "user", "content": initial_context},
     ]
 
+    # INV_DIAG_GROUNDED: everything the LLM may legitimately cite (facts, alert,
+    # command outputs) accumulates here; the grounding gate checks conclusions
+    # against it. The system prompt is deliberately EXCLUDED — its format
+    # examples are exactly what must not be citable.
+    evidence_corpus_parts: list[str] = [initial_context]
+
     for turn_n in range(1, _MAX_TURNS + 1):
         logger.info(
             "[diag-loop] turn=%d/%d trace=%s msg_history=%d",
@@ -621,6 +704,10 @@ async def run_diagnosis_loop(
                     cid = r.get("cmd_id", "")
                     r["purpose"] = purpose_by_id.get(cid, "")
                     r["command_str"] = cmd_str_by_id.get(cid, "")
+                    if r.get("status") != "timeout":
+                        evidence_corpus_parts.append(
+                            f"{r.get('command_str', '')}\n{r.get('stdout', '')}\n{r.get('stderr', '')}"
+                        )
 
         turn_record = {
             "turn": turn_n,
@@ -635,19 +722,21 @@ async def run_diagnosis_loop(
         turns.append(turn_record)
 
         if is_complete:
-            remediation = llm_resp.get("remediation_steps") or []
             root_cause = llm_resp.get("root_cause") or llm_resp.get("hypothesis", "")
+            final = _apply_grounding_gate(
+                {
+                    "root_cause": root_cause,
+                    "affected_components": llm_resp.get("affected_components", []),
+                    "blast_radius": llm_resp.get("blast_radius", ""),
+                    "impact_summary": llm_resp.get("impact_summary", ""),
+                    "remediation_steps": llm_resp.get("remediation_steps") or [],
+                    "confidence": llm_resp.get("confidence", 0.0),
+                },
+                "\n".join(evidence_corpus_parts),
+            )
             # Ensure remediation_steps is never empty when root cause is known
-            if not remediation and root_cause:
-                remediation = _fallback_remediation(root_cause)
-            final = {
-                "root_cause": root_cause,
-                "affected_components": llm_resp.get("affected_components", []),
-                "blast_radius": llm_resp.get("blast_radius", ""),
-                "impact_summary": llm_resp.get("impact_summary", ""),
-                "remediation_steps": remediation,
-                "confidence": llm_resp.get("confidence", 0.0),
-            }
+            if not final["remediation_steps"] and root_cause:
+                final["remediation_steps"] = _fallback_remediation(root_cause)
             logger.info(
                 "[diag-loop] COMPLETE turn=%d confidence=%.2f trace=%s",
                 turn_n, final["confidence"], trace_id,
@@ -687,14 +776,18 @@ async def run_diagnosis_loop(
     if not final:
         last = turns[-1] if turns else {}
         hypothesis = last.get("hypothesis", "")
-        final = {
-            "root_cause": hypothesis or "Diagnosis inconclusive after max turns — see hypothesis per turn",
-            "affected_components": [],
-            "blast_radius": "",
-            "impact_summary": "Diagnosis reached maximum turns. Best-effort root cause from available evidence.",
-            "remediation_steps": _fallback_remediation(hypothesis),
-            "confidence": last.get("confidence", 0.0),
-        }
+        final = _apply_grounding_gate(
+            {
+                "root_cause": hypothesis or "Diagnosis inconclusive after max turns — see hypothesis per turn",
+                "affected_components": [],
+                "blast_radius": "",
+                "impact_summary": "Diagnosis reached maximum turns. Best-effort root cause from available evidence.",
+                "remediation_steps": [],
+                "confidence": last.get("confidence", 0.0),
+            },
+            "\n".join(evidence_corpus_parts),
+        )
+        final["remediation_steps"] = _fallback_remediation(hypothesis)
         logger.warning("[diag-loop] max_turns reached trace=%s", trace_id)
 
     session = {

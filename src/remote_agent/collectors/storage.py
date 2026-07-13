@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 _DISK_CRITICAL_PCT = 95
 _DISK_WARN_PCT = 90
 _INODE_CRITICAL_PCT = 95
+# Host-shared mounts (hypervisor host filesystem exposed into the VM) are NOT
+# this VM's storage — alerting on them produces false incidents about the host
+# machine (e.g. OrbStack mounts the operator's Mac at /mnt/mac at 97%). Out of
+# diagnosis scope entirely.
+_HOST_SHARE_FSTYPES = ("virtiofs", "9p", "vboxsf", "prl_fs", "fuse.sshfs", "osxfs")
+_HOST_SHARE_MOUNT_PREFIXES = ("/mnt/mac", "/mnt/machines")
 _NFS_STALE_ERROR_KEYWORDS = ("stale", "i/o error", "input/output", "transport endpoint")
 
 
@@ -57,6 +63,7 @@ async def collect_disk_usage(hostname: str) -> dict[str, Any] | None:
     critical_partitions: list[str] = []
     warn_partitions: list[str] = []
     nfs_mounts: list[str] = []
+    host_share_excluded: list[str] = []
 
     for line in out.splitlines():
         parts = line.split()
@@ -77,6 +84,11 @@ async def collect_disk_usage(hostname: str) -> dict[str, Any] | None:
 
         # Skip pseudo-filesystems
         if fstype in ("tmpfs", "devtmpfs", "squashfs", "overlay", "proc", "sysfs", "cgroup"):
+            continue
+
+        # Skip host-shared mounts — the hypervisor host's disk, not this VM's
+        if fstype in _HOST_SHARE_FSTYPES or mount.startswith(_HOST_SHARE_MOUNT_PREFIXES):
+            host_share_excluded.append(mount)
             continue
 
         pct = 0
@@ -107,6 +119,8 @@ async def collect_disk_usage(hostname: str) -> dict[str, Any] | None:
             parts = line.split()
             if len(parts) < 3 or parts[0] in ("Filesystem", "Source") or parts[1] == "-":
                 continue
+            if parts[2].startswith(_HOST_SHARE_MOUNT_PREFIXES):
+                continue
             try:
                 ipct = int(parts[1].rstrip("%"))
                 if ipct >= _INODE_CRITICAL_PCT:
@@ -123,6 +137,7 @@ async def collect_disk_usage(hostname: str) -> dict[str, Any] | None:
         "warn_partitions": warn_partitions,
         "inode_critical": inode_critical,
         "nfs_mounts": nfs_mounts,
+        "host_share_excluded": host_share_excluded,
         "disk_critical_count": len(critical_partitions),
         "disk_warn_count": len(warn_partitions),
     }
