@@ -1,7 +1,7 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại (2026-07-13 tối)
-**IT-6 (command outcome durability PG + chaos proof) — DONE, CHƯA COMMIT.**
+**IT-6 (command outcome durability PG + chaos proof) — DONE, ĐÃ COMMIT `8e7d737` + PUSH.**
 PRODUCT_PROOF Iteration 32 đã ghi đầy đủ — đừng re-verify. Tóm tắt:
 - Migration `migrations/omni_admin/0006_agent_command_ledger.sql` — bảng
   `omni_admin.agent_command_outcome`, PK (tenant_id, command_id), KHÔNG FK tenant (chủ ý,
@@ -21,7 +21,7 @@ PRODUCT_PROOF Iteration 32 đã ghi đầy đủ — đừng re-verify. Tóm t�
   gateway/runtime/ledger/enroll/updater 316 passed.
 
 ## Deliverable cùng ngày (chiều)
-**Anti-hallucination fix sau false-incident /mnt/mac — DONE, CHƯA COMMIT.**
+**Anti-hallucination fix sau false-incident /mnt/mac — DONE, ĐÃ COMMIT `7f28d5d` + PUSH.**
 Post-mortem: card REMOTE DIAG cust-edge báo "disk 95% + inode exhaustion confirmed" +
 remediation `truncate /mnt/mac/vmware/hostd.log` (file không tồn tại). Root cause KÉP:
 (1) tín hiệu gốc = unit cũ `omni-remote-agent` disabled-nhưng-failed (residue migration IT-5);
@@ -77,20 +77,15 @@ Gap đợt 2 (user muốn "mọi backend hiển thị, non-tech hiểu"): incide
 `/incident/{tenant}/{cid}` có sẵn), advisory/brain card VI, support-access, workers health,
 KB stats, Việt hoá bảng understanding/incidents. Tenant portal chưa đụng.
 
-## Trạng thái Git tại checkpoint (2026-07-13 ~11:30 +07)
-Branch `main`, HEAD `eec6c95` (IT-5 ĐÃ COMMIT + PUSH). Working tree sạch, chỉ còn untracked
-`.claude/launch.json` (dev tooling, không thuộc sản phẩm). Verification cuối:
-`pytest tests/test_aoip_agent_updater.py tests/test_aoip_employee_pilot.py
-tests/test_agent_drift_detection.py` → 48 passed.
+## Trạng thái Git tại checkpoint (2026-07-13 tối)
+Branch `main`, HEAD `8e7d737` (IT-6) trên `7f28d5d` (anti-hallucination fix) — CẢ HAI ĐÃ PUSH.
+Working tree sạch, chỉ còn untracked `.claude/launch.json` (dev tooling, không thuộc sản phẩm).
+Verification cuối: nhóm gateway/runtime/ledger/enroll/updater 316 passed + chaos drill PG count=1.
 
 ## Next step chính xác
-1. Commit khi user chỉ thị: 2 deliverable chưa commit trong working tree — (a) anti-hallucination
-   fix (diagnosis_loop + collectors + VERSION 1.3.1 + tests), (b) IT-6 (migration 0006 +
-   agent_command_ledger + agent_runtime wiring + Dockerfile.gateway + tests + PRODUCT_PROOF).
-   Nên tách 2 commit.
-2. Mở IT-7 (soak + offline recovery): reboot/cắt mạng 10p từng VM, chạy lại
+1. Mở IT-7 (soak + offline recovery): reboot/cắt mạng 10p từng VM, chạy lại
    e2e_onboarding_full_flow 10 TC, điền cột SAU 6 metric sprint, cập nhật ADR-001.
-3. Portal đợt 2 khi user yêu cầu UI tiếp (bảng gap ở mục Portal trên).
+2. Portal đợt 2 khi user yêu cầu UI tiếp (bảng gap ở mục Portal trên).
 
 ## Không được làm lại
 IT-1..IT-6 DONE có runtime proof (IT-6: PRODUCT_PROOF Iteration 32). Portal đợt 1 DONE
