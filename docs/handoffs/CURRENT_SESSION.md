@@ -21,6 +21,12 @@ provider trước" — sprint IT-5 backend TẠM DỪNG (xem dưới).
    - E2E spec `tests/e2e_portals/specs/provider_overview.spec.ts`: sửa test nav count 7→12
      (stale từ trước), thêm 5 test mới (PageIntro/pipeline/kpi/operations+tenants).
 
+3. **Fix hiểu nhầm /pipeline** (commit `dd9f9c9`, deployed, E2E 18/18): user thấy discovery
+   traces "đứng hàng loạt" — không phải bug backend; ONBOARDING_DISCOVERY chỉ có 1 bước
+   EVIDENCE theo INV_KNOWLEDGE_NOT_ALERT. UI nay tách khu "Sự cố" (12 bước, chỉ 4 lane
+   chẩn đoán qua `isDiagnosticLane()`) vs "Tín hiệu học hỏi" (✓ đã ghi nhận, hoàn thành);
+   chi tiết lane học hỏi hiện card giải thích thay vì 12 bước.
+
 ## Gap portal còn lại (đợt 2 — theo audit Explore agent phiên này)
 - Drill-down sự cố dùng console `/incident/{tenant}/{cid}` (đã có endpoint, chưa có trang).
 - Advisory/brain card ngôn ngữ tự nhiên (gateway `/trace/{id}/advisory|brain`).
