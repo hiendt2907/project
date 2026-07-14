@@ -7,6 +7,7 @@
 | Architecture | `docs/vendor/OMNI_PROJECT_CANONICAL.md` |
 | Symptom → fix | `docs/vendor/knownbase.md` |
 | Invariants / failure patterns | `docs/reports/project-memory.md` |
+| Customer topology + API sequence contract | `docs/architecture/customer-system-understanding.md` |
 | Shadow OS command governance | `docs/runbooks/shadow_os_command_mode.md` |
 | Trace audit `gw-prom-f58ffe43e85e` | `docs/reports/trace-audit-gw-prom-f58ffe43e85e.md` |
 

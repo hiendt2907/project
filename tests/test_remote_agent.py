@@ -264,6 +264,27 @@ class TestAgentRegisterEndpoint:
 
         assert resp.json()["ttl"] == 120
 
+    @pytest.mark.asyncio
+    async def test_register_persists_domain_adapter_attestation(self):
+        from fastapi import FastAPI
+        from httpx import AsyncClient, ASGITransport
+
+        app = FastAPI()
+        app.state.redis = AsyncMock()
+        app.state.redis.set = AsyncMock()
+        from gateway.routes.agent_webhook import router
+        app.include_router(router)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/webhook/agent/register", json={
+                "agent_id": "a-domain", "hostname": "h1",
+                "adapter_domains": ["linux", "database"],
+            })
+
+        assert resp.status_code == 200
+        stored = json.loads(app.state.redis.set.call_args.args[1])
+        assert stored["adapter_domains"] == ["database", "linux"]
+
 
 # ─── POST /webhook/agent/evidence ────────────────────────────────────────────
 
@@ -492,6 +513,7 @@ class TestAgentSettings:
         assert cfg.api_key == "secret-key"
         assert cfg.collect_interval == 60
         assert cfg.k8s_enabled is True
+        assert cfg.discovery_enabled is True
 
     def test_validate_raises_without_api_key(self, monkeypatch):
         monkeypatch.setenv("OMNI_AGENT_GATEWAY_URL", "http://omni:8080")
@@ -502,6 +524,14 @@ class TestAgentSettings:
         cfg.api_key = ""
         with pytest.raises(ValueError, match="API_KEY"):
             cfg.validate()
+
+    def test_discovery_can_be_explicitly_disabled(self, monkeypatch):
+        monkeypatch.setenv("OMNI_REMOTE_DISCOVERY_ENABLED", "false")
+        monkeypatch.setenv("OMNI_AGENT_GATEWAY_URL", "http://omni:8080")
+        monkeypatch.setenv("OMNI_AGENT_API_KEY", "secret-key")
+
+        from remote_agent.settings import AgentSettings
+        assert AgentSettings().discovery_enabled is False
 
     def test_log_paths_parsed(self, monkeypatch):
         monkeypatch.setenv("OMNI_AGENT_LOG_PATHS", "/var/log/a.log,/var/log/b.log")

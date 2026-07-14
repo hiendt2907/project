@@ -109,6 +109,7 @@ class CommandItem(BaseModel):
     timeout_s: int = Field(default=30, ge=1, le=120)
     trace_id: str = Field(default="", max_length=128)
     purpose: str = Field(default="", max_length=256)
+    command_kind: str = Field(default="diagnostic_probe", pattern="^diagnostic_probe$")
 
 
 class EnqueueCommandsRequest(BaseModel):
@@ -252,6 +253,7 @@ async def enqueue_commands(body: EnqueueCommandsRequest, request: Request) -> JS
             "timeout_s": cmd.timeout_s,
             "trace_id": cmd.trace_id,
             "purpose": cmd.purpose,
+            "command_kind": cmd.command_kind,
             "enqueued_at": int(time.time()),
         })
         await redis.lpush(queue_key, payload)

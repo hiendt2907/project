@@ -86,6 +86,7 @@ class OmniEmitter:
         k8s_namespace: str = "",
         bundle_sha256: str = "",
         extra_fields: dict[str, str] | None = None,
+        adapter_domains: list[str] | None = None,
     ) -> dict[str, float] | None:
         """Register/heartbeat with the gateway.
 
@@ -107,6 +108,7 @@ class OmniEmitter:
             "tenant_id": self._tenant_id,
             "local_ip": _detect_local_ip(self._base),
             "bundle_sha256": bundle_sha256,
+            "adapter_domains": sorted({str(domain).strip().lower() for domain in (adapter_domains or []) if str(domain).strip()}),
         }
         if extra_fields:
             payload.update(extra_fields)
@@ -119,8 +121,10 @@ class OmniEmitter:
                 return thresholds if isinstance(thresholds, dict) else None
             return None
 
-    async def emit(self, evidence_list: list[dict]) -> int:
-        """POST evidence batch. Returns number of items enqueued by gateway."""
+    async def emit(self, evidence_list: list[dict]) -> int | None:
+        """POST evidence batch. Returns number of items enqueued by gateway,
+        or None on total transport failure (retries exhausted) — caller dùng
+        None để quyết định spool vào outbox (IT-7), KHÔNG nhầm với enqueued=0."""
         if not evidence_list:
             return 0
         payload = {
@@ -131,7 +135,9 @@ class OmniEmitter:
         }
         async with _make_client(self._headers, self._base) as client:
             result = await _with_retry(client, "/webhook/agent/evidence", payload)
-            enqueued = result.get("enqueued", 0) if result else 0
+            if result is None:
+                return None
+            enqueued = result.get("enqueued", 0)
             logger.info("[emitter] emitted evidence enqueued=%d", enqueued)
             return enqueued
 

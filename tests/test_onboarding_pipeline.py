@@ -63,6 +63,35 @@ class TestAccumulateAndDiagram:
         assert doc["process_list"]["processes"][0]["name"] == "nginx"
 
     @pytest.mark.asyncio
+    async def test_multi_host_slots_merge_instead_of_overwrite(self):
+        """IT-7: 3 host cùng tenant không được ghi đè fact của nhau —
+        port 3306 (cust-db) phải sống sót sau khi cust-app emit port_scan."""
+        r = _redis()
+        await dd.accumulate_probe_fact(
+            r, "acme", "port_scan",
+            {"listening_ports": [{"port": 3306, "service": "mariadb"}]}, hostname="cust-db")
+        await dd.accumulate_probe_fact(
+            r, "acme", "port_scan",
+            {"listening_ports": [{"port": 8080, "service": "payment-api"}]}, hostname="cust-app")
+        doc = await dd.get_accumulated_doc(r, "acme")
+        ports = {p["port"] for p in doc["port_scan"]["listening_ports"]}
+        assert ports == {3306, 8080}
+        assert sorted(doc["port_scan"]["hosts"]) == ["cust-app", "cust-db"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_slot_and_host_slot_merge_dedupes(self):
+        r = _redis()
+        await dd.accumulate_probe_fact(
+            r, "acme", "port_scan", {"listening_ports": [{"port": 80, "service": "http"}]})
+        await dd.accumulate_probe_fact(
+            r, "acme", "port_scan",
+            {"listening_ports": [{"port": 80, "service": "http"}, {"port": 22, "service": "ssh"}]},
+            hostname="cust-edge")
+        doc = await dd.get_accumulated_doc(r, "acme")
+        ports = [p["port"] for p in doc["port_scan"]["listening_ports"]]
+        assert sorted(ports) == [22, 80]  # port 80 dedupe, không nhân đôi
+
+    @pytest.mark.asyncio
     async def test_regenerate_diagrams_creates_new_version_each_call(self):
         r = _redis()
         await dd.accumulate_probe_fact(r, "acme", "service_topology", {"services": [{"name": "api", "status": "running", "description": "REST API"}]})

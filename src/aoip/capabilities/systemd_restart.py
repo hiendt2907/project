@@ -410,7 +410,9 @@ async def build_systemd_restart_executor(
         product_outcome = _classify_product_outcome(outcome)
         summary = _operator_summary(unit=unit, mode=mode, product_outcome=product_outcome,
                                     reason=outcome.reason,
-                                    evidence={**evidence, "recovery_evidence": list(outcome.evidence)},
+                                    evidence={**evidence,
+                                              "recovery_evidence": list(outcome.evidence),
+                                              "verification": outcome.verification.to_dict()},
                                     duration_s=clock() - start, approver=approval.approver)
         if outcome.status == "recovered":
             return "COMPLETED", {"rc": 0, "verified": True, **summary}

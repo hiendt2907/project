@@ -57,9 +57,10 @@ class AgentSettings:
         self.services_enabled = os.getenv("OMNI_AGENT_SERVICES_ENABLED", "false").lower() not in ("false", "0", "no")
         self.storage_enabled = os.getenv("OMNI_AGENT_STORAGE_ENABLED", "false").lower() not in ("false", "0", "no")
         self.tenant_id = os.getenv("OMNI_AGENT_TENANT_ID", "default")
-        # Onboarding discovery probes (process_list/port_scan/service_topology/doc
-        # snapshot) — default off so existing deployments see zero behavior change.
-        self.discovery_enabled = os.getenv("OMNI_REMOTE_DISCOVERY_ENABLED", "false").lower() not in (
+        # Onboarding discovery is a core agent responsibility: new installs must
+        # discover by default so Omni can build a System Twin. Operators may
+        # explicitly opt out with OMNI_REMOTE_DISCOVERY_ENABLED=false.
+        self.discovery_enabled = os.getenv("OMNI_REMOTE_DISCOVERY_ENABLED", "true").lower() not in (
             "false", "0", "no",
         )
         raw_doc_dirs = os.getenv("OMNI_AGENT_DOC_SEARCH_DIRS", "/etc,/opt,/srv,/app")

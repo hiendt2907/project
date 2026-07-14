@@ -2,6 +2,16 @@
 
 ## Architecture Overview
 
+### Customer System Understanding (updated 2026-07-14)
+
+The customer-facing System Twin is a graph projection, not a card list. It excludes
+Omni/Remote Agent nodes and filters Linux platform noise from the primary view. The
+topology is based on observed hosts, operational services, ports and connection
+facts. API sequence drawing is contract-first: OpenAPI/Swagger metadata is discovered
+or supplied, then access-log metadata verifies runtime routes. TCP connection evidence
+alone is labelled `network_only`; see
+[Customer System Understanding](architecture/customer-system-understanding.md).
+
 Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbound signals arrive via three paths: HTTP alerts through the FastAPI Gateway (→ Kafka `omni-alerts`), SIEM incidents from FinGuard Redis streams (siem-bridge → `omni-alerts`), and direct SIEM evidence injection (evidence-adapter → `omni-diagnostic-evidence`). The **prober** role consumes `omni-alerts`, runs K8s SDK + Prometheus probes, and publishes per-probe evidence to `omni-diagnostic-evidence`. The **analyst** role batches evidence by `trace_id`, runs RAG gate + Ollama LLM (qwen2.5-coder:7b, num_ctx=8192), and emits `SUGGEST_REMEDIATION` → `omni-actions` with mandatory CRAT audit writes before any Telegram or action emission. Approved mutations flow through `omni-hitl-pending` → HITL dispatcher → `omni-actions` → **executor**; feedback returns to analyst via `omni-action-feedback` for re-evaluation or learning. Smart-SIEM (Go) runs as a parallel pipeline: brain-go correlates events → agent applies LLM analysis → BFF serves the React UI.
 
 > **Lab deployment (2026-06-05):** single consolidated pod `omni-fullstack` (`OMNI_WORKER_ROLE=full`) — split-role deployments deleted. Active model `qwen2.5-coder:7b` (embed `nomic-embed-text`) on OrbStack host Ollama. Graduated-autonomy tiers (shadow→assist→auto) are live with PostgreSQL `omni_admin` as config source-of-truth — see [Autonomy Tiers & Admin Config](#autonomy-tiers--admin-config-2026-06-05) below.

@@ -1,38 +1,48 @@
 .aoip-intro {
-  margin: 0 0 1.25rem;
-  max-width: 72ch;
+  margin: 0 0 1.5rem;
+  max-width: 78ch;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--content-line);
 }
 
 .aoip-intro-title {
-  font-size: 1.35rem;
+  color: var(--content-text);
+  font-family: var(--font-sans);
+  font-size: clamp(1.8rem, 3vw, 2.65rem);
   font-weight: 650;
-  letter-spacing: -0.01em;
-  margin: 0 0 0.35rem;
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+  margin: 0 0 0.55rem;
 }
 
 .aoip-intro-lead {
   margin: 0;
-  color: var(--aoip-muted, #6b7280);
-  line-height: 1.55;
+  max-width: 74ch;
+  color: var(--content-muted);
+  font-family: var(--font-sans);
+  font-size: 0.98rem;
+  line-height: 1.65;
 }
 
 .aoip-intro-glossary {
-  margin-top: 0.6rem;
-  font-size: 0.9rem;
+  margin-top: 0.9rem;
+  color: var(--content-muted);
+  font-family: var(--font-sans);
+  font-size: 0.86rem;
 }
 
 .aoip-intro-glossary > summary {
   cursor: pointer;
-  color: var(--aoip-accent, #2563eb);
+  color: var(--accent-ink);
   user-select: none;
 }
 
 .aoip-intro-glossary dl {
   margin: 0.5rem 0 0;
   padding: 0.65rem 0.85rem;
-  border-left: 3px solid var(--aoip-accent, #2563eb);
-  background: color-mix(in srgb, var(--aoip-accent, #2563eb) 6%, transparent);
-  border-radius: 0 6px 6px 0;
+  border-left: 2px solid var(--accent-ink);
+  background: var(--content-tint);
+  border-radius: 0 10px 10px 0;
 }
 
 .aoip-intro-term {

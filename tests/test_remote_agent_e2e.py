@@ -51,6 +51,7 @@ def _build_app() -> FastAPI:
     app.state.redis = FakeRedis(decode_responses=True)
     app.state.kafka = AsyncMock()
     app.state.kafka_topic_evidence = "omni-diagnostic-evidence"
+    app.state.kafka_topic_knowledge_evidence = "omni-knowledge-evidence"
     app.include_router(webhook_router)
     app.include_router(commands_router)
     return app
@@ -112,7 +113,14 @@ class TestE2ERegisterAndEvidenceCycle:
         assert enqueued == 1
         app.state.kafka.send_and_wait.assert_called_once()
         call_args = app.state.kafka.send_and_wait.call_args
-        assert call_args[0][0] == "omni-diagnostic-evidence"
+        # Healthy metric samples are knowledge evidence; a real host can cross
+        # the pushed threshold and legitimately become an ANOMALY.
+        expected_topic = (
+            "omni-diagnostic-evidence"
+            if fact.get("signal_type") == "ANOMALY"
+            else "omni-knowledge-evidence"
+        )
+        assert call_args[0][0] == expected_topic
         envelope = json.loads(json.loads(call_args[1]["value"])["data"])
         assert envelope["extracted_fact"]["agent_id"] == "agent-e2e-1"
         assert envelope["extracted_fact"]["hostname"] == "e2e-test-host"
@@ -176,12 +184,13 @@ class TestE2ERegisterAndEvidenceCycle:
 
         # OmniEmitter swallows transport errors via retry+log: a 503 surfaces
         # through raise_for_status inside _post, gets retried 3x, then emit()
-        # degrades to 0 rather than raising.
+        # returns None (IT-7 contract: None = transport fail → caller spool
+        # outbox; 0 = gateway nhận nhưng enqueue 0).
         enqueued = await agent.emit([{
             "trace_id": "ra-cb-1", "probe": "remote_system_metrics",
             "result": "PASSED", "extracted_fact": {"cpu_percent": 1.0}, "lane": "SYS_RESOURCE",
         }])
-        assert enqueued == 0
+        assert enqueued is None
         app.state.kafka.send_and_wait.assert_not_called()
 
 

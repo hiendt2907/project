@@ -1,5 +1,18 @@
 # Project Memory Registry
 
+## Customer System Understanding (2026-07-14)
+
+- The System Twin primary view is a customer-only topology graph. Omni/Remote Agent
+  are control-plane actors and must not be drawn as customer nodes.
+- `systemd`, cron, dbus, RPC/NFS helpers, dynamic kernel ports and Omni processes may
+  remain in raw evidence/audit but are filtered from the primary architecture view.
+- API sequence is contract-first: discover or receive OpenAPI/Swagger, parse metadata
+  at the customer/upload boundary, then correlate redacted access-log metadata.
+- TCP connections alone are dependency evidence, never HTTP sequence evidence.
+- Read-model statuses are `runtime_verified`, `contract_observed`, `missing_contract`,
+  and `network_only`; incomplete evidence must remain visible as an unknown/action.
+- Canonical details: [`customer-system-understanding.md`](../architecture/customer-system-understanding.md).
+
 **North Star + audit verify log (định kỳ):** [audit-snapshot-2026-05.md](audit-snapshot-2026-05.md)
 
 **Canonical kiến trúc (bám code):** [../vendor/OMNI_PROJECT_CANONICAL.md](../vendor/OMNI_PROJECT_CANONICAL.md)
@@ -151,4 +164,3 @@ Implemented behavior to lock in:
 - **Logs (debug):** Executor `worker_role=executor`, consumer `omni-actions`, audit-only `SUGGEST_REMEDIATION`; WARNING heartbeat/rebalance Kafka trong lúc rollout là bình thường. Analyst khởi động evidence + action-feedback + KPI collector (có LeaveGroup khi pod terminate trong rollout).
 - **Test:** `make auto-execute-gate` PASS (10 tests).
 - **Tài liệu:** Preflight ConfigMap — [../runbooks/e2e_cluster_after_deploy.md](../runbooks/e2e_cluster_after_deploy.md); policy auto-execute — [../runbooks/auto-execute-policy-matrix.md](../runbooks/auto-execute-policy-matrix.md).
-

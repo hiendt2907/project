@@ -36,8 +36,13 @@ async def accumulate_discovery_evidence(ctx: WorkerHandlerContext, ev_doc: dict[
         logger.warning("onboarding_pipeline: empty discovery_data probe=%s tenant=%s", probe, tenant_id)
         return
 
+    # IT-7: per-host slot — multi-host tenant không còn ghi đè fact của nhau
+    hostname = str(
+        ev_doc.get("namespace") or ev_doc.get("hostname")
+        or (fact.get("hostname") if isinstance(fact, dict) else "") or ""
+    )
     try:
-        await dd.accumulate_probe_fact(ctx.redis, tenant_id, probe, discovery_data)
+        await dd.accumulate_probe_fact(ctx.redis, tenant_id, probe, discovery_data, hostname=hostname)
     except Exception as exc:  # noqa: BLE001 — accumulation is best-effort, never blocks consumer
         logger.warning("onboarding_pipeline: accumulate failed tenant=%s probe=%s err=%s", tenant_id, probe, exc)
         return
@@ -190,6 +195,24 @@ async def _detect_gaps_and_ask(
                 f"Onboarding ({tenant_id}): các cổng {port_list} đang mở nhưng chưa rõ dịch vụ nào "
                 "sử dụng — bạn xác nhận giúp không?"
             )
+    elif probe == "api_access":
+        # Runtime access metadata is useful for correlation, but it is not an
+        # API contract. Ask once when routes are seen without a discovered or
+        # uploaded OpenAPI/Swagger document; the UI can also resolve this by
+        # uploading the contract through /onboarding/handover-doc.
+        try:
+            raw_doc = await ctx.redis.hgetall(dd.DOC_KEY.format(tenant_id=tenant_id))
+            has_contract = any(str(key).startswith("api_contract") for key in raw_doc)
+            if not has_contract:
+                existing = await ctx.redis.hgetall(dd.QUESTIONS_KEY.format(tenant_id=tenant_id))
+                already_asked = any("OpenAPI/Swagger" in str(value) for value in existing.values())
+                if not already_asked:
+                    question = (
+                        f"Onboarding ({tenant_id}): đã thấy API route trong access log nhưng chưa có contract. "
+                        "Agent sẽ tự tìm openapi.json/openapi.yaml/swagger.json; nếu không có, hãy cung cấp tài liệu OpenAPI/Swagger."
+                    )
+        except Exception as exc:  # noqa: BLE001 — question is best-effort
+            logger.debug("onboarding_pipeline: API contract question check failed tenant=%s err=%s", tenant_id, exc)
     if question is None:
         return
     await _open_question(ctx, tenant_id, question)

@@ -5,7 +5,9 @@ step-3 của agent/plans/PLAN_onboarding_ops_agent.md. Uses pkg.onboarding.disco
 """
 from __future__ import annotations
 
+import json
 import logging
+import hashlib
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -124,6 +126,37 @@ async def get_readiness(
     return JSONResponse(content={"tenant_id": scope, "readiness": readiness, "thresholds": thresholds})
 
 
+@router.get("/adapters")
+async def get_domain_adapters() -> JSONResponse:
+    """Domain-neutral capability catalog for provider/operator surfaces.
+
+    Kubernetes is deliberately returned beside Linux, database and network
+    adapters.  The endpoint is metadata-only: it does not authorize or execute
+    commands; the durable command runtime still enforces tenant, approval and
+    verification gates.
+    """
+    from aoip.domain_adapters import default_registry
+
+    adapters = []
+    for descriptor in default_registry().list_adapters():
+        adapters.append({
+            "name": descriptor.name,
+            "domain": descriptor.domain,
+            "version": descriptor.version,
+            "capabilities": [
+                {
+                    "name": capability.name,
+                    "operations": list(capability.operations),
+                    "mutating": capability.mutating,
+                    "requires_approval": capability.requires_approval,
+                    "verification_required": capability.verification_required,
+                }
+                for capability in descriptor.capabilities
+            ],
+        })
+    return JSONResponse(content={"adapters": adapters})
+
+
 class HandoverDocUpload(BaseModel):
     filename: str = Field(..., min_length=1, max_length=200)
     content: str = Field(..., min_length=1, max_length=8000)
@@ -139,9 +172,12 @@ async def upload_handover_doc(request: Request, body: HandoverDocUpload) -> JSON
     step and never persisted on the Omni side — only path/hash/length."""
     redis = _get_redis(request)
     scope = _effective_tenant_id(request, body.tenant_id)
+    contract = _parse_uploaded_api_contract(body.content, body.filename)
     discovery_data = {"documents": [{"path": body.filename, "content": body.content}]}
     try:
         await dd.accumulate_probe_fact(redis, scope, "doc_snapshot", discovery_data)
+        if contract:
+            await dd.accumulate_probe_fact(redis, scope, "api_contract", {"api_contracts": [contract]})
         version = await dd.regenerate_diagrams(redis, scope)
     except Exception as exc:
         logger.error("onboarding.upload_handover_doc error tenant=%s err=%s", scope, exc)
@@ -221,6 +257,245 @@ async def get_entities(
         "hosts": sorted(n for n in nodes if n.startswith("host:")),
         "services": sorted(n for n in nodes if n.startswith("svc:")),
     })
+
+
+@router.get("/system-twin")
+async def get_system_twin(
+    request: Request,
+    tenant_id: str | None = Query(default=None, max_length=64, pattern=_TENANT_ID_PATTERN),
+) -> JSONResponse:
+    """Single read model for the operator's current understanding of a tenant.
+
+    This is intentionally a projection over the canonical SystemModel store,
+    not a second source of truth.  It exposes revision, graph edges, known
+    entities, unresolved edge targets, contradictions, and competency unknowns
+    in one tenant-scoped response so callers do not have to reconstruct the
+    meaning of the twin from several endpoints.
+    """
+    from aoip.question_lifecycle import list_unknowns
+    from aoip.system_model_store import load_contradictions, load_system_model
+
+    redis = _get_redis(request)
+    scope = _effective_tenant_id(request, tenant_id)
+    model, revision = await load_system_model(redis, scope)
+    contradictions = await load_contradictions(redis, scope)
+    unknowns = await list_unknowns(redis, scope)
+    hosts = sorted(n for n in model.known_nodes if n.startswith("host:"))
+    services = sorted(n for n in model.known_nodes if n.startswith("svc:"))
+    raw_doc = await redis.hgetall(dd.DOC_KEY.format(tenant_id=scope))
+    operational_hosts = _build_operational_hosts(model.facts, hosts, raw_doc)
+    api_sequence = _build_api_sequence(raw_doc)
+    edges = [
+        {"subject": fact.subject, "predicate": fact.predicate, "object": fact.obj,
+         "confidence": fact.confidence, "provenance": list(fact.provenance),
+         "verified_time": fact.verified_time}
+        for fact in model.edges
+    ]
+    unknown_edge_targets = sorted(model.unknown_edge_targets)
+    return JSONResponse(content={
+        "tenant_id": scope,
+        "revision": revision,
+        "summary": {
+            "hosts": len(hosts),
+            "services": len(services),
+            "edges": len(edges),
+            "unknown_edge_targets": unknown_edge_targets,
+            "contradictions": len(contradictions),
+            "unknowns": len(unknowns),
+        },
+        "entities": {"hosts": hosts, "services": services},
+        "operational_hosts": operational_hosts,
+        "api_sequence": api_sequence,
+        "edges": edges,
+        "unknown_edge_targets": unknown_edge_targets,
+        "contradictions": contradictions,
+        "unknowns": unknowns,
+    })
+
+
+def _build_operational_hosts(
+    facts: tuple[Any, ...], hosts: list[str], raw_doc: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Build the operator-facing host/service/port projection from observed facts.
+
+    This deliberately keeps platform daemons in the raw facts stream but gives the
+    UI a compact architecture view. Port ownership comes from the per-host raw
+    port_scan snapshot; facts without that snapshot remain unclassified. No
+    service dependency is invented from a process name alone.
+    """
+    port_map: dict[str, dict[str, set[str]]] = {}
+    for key, raw in (raw_doc or {}).items():
+        if key.endswith(":updated_at"):
+            continue
+        probe, separator, hostname = key.partition("@")
+        if separator != "@" or probe != "port_scan":
+            continue
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        by_service = port_map.setdefault(hostname, {})
+        if not isinstance(payload, dict):
+            continue
+        for port in payload.get("listening_ports") or []:
+            if not isinstance(port, dict):
+                continue
+            number = port.get("port")
+            if number is None:
+                continue
+            service = str(port.get("service") or "unclassified")
+            by_service.setdefault(service, set()).add(str(number))
+
+    result: list[dict[str, Any]] = []
+    for host in hosts:
+        host_facts = [fact for fact in facts if fact.subject == host]
+        service_names: set[str] = set()
+        for fact in host_facts:
+            if fact.predicate == "runs_service":
+                service_names.add(str(fact.obj))
+            elif fact.predicate == "hosts" and str(fact.obj).startswith("svc:"):
+                service_names.add(str(fact.obj).split(":", 1)[1])
+
+        services: list[dict[str, Any]] = []
+        for name in sorted(service_names):
+            service_facts = [
+                fact for fact in host_facts
+                if (fact.predicate == "runs_service" and str(fact.obj) == name)
+                or (fact.predicate == "hosts" and str(fact.obj) == f"svc:{name}")
+            ]
+            host_name = host.split(":", 1)[-1]
+            ports = sorted(port_map.get(host_name, {}).get(name, set()), key=lambda value: int(value) if value.isdigit() else value)
+            services.append({
+                "name": name,
+                "ports": ports,
+                "confidence": max((fact.confidence for fact in service_facts), default=0.0),
+                "provenance": list(next(iter(service_facts)).provenance) if service_facts else [],
+            })
+
+        connections = [
+            {"target": str(fact.obj), "confidence": fact.confidence, "provenance": list(fact.provenance)}
+            for fact in host_facts if fact.predicate == "connects_to"
+        ]
+        host_name = host.split(":", 1)[-1]
+        observed_ports = sorted({
+            port for service_ports in port_map.get(host_name, {}).values() for port in service_ports
+        }, key=lambda value: int(value) if value.isdigit() else value)
+        result.append({"host": host, "ports": observed_ports, "services": services, "connections": connections})
+    return result
+
+
+def _build_api_sequence(raw_doc: dict[str, str] | None) -> dict[str, Any]:
+    """Project redacted access-log metadata without inventing downstream hops.
+
+    ``source_host`` is the agent host that owns the access log. ``target_host``
+    is present only when the log itself emitted an upstream/backend field. A
+    connection scan can explain network dependency, but cannot promote it to an
+    HTTP sequence.
+    """
+    contracts: list[dict[str, Any]] = []
+    access: list[dict[str, Any]] = []
+    for key, raw in (raw_doc or {}).items():
+        if key.endswith(":updated_at"):
+            continue
+        probe, separator, hostname = key.partition("@")
+        if separator != "@" or probe not in {"api_access", "api_contract"}:
+            continue
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if probe == "api_contract":
+            for contract in payload.get("api_contracts") or []:
+                if isinstance(contract, dict):
+                    contracts.append({**contract, "source_host": f"host:{hostname}"})
+            continue
+        for item in payload.get("api_interactions") or []:
+            if not isinstance(item, dict) or not item.get("route") or not item.get("method"):
+                continue
+            upstream = str(item.get("upstream") or "")[:120]
+            access.append({
+                "source_host": f"host:{hostname}",
+                "target_host": upstream or None,
+                "method": str(item["method"]).upper(),
+                "route": str(item["route"])[:160],
+                "status_class": str(item.get("status_class") or "unknown"),
+                "count": int(item.get("count") or 1),
+                "source_path": str(item.get("source_path") or "")[:200],
+                "confidence": 0.9 if upstream else 0.8,
+                "provenance": f"discovery:api_access:{hostname}",
+            })
+    if contracts:
+        interactions: list[dict[str, Any]] = []
+        for contract in contracts:
+            for route in contract.get("routes") or []:
+                if not isinstance(route, dict):
+                    continue
+                matches = [item for item in access if item["source_host"] == contract["source_host"] and item["method"] == route.get("method") and item["route"] == route.get("route")]
+                count = sum(int(item.get("count") or 0) for item in matches)
+                statuses = sorted({str(item.get("status_class") or "unknown") for item in matches})
+                interactions.append({
+                    "source_host": contract["source_host"],
+                    "target_host": next((item.get("target_host") for item in matches if item.get("target_host")), None),
+                    "method": str(route.get("method") or "").upper(),
+                    "route": str(route.get("route") or "")[:160],
+                    "operation_id": str(route.get("operation_id") or "")[:120],
+                    "status_class": ", ".join(statuses) if statuses else "contract only",
+                    "count": count,
+                    "runtime_observed": bool(matches),
+                    "confidence": 0.95 if matches else 0.8,
+                    "provenance": f"api_contract:{contract.get('path', '')}",
+                })
+        interactions.sort(key=lambda item: (item["source_host"], item["route"], item["method"]))
+        runtime_verified = any(item["runtime_observed"] for item in interactions)
+        return {
+            "status": "runtime_verified" if runtime_verified else "contract_observed",
+            "evidence": "openapi_swagger_contract" if not runtime_verified else "openapi_swagger_plus_access_log",
+            "interactions": interactions[:200],
+            "unknown_reasons": [] if runtime_verified else ["Contract found; runtime access-log correlation is not observed yet."],
+        }
+    if access:
+        return {
+            "status": "missing_contract",
+            "evidence": "access_log_metadata",
+            "interactions": [],
+            "unknown_reasons": ["Access-log routes exist, but an OpenAPI/Swagger contract is required before drawing API sequence."],
+        }
+    return {
+        "status": "network_only",
+        "evidence": "connection_scan",
+        "interactions": [],
+        "unknown_reasons": ["No redacted access-log route/method metadata observed yet."],
+    }
+
+
+def _parse_uploaded_api_contract(content: str, filename: str) -> dict[str, Any] | None:
+    """Parse a supplied OpenAPI/Swagger document, retaining metadata only."""
+    try:
+        if filename.lower().endswith(".json"):
+            document = json.loads(content)
+        else:
+            import yaml
+            document = yaml.safe_load(content)
+    except Exception:
+        return None
+    if not isinstance(document, dict) or not (document.get("openapi") or document.get("swagger")):
+        return None
+    routes: list[dict[str, Any]] = []
+    methods = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+    for route, item in (document.get("paths") or {}).items():
+        if not isinstance(route, str) or not route.startswith("/") or not isinstance(item, dict):
+            continue
+        for method, operation in item.items():
+            if method.lower() not in methods or not isinstance(operation, dict):
+                continue
+            routes.append({"method": method.upper(), "route": route[:200], "operation_id": str(operation.get("operationId") or "")[:120], "tags": [str(x)[:80] for x in (operation.get("tags") or [])[:10]], "response_statuses": [str(x)[:20] for x in ((operation.get("responses") or {}).keys())][:20]})
+            if len(routes) >= 500:
+                break
+    if not routes:
+        return None
+    return {"path": filename[:200], "format": "openapi" if document.get("openapi") else "swagger", "version": str(document.get("openapi") or document.get("swagger"))[:30], "title": str((document.get("info") or {}).get("title") or "")[:160], "base_path": str(document.get("basePath") or "")[:120], "routes": routes, "content_hash": hashlib.sha256(content.encode()).hexdigest()}
 
 
 @router.get("/unknowns")

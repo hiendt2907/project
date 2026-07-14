@@ -142,3 +142,104 @@ class TestEntitiesEndpoint:
             resp = await c.get("/onboarding/entities", params={"tenant_id": "other"})
         assert resp.status_code == 200
         assert resp.json()["hosts"] == []
+
+
+class TestSystemTwinEndpoint:
+    @pytest.mark.asyncio
+    async def test_system_twin_exposes_operational_host_service_port_projection(self):
+        r = _redis()
+        await fold_and_persist(
+            r, "acme", [
+                Fact(subject="host:edge", predicate="runs_service", obj="nginx", confidence=0.9,
+                     provenance=("discovery:port_scan:t1", "agent:a1")),
+                Fact(subject="host:edge", predicate="hosts", obj="svc:nginx", confidence=0.9,
+                     provenance=("discovery:port_scan:t1", "agent:a1")),
+                Fact(subject="host:edge", predicate="exposes_port", obj="80", confidence=0.9,
+                     provenance=("discovery:port_scan:t1", "agent:a1")),
+                Fact(subject="host:edge", predicate="connects_to", obj="host:app", confidence=0.7,
+                     provenance=("discovery:connection_scan:t2", "agent:a1")),
+            ], source="discovery",
+        )
+        await r.hset(
+            "omni:onboarding:doc:acme", "port_scan@edge",
+            '{"hostname":"edge","listening_ports":[{"port":80,"service":"nginx"}]}',
+        )
+        async with AsyncClient(transport=ASGITransport(app=_app(r)), base_url="http://test") as c:
+            data = (await c.get("/onboarding/system-twin", params={"tenant_id": "acme"})).json()
+
+        assert data["operational_hosts"] == [{
+            "host": "host:edge",
+            "ports": ["80"],
+            "services": [{
+                "name": "nginx", "ports": ["80"], "confidence": 0.9,
+                "provenance": ["discovery:port_scan:t1", "agent:a1"],
+            }],
+            "connections": [{
+                "target": "host:app", "confidence": 0.7,
+                "provenance": ["discovery:connection_scan:t2", "agent:a1"],
+            }],
+        }]
+
+    @pytest.mark.asyncio
+    async def test_system_twin_exposes_only_redacted_api_sequence_metadata(self):
+        r = _redis()
+        await r.hset(
+            "omni:onboarding:doc:acme", "api_access@edge",
+            '{"hostname":"edge","api_interactions":[{"method":"GET","route":"/api/orders/:id","status_class":"2xx","count":3,"upstream":"app:8080","source_path":"/var/log/nginx/access.log"}]}',
+        )
+        await r.hset(
+            "omni:onboarding:doc:acme", "api_contract@edge",
+            '{"hostname":"edge","api_contracts":[{"path":"/app/openapi.json","format":"openapi","version":"3.0.0","routes":[{"method":"GET","route":"/api/orders/:id","operation_id":"getOrder","tags":["orders"],"response_statuses":["200"]}]}]}',
+        )
+        async with AsyncClient(transport=ASGITransport(app=_app(r)), base_url="http://test") as c:
+            data = (await c.get("/onboarding/system-twin", params={"tenant_id": "acme"})).json()
+
+        assert data["api_sequence"]["status"] == "runtime_verified"
+        assert data["api_sequence"]["interactions"] == [{
+            "source_host": "host:edge", "target_host": "app:8080", "method": "GET",
+            "route": "/api/orders/:id", "operation_id": "getOrder", "status_class": "2xx", "count": 3,
+            "runtime_observed": True, "confidence": 0.95,
+            "provenance": "api_contract:/app/openapi.json",
+        }]
+
+    @pytest.mark.asyncio
+    async def test_system_twin_aggregate_exposes_revision_graph_unknowns_and_contradictions(self):
+        r = _redis()
+        facts = [
+            Fact(subject="host:web-01", predicate="runs_service", obj="payments", confidence=0.9,
+                 provenance=("discovery:service_topology:t1", "agent:a1")),
+            Fact(subject="host:web-01", predicate="connects_to", obj="db:payments", confidence=0.8,
+                 provenance=("discovery:connection_scan:t1", "agent:a1")),
+        ]
+        await fold_and_persist(r, "acme", facts, source="discovery")
+
+        async with AsyncClient(transport=ASGITransport(app=_app(r)), base_url="http://test") as c:
+            resp = await c.get("/onboarding/system-twin", params={"tenant_id": "acme"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["tenant_id"] == "acme"
+        assert data["revision"] == 1
+        assert data["summary"]["hosts"] == 1
+        assert data["summary"]["services"] == 1
+        assert data["summary"]["edges"] == 1
+        assert data["summary"]["unknown_edge_targets"] == ["db:payments"]
+        assert data["entities"]["hosts"] == ["host:web-01"]
+        assert data["entities"]["services"] == ["svc:payments"]
+        assert data["contradictions"] == []
+        assert isinstance(data["unknowns"], list)
+
+    @pytest.mark.asyncio
+    async def test_system_twin_is_tenant_scoped(self):
+        r = _redis()
+        await fold_and_persist(
+            r, "acme",
+            [Fact(subject="host:private", predicate="exposes_port", obj="443", confidence=0.9,
+                  provenance=("discovery:port_scan:t1", "agent:a1"))],
+            source="discovery",
+        )
+        async with AsyncClient(transport=ASGITransport(app=_app(r)), base_url="http://test") as c:
+            resp = await c.get("/onboarding/system-twin", params={"tenant_id": "other"})
+        assert resp.status_code == 200
+        assert resp.json()["revision"] == 0
+        assert resp.json()["entities"] == {"hosts": [], "services": []}

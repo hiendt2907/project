@@ -1,6 +1,6 @@
 # SPRINT — "Nhân viên SRE": Remote Agent Production Lifecycle
 
-**Ngày lập:** 2026-07-07 · **Trạng thái:** PROPOSED (chờ user duyệt)
+**Ngày lập:** 2026-07-07 · **Trạng thái:** DONE (IT-1..IT-7, verified 2026-07-13)
 **Chủ đề:** Remote Agent là **nhân viên SRE của công ty Omni** — tiếp nhận hệ thống khách hàng,
 tìm hiểu, quan sát, vận hành. Sprint này productize vòng đời nhân viên đó ở tầng backend.
 **Bám:** `docs/product/PRODUCTION_MISSON.md` (ưu tiên #2 Productize Remote Agent, #4 safety/
@@ -49,6 +49,20 @@ Trạng thái nền liên quan (snapshot cùng thời điểm):
 **Cách so sánh sau sprint:** chạy lại đúng các lệnh ở cột "Bằng chứng" (IT-7 sprint review) và
 điền cột "SAU" — mỗi ❌/⚠️/❓ phải chuyển thành ✅ có runtime proof, hoặc ghi trung thực
 Failed/Not Run.
+
+## Sprint review — cột SAU (IT-7, đo thật 2026-07-13, fleet agent 1.3.2)
+
+| # | Thước đo sprint | SAU | Runtime proof |
+|---|---|---|---|
+| 1 | 0 raw content rời VM | ✅ **Passed** (IT-1) | Giữ nguyên từ Iteration 27; e2e TC-OB06/TC-OB09 re-verify 2026-07-13: doc lưu hash+length only |
+| 2 | Drift phát hiện ≤1 heartbeat | ✅ **Passed** (IT-2) | Re-verify IT-7: publish manifest 1.3.2 → cả 3 agent báo `drifted` trong heartbeat kế tiếp; update xong → `current` |
+| 3 | Enroll VM mới không sửa tay | ✅ **Passed** (IT-3) | PRODUCT_PROOF Iteration 29; per-agent credential PG vẫn hiệu lực (e2e TC-OB03 register OK) |
+| 4 | Update hỏng tự rollback | ✅ **Passed** (IT-5) | PRODUCT_PROOF Iteration 31 drill (a)(b); IT-7 dùng lại cơ chế: update fleet 1.3.1→1.3.2 3/3 `COMPLETED/updated` |
+| 5 | 0 mất/0 trùng outcome (chaos) | ✅ **Passed** (IT-6) | PRODUCT_PROOF Iteration 32: PG `count=1 COMPLETED` qua gateway restart giữa RUNNING; 3 record upd-1-3-2-* mỗi cái đúng 1 dòng |
+| 6 | Agent tự resume sau reboot/mất mạng | ✅ **Passed** (IT-7) | Reboot cả 3 VM → `aoip-agent` auto-active, re-register ≤30s. Cắt mạng 10' từng VM (iptables DROP → gateway): mỗi VM spool 3 batch vào outbox (`/var/lib/aoip/outbox`), mạng về → flush đủ 3 theo thứ tự, pending=0, không duplicate (chỉ spool batch fail toàn phần). e2e 10/10 TC PASS trên runtime AOIP |
+
+DoD IT-7 ĐẠT: metric #6 ✅, `e2e_onboarding_full_flow` 10/10 TC (TC-OB01/02 skip theo
+`--skip-reinstall` như quy ước), PRODUCT_PROOF Iteration 33, ADR-001 cập nhật migration DONE.
 
 ## Nguyên tắc xuyên suốt (không nhắc lại trong từng iteration)
 

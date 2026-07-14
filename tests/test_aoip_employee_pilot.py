@@ -132,8 +132,9 @@ class TestRegisterCarriesAoipHash:
 
         async def fake_register(self, capabilities, version="1.0.0",
                                 k8s_namespace="", bundle_sha256="",
-                                extra_fields=None):
+                                extra_fields=None, adapter_domains=None):
             captured["extra_fields"] = extra_fields
+            captured["adapter_domains"] = adapter_domains
             raise _Stop  # dừng loop ngay sau register đầu tiên
 
         async def fake_discovery(agent_id, hostname):

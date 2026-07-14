@@ -124,6 +124,7 @@ def main() -> int:
         OMNI_AGENT_GATEWAY_URL=GATEWAY_URL,
         OMNI_AGENT_API_KEY=tenant_key,
         OMNI_AGENT_ID=agent_id,
+        OMNI_AGENT_HOSTNAME="e2e-host",
         OMNI_AGENT_TENANT_ID="default",
         OMNI_AGENT_COLLECT_INTERVAL=COLLECT_INTERVAL_S,
         OMNI_AGENT_K8S_ENABLED="false",  # máy host không có in-cluster kubeconfig cho probe k8s

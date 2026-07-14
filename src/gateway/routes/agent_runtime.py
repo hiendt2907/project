@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -157,6 +158,42 @@ def _tenant_of(request: Request, body_tenant: str) -> str:
     return body_tenant if is_admin_ctx(ctx) else (ctx.tenant_id if ctx else body_tenant)
 
 
+_MUTATION_FLAG_KEY = "aoip_mutation_enabled"
+
+
+def _master_auto_execute_enabled() -> bool:
+    return os.getenv("OMNI_AUTO_EXECUTE_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def _flag_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def _enforce_mutation_toggle(request: Request, tenant: str) -> None:
+    """Guard every durable recovery enqueue with both mutation permission gates."""
+    repo = getattr(request.app.state, "admin_repo", None)
+    if repo is None:
+        # Lightweight ASGI/unit harnesses do not wire the control-plane repository.
+        return
+    try:
+        requested = _flag_bool(await repo.get_runtime_flag(_MUTATION_FLAG_KEY, tenant_id=tenant))
+    except Exception as exc:  # noqa: BLE001 - fail closed at the control-plane boundary
+        logger.exception("mutation toggle lookup failed tenant=%s", tenant)
+        raise HTTPException(status_code=503, detail="Mutation control unavailable") from exc
+    if not requested:
+        raise HTTPException(status_code=423, detail={
+            "reason": "tenant_toggle_off", "tenant_id": tenant,
+        })
+    if not _master_auto_execute_enabled():
+        raise HTTPException(status_code=423, detail={
+            "reason": "master_kill_switch_off", "tenant_id": tenant,
+        })
+
+
 # ── Models ───────────────────────────────────────────────────────────────────
 
 class EnqueueRuntimeCommand(BaseModel):
@@ -191,6 +228,26 @@ class Terminal(AckDelivered):
     outcome: dict = Field(default_factory=dict)
 
 
+def _validate_typed_mutation_payload(payload: dict) -> None:
+    """Typed capability payloads cannot enter durable mutation without proof gates.
+
+    Legacy test/read models may still carry generic payloads; once a payload
+    declares a capability, it is treated as a mutation contract and validated
+    strictly here.
+    """
+    if "capability" not in payload:
+        return
+    required = ("capability_version", "target", "verification", "approval")
+    missing = [key for key in required if not payload.get(key)]
+    if missing:
+        raise HTTPException(status_code=422,
+                            detail=f"typed mutation payload missing: {missing}")
+    if not isinstance(payload.get("target"), dict) or not payload["target"]:
+        raise HTTPException(status_code=422, detail="typed mutation target is required")
+    if not isinstance(payload.get("verification"), dict):
+        raise HTTPException(status_code=422, detail="typed mutation verification contract is required")
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @router.post("/commands/enqueue")
@@ -205,6 +262,8 @@ async def enqueue_command(body: EnqueueRuntimeCommand, request: Request) -> JSON
         raise HTTPException(status_code=422, detail="Invalid agent_id")
     await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
     tenant = _tenant_of(request, body.tenant_id)
+    await _enforce_mutation_toggle(request, tenant)
+    _validate_typed_mutation_payload(body.payload)
     now = int(time.time())
     expires_at = now + body.ttl_s
 

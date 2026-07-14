@@ -58,6 +58,7 @@ class AgentRegisterRequest(BaseModel):
     hostname: str = Field(min_length=1, max_length=256)
     version: str = Field(default="1.0.0", max_length=32)
     capabilities: list[str] = Field(default_factory=list)  # ["metrics", "logs", "k8s"]
+    adapter_domains: list[str] = Field(default_factory=list, max_length=32)
     platform: str = Field(default="linux", max_length=64)
     k8s_namespace: str = Field(default="", max_length=256)
     tenant_id: str = Field(default="default", pattern=r"^[a-zA-Z0-9_-]{1,64}$")
@@ -288,6 +289,7 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
         "hostname": body.hostname,
         "version": body.version,
         "capabilities": body.capabilities,
+        "adapter_domains": sorted({str(domain).strip().lower() for domain in body.adapter_domains if str(domain).strip()}),
         "platform": body.platform,
         "k8s_namespace": body.k8s_namespace,
         "tenant_id": tenant_id,

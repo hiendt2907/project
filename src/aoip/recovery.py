@@ -27,6 +27,7 @@ from typing import Awaitable, Callable
 
 from aoip import audit
 from aoip.objects import Action, ActionState
+from aoip.verification import VerificationResult
 
 # Substrate đã hỗ trợ (mở rộng = thêm operator, KHÔNG sửa executor).
 SUBSTRATE_SYSTEMD = "systemd"
@@ -158,6 +159,12 @@ class RecoveryRequest:
     diagnosed_at: float
     dependents: tuple[str, ...] = ()
     tenant: str = "default"
+    mission_id: str = ""
+    incident_id: str = ""
+    decision_id: str = ""
+    action_id: str = ""
+    command_id: str = ""
+    trace_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -166,6 +173,9 @@ class RecoveryOutcome:
     status: str           # "recovered" | "escalated" | "aborted"
     reason: str
     evidence: tuple[str, ...] = ()
+    verification: VerificationResult = field(default_factory=lambda: VerificationResult.unknown(
+        expected_state="verification.not_run", reason="recovery did not reach verification",
+        evidence_refs=("verification:not_run",)))
 
 
 def plan_recovery(
@@ -232,9 +242,18 @@ async def execute_recovery(
     Trình tự: gate → capture before → execute smallest action → verify service +
     dependents → complete | escalate. KHÔNG retry. Fail-closed tuyệt đối.
     """
-    trace = req.action.scope
+    trace = req.trace_id or req.action.scope
+    audit_context = {
+        "tenant_id": req.tenant,
+        "mission_id": req.mission_id,
+        "incident_id": req.incident_id,
+        "decision_id": req.decision_id,
+        "action_id": req.action_id,
+        "command_id": req.command_id,
+    }
     op = operator_for(req.failure_mode, req.substrate)
     audit_log.append(audit.EV_RECOVERY_PLANNED, {
+        **audit_context,
         "node": req.failed_node, "failure_mode": req.failure_mode, "substrate": req.substrate,
         "unit": req.unit, "verb": req.action.result.get("verb"), "risk": req.risk,
         "env_auto_execute": env_auto_execute,
@@ -249,7 +268,7 @@ async def execute_recovery(
     if blocked:
         reason = "; ".join(f"{n}: {r}" for n, r in blocked)
         audit_log.append(audit.EV_RECOVERY_GATE_BLOCKED,
-                         {"node": req.failed_node, "blocked": [n for n, _ in blocked],
+                         {**audit_context, "node": req.failed_node, "blocked": [n for n, _ in blocked],
                           "reason": reason}, trace_id=trace)
         ctx.log("Recover", f"GATE chặn — KHÔNG mutation: {reason}")
         return RecoveryOutcome(action=req.action.at(ActionState.ABORTED, reason=reason),
@@ -259,7 +278,7 @@ async def execute_recovery(
     if not await op.is_broken(transport, req.unit, req.port):
         reason = "service đang HEALTHY ngay trước execute — không tác động (zero mutation)"
         audit_log.append(audit.EV_RECOVERY_GATE_BLOCKED,
-                         {"node": req.failed_node, "blocked": ["current_state_broken"],
+                         {**audit_context, "node": req.failed_node, "blocked": ["current_state_broken"],
                           "reason": reason}, trace_id=trace)
         ctx.log("Recover", reason)
         return RecoveryOutcome(action=req.action.at(ActionState.ABORTED, reason=reason),
@@ -268,43 +287,86 @@ async def execute_recovery(
     # ── CAPTURE BEFORE-STATE (bằng chứng trước mutation) ──────────────────────
     before = await op.capture_before(transport, req.unit, req.port)
     audit_log.append(audit.EV_RECOVERY_BEFORE_STATE,
-                     {"node": req.failed_node, "before": before}, trace_id=trace)
+                     {**audit_context, "node": req.failed_node, "before": before}, trace_id=trace)
 
     # ── EXECUTE smallest reversible action (mutation thật) ────────────────────
     action = req.action.at(ActionState.EXECUTING)
     out, rc = await op.apply(transport, req.unit, req.port)
     audit_log.append(audit.EV_RECOVERY_EXECUTED,
-                     {"node": req.failed_node, "verb": op.action_verb, "rc": rc,
+                     {**audit_context, "node": req.failed_node, "verb": op.action_verb, "rc": rc,
                       "stdout": out[:200], "approver": approval.approver}, trace_id=trace)
     ctx.log("Recover", f"executed {op.action_verb} {req.unit} (rc={rc}) bởi {approval.approver}")
 
     # ── VERIFY: service khỏe lại + dependents hết ảnh hưởng ───────────────────
-    service_ok = await op.health(transport, req.unit, req.port)
+    try:
+        service_ok = await op.health(transport, req.unit, req.port)
+    except Exception as exc:  # noqa: BLE001 — verification uncertainty must be explicit
+        evidence = (f"before={before.get('active_state')}",)
+        verification = VerificationResult.unknown(
+            expected_state="service.active_and_dependents.healthy",
+            evidence_refs=evidence,
+            reason=f"verification transport error: {type(exc).__name__}: {exc}",
+        )
+        reason = "verification UNKNOWN → escalate (transport error, no retry)"
+        audit_log.append(audit.EV_RECOVERY_VERIFICATION_FAILED,
+                         {**audit_context, "node": req.failed_node,
+                          "evidence": list(evidence), "verification": verification.to_dict()},
+                         trace_id=trace)
+        audit_log.append(audit.EV_RECOVERY_ESCALATED,
+                         {**audit_context, "node": req.failed_node, "reason": reason},
+                         trace_id=trace)
+        ctx.log("Recover", f"{reason}: {exc}")
+        return RecoveryOutcome(
+            action=action.at(ActionState.FAILED, verified=False), status="escalated",
+            reason=reason, evidence=evidence, verification=verification,
+        )
     dep_results: dict[str, bool] = {}
     if probe_dependent is not None:
         for dep in req.dependents:
-            dep_results[dep] = await probe_dependent(dep)
+            try:
+                dep_results[dep] = await probe_dependent(dep)
+            except Exception:
+                dep_results[dep] = False
     dependents_ok = all(dep_results.values()) if dep_results else True
     evidence = (f"before={before.get('active_state')}",
                 f"service_health={'ok' if service_ok else 'fail'}",
                 f"dependents={dep_results or 'n/a'}")
+    verification = (
+        VerificationResult.pass_(
+            expected_state="service.active_and_dependents.healthy",
+            evidence_refs=evidence,
+            checks={"service": service_ok, "dependents": dep_results or True},
+            confidence=1.0,
+        )
+        if service_ok and dependents_ok else
+        VerificationResult.fail(
+            expected_state="service.active_and_dependents.healthy",
+            evidence_refs=evidence,
+            checks={"service": service_ok, "dependents": dep_results or True},
+            reason="service or dependent verification failed",
+            confidence=1.0,
+        )
+    )
 
     if service_ok and dependents_ok:
         final = action.at(ActionState.COMPLETED, verified=True, dependents=dep_results)
         audit_log.append(audit.EV_RECOVERY_COMPLETED,
-                         {"node": req.failed_node, "evidence": list(evidence)}, trace_id=trace)
+                         {**audit_context, "node": req.failed_node, "evidence": list(evidence),
+                          "verification": verification.to_dict()}, trace_id=trace)
         ctx.log("Recover", f"VERIFIED khỏe lại → COMPLETED ({', '.join(evidence)})")
         return RecoveryOutcome(action=final, status="recovered",
-                               reason="service + dependents verified", evidence=evidence)
+                               reason="service + dependents verified", evidence=evidence,
+                               verification=verification)
 
     # ── VERIFY FAIL: dừng, KHÔNG retry, giữ bằng chứng, escalate ──────────────
     final = action.at(ActionState.FAILED, verified=False, dependents=dep_results)
     audit_log.append(audit.EV_RECOVERY_VERIFICATION_FAILED,
-                     {"node": req.failed_node, "evidence": list(evidence)}, trace_id=trace)
+                     {**audit_context, "node": req.failed_node, "evidence": list(evidence),
+                      "verification": verification.to_dict()}, trace_id=trace)
     audit_log.append(audit.EV_RECOVERY_ESCALATED,
-                     {"node": req.failed_node,
+                     {**audit_context, "node": req.failed_node,
                       "reason": "verification failed — no retry, human escalation"}, trace_id=trace)
     ctx.log("Recover", f"VERIFY FAIL → KHÔNG retry, ESCALATE ({', '.join(evidence)})")
     return RecoveryOutcome(action=final, status="escalated",
                            reason="verification failed → escalate (no infinite retry)",
-                           evidence=evidence)
+                           evidence=evidence, verification=verification)

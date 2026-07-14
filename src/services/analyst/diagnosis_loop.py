@@ -347,6 +347,7 @@ async def _enqueue_commands(
             "timeout_s": cmd.get("timeout_s", 30),
             "trace_id": trace_id,
             "purpose": cmd.get("purpose", ""),
+            "command_kind": "diagnostic_probe",
             "enqueued_at": int(time.time()),
         })
         try:

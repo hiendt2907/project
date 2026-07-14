@@ -1,7 +1,10 @@
 import { headers } from "next/headers";
 import { Card } from "@aoip/ui-kit";
 import { fetchSettings } from "@/lib/settings";
+import { fetchMutationToggle } from "@/lib/mutation";
 import { SettingsPanel } from "./SettingsPanel";
+import { MutationToggle } from "./MutationToggle";
+import "./settings.css";
 import { PageIntro } from "@/components/PageIntro";
 
 export default async function ProviderSettingsPage() {
@@ -20,6 +23,7 @@ export default async function ProviderSettingsPage() {
   }
 
   const { tenants, agent_credentials } = result.data;
+  const mutationByTenant = await Promise.all(tenants.map((tenant) => fetchMutationToggle(tenant.tenant_id)));
   return (
     <>
       <PageIntro
@@ -35,9 +39,18 @@ export default async function ProviderSettingsPage() {
           Chưa có tenant nào provision.
         </div>
       ) : (
-        <Card>
-          <SettingsPanel tenants={tenants} agentCredentials={agent_credentials} />
-        </Card>
+        <>
+          <Card>
+            <div className="aoip-k">Quyền vận hành</div>
+            <div className="aoip-muted">Mặc định khóa. Bật tenant switch chỉ ghi nhận quyền; master kill-switch vẫn có thể khóa toàn hệ thống.</div>
+            {tenants.map((tenant, index) => (
+              <MutationToggle key={tenant.tenant_id} tenantId={tenant.tenant_id} initial={mutationByTenant[index]} />
+            ))}
+          </Card>
+          <Card>
+            <SettingsPanel tenants={tenants} agentCredentials={agent_credentials} />
+          </Card>
+        </>
       )}
     </>
   );

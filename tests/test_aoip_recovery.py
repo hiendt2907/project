@@ -111,6 +111,8 @@ async def test_successful_approved_recovery(tmp_path):
     assert audit.EV_RECOVERY_EXECUTED in log.events()
     assert audit.EV_RECOVERY_COMPLETED in log.events()
     assert log.verify_chain()
+    assert outcome.verification.status.value == "PASS"
+    assert outcome.verification.evidence_refs
 
 
 # ── Ca 2: thiếu approval → zero mutation ─────────────────────────────────────
@@ -153,6 +155,7 @@ async def test_failed_verification_escalates_no_retry(tmp_path):
     assert t.restarts == 1  # đúng MỘT lần — không retry vô hạn
     assert audit.EV_RECOVERY_VERIFICATION_FAILED in log.events()
     assert audit.EV_RECOVERY_ESCALATED in log.events()
+    assert outcome.verification.status.value == "FAIL"
 
 
 async def test_dependent_unhealthy_escalates(tmp_path):
@@ -164,6 +167,21 @@ async def test_dependent_unhealthy_escalates(tmp_path):
 
     outcome, _ = await _run(tmp_path, t, req=req, probe_dependent=probe_dependent)
     assert outcome.status == "escalated"
+
+
+async def test_verification_transport_error_is_unknown_and_escalated(tmp_path):
+    class BrokenHealth(FakeSystemd):
+        async def run(self, argv, *, timeout=15.0):
+            if "is-active" in " ".join(argv) and self.restarts:
+                raise ConnectionError("verification transport unavailable")
+            return await super().run(argv, timeout=timeout)
+
+    t = BrokenHealth(state="inactive", heal_on_restart=True)
+    outcome, log = await _run(tmp_path, t)
+    assert outcome.status == "escalated"
+    assert outcome.verification.status.value == "UNKNOWN"
+    assert "transport" in outcome.verification.reason
+    assert audit.EV_RECOVERY_ESCALATED in log.events()
 
 
 # ── Gate phụ: state/risk/scope/capability ────────────────────────────────────
@@ -222,3 +240,23 @@ async def test_audit_chain_tamper_evident(tmp_path):
     lines[0] = lines[0].replace('"node": "svc:cust-db"', '"node": "svc:hacked"')
     p.write_text("\n".join(lines) + "\n")
     assert not log.verify_chain()  # sửa lén → gãy chuỗi
+
+
+async def test_recovery_audit_carries_end_to_end_correlation(tmp_path):
+    t = FakeSystemd(state="inactive")
+    req = _request()
+    req = req.__class__(**{
+        **req.__dict__,
+        "tenant": "acme",
+        "mission_id": "mission-1",
+        "incident_id": "incident-1",
+        "decision_id": "decision-1",
+        "action_id": "action-1",
+        "command_id": "command-1",
+        "trace_id": "trace-1",
+    })
+    _, log = await _run(tmp_path, t, req=req)
+    first = log._blocks()[0]
+    assert first["trace_id"] == "trace-1"
+    assert first["payload"]["tenant_id"] == "acme"
+    assert first["payload"]["command_id"] == "command-1"

@@ -91,7 +91,8 @@ class TestOmniEmitter:
         assert result == 3
 
     @pytest.mark.asyncio
-    async def test_emit_fail_returns_zero(self):
+    async def test_emit_fail_returns_none(self):
+        # IT-7 contract: None = transport fail (caller spool outbox), 0 = gateway enqueue 0
         e = self._emitter()
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -99,7 +100,7 @@ class TestOmniEmitter:
         mock_client.post = AsyncMock(side_effect=RuntimeError("network"))
         with patch("remote_agent.emitter._make_client", return_value=mock_client):
             result = await e.emit([{"probe": "test"}])
-        assert result == 0
+        assert result is None
 
 
 def test_make_transport():

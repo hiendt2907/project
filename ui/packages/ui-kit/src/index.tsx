@@ -9,9 +9,19 @@ export function Header({ title, whoami, nav }: {
 }) {
   return (
     <header className="aoip-header">
-      <h1>{title}</h1>
+      <div className="aoip-header-title">
+        <span className="aoip-header-mark" aria-hidden>◈</span>
+        <div>
+          <h1>{title}</h1>
+          <span className="aoip-header-context">CONTROL ROOM · PROVIDER</span>
+        </div>
+      </div>
       {nav ? <nav className="aoip-nav" aria-label="Điều hướng chính">{nav}</nav> : null}
-      <span className="aoip-muted" data-testid="whoami">{whoami ?? ""}</span>
+      <div className="aoip-header-right">
+        <span className="aoip-view-label">OPERATOR VIEW</span>
+        <span className="aoip-header-divider" aria-hidden />
+        <span className="aoip-muted" data-testid="whoami">{whoami ?? ""}</span>
+      </div>
     </header>
   );
 }
@@ -73,7 +83,9 @@ export function AppShell({ title, whoami, whoamiHref, sidebar, children }: {
           : undefined} />
       <div className="aoip-body">
         {sidebar}
-        <main className="aoip-content">{children}</main>
+        <main className="aoip-content">
+          <div className="aoip-content-inner">{children}</div>
+        </main>
       </div>
     </div>
   );

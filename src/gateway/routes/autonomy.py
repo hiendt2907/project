@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -241,6 +242,83 @@ class RuntimeFlagRequest(BaseModel):
     value_type: str = Field(..., description="int|bool|str|float|json")
     tenant_id: str = "default"
     actor: str = "admin_ui"
+
+
+MUTATION_FLAG_KEY = "aoip_mutation_enabled"
+
+
+class MutationToggleRequest(BaseModel):
+    tenant_id: str = Field(default="default", min_length=1, max_length=128)
+    enabled: bool
+    actor: str = Field(default="admin_ui", min_length=1, max_length=128)
+    confirm: bool = False
+
+
+def _master_auto_execute_enabled() -> bool:
+    return os.getenv("OMNI_AUTO_EXECUTE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _flag_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _mutation_status(*, requested: bool, master_enabled: bool) -> tuple[bool, str]:
+    if not requested:
+        return False, "tenant_toggle_off"
+    if not master_enabled:
+        return False, "master_kill_switch_off"
+    return True, "enabled"
+
+
+@router.get("/mutation")
+async def get_mutation_toggle(request: Request, tenant_id: str = Query(default="default")) -> JSONResponse:
+    """Read the tenant mutation switch and its effective fail-closed state."""
+    repo = _get_admin_repo(request)
+    raw = await repo.get_runtime_flag(MUTATION_FLAG_KEY, tenant_id=tenant_id)
+    requested = _flag_bool(raw)
+    master_enabled = _master_auto_execute_enabled()
+    effective, reason = _mutation_status(requested=requested, master_enabled=master_enabled)
+    return JSONResponse(content={
+        "tenant_id": tenant_id,
+        "requested": requested,
+        "master_kill_switch": master_enabled,
+        "effective": effective,
+        "reason": reason,
+        "flag_key": MUTATION_FLAG_KEY,
+    })
+
+
+@router.post("/mutation")
+async def set_mutation_toggle(request: Request, body: MutationToggleRequest) -> JSONResponse:
+    """Set the tenant mutation switch; every change is persisted/audited.
+
+    Enabling requires a second confirmation. The tenant switch can never
+    override the process-wide master kill switch.
+    """
+    repo = _get_admin_repo(request)
+    current = _flag_bool(await repo.get_runtime_flag(MUTATION_FLAG_KEY, tenant_id=body.tenant_id))
+    if body.enabled and not current and not body.confirm:
+        raise HTTPException(status_code=409, detail="enabling mutation requires confirm=true")
+    try:
+        result = await repo.set_runtime_flag(
+            flag_key=MUTATION_FLAG_KEY, flag_value=body.enabled, value_type="bool",
+            actor=body.actor, tenant_id=body.tenant_id,
+        )
+    except Exception as exc:
+        logger.error("autonomy.set_mutation_toggle error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    effective, reason = _mutation_status(
+        requested=body.enabled, master_enabled=_master_auto_execute_enabled(),
+    )
+    return JSONResponse(content={
+        "status": "ok", "tenant_id": body.tenant_id, "requested": body.enabled,
+        "effective": effective, "reason": reason, "flag_key": MUTATION_FLAG_KEY,
+        **result,
+    })
 
 
 @router.get("/flags")

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import glob
+import json
 import logging
 import re
+from collections import Counter
 from typing import Any
 
 from remote_agent.evidence import build_envelope
@@ -15,6 +17,66 @@ _ERROR_RE = re.compile(r"\b(ERROR|CRITICAL|FATAL|Exception|Traceback)\b", re.IGN
 _WINDOW_SEC = 300  # 5 minutes
 _TAIL_LINES = 500
 _ERROR_THRESHOLD = 5
+_ACCESS_TAIL_LINES = 800
+_ACCESS_MAX_RECORDS = 100
+_HTTP_METHODS = "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE"
+_ACCESS_RE = re.compile(
+    rf'"(?P<method>{_HTTP_METHODS})\s+(?P<target>\S+)(?:\s+HTTP/[^\"]+)?"\s+(?P<status>\d{{3}})'
+)
+_ROUTE_SEGMENT_RE = re.compile(r"^[0-9a-f]{8,}$|^\d+$", re.IGNORECASE)
+_UPSTREAM_RE = re.compile(r"(?:upstream(?:_addr|_host)?|backend)[=: ]+(?P<upstream>[A-Za-z0-9_.:-]+)", re.IGNORECASE)
+
+
+def normalize_api_route(target: str) -> str:
+    """Return a bounded route shape, never a query string or credential value."""
+    path = target.split("?", 1)[0].split("#", 1)[0] or "/"
+    path = path[:160]
+    segments = [":id" if _ROUTE_SEGMENT_RE.match(segment) else segment[:64] for segment in path.split("/")]
+    return "/".join(segments) or "/"
+
+
+def _parse_access_line(line: str) -> dict[str, Any] | None:
+    """Parse metadata from common/JSON access logs; raw lines never leave host."""
+    stripped = line.strip()
+    if stripped.startswith("{"):
+        try:
+            item = json.loads(stripped)
+        except (TypeError, json.JSONDecodeError):
+            item = None
+        if isinstance(item, dict):
+            method = str(item.get("method") or item.get("http_method") or item.get("request_method") or "").upper()
+            target = str(item.get("route") or item.get("path") or item.get("url") or item.get("request_uri") or "/")
+            status = item.get("status") or item.get("status_code") or item.get("http_status")
+            upstream = item.get("upstream") or item.get("upstream_addr") or item.get("backend") or ""
+            try:
+                status_int = int(status)
+            except (TypeError, ValueError):
+                status_int = 0
+            if method in _HTTP_METHODS.split("|") and 100 <= status_int <= 599:
+                return {"method": method, "route": normalize_api_route(target), "status_class": f"{status_int // 100}xx", "upstream": str(upstream)[:120]}
+    match = _ACCESS_RE.search(stripped)
+    if not match:
+        return None
+    upstream_match = _UPSTREAM_RE.search(stripped)
+    return {
+        "method": match.group("method").upper(),
+        "route": normalize_api_route(match.group("target")),
+        "status_class": f"{int(match.group('status')) // 100}xx",
+        "upstream": upstream_match.group("upstream")[:120] if upstream_match else "",
+    }
+
+
+def parse_api_access_lines(lines: list[str], source_path: str) -> list[dict[str, Any]]:
+    counts: Counter[tuple[str, str, str, str]] = Counter()
+    for line in lines:
+        record = _parse_access_line(line)
+        if record:
+            counts[(record["method"], record["route"], record["status_class"], record["upstream"])] += 1
+    return [
+        {"method": method, "route": route, "status_class": status_class, "upstream": upstream,
+         "count": count, "source_path": source_path[:200]}
+        for (method, route, status_class, upstream), count in counts.most_common(_ACCESS_MAX_RECORDS)
+    ]
 
 
 def _tail_lines(path: str, n: int) -> list[str]:
@@ -91,3 +153,34 @@ async def collect_log_errors(log_paths: list[str], hostname: str) -> list[dict[s
         signal_type="ANOMALY" if failed_files else "LOG_SAMPLE",
     )
     return [env]
+
+
+async def collect_api_access(log_paths: list[str], hostname: str) -> dict[str, Any] | None:
+    """Collect route/method/status shapes from access logs for topology sequencing.
+
+    This is metadata-only: query strings, headers, bodies, tokens and raw log lines
+    are intentionally excluded. A missing/unsupported log is represented by no
+    envelope, so callers can distinguish network-only evidence from HTTP evidence.
+    """
+    interactions: list[dict[str, Any]] = []
+    scanned: list[str] = []
+    for path in sorted(set(p for pattern in log_paths for p in glob.glob(pattern))):
+        lines = await asyncio.get_event_loop().run_in_executor(None, _tail_lines, path, _ACCESS_TAIL_LINES)
+        records = parse_api_access_lines(lines, path)
+        if records:
+            scanned.append(path)
+            interactions.extend(records)
+    if not interactions:
+        return None
+    return build_envelope(
+        probe="api_access",
+        lane="APP_HTTP",
+        result="PASSED",
+        extracted_fact={"discovery_data": {"api_interactions": interactions[:_ACCESS_MAX_RECORDS], "files_scanned": scanned}},
+        alert_rule="RemoteApiAccessObserved",
+        alert_hint=f"[{hostname}] observed {len(interactions)} aggregated API access shapes",
+        symptom_group="onboarding_discovery",
+        namespace=hostname,
+        evidence_source="DiscoveryEvidence",
+        signal_type="DISCOVERY",
+    )

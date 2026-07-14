@@ -4,9 +4,11 @@ import type { ProviderTenantUnderstanding, ProviderTwinFact } from "@aoip/shared
 import { fetchUnderstanding } from "@/lib/understanding";
 import { fetchReadiness, type ReadinessResponse } from "@/lib/readiness";
 import { fetchDiagram, type DiagramResponse } from "@/lib/diagram";
+import { fetchSystemTwin, type SystemTwinResponse } from "@/lib/system-twin";
 import { MermaidBlock } from "@/components/mermaid-diagram";
 import { splitDiagramText } from "@/lib/diagram-utils";
 import { DiagramHistoryPanel } from "./DiagramHistoryPanel";
+import { SystemTwinPanel } from "./SystemTwinPanel";
 import { PageIntro } from "@/components/PageIntro";
 import "./understanding.css";
 
@@ -28,9 +30,10 @@ export default async function ProviderUnderstandingPage() {
   const tenants = result.data.tenants;
   // Readiness + system diagram live on the Omni gateway (/onboarding/*), not the
   // provider console API — fetched separately per tenant, in parallel.
-  const [readinessByTenant, diagramByTenant] = await Promise.all([
+  const [readinessByTenant, diagramByTenant, twinByTenant] = await Promise.all([
     Promise.all(tenants.map((t) => fetchReadiness(t.tenant_id))),
     Promise.all(tenants.map((t) => fetchDiagram(t.tenant_id))),
+    Promise.all(tenants.map((t) => fetchSystemTwin(t.tenant_id))),
   ]);
 
   return (
@@ -58,16 +61,18 @@ export default async function ProviderUnderstandingPage() {
           tenant={tenant}
           readiness={readinessByTenant[i]}
           diagram={diagramByTenant[i]}
+          twin={twinByTenant[i]}
         />
       ))}
     </>
   );
 }
 
-function TenantUnderstanding({ tenant, readiness, diagram }: {
+function TenantUnderstanding({ tenant, readiness, diagram, twin }: {
   tenant: ProviderTenantUnderstanding;
   readiness: { data: ReadinessResponse | null; error: string | null };
   diagram: { data: DiagramResponse | null; error: string | null };
+  twin: { data: SystemTwinResponse | null; error: string | null };
 }) {
   return (
     <section data-testid={`understanding-${tenant.tenant_id}`}>
@@ -82,7 +87,11 @@ function TenantUnderstanding({ tenant, readiness, diagram }: {
       </div>
 
       <ReadinessCard readiness={readiness} testid={`readiness-${tenant.tenant_id}`} />
-      <DiagramCard diagram={diagram} tenantId={tenant.tenant_id} testid={`diagram-${tenant.tenant_id}`} />
+      <SystemTwinPanel tenantId={tenant.tenant_id} result={twin} />
+      <details className="aoip-raw-diagram">
+        <summary>Raw diagram history · audit/debug</summary>
+        <DiagramCard diagram={diagram} tenantId={tenant.tenant_id} testid={`diagram-${tenant.tenant_id}`} />
+      </details>
 
       <Card>
         <div className="aoip-k">Entities</div>

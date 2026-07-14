@@ -648,7 +648,10 @@ def tc_ob07_mermaid_diagram(key: str) -> TC:
 
     # Verify 3 loại diagram (component + api sequence + business flow)
     has_component = "graph TD" in mermaid or "graph LR" in mermaid
-    has_sequence = "sequenceDiagram" in mermaid
+    # Iteration 22 (settled): API-flow diagram chủ ý render `graph LR` với node
+    # client fan-out thay vì `sequenceDiagram` (xem render_api_sequence_diagram
+    # docstring) — check theo thiết kế thật, giữ sequenceDiagram cho tương lai.
+    has_sequence = "sequenceDiagram" in mermaid or 'client(["Client"])' in mermaid
     has_flow = "flowchart" in mermaid
 
     if has_component:
@@ -918,8 +921,10 @@ def tc_ob10_resolve_question(key: str) -> TC:
         tc.warn("không có câu hỏi nào để resolve — skip TC-OB10")
         return tc
 
-    # Lấy question_id đầu tiên
-    question_id = next(iter(q_data))
+    # Lấy 1 câu hỏi ĐANG MỞ (từ zset) — hash chứa cả câu đã resolved từ trước,
+    # next(iter(hash)) có thể trúng câu đã đóng → ZREM không giảm count (bug cũ)
+    open_id = _redis("ZRANGE", questions_open_key, "0", "0").strip()
+    question_id = open_id if open_id and open_id in q_data else next(iter(q_data))
     qobj = json.loads(q_data[question_id])
     tc.ok(f"tìm thấy câu hỏi mở: {question_id[:8]}...",
           f"text={qobj.get('text','')[:60]!r}")

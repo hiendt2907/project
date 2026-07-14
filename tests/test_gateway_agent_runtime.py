@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 import time
 
 import pytest
@@ -23,6 +24,10 @@ from httpx import ASGITransport, AsyncClient
 
 TENANT = "acme"
 AGENT = "agent-rt-1"
+
+
+async def _async_false(*args, **kwargs):
+    return False
 
 
 def _make_app(redis) -> FastAPI:
@@ -82,6 +87,33 @@ async def test_get_is_peek_over_http():
         # command KHÔNG bị pop — record vẫn còn
         rec = await c.get(f"/webhook/agent/rt/commands/record/{TENANT}/cmd-1")
         assert rec.status_code == 200 and rec.json()["state"] == "DELIVERED"
+
+
+@pytest.mark.asyncio
+async def test_typed_mutation_payload_requires_verification_contract():
+    redis = FakeRedis(decode_responses=True)
+    await _register(redis)
+    app = _make_app(redis)
+    bad = _cmd(command_id="cmd-typed-bad")
+    bad["payload"] = {"capability": "systemd.restart_unit", "capability_version": "1"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        response = await c.post("/webhook/agent/rt/commands/enqueue", json=bad)
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_typed_mutation_is_blocked_when_tenant_toggle_is_off(monkeypatch):
+    redis = FakeRedis(decode_responses=True)
+    await _register(redis)
+    app = _make_app(redis)
+    app.state.admin_repo = SimpleNamespace(get_runtime_flag=_async_false)
+    monkeypatch.setenv("OMNI_AUTO_EXECUTE_ENABLED", "true")
+    command = _cmd(command_id="cmd-toggle-off")
+    command["payload"] = {"capability": "systemd.restart_unit"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        response = await c.post("/webhook/agent/rt/commands/enqueue", json=command)
+    assert response.status_code == 423
+    assert response.json()["detail"]["reason"] == "tenant_toggle_off"
 
 
 @pytest.mark.asyncio

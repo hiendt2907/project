@@ -1,12 +1,26 @@
 # ADR-001: Canonical Agent Runtime (AOIP vs remote_agent)
 
 **Ngày:** 2026-07-03
-**Trạng thái:** Accepted (quyết định hướng đi — chưa migrate code)
+**Trạng thái:** Accepted — **MIGRATION HOÀN TẤT trên fleet lab (2026-07-13, Sprint NV-SRE IT-4→IT-7)**
+
+> **Cập nhật 2026-07-13 (IT-7 sprint close):** cả 3 VM lab (cust-edge/cust-app/cust-db) chạy
+> `aoip.agent.employee` (unit `aoip-agent.service`, 1 process 2 vòng: telemetry reuse
+> `remote_agent.run_agent()` as-library + AOIP durable command daemon) — agent 1.3.2, drift
+> `current`, update/rollback qua chính durable command channel (IT-5), outcome bền PG (IT-6),
+> soak reboot + cắt mạng 10 phút PASS với evidence outbox (IT-7). Unit cũ
+> `omni-remote-agent.service` giữ disabled trên VM làm rollback path. §3-§4 bên dưới là trạng
+> thái lịch sử tại thời điểm viết; §1-§2 vẫn hiệu lực (`aoip.agent.main` đã được employee thay
+> thế trong provisioning thực tế).
 
 > **Cập nhật 2026-07-03:** §5 (hướng "gateway import `DurableCommandChannel`") đã bị superseded
 > bởi `ADR-002-command-protocol.md` sau khi đọc kỹ cả hai implementation — `agent_runtime.py` đã
 > vượt bản aoip về an toàn (fencing/atomic claim/heartbeat), hướng hợp nhất đúng là hút state
 > machine vocabulary ra `aoip.protocol` dùng chung. Các quyết định §1-§4 giữ nguyên hiệu lực.
+
+> **Current reading rule (2026-07-14):** This ADR records the runtime migration history. For
+> customer-system topology and API-sequence semantics, use
+> [`customer-system-understanding.md`](customer-system-understanding.md); that view never
+> draws Omni or Remote Agent as customer components.
 
 ## Bối cảnh
 

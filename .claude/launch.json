@@ -1,0 +1,30 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "provider-portal",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "ui/apps/provider-portal", "--", "-p", "3011"],
+      "port": 3011,
+      "autoPort": true
+    },
+    {
+      "name": "tenant-portal",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "ui/apps/tenant-portal"],
+      "port": 3002
+    },
+    {
+      "name": "provider-console-bff",
+      "runtimeExecutable": ".venv/bin/uvicorn",
+      "runtimeArgs": ["aoip.console.server:provider_app", "--host", "0.0.0.0", "--port", "8081", "--reload"],
+      "port": 8081
+    },
+    {
+      "name": "tenant-console-bff",
+      "runtimeExecutable": ".venv/bin/uvicorn",
+      "runtimeArgs": ["aoip.console.server:tenant_app", "--host", "0.0.0.0", "--port", "8082", "--reload"],
+      "port": 8082
+    }
+  ]
+}

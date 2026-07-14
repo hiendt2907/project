@@ -1078,3 +1078,58 @@ gateway restart, với bất biến **đúng MỘT terminal outcome mỗi (tenan
 
 **Verify lại**: `psql ... "SELECT * FROM omni_admin.agent_command_outcome"`;
 `.venv/bin/python -m pytest tests/test_agent_command_pg_ledger.py -q`.
+
+## Iteration 33 (Sprint NV-SRE, IT-7) — Soak + offline recovery, đóng sprint (2026-07-13)
+
+**CLAIM**: Nhân viên SRE "qua thử việc": reboot VM hoặc mất mạng 10 phút → agent tự resume,
+KHÔNG mất evidence, KHÔNG duplicate. Cơ chế: evidence outbox trên disk
+(`src/remote_agent/outbox.py`, spool tại `/var/lib/aoip/outbox`) — batch CHỈ vào outbox khi
+emit fail TOÀN PHẦN (`emit()` contract mới: `None` = transport fail sau retry, phân biệt với
+`enqueued=0`), flush cũ→mới trước batch mới, dừng ngay khi mạng còn down. Batch đã được
+gateway ACK không bao giờ spool → replay không tạo duplicate.
+
+**Fix kèm theo (multi-host knowledge)**: `discovery_doc.py` accumulate per-host slot
+(`{probe}@{hostname}`) + merge khi đọc — trước đây 3 host cùng tenant ghi đè fact lẫn nhau
+(last-writer-wins) khiến Omni "quên" port 3306 của cust-db ngay khi cust-app emit sau
+(TC-OB12 fail thật). Legacy slot không hostname vẫn đọc được (backward-compatible).
+2 test-bug e2e cũng sửa: TC-OB07 check `sequenceDiagram` trong khi thiết kế Iteration 22
+chủ ý render `graph LR` client fan-out; TC-OB10 chọn câu hỏi từ hash (có thể đã resolved)
+thay vì từ open zset.
+
+**VERIFIED_TEST**: `tests/test_remote_agent_outbox.py` (8 test mới: spool/pending ordering,
+best-effort trên disk lỗi, prune cap, flush in-order + stop-on-failure + skip-corrupted,
+emit None-vs-0 contract); merge multi-host trong `tests/test_onboarding_pipeline.py` (2 test
+mới). Full suite **6097 passed** (2 test cũ cập nhật theo contract emit None).
+
+**VERIFIED_RUNTIME** (3 VM thật + cluster, 2026-07-13):
+- Publish release 1.3.2 → cả 3 agent báo `drifted` heartbeat kế tiếp (IT-2 re-verify) →
+  update fleet BẰNG cơ chế IT-5: `upd-1-3-2-{cust-app,cust-db,cust-edge}` cả 3
+  `COMPLETED/updated 1.3.2` → `/versions` 3/3 `current drifted=0`; PG ledger mỗi command
+  đúng 1 dòng (IT-6 re-verify).
+- **Drill reboot cả 3 VM** (`orb restart`): `aoip-agent` auto-active (enabled), re-register
+  ≤30s, registry online (age 11s sau boot cust-app).
+- **Drill cắt mạng 10 phút TỪNG VM** (`iptables -I OUTPUT -d <gateway-ip> -j DROP`, 600s):
+  - cust-app: spool 3 batch (7 items/batch) lúc 15:58/16:02/16:05 → mạng về 16:05:55 →
+    flush 3/3 lúc 16:06:12, `pending=0`.
+  - cust-db: spool 3 batch (8 items) → flush 3/3 16:17:23, pending=0.
+  - cust-edge: spool 3 batch (10 items) → flush 3/3 16:17:38, pending=0.
+  Log flush ngay sau log spool cuối, thứ tự cũ→mới, mỗi batch emit đúng 1 lần (no-dup theo
+  thiết kế chỉ-spool-khi-fail-toàn-phần).
+- **e2e `scripts/e2e_onboarding_full_flow.py --skip-reinstall`: 10/10 TC PASS** trên runtime
+  AOIP 1.3.2 sau toàn bộ drill (TC-OB12 PASS nhờ fix multi-host merge — verify trong Redis:
+  `port_scan@cust-db` chứa 3306, `port_scan@cust-app` chứa 8080, doc merge đủ cả hai).
+
+**Known behavior / quan sát**:
+- Trong lúc mất mạng, register cũng fail (agent "biến mất" khỏi registry sau TTL 120s — đúng
+  thiết kế sensor model; mạng về là re-register ngay).
+- Chu kỳ spool ~4 phút/batch khi mất mạng (mỗi POST 4 attempt × 15s timeout tuần tự:
+  register + emit) — outbox cap 2000 batch ≈ nhiều ngày offline, dư cho mọi outage thực tế.
+- Câu hỏi onboarding open ~2974 (tích lũy từ gap detection nhiều tuần) — flood quản trị, đáng
+  dọn ở iteration sau, không chặn sprint.
+
+**Sprint NV-SRE ĐÓNG: 6/6 metric Passed** — bảng SAU ở
+`docs/plans/sprint-agent-sre-employee-production.md`; ADR-001 cập nhật migration DONE.
+
+Verify lại: `orb -m cust-app sudo grep outbox /var/log/omni-agent.log`;
+`.venv/bin/python -m pytest tests/test_remote_agent_outbox.py -q`;
+`.venv/bin/python scripts/e2e_onboarding_full_flow.py --skip-reinstall`.

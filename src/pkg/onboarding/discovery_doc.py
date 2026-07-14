@@ -114,25 +114,72 @@ def _sanitize_for_residency(probe: str, discovery_data: dict[str, Any]) -> dict[
     return discovery_data
 
 
-async def accumulate_probe_fact(redis: Any, tenant_id: str, probe: str, discovery_data: dict[str, Any]) -> None:
-    """A2/A3: fold one probe's discovery_data into the per-tenant doc hash."""
+async def accumulate_probe_fact(
+    redis: Any, tenant_id: str, probe: str, discovery_data: dict[str, Any],
+    hostname: str = "",
+) -> None:
+    """A2/A3: fold one probe's discovery_data into the per-tenant doc hash.
+
+    IT-7 multi-host fix: với ``hostname``, mỗi host giữ slot riêng
+    (``{probe}@{hostname}``) — trước đây 3 host cùng tenant ghi đè lẫn nhau
+    (last-writer-wins) khiến Omni "quên" port 3306 của cust-db ngay khi
+    cust-app emit port_scan sau. ``get_accumulated_doc`` merge các slot lại.
+    Không hostname → slot legacy ``{probe}`` như cũ (backward-compatible)."""
     doc_key = DOC_KEY.format(tenant_id=tenant_id)
     sanitized = _sanitize_for_residency(probe, discovery_data)
-    await redis.hset(doc_key, probe, json.dumps(sanitized, ensure_ascii=False))
-    await redis.hset(doc_key, f"{probe}:updated_at", str(int(time.time())))
+    field = f"{probe}@{hostname}" if hostname else probe
+    if hostname:
+        sanitized = {**sanitized, "hostname": hostname}
+    await redis.hset(doc_key, field, json.dumps(sanitized, ensure_ascii=False))
+    await redis.hset(doc_key, f"{field}:updated_at", str(int(time.time())))
+
+
+def _merge_probe_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge per-host slots of one probe: list fields = union (dedupe theo JSON
+    canonical), scalar fields = last wins; ``hosts`` liệt kê host đóng góp."""
+    merged: dict[str, Any] = {}
+    hosts: list[str] = []
+    for entry in entries:
+        host = str(entry.get("hostname") or "")
+        if host and host not in hosts:
+            hosts.append(host)
+        for k, v in entry.items():
+            if isinstance(v, list) and isinstance(merged.get(k), list):
+                seen = {json.dumps(x, sort_keys=True, ensure_ascii=False) for x in merged[k]}
+                merged[k] = merged[k] + [
+                    x for x in v
+                    if json.dumps(x, sort_keys=True, ensure_ascii=False) not in seen
+                ]
+            else:
+                merged[k] = v
+    if hosts:
+        merged["hosts"] = hosts
+    return merged
 
 
 async def get_accumulated_doc(redis: Any, tenant_id: str) -> dict[str, Any]:
-    """Read back the accumulated per-probe discovery facts for a tenant."""
+    """Read back the accumulated per-probe discovery facts for a tenant,
+    merging per-host slots (``{probe}@{host}``) with the legacy ``{probe}``
+    slot — legacy trước, host theo thứ tự alphabet (deterministic)."""
     raw = await redis.hgetall(DOC_KEY.format(tenant_id=tenant_id))
+    grouped: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     out: dict[str, Any] = {}
     for k, v in raw.items():
         if k.endswith(":updated_at"):
             continue
         try:
-            out[k] = json.loads(v)
+            parsed = json.loads(v)
         except Exception:
             out[k] = v
+            continue
+        probe, _, host = k.partition("@")
+        if isinstance(parsed, dict):
+            grouped.setdefault(probe, []).append((host, parsed))
+        else:
+            out[k] = parsed
+    for probe, entries in grouped.items():
+        entries.sort(key=lambda item: item[0])  # "" (legacy) trước, rồi host a→z
+        out[probe] = _merge_probe_entries([e for _, e in entries])
     return out
 
 

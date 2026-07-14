@@ -45,7 +45,7 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
     from remote_agent.discovery import run_vm_discovery, derive_enabled_collectors
     from remote_agent.command_executor import execute_batch
     from remote_agent.collectors.system import collect_system_metrics
-    from remote_agent.collectors.logs import collect_log_errors
+    from remote_agent.collectors.logs import collect_api_access, collect_log_errors
     from remote_agent.collectors.k8s import collect_k8s_status
     from remote_agent.collectors.database import collect_mysql_health, collect_proxysql_stats
     from remote_agent.collectors.services import collect_haproxy_stats, collect_systemd_units
@@ -57,6 +57,7 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
         collect_process_list,
         collect_service_topology,
     )
+    from remote_agent.collectors.api_contract import collect_api_contracts
 
     cfg = AgentSettings()
     cfg.validate()
@@ -112,6 +113,22 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
     if cfg.storage_enabled:
         capabilities.append("storage")
 
+    adapter_domains = ["linux", "network"]
+    if cfg.k8s_enabled:
+        adapter_domains.append("kubernetes")
+    if cfg.database_enabled or cfg.proxysql_enabled:
+        adapter_domains.append("database")
+
+    # IT-7: outbox chống mất evidence khi mất mạng — spool khi emit fail toàn
+    # phần, flush cũ→mới trước khi emit batch mới (giữ ordering, no-duplicate).
+    import os
+    from pathlib import Path
+    from remote_agent.outbox import EvidenceOutbox
+
+    outbox = EvidenceOutbox(
+        Path(os.environ.get("OMNI_AGENT_OUTBOX_DIR", "/var/lib/aoip/outbox"))
+    )
+
     emitter = OmniEmitter(
         gateway_url=cfg.gateway_url,
         api_key=cfg.api_key,
@@ -149,6 +166,7 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
     thresholds = await emitter.register(
         capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace,
         bundle_sha256=bundle_sha256, extra_fields=extra_register_fields,
+        adapter_domains=adapter_domains,
     )
     if profile:
         await emitter.upload_profile(profile)
@@ -163,6 +181,7 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
             new_thresholds = await emitter.register(
                 capabilities, version=cfg.version, k8s_namespace=cfg.k8s_namespace,
                 bundle_sha256=bundle_sha256, extra_fields=extra_register_fields,
+                adapter_domains=adapter_domains,
             )
             if new_thresholds is not None:
                 thresholds = new_thresholds
@@ -187,6 +206,9 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
         # Lane 2: log errors
         log_evs = await collect_log_errors(cfg.log_paths, cfg.hostname)
         evidence.extend(log_evs)
+        api_access_ev = await collect_api_access(cfg.log_paths, cfg.hostname)
+        if api_access_ev:
+            evidence.append(api_access_ev)
 
         # Lane 3: K8s status (optional)
         if cfg.k8s_enabled:
@@ -244,12 +266,21 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
                 await collect_service_topology(cfg.hostname),
                 await collect_connection_scan(cfg.hostname),
                 await collect_doc_snapshot(cfg.hostname, cfg.doc_search_dirs),
+                await collect_api_contracts(cfg.hostname, cfg.doc_search_dirs),
             ):
                 if disc_ev:
                     evidence.append(disc_ev)
 
+        if outbox.has_pending():
+            try:
+                await outbox.flush(emitter.emit)
+            except Exception as exc:
+                logger.warning("omni-agent: outbox flush failed (non-fatal): %s", exc)
+
         if evidence:
-            await emitter.emit(evidence)
+            sent = await emitter.emit(evidence)
+            if sent is None:
+                outbox.spool(evidence)
 
         # ── Phase B: Command channel poll ─────────────────────────────────────
         # Poll FAST (every _CMD_POLL_INTERVAL) for the whole collect_interval so

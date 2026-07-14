@@ -34,6 +34,33 @@ from workers.settings import WorkerSettings
 logger = logging.getLogger(__name__)
 
 
+def build_verified_outcome_payload(
+    *, tenant_id: str, trace_id: str, action: str, outcome: str,
+    verification: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the only payload shape eligible for verified action learning.
+
+    A command that is merely executed is not a lesson.  It needs a PASS result
+    and concrete after-state evidence before it can influence future routing.
+    """
+    status = str((verification or {}).get("status") or "").upper()
+    refs = [str(ref).strip() for ref in (verification or {}).get("evidence_refs") or () if str(ref).strip()]
+    if status != "PASS":
+        raise ValueError("verified outcome requires verification status PASS")
+    if not refs:
+        raise ValueError("verified outcome requires evidence_refs")
+    return {
+        "tenant_id": tenant_id,
+        "trace_id": trace_id,
+        "action": action,
+        "exec_outcome": outcome,
+        "verification_result": "PASS",
+        "evidence_refs": refs,
+        "verification_confidence": float((verification or {}).get("confidence", 1.0)),
+        "verified": True,
+    }
+
+
 def truncate_lesson_to_budget(text: str, max_chars: int) -> str:
     t = (text or "").strip().replace("\n", " ")
     if len(t) <= max_chars:
