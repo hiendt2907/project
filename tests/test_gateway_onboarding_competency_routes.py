@@ -1,6 +1,7 @@
 """Slice O2A/O2B: gateway read API for Competency Matrix + Unknown/Question/Answer."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import fakeredis.aioredis
@@ -201,6 +202,20 @@ class TestSystemTwinEndpoint:
             "runtime_observed": True, "confidence": 0.95,
             "provenance": "api_contract:/app/openapi.json",
         }]
+
+    @pytest.mark.asyncio
+    async def test_api_sequence_matches_openapi_base_path_and_parameter_template(self):
+        r = _redis()
+        await r.hset("omni:onboarding:doc:acme", "api_access@edge", json.dumps({
+            "api_interactions": [{"method": "GET", "route": "/api/orders/:id", "status_class": "2xx", "count": 1}],
+        }))
+        await r.hset("omni:onboarding:doc:acme", "api_contract@edge", json.dumps({
+            "api_contracts": [{"path": "openapi.json", "base_path": "/api", "routes": [{"method": "GET", "route": "/orders/{id}", "operation_id": "getOrder"}]}],
+        }))
+        async with AsyncClient(transport=ASGITransport(app=_app(r)), base_url="http://test") as c:
+            data = (await c.get("/onboarding/system-twin", params={"tenant_id": "acme"})).json()
+        assert data["api_sequence"]["status"] == "runtime_verified"
+        assert data["api_sequence"]["interactions"][0]["runtime_observed"] is True
 
     @pytest.mark.asyncio
     async def test_system_twin_aggregate_exposes_revision_graph_unknowns_and_contradictions(self):

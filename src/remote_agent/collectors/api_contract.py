@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from remote_agent.evidence import build_envelope
 
@@ -18,6 +19,15 @@ _MAX_BYTES = 512_000
 _MAX_ROUTES = 500
 _CANDIDATE_NAMES = ("openapi.json", "openapi.yaml", "openapi.yml", "swagger.json", "swagger.yaml", "swagger.yml")
 _METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+
+
+def _base_path(document: dict[str, Any]) -> str:
+    if document.get("basePath"):
+        return str(document["basePath"])[:120]
+    servers = document.get("servers") or []
+    if servers and isinstance(servers[0], dict):
+        return urlparse(str(servers[0].get("url") or "")).path[:120]
+    return ""
 
 
 def _load_document(content: str, path: str) -> dict[str, Any] | None:
@@ -59,7 +69,7 @@ def parse_api_contract(content: str, path: str) -> dict[str, Any] | None:
         "format": "openapi" if document.get("openapi") else "swagger",
         "version": str(document.get("openapi") or document.get("swagger"))[:30],
         "title": str((document.get("info") or {}).get("title") or "")[:160],
-        "base_path": str(document.get("basePath") or "")[:120],
+        "base_path": _base_path(document),
         "routes": routes,
         "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
     }

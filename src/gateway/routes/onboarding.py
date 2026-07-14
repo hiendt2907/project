@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import hashlib
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -432,7 +433,7 @@ def _build_api_sequence(raw_doc: dict[str, str] | None) -> dict[str, Any]:
             for route in contract.get("routes") or []:
                 if not isinstance(route, dict):
                     continue
-                matches = [item for item in access if item["source_host"] == contract["source_host"] and item["method"] == route.get("method") and item["route"] == route.get("route")]
+                matches = [item for item in access if item["source_host"] == contract["source_host"] and item["method"] == route.get("method") and _api_route_shape(item["route"]) == _api_route_shape(route.get("route"), contract.get("base_path"))]
                 count = sum(int(item.get("count") or 0) for item in matches)
                 statuses = sorted({str(item.get("status_class") or "unknown") for item in matches})
                 interactions.append({
@@ -495,7 +496,21 @@ def _parse_uploaded_api_contract(content: str, filename: str) -> dict[str, Any] 
                 break
     if not routes:
         return None
-    return {"path": filename[:200], "format": "openapi" if document.get("openapi") else "swagger", "version": str(document.get("openapi") or document.get("swagger"))[:30], "title": str((document.get("info") or {}).get("title") or "")[:160], "base_path": str(document.get("basePath") or "")[:120], "routes": routes, "content_hash": hashlib.sha256(content.encode()).hexdigest()}
+    base_path = str(document.get("basePath") or "")[:120]
+    if not base_path and document.get("servers") and isinstance(document["servers"][0], dict):
+        from urllib.parse import urlparse
+        base_path = urlparse(str(document["servers"][0].get("url") or "")).path[:120]
+    return {"path": filename[:200], "format": "openapi" if document.get("openapi") else "swagger", "version": str(document.get("openapi") or document.get("swagger"))[:30], "title": str((document.get("info") or {}).get("title") or "")[:160], "base_path": base_path, "routes": routes, "content_hash": hashlib.sha256(content.encode()).hexdigest()}
+
+
+def _api_route_shape(route: Any, base_path: Any = "") -> str:
+    """Canonicalize OpenAPI `{id}` and access-log `:id` route shapes."""
+    path = str(route or "").split("?", 1)[0].rstrip("/") or "/"
+    prefix = str(base_path or "").rstrip("/")
+    if prefix and not (path == prefix or path.startswith(f"{prefix}/")):
+        path = f"{prefix}/{path.lstrip('/')}"
+    path = re.sub(r"\{[^}/]+\}", ":id", path)
+    return path.rstrip("/") or "/"
 
 
 @router.get("/unknowns")
