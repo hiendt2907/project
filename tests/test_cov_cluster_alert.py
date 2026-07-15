@@ -25,7 +25,9 @@ class TestIncidentCluster:
     @pytest.mark.asyncio
     async def test_assign_fallback_on_exception(self):
         from pkg.clustering.incident_cluster import assign_to_cluster
-        ctx = SimpleNamespace(vector_store="bad", llm=AsyncMock(), redis=None, settings=None)
+        llm = AsyncMock()
+        llm.embed = AsyncMock(return_value={"embedding": [0.0] * 8})
+        ctx = SimpleNamespace(vector_store="bad", llm=llm, redis=None, settings=None)
         result = await assign_to_cluster(ctx, alert_fp="fp-xyz", error_hint="err", namespace="ns")
         assert "fallback" in result or "nollm" in result or "cls-" in result
 

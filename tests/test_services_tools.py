@@ -221,7 +221,14 @@ class TestRunCmd:
         import asyncio
         from workers.services_tools import _run_cmd
 
-        with patch("workers.services_tools.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+        def _wf_timeout(coro, *a, **k):
+            # đóng coroutine communicate() thật trước khi raise — tránh
+            # RuntimeWarning 'coroutine never awaited'
+            if hasattr(coro, "close"):
+                coro.close()
+            raise asyncio.TimeoutError()
+
+        with patch("workers.services_tools.asyncio.wait_for", side_effect=_wf_timeout):
             out, err, rc = await _run_cmd(["echo", "x"])
 
         assert err == "timeout"

@@ -152,7 +152,11 @@ async def test_message_exactly_4000_chars_no_chunking():
     ctx = make_fake_ctx()
     advisory = make_advisory(root_cause="x" * 3950)  # pad to near 4000
 
-    with patch.object(ctx.telegram, "send_message", new=AsyncMock()) as mock_send:
+    with patch.object(
+        ctx.telegram, "send_message",
+        # emitter gọi res.get("result") trên kết quả send — phải là dict thật
+        new=AsyncMock(return_value={"result": {"message_id": 1}}),
+    ) as mock_send:
         # Build message manually to verify length.
         from workers.telegram_advisory_emitter import _render_verdict_header
         # Use a root cause that produces exactly 4000 chars total by inspection.

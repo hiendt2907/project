@@ -24,6 +24,22 @@ from workers.kubectl_cluster import (
 )
 
 
+def _wf_return(value):
+    """asyncio.wait_for stub: đóng coroutine được truyền vào rồi trả value —
+    tránh RuntimeWarning 'coroutine never awaited' từ mocked wait_for."""
+    def _wf(coro, *args, **kwargs):
+        if hasattr(coro, "close"):
+            coro.close()
+        return value
+    return _wf
+
+
+def _wf_timeout(coro, *args, **kwargs):
+    if hasattr(coro, "close"):
+        coro.close()
+    raise asyncio.TimeoutError()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -209,7 +225,7 @@ async def test_tool_success_exec():
     mock_proc.communicate.return_value = (b"pod1  Running\n", b"")
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-        with patch("asyncio.wait_for", return_value=(b"pod1  Running\n", b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"pod1  Running\n", b""))):
             result = await tool_kubectl_cluster(ctx, _args(["get", "pods", "-A"]))
 
     assert "kubectl_ok" in result
@@ -223,7 +239,7 @@ async def test_tool_nonzero_exit_code():
     mock_proc.returncode = 1
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"", b"Error from server")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"", b"Error from server"))):
             result = await tool_kubectl_cluster(ctx, _args(["get", "pods"]))
 
     assert "kubectl_exit_1" in result or "stderr=Error from server" in result
@@ -236,7 +252,7 @@ async def test_tool_with_reasoning_in_output():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"output", b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"output", b""))):
             result = await tool_kubectl_cluster(ctx, _args(reasoning="check pod health"))
 
     assert "reasoning=check pod health" in result or "kubectl_ok" in result
@@ -252,7 +268,7 @@ async def test_tool_timeout_returns_error():
     mock_proc.returncode = None
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+        with patch("asyncio.wait_for", side_effect=_wf_timeout):
             result = await tool_kubectl_cluster(ctx, _args(timeout_sec=5.0))
 
     assert "timeout" in result.lower()
@@ -280,7 +296,7 @@ async def test_tool_nsenter_path():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc) as mock_shell:
-        with patch("asyncio.wait_for", return_value=(b"ok\n", b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"ok\n", b""))):
             result = await tool_kubectl_cluster(ctx, _args(["get", "nodes"]))
 
     mock_shell.assert_called_once()
@@ -296,7 +312,7 @@ async def test_tool_nsenter_timeout():
     mock_proc = AsyncMock()
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+        with patch("asyncio.wait_for", side_effect=_wf_timeout):
             result = await tool_kubectl_cluster(ctx, _args(timeout_sec=10.0))
 
     assert "timeout" in result.lower()
@@ -315,7 +331,7 @@ async def test_tool_large_output_truncated():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(large_output, b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((large_output, b""))):
             result = await tool_kubectl_cluster(ctx, _args())
 
     assert "truncated" in result or len(result) < 500_000
@@ -334,7 +350,7 @@ async def test_tool_trace_id_fallback():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"ok", b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"ok", b""))):
             result = await tool_kubectl_cluster(ctx, _args())
 
     assert "[TRACE]" in result

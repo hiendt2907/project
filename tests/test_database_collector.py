@@ -280,7 +280,13 @@ class TestRunFunction:
     async def test_run_timeout(self):
         from remote_agent.collectors.database import _run
 
-        with patch("remote_agent.collectors.database.asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+        def _wf_timeout(coro, *a, **k):
+            # đóng coroutine communicate() của subprocess thật trước khi raise
+            if hasattr(coro, "close"):
+                coro.close()
+            raise asyncio.TimeoutError()
+
+        with patch("remote_agent.collectors.database.asyncio.wait_for", side_effect=_wf_timeout):
             out, err, rc = await _run(["echo", "x"], timeout=0.001)
 
         assert rc == 1

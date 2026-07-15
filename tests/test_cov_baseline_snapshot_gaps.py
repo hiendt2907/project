@@ -608,6 +608,9 @@ async def test_baseline_sync_loop_one_tick(monkeypatch: pytest.MonkeyPatch) -> N
         }
 
     monkeypatch.setattr(bs, "build_health_manifest_dict", fake_build)
+    # Gate thật gọi redis.pipeline() (sync) — trên AsyncMock nó sinh coroutine
+    # không được await; thay cả gate bằng stub async.
+    monkeypatch.setattr(bs, "_get_sigma_gate", lambda r: SimpleNamespace(observe_adaptive=AsyncMock()))
 
     ws = SimpleNamespace(
         baseline_snapshot_enabled=True,
@@ -647,6 +650,7 @@ async def test_baseline_sync_loop_exception_continues(monkeypatch: pytest.Monkey
         }
 
     monkeypatch.setattr(bs, "build_health_manifest_dict", fake_build)
+    monkeypatch.setattr(bs, "_get_sigma_gate", lambda r: SimpleNamespace(observe_adaptive=AsyncMock()))
 
     fake_redis = AsyncMock()
     fake_redis.get = AsyncMock(return_value=None)

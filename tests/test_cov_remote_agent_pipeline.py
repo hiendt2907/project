@@ -112,7 +112,9 @@ async def test_repeat_known_cluster_above_notify_tier_still_proceeds(ev_doc):
         patch("workers.remote_agent_pipeline.upsert_cluster", return_value=cluster),
         patch("workers.remote_agent_pipeline.triage_cluster", return_value=triage),
         patch("workers.remote_agent_pipeline.write_lessons", new_callable=AsyncMock),
-        patch("workers.remote_agent_pipeline.analyze_cluster", new_callable=AsyncMock) as mock_llm,
+        # return_value=MagicMock(): advisory downstream gọi model_dump() sync —
+        # để AsyncMock trần thì model_dump() sinh coroutine không được await
+        patch("workers.remote_agent_pipeline.analyze_cluster", new=AsyncMock(return_value=MagicMock())) as mock_llm,
     ):
         result = await handle_remote_agent_evidence(ctx, ev_doc, "trace-repeat-2")
     mock_llm.assert_called_once()
@@ -477,7 +479,7 @@ class TestLogErrorsBaselineDivert:
             patch("workers.remote_agent_pipeline.upsert_cluster", return_value=cluster) as mock_up,
             patch("workers.remote_agent_pipeline.triage_cluster", return_value=triage),
             patch("workers.remote_agent_pipeline.write_lessons", new_callable=AsyncMock),
-            patch("workers.remote_agent_pipeline.analyze_cluster", new_callable=AsyncMock),
+            patch("workers.remote_agent_pipeline.analyze_cluster", new=AsyncMock(return_value=MagicMock())),
         ):
             await handle_remote_agent_evidence(ctx, ev, "trace-log-fail-new")
 

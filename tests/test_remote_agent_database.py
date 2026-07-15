@@ -158,8 +158,14 @@ class TestDatabaseRunHelper:
 
         proc = MagicMock()
         proc.communicate = AsyncMock()
+
+        def _wf_timeout(coro, *a, **k):
+            if hasattr(coro, "close"):
+                coro.close()
+            raise _asyncio.TimeoutError()
+
         with patch("remote_agent.collectors.database.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)), \
-             patch("remote_agent.collectors.database.asyncio.wait_for", side_effect=_asyncio.TimeoutError()):
+             patch("remote_agent.collectors.database.asyncio.wait_for", side_effect=_wf_timeout):
             out, err, rc = await db._run(["mysql", "--version"])
 
         assert rc == 1

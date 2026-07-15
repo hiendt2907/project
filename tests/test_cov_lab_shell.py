@@ -17,6 +17,23 @@ import pytest
 from workers.lab_shell import _audit_lab_shell, tool_execute_shell_command
 
 
+def _wf_return(value):
+    """asyncio.wait_for stub: đóng coroutine được truyền vào rồi trả value —
+    tránh RuntimeWarning 'coroutine never awaited' từ mocked wait_for."""
+    def _wf(coro, *args, **kwargs):
+        if hasattr(coro, "close"):
+            coro.close()
+        return value
+    return _wf
+
+
+def _wf_timeout(coro, *args, **kwargs):
+    if hasattr(coro, "close"):
+        coro.close()
+    raise asyncio.TimeoutError()
+
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -161,7 +178,7 @@ async def test_successful_command_execution():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"hello world\n", b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"hello world\n", b""))):
             result = await tool_execute_shell_command(ctx, {"command": "echo hello world"})
 
     assert "exit=0" in result
@@ -175,7 +192,7 @@ async def test_command_nonzero_exit():
     mock_proc.returncode = 127
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"", b"command not found")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"", b"command not found"))):
             result = await tool_execute_shell_command(ctx, {"command": "nonexistent_cmd"})
 
     assert "exit=127" in result
@@ -189,7 +206,7 @@ async def test_command_timeout():
     mock_proc.kill = MagicMock()
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+        with patch("asyncio.wait_for", side_effect=_wf_timeout):
             result = await tool_execute_shell_command(ctx, {"command": "sleep 999", "timeout_sec": 5.0})
 
     mock_proc.kill.assert_called_once()
@@ -204,7 +221,7 @@ async def test_custom_trace_id():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"out", b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"out", b""))):
             result = await tool_execute_shell_command(
                 ctx, {"command": "echo hi", "trace_id": "my-trace-xyz"}
             )
@@ -219,7 +236,7 @@ async def test_trace_id_from_context():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"data", b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"data", b""))):
             result = await tool_execute_shell_command(ctx, {"command": "ls"})
 
     assert "ctx-trace-99" in result
@@ -232,7 +249,7 @@ async def test_timeout_clamped_to_600():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"ok", b"")) as mock_wait:
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"ok", b""))) as mock_wait:
             await tool_execute_shell_command(ctx, {"command": "ls", "timeout_sec": 9999})
             # Verify wait_for was called with timeout clamped to 600
             _, kwargs = mock_wait.call_args
@@ -248,7 +265,7 @@ async def test_timeout_min_5():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"ok", b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"ok", b""))):
             # Should not raise; timeout clamped to >= 5
             result = await tool_execute_shell_command(ctx, {"command": "ls", "timeout_sec": 0.1})
 
@@ -263,7 +280,7 @@ async def test_stdout_clipped_at_12000():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(large_out, b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((large_out, b""))):
             result = await tool_execute_shell_command(ctx, {"command": "big_output_cmd"})
 
     assert len(result) < 20000
@@ -277,7 +294,7 @@ async def test_stderr_present_in_output():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"out", b"some warning")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"out", b"some warning"))):
             result = await tool_execute_shell_command(ctx, {"command": "cmd"})
 
     assert "some warning" in result
@@ -291,7 +308,7 @@ async def test_audit_called_on_success():
     mock_proc.returncode = 0
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", return_value=(b"output", b"")):
+        with patch("asyncio.wait_for", side_effect=_wf_return((b"output", b""))):
             await tool_execute_shell_command(ctx, {"command": "echo test"})
 
     # Audit should have been called (kafka.send_dict)
@@ -306,7 +323,7 @@ async def test_audit_called_on_timeout():
     mock_proc.kill = MagicMock()
 
     with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+        with patch("asyncio.wait_for", side_effect=_wf_timeout):
             await tool_execute_shell_command(ctx, {"command": "sleep 100"})
 
     # Audit should have been called for timeout

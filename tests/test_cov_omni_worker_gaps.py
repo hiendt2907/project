@@ -84,10 +84,15 @@ def _make_ctx(redis_client=None, kafka=None, settings=None, **kw: Any) -> Simple
     ledger.record_exception = AsyncMock()
     ledger.ensure_ready = AsyncMock()
 
+    llm = AsyncMock()
+    # embed phải trả dict thật: consumer gọi .get() trên kết quả — nếu để mock
+    # async trần, .get() sinh coroutine không bao giờ được await (RuntimeWarning).
+    llm.embed = AsyncMock(return_value={"embedding": [0.0] * 8})
+
     defaults: dict[str, Any] = {
         "settings": settings or _make_settings(),
         "redis": redis_client or fakeredis.aioredis.FakeRedis(decode_responses=True),
-        "llm": AsyncMock(),
+        "llm": llm,
         "vector_store": MagicMock(),
         "ledger": ledger,
         "semaphore": sem,
@@ -415,12 +420,13 @@ class TestWorkerBackgroundTasks:
         async def noop_exec(*a, **k):
             pass
 
-        with patch("workers.omni_worker.kafka_actions_loop", return_value=noop_exec()):
+        with patch("workers.omni_worker.kafka_actions_loop", side_effect=noop_exec):
             from workers.omni_worker import _worker_background_tasks
             tasks = _worker_background_tasks(ctx, stop)
         assert len(tasks) == 1
         for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_analyst_role_creates_evidence_feedback_kpi(self):
@@ -433,14 +439,15 @@ class TestWorkerBackgroundTasks:
         async def noop(*a, **k):
             pass
 
-        with patch("workers.omni_worker.kafka_evidence_loop", return_value=noop()), \
-             patch("workers.omni_worker.kafka_action_feedback_loop", return_value=noop()), \
-             patch("workers.omni_worker._run_kpi_collector", return_value=noop()):
+        with patch("workers.omni_worker.kafka_evidence_loop", side_effect=noop), \
+             patch("workers.omni_worker.kafka_action_feedback_loop", side_effect=noop), \
+             patch("workers.omni_worker._run_kpi_collector", side_effect=noop):
             from workers.omni_worker import _worker_background_tasks
             tasks = _worker_background_tasks(ctx, stop)
         assert len(tasks) >= 2
         for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_prober_role_creates_alerts_delayed_circuit(self):
@@ -453,15 +460,16 @@ class TestWorkerBackgroundTasks:
         async def noop(*a, **k):
             pass
 
-        with patch("workers.omni_worker.kafka_alerts_loop", return_value=noop()), \
-             patch("workers.omni_worker.delayed_queue_loop", return_value=noop()), \
-             patch("workers.omni_worker.circuit_breaker_loop", return_value=noop()):
+        with patch("workers.omni_worker.kafka_alerts_loop", side_effect=noop), \
+             patch("workers.omni_worker.delayed_queue_loop", side_effect=noop), \
+             patch("workers.omni_worker.circuit_breaker_loop", side_effect=noop):
             from workers.omni_worker import _worker_background_tasks
             tasks = _worker_background_tasks(ctx, stop)
         # prober has at least 3 tasks (alerts + delayed + circuit_breaker)
         assert len(tasks) >= 3
         for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_full_role_creates_all_loops(self):
@@ -482,21 +490,22 @@ class TestWorkerBackgroundTasks:
         async def noop(*a, **k):
             pass
 
-        with patch("workers.omni_worker.kafka_alerts_loop", return_value=noop()), \
-             patch("workers.omni_worker.delayed_queue_loop", return_value=noop()), \
-             patch("workers.omni_worker.circuit_breaker_loop", return_value=noop()), \
-             patch("workers.omni_worker.kafka_evidence_loop", return_value=noop()), \
-             patch("workers.omni_worker.kafka_action_feedback_loop", return_value=noop()), \
-             patch("workers.omni_worker._run_kpi_collector", return_value=noop()), \
-             patch("workers.omni_worker.deep_scout_periodic_loop", return_value=noop()), \
-             patch("workers.omni_worker.autonomous_forecast_loop", return_value=noop()), \
-             patch("workers.omni_worker.baseline_snapshot_loop", return_value=noop()):
+        with patch("workers.omni_worker.kafka_alerts_loop", side_effect=noop), \
+             patch("workers.omni_worker.delayed_queue_loop", side_effect=noop), \
+             patch("workers.omni_worker.circuit_breaker_loop", side_effect=noop), \
+             patch("workers.omni_worker.kafka_evidence_loop", side_effect=noop), \
+             patch("workers.omni_worker.kafka_action_feedback_loop", side_effect=noop), \
+             patch("workers.omni_worker._run_kpi_collector", side_effect=noop), \
+             patch("workers.omni_worker.deep_scout_periodic_loop", side_effect=noop), \
+             patch("workers.omni_worker.autonomous_forecast_loop", side_effect=noop), \
+             patch("workers.omni_worker.baseline_snapshot_loop", side_effect=noop):
             from workers.omni_worker import _worker_background_tasks
             tasks = _worker_background_tasks(ctx, stop)
         # Full should have at least 9 tasks
         assert len(tasks) >= 9
         for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_full_role_with_proactive_adds_proactive_tasks(self):
@@ -517,23 +526,24 @@ class TestWorkerBackgroundTasks:
         async def noop(*a, **k):
             pass
 
-        with patch("workers.omni_worker.kafka_alerts_loop", return_value=noop()), \
-             patch("workers.omni_worker.delayed_queue_loop", return_value=noop()), \
-             patch("workers.omni_worker.circuit_breaker_loop", return_value=noop()), \
-             patch("workers.omni_worker.kafka_evidence_loop", return_value=noop()), \
-             patch("workers.omni_worker.kafka_action_feedback_loop", return_value=noop()), \
-             patch("workers.omni_worker._run_kpi_collector", return_value=noop()), \
-             patch("workers.omni_worker.deep_scout_periodic_loop", return_value=noop()), \
-             patch("workers.omni_worker.autonomous_forecast_loop", return_value=noop()), \
-             patch("workers.omni_worker.baseline_snapshot_loop", return_value=noop()), \
-             patch("workers.omni_worker.proactive_evaluate_loop", return_value=noop()), \
-             patch("workers.omni_worker.kafka_proactive_incidents_loop", return_value=noop()):
+        with patch("workers.omni_worker.kafka_alerts_loop", side_effect=noop), \
+             patch("workers.omni_worker.delayed_queue_loop", side_effect=noop), \
+             patch("workers.omni_worker.circuit_breaker_loop", side_effect=noop), \
+             patch("workers.omni_worker.kafka_evidence_loop", side_effect=noop), \
+             patch("workers.omni_worker.kafka_action_feedback_loop", side_effect=noop), \
+             patch("workers.omni_worker._run_kpi_collector", side_effect=noop), \
+             patch("workers.omni_worker.deep_scout_periodic_loop", side_effect=noop), \
+             patch("workers.omni_worker.autonomous_forecast_loop", side_effect=noop), \
+             patch("workers.omni_worker.baseline_snapshot_loop", side_effect=noop), \
+             patch("workers.omni_worker.proactive_evaluate_loop", side_effect=noop), \
+             patch("workers.omni_worker.kafka_proactive_incidents_loop", side_effect=noop):
             from workers.omni_worker import _worker_background_tasks
             tasks = _worker_background_tasks(ctx, stop)
         # Should be at least 11 tasks with proactive
         assert len(tasks) >= 11
         for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_core_role_creates_core_loops(self):
@@ -553,14 +563,15 @@ class TestWorkerBackgroundTasks:
         async def noop(*a, **k):
             pass
 
-        with patch("workers.omni_worker.deep_scout_periodic_loop", return_value=noop()), \
-             patch("workers.omni_worker.autonomous_forecast_loop", return_value=noop()), \
-             patch("workers.omni_worker.baseline_snapshot_loop", return_value=noop()):
+        with patch("workers.omni_worker.deep_scout_periodic_loop", side_effect=noop), \
+             patch("workers.omni_worker.autonomous_forecast_loop", side_effect=noop), \
+             patch("workers.omni_worker.baseline_snapshot_loop", side_effect=noop):
             from workers.omni_worker import _worker_background_tasks
             tasks = _worker_background_tasks(ctx, stop)
         assert len(tasks) >= 3
         for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

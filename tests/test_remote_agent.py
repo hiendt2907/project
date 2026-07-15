@@ -575,10 +575,15 @@ class TestMain:
         async def _raise_kb():
             raise KeyboardInterrupt
 
+        def _ruc(coro):
+            if hasattr(coro, "close"):
+                coro.close()
+            raise KeyboardInterrupt
+
         with patch.object(agent_mod, "run_agent", side_effect=_raise_kb):
             with patch("asyncio.new_event_loop") as mock_loop_factory:
                 mock_loop = MagicMock(spec=asyncio.AbstractEventLoop)
-                mock_loop.run_until_complete.side_effect = KeyboardInterrupt
+                mock_loop.run_until_complete.side_effect = _ruc
                 mock_loop_factory.return_value = mock_loop
                 agent_mod.main()
                 mock_loop.close.assert_called_once()
@@ -588,9 +593,14 @@ class TestMain:
         from unittest.mock import patch, MagicMock
         from remote_agent import agent as agent_mod
 
+        def _ruc(coro):
+            if hasattr(coro, "close"):
+                coro.close()
+            raise SystemExit(0)
+
         with patch("asyncio.new_event_loop") as mock_loop_factory:
             mock_loop = MagicMock(spec=asyncio.AbstractEventLoop)
-            mock_loop.run_until_complete.side_effect = SystemExit(0)
+            mock_loop.run_until_complete.side_effect = _ruc
             mock_loop_factory.return_value = mock_loop
             agent_mod.main()
             mock_loop.close.assert_called_once()
@@ -845,7 +855,12 @@ class TestServicesRunHelper:
         import asyncio as _asyncio
         from remote_agent.collectors import services as svc
 
-        with patch("remote_agent.collectors.services.asyncio.wait_for", side_effect=_asyncio.TimeoutError()):
+        def _wf_timeout(coro, *a, **k):
+            if hasattr(coro, "close"):
+                coro.close()
+            raise _asyncio.TimeoutError()
+
+        with patch("remote_agent.collectors.services.asyncio.wait_for", side_effect=_wf_timeout):
             out, err, rc = await svc._run(["sleep", "999"])
 
         assert rc == 1
