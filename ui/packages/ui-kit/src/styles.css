@@ -227,6 +227,7 @@ a { color: inherit; }
   display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: var(--space-3); margin-bottom: var(--space-5);
 }
+.aoip-grid > * { min-width: 0; }
 .aoip-stat {
   color: var(--content-text); background: var(--content-surface); border: 1px solid var(--content-line);
   border-radius: 11px; padding: 1rem 1.05rem; box-shadow: 0 5px 14px rgba(44, 50, 44, .035);
@@ -276,9 +277,10 @@ a { color: inherit; }
 
 .aoip-question { border-top: 1px solid var(--line); padding: var(--space-3) 0; }
 .aoip-question:first-of-type { border-top: none; }
-.aoip-answer { display: flex; gap: var(--space-2); align-items: center; margin-top: var(--space-2); }
+.aoip-answer { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-top: var(--space-2); }
+.aoip-answer > label { display: flex; flex: 1 1 180px; min-width: 0; flex-direction: column; gap: var(--space-1); }
 .aoip-input {
-  font: var(--text-base) var(--font-sans); min-width: 240px; flex: 1; color: var(--content-text);
+  font: var(--text-base) var(--font-sans); min-width: 0; width: 100%; flex: 1; color: var(--content-text);
   background: var(--content-surface); border: 1px solid var(--content-line); border-radius: 8px;
   padding: var(--space-2) var(--space-3);
   transition: border-color var(--duration-fast) var(--ease-out);
@@ -286,11 +288,14 @@ a { color: inherit; }
 .aoip-input:focus { outline: none; border-color: var(--accent); }
 .aoip-err { color: var(--color-critical); font-size: var(--text-xs); }
 .aoip-select {
-  font: var(--text-base) var(--font-sans); color: var(--content-text); background: var(--content-surface);
+  font: var(--text-base) var(--font-sans); min-width: 0; max-width: 100%; color: var(--content-text); background: var(--content-surface);
   border: 1px solid var(--content-line); border-radius: 8px; padding: .45rem .75rem;
 }
 .aoip-select:focus { outline: none; border-color: var(--accent); }
 .aoip-filter-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; }
+.aoip-form { display: block; }
+.aoip-form-row { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.aoip-form-row > .aoip-input { flex: 1 1 220px; }
 
 @media (max-width: 820px) {
   .aoip-header { padding: 0 1rem; }

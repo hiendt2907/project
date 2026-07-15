@@ -22,7 +22,7 @@ export default async function ProviderSettingsPage() {
     );
   }
 
-  const { tenants, agent_credentials } = result.data;
+  const { tenants, agent_credentials, environments } = result.data;
   const mutationByTenant = await Promise.all(tenants.map((tenant) => fetchMutationToggle(tenant.tenant_id)));
   return (
     <>
@@ -48,7 +48,7 @@ export default async function ProviderSettingsPage() {
             ))}
           </Card>
           <Card>
-            <SettingsPanel tenants={tenants} agentCredentials={agent_credentials} />
+            <SettingsPanel tenants={tenants} agentCredentials={agent_credentials} environments={environments} />
           </Card>
         </>
       )}

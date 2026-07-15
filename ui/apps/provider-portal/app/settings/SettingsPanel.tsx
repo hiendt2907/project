@@ -1,17 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import type { ProviderAgentCredential, ProviderTenantSummary } from "@/lib/settings";
+import type { ProviderAgentCredential, ProviderEnvironment, ProviderTenantSummary } from "@/lib/settings";
 
 interface Props {
   tenants: ProviderTenantSummary[];
   agentCredentials: Record<string, ProviderAgentCredential[]>;
+  environments: Record<string, ProviderEnvironment[]>;
 }
 
-export function SettingsPanel({ tenants, agentCredentials }: Props) {
+export function SettingsPanel({ tenants, agentCredentials, environments }: Props) {
   const [byTenant, setByTenant] = useState(agentCredentials);
   const [selectedTenant, setSelectedTenant] = useState(tenants[0]?.tenant_id ?? "");
   const [label, setLabel] = useState("");
+  const [selectedEnvironment, setSelectedEnvironment] = useState("");
   const [issuedToken, setIssuedToken] = useState<string | null>(null);
   const [state, setState] = useState<"idle" | "saving" | "error">("idle");
 
@@ -23,7 +25,11 @@ export function SettingsPanel({ tenants, agentCredentials }: Props) {
     const res = await fetch("/api/provider/v1/settings/enroll-tokens", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tenant_id: selectedTenant, label: label.trim() || undefined }),
+      body: JSON.stringify({
+        tenant_id: selectedTenant,
+        environment_id: selectedEnvironment || undefined,
+        label: label.trim() || undefined,
+      }),
     });
     if (!res.ok) {
       setState("error");
@@ -67,6 +73,18 @@ export function SettingsPanel({ tenants, agentCredentials }: Props) {
           onChange={(e) => setLabel(e.target.value)}
           placeholder="Label (vd: cust-app pilot)"
         />
+        <select
+          className="aoip-select"
+          value={selectedEnvironment}
+          onChange={(e) => setSelectedEnvironment(e.target.value)}
+        >
+          <option value="">Tenant-wide (legacy)</option>
+          {(environments[selectedTenant] ?? []).map((environment) => (
+            <option key={environment.environment_id} value={environment.environment_id}>
+              {environment.display_name} ({environment.status})
+            </option>
+          ))}
+        </select>
         <button className="aoip-btn" type="submit" disabled={state === "saving" || !selectedTenant}>
           {state === "saving" ? "Đang phát hành" : "Phát hành enroll token"}
         </button>
@@ -87,6 +105,7 @@ export function SettingsPanel({ tenants, agentCredentials }: Props) {
               <tr>
                 <th>Agent</th>
                 <th>Host</th>
+                <th>Environment</th>
                 <th>Key</th>
                 <th>Status</th>
                 <th></th>
@@ -97,6 +116,7 @@ export function SettingsPanel({ tenants, agentCredentials }: Props) {
                 <tr key={c.id}>
                   <td>{c.agent_id}</td>
                   <td>{c.hostname}</td>
+                  <td>{c.environment_id ?? "Tenant-wide"}</td>
                   <td>{c.key_prefix}…</td>
                   <td><span className={`aoip-pill ${c.status === "active" ? "online" : "offline"}`}>{c.status}</span></td>
                   <td>
@@ -109,7 +129,7 @@ export function SettingsPanel({ tenants, agentCredentials }: Props) {
                 </tr>
               ))}
               {(byTenant[t.tenant_id] ?? []).length === 0 ? (
-                <tr><td colSpan={5} className="aoip-muted">Chưa có credential nào</td></tr>
+                <tr><td colSpan={6} className="aoip-muted">Chưa có credential nào</td></tr>
               ) : null}
             </tbody>
           </table>

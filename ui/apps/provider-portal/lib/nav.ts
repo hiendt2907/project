@@ -1,8 +1,8 @@
 import type { NavItem } from "@aoip/shared-types";
 
 // GOVERNING RULE (2026-07-01): navigation CHỈ phản ánh capability backend/runtime đã tồn tại.
-// Portal là "operational projection" của runtime — KHÔNG phải product portal. Không license/
-// billing/CRM/deployment/policy-editor/onboarding-wizard trừ khi backend đã production-ready.
+// Portal là "operational projection" của runtime — KHÔNG phải product portal. Không billing/
+// CRM/deployment/policy-editor/onboarding-wizard trừ khi backend đã production-ready.
 // Mỗi mục map tới một nguồn runtime thật: Overview(/overview) · Agents(registry) ·
 // Understanding(mission/facts) · Missions(mission runtime) · Incidents(CRAT audit-chain, read-only
 // — src/gateway/routes/siem.py `/siem/overview`, tenant-scoped) · Human Inbox(pending approvals/
@@ -26,11 +26,12 @@ import type { NavItem } from "@aoip/shared-types";
 export const PROVIDER_NAV: NavItem[] = [
   { label: "Tổng quan", href: "/", implemented: true },
   { label: "Khách hàng", href: "/tenants", implemented: true },
+  { label: "Gói dịch vụ", href: "/licenses", implemented: true },
   { label: "Xử lý sự cố (Pipeline)", href: "/pipeline", implemented: true },
   { label: "Số liệu 24h", href: "/kpi", implemented: true },
   { label: "Agents tại khách hàng", href: "/agents", implemented: true },
   { label: "Hiểu biết hệ thống", href: "/understanding", implemented: true },
-  { label: "Nhiệm vụ (Missions)", href: "/missions", implemented: false, slice: "Mission projection" },
+  { label: "Nhiệm vụ vận hành", href: "/missions", implemented: true },
   { label: "Sự cố bảo mật", href: "/incidents", implemented: true },
   { label: "Việc cần xử lý", href: "/operations", implemented: true },
   { label: "Hộp thư chờ người duyệt", href: "/human-inbox", implemented: true },

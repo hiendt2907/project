@@ -1,10 +1,20 @@
-import { SectionStub } from "@aoip/ui-kit";
-import { PROVIDER_NAV, stubReason } from "@/lib/nav";
+import { headers } from "next/headers";
+import { Card } from "@aoip/ui-kit";
+import { fetchMissions } from "@/lib/missions";
+import { PageIntro } from "@/components/PageIntro";
 
-// Route khung production nhưng CHƯA triển khai ở Sub-slice A — đánh dấu unavailable + lý do
-// khe hở (sub-slice sẽ lấp). KHÔNG dữ liệu giả. Backend chưa expose API tương ứng.
-const ITEM = PROVIDER_NAV.find((n) => n.href === "/missions")!;
-
-export default function Page() {
-  return <SectionStub title={ITEM.label} reason={stubReason(ITEM)} />;
+export default async function Page() {
+  const missions = await fetchMissions((await headers()).get("cookie") ?? "");
+  return <>
+    <PageIntro title="Nhiệm vụ vận hành" lead="Các mission đang chạy trên runtime AOIP, theo dõi tiến độ và bước tiếp theo từ nguồn thật." />
+    <Card>
+      {!missions ? <div className="aoip-state">Không tải được mission projection.</div> : missions.length === 0 ?
+        <div className="aoip-state">Chưa có mission nào được ghi nhận.</div> : missions.map((m) => (
+          <div className="aoip-row" key={`${m.tenant_id}:${m.mission_id}`}>
+            <span>{m.tenant_id} · {m.goal}<br /><small>{m.mission_id}</small></span>
+            <span>{m.state} · {Math.round(m.completion * 100)}%<br /><small>{m.next_action ?? m.last_activity ?? ""}</small></span>
+          </div>
+        ))}
+    </Card>
+  </>;
 }

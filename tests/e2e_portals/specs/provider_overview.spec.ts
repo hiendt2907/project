@@ -34,16 +34,14 @@ test("Overview: metric chưa có nguồn hiển thị 'chưa khả dụng' (khô
   await expect(page.getByTestId("stat-Missions")).toContainText("chưa khả dụng");
 });
 
-test("Nav: chỉ vùng runtime-backed (12 mục, nhãn VI); Agents projection hiển thị bảng thật", async ({ page }) => {
+test("Nav: chỉ vùng runtime-backed (13 mục, nhãn VI); Agents projection hiển thị bảng thật", async ({ page }) => {
   await login(page, "owner@aoip.dev");
   const links = page.locator(".aoip-side-link");
-  // Governing rule: nav chỉ phản ánh capability runtime. 2026-07-13: 12 mục nhãn tiếng Việt
-  // (thêm Khách hàng/Pipeline/Số liệu/Vận hành — đều read-projection nguồn thật).
-  await expect(links).toHaveCount(12);
+  // Governing rule: nav chỉ phản ánh capability runtime. 2026-07-14: thêm Gói dịch vụ
+  // sau khi tenant_plan backend đã có API, RBAC, audit và enforcement thật.
+  await expect(links).toHaveCount(13);
   await expect(page.locator(".aoip-side-link", { hasText: "Xử lý sự cố" })).toHaveCount(1);
-  await expect(page.locator(".aoip-side-link.soon").first()).toBeVisible();
-  // KHÔNG còn product-domain trong nav (license/onboarding/deployments…).
-  await expect(page.locator(".aoip-side-link", { hasText: "Licenses" })).toHaveCount(0);
+  await expect(page.locator(".aoip-side-link", { hasText: "Gói dịch vụ" })).toHaveCount(1);
   // Agents là projection đã expose từ runtime registry, không còn section stub.
   await page.goto(PROVIDER + "/agents");
   await expect(page.getByTestId("agents-summary")).toBeVisible();

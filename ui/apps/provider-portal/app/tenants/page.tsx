@@ -1,7 +1,9 @@
 import { headers } from "next/headers";
-import { Card, MetricStat } from "@aoip/ui-kit";
+import { Card } from "@aoip/ui-kit";
 import { PageIntro } from "@/components/PageIntro";
-import { fetchTenants } from "@/lib/operations";
+import { fetchEnvironments, fetchTenantPlan, fetchTenants } from "@/lib/operations";
+import { EnvironmentForm } from "./EnvironmentForm";
+import { TenantCreateForm } from "./TenantCreateForm";
 
 export default async function TenantsPage() {
   const cookieHeader = (await headers()).get("cookie") ?? "";
@@ -24,23 +26,42 @@ export default async function TenantsPage() {
             Backend trả mã {result.code || "không phản hồi"}. Thử tải lại trang.
           </div>
         </Card>
-      ) : result.data.tenants.length === 0 ? (
-        <Card>
-          <div className="aoip-state" data-testid="tenants-empty">
-            Chưa có khách hàng nào có hồ sơ sự cố trong hệ thống theo dõi.
-          </div>
-        </Card>
       ) : (
-        <div className="aoip-grid" data-testid="tenants-grid">
-          {result.data.tenants.map((t) => (
-            <MetricStat
-              key={t.tenant}
-              label={t.tenant}
-              value={`${t.incidents} sự cố trong hồ sơ`}
-              hint="Số sự cố có hồ sơ theo dõi cho khách hàng này"
-            />
-          ))}
-        </div>
+        <>
+          <Card><TenantCreateForm /></Card>
+          {result.data.tenants.length === 0 ? <Card>
+            <div className="aoip-state" data-testid="tenants-empty">Chưa có tenant nào.</div>
+          </Card> : <div className="aoip-grid" data-testid="tenants-grid">
+            {await Promise.all(result.data.tenants.map(async (t) => {
+            const tenantId = t.tenant_id ?? t.tenant;
+            const environments = await fetchEnvironments(cookieHeader, tenantId);
+            const plan = await fetchTenantPlan(cookieHeader, tenantId);
+            return (
+              <Card key={tenantId}>
+                <div className="aoip-k">{t.display_name ?? tenantId}</div>
+                <div className="aoip-state">{t.status ?? "active"}</div>
+                <div className="aoip-state">{t.incidents} sự cố trong hồ sơ</div>
+                {plan.status === "ok" ? (
+                  <div className="aoip-state" data-testid={`plan-${tenantId}`}>
+                    Gói: {plan.data.plan_code} · agent tối đa {plan.data.agent_limit} ·
+                    autonomy tối đa {plan.data.autonomy_ceiling} · lưu {plan.data.retention_days} ngày
+                  </div>
+                ) : <div className="aoip-state">Gói dịch vụ: chưa cấu hình</div>}
+                {environments.status === "ok" ? (
+                  <div className="aoip-state" data-testid={`environments-${tenantId}`}>
+                    Môi trường: {environments.data.environments.length === 0
+                      ? "chưa tạo"
+                      : environments.data.environments.map((e) => `${e.display_name} (${e.status})`).join(", ")}
+                  </div>
+                ) : (
+                  <div className="aoip-state">Môi trường: chưa kết nối được</div>
+                )}
+                <EnvironmentForm tenantId={tenantId} />
+              </Card>
+            );
+            }))}
+          </div>}
+        </>
       )}
     </>
   );

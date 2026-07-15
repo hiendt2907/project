@@ -15,11 +15,19 @@ export interface ProviderAgentCredential {
   status: "active" | "revoked" | string;
   created_at: string;
   revoked_at: string;
+  environment_id?: string | null;
+}
+
+export interface ProviderEnvironment {
+  environment_id: string;
+  display_name: string;
+  status: string;
 }
 
 export interface ProviderSettingsResponse {
   tenants: ProviderTenantSummary[];
   agent_credentials: Record<string, ProviderAgentCredential[]>;
+  environments: Record<string, ProviderEnvironment[]>;
 }
 
 export type SettingsResult =

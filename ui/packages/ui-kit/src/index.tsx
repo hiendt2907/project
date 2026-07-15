@@ -4,8 +4,8 @@ import * as React from "react";
 export { LogoutButton } from "./LogoutButton";
 export { Sidebar } from "./Sidebar";
 
-export function Header({ title, whoami, nav }: {
-  title: string; whoami?: string; nav?: React.ReactNode;
+export function Header({ title, whoami, context, nav }: {
+  title: string; whoami?: string; context?: string; nav?: React.ReactNode;
 }) {
   return (
     <header className="aoip-header">
@@ -20,6 +20,7 @@ export function Header({ title, whoami, nav }: {
       <div className="aoip-header-right">
         <span className="aoip-view-label">OPERATOR VIEW</span>
         <span className="aoip-header-divider" aria-hidden />
+        {context ? <span className="aoip-muted" data-testid="active-tenant">{context}</span> : null}
         <span className="aoip-muted" data-testid="whoami">{whoami ?? ""}</span>
       </div>
     </header>
@@ -71,13 +72,14 @@ export function StateScreen({ kind, title, message, loginHref, action }: {
 }
 
 /** Khung app: header + sidebar điều hướng + vùng nội dung. Presentation-only. */
-export function AppShell({ title, whoami, whoamiHref, sidebar, children }: {
+export function AppShell({ title, whoami, context, whoamiHref, sidebar, children }: {
   title: string; whoami?: string; whoamiHref?: string;
+  context?: string;
   sidebar: React.ReactNode; children: React.ReactNode;
 }) {
   return (
     <div className="aoip-shell">
-      <Header title={title} whoami={whoami}
+      <Header title={title} whoami={whoami} context={context}
         nav={whoami && whoamiHref
           ? <a className="aoip-account" href={whoamiHref}>Tài khoản</a>
           : undefined} />
