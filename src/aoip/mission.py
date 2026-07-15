@@ -9,7 +9,8 @@ vị giá trị khách hàng thực sự thấy.
 Mission ĐÃ là Runtime noun (META_MODEL §Runtime; lifecycle trong SEMANTIC_RULES) —
 đây là IMPLEMENT, KHÔNG noun mới. Tuân INV_LIFECYCLE_BEFORE_ALGORITHM: lifecycle
 khai báo tường minh trước khi chạy thuật toán. DoD/completion là field+derived,
-không persist (INV_DERIVED_NEVER_PERSIST).
+runtime; MissionStore chỉ lưu projection vận hành tenant-scoped để portal theo dõi,
+không lưu evidence hay dữ liệu khách hàng.
 """
 from __future__ import annotations
 

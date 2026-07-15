@@ -275,7 +275,8 @@ async def _resolve_agent_credential(request: Request, incoming: str) -> "TenantC
             cached = await redis.get(cache_key)
             if cached:
                 rec = json.loads(cached)
-                return TenantContext(tenant_id=rec["tenant_id"], is_admin=False)
+                return TenantContext(tenant_id=rec["tenant_id"], is_admin=False,
+                                     environment_id=rec.get("environment_id"))
         except Exception:
             logger.warning("[GATEWAY] agent credential cache read failed", exc_info=True)
     try:
@@ -292,7 +293,8 @@ async def _resolve_agent_credential(request: Request, incoming: str) -> "TenantC
             ))
         except Exception:
             logger.warning("[GATEWAY] agent credential cache write failed", exc_info=True)
-    return TenantContext(tenant_id=rec["tenant_id"], is_admin=False)
+        return TenantContext(tenant_id=rec["tenant_id"], is_admin=False,
+                             environment_id=rec.get("environment_id"))
 
 
 def _is_chaos_lab_prometheus_webhook(body: Any) -> bool:

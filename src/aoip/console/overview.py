@@ -5,16 +5,20 @@ nguồn được nêu rõ). KHÔNG bịa số, KHÔNG hardcode. Đây là READ-M
 (incidents/approvals/reconcile/activity), Redis agent registry (fleet), PG omni_admin (tenants),
 liveness dependencies (component health). Không tạo nguồn sự thật thứ hai.
 
-Slice A phơi bày phần đã có nguồn; phần chưa có (onboarding lifecycle, mission persist, question
-store, license store, version baseline) trả unavailable trỏ tới sub-slice sẽ lấp — trung thực với
-người vận hành thay vì giả hoàn thành.
+Slice A phơi bày phần đã có nguồn; license store và version baseline chưa có nguồn thật vẫn trả
+unavailable. Mission/onboarding đã có Redis read-model tenant-scoped.
 """
 from __future__ import annotations
 
 import json
+import logging
 
 from aoip.agent.trace import TERMINAL_EVENTS
 from aoip.console.projections import provider_incident
+from aoip.mission_store import MissionStore
+from aoip.question_lifecycle import QUESTIONS_KEY, list_questions
+
+logger = logging.getLogger(__name__)
 
 _REMOTE_PREFIX = "omni:remote_agent:registry:"
 _REMOTE_STALE_SEC = 120          # khớp gateway/routes/agents.py (_REMOTE_STALE_SEC)
@@ -153,6 +157,24 @@ async def build_provider_overview(redis, pool, trace, *, now: float) -> dict:
     """Payload Overview control-tower. Mỗi khoá là {available:true,value} hoặc {available:false,reason}."""
     tenants = await _tenants_rollup(pool)
     tr = await _trace_rollup(redis, trace, now)
+    missions = await MissionStore(redis).list_all(limit=500)
+    onboarding_count = sum(
+        m.get("goal") == "onboard_tenant" and m.get("state") in {"in_progress", "blocked"}
+        for m in missions
+    )
+    pending_questions = 0
+    question_store_seen = False
+    try:
+        question_keys = await redis.keys(QUESTIONS_KEY.format(tenant_id="*"))
+        question_store_seen = bool(question_keys)
+        for key in question_keys:
+            tenant_id = str(key).split("omni:aoip:questions:", 1)[-1]
+            pending_questions += sum(
+                q.get("status") == "PENDING" for q in await list_questions(redis, tenant_id)
+            )
+    except Exception as exc:  # noqa: BLE001 — preserve unavailable semantics
+        logger.warning("overview: question projection unavailable err=%s", exc)
+        pending_questions = -1
     if "error" in tr:  # Trace Spine không tới được → mọi metric trace = cùng khe hở
         trace_gap = tr["error"]
         tr = {k: trace_gap for k in
@@ -160,16 +182,20 @@ async def build_provider_overview(redis, pool, trace, *, now: float) -> dict:
     return {
         "generated_at": now,
         "tenants": tenants["tenants"],
-        "tenants_onboarding": tenants["onboarding"],
+        "tenants_onboarding": (_metric(onboarding_count) if missions else tenants["onboarding"]),
         "agents": await _agent_fleet(redis, now),
         # Bỏ license_warnings & agent_version_drift: không có backend capability tương ứng
         # (governing rule 2026-07-01 — không placeholder metric cho domain chưa tồn tại backend).
-        "missions": _gap(
-            "mission state projection chưa expose — runtime mission có thật, đang chờ read-model"),
+        "missions": (_metric({
+            "total": len(missions),
+            "in_progress": sum(m.get("state") == "in_progress" for m in missions),
+            "blocked": sum(m.get("state") == "blocked" for m in missions),
+            "completed": sum(m.get("state") == "completed" for m in missions),
+        }) if missions else _gap("chưa có Mission runtime nào được ghi nhận")),
         "active_incidents": tr["active_incidents"],
         "pending_approvals": tr["pending_approvals"],
-        "pending_questions": _gap(
-            "Communications (human questions) chưa expose qua console projection"),
+        "pending_questions": (_metric(pending_questions) if question_store_seen and pending_questions >= 0 else _gap(
+            "Question store (Redis) không truy cập được")),
         "reconcile_required": tr["reconcile_required"],
         "component_health": await _component_health(redis, pool),
         "recent_activity": tr["recent_activity"],

@@ -19,6 +19,7 @@ def build_execute_mutate_body(
     correlation_id: str | None = None,
     reasoning_chain: dict[str, Any] | None = None,
     planner_origin: str | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Inner Kafka JSON for omni-actions — executor runs mutate after Pre-apply when allowed."""
     cid = (correlation_id or "").strip() or str(uuid.uuid4())
@@ -28,6 +29,8 @@ def build_execute_mutate_body(
         "attempt_count": max(1, int(attempt_count)),
         "correlation_id": cid,
     }
+    if tenant_id:
+        data["tenant_id"] = str(tenant_id)[:128]
     if reasoning_chain is not None and isinstance(reasoning_chain, dict) and reasoning_chain:
         data["reasoning_chain"] = reasoning_chain
     # Reasoning-source provenance for the executor's autonomy-tier gate (minimal mode

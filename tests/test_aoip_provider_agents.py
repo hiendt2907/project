@@ -116,6 +116,15 @@ async def test_provider_agents_projection_reports_drift_and_runtime():
     assert by_id["acme-drifted"]["drift_status"] == "drifted"
 
 
+async def test_tenant_filter_is_applied_before_projection():
+    r = _redis()
+    await _seed_agent(r, "acme-edge", tenant="acme", hostname="cust-edge", last_seen=999)
+    await _seed_agent(r, "globex-db", tenant="globex", hostname="globex-db", last_seen=999)
+    result = await build_provider_agents(r, now=NOW, tenant_id="acme")
+    assert [a["agent_id"] for a in result["agents"]] == ["acme-edge"]
+    assert result["summary"]["total"] == 1
+
+
 async def test_provider_agents_endpoint_enforces_provider_rbac():
     r = _redis()
     await _provision(r)
@@ -129,3 +138,15 @@ async def test_provider_agents_endpoint_enforces_provider_rbac():
         ok = await c.get("/api/provider/v1/agents", headers=_auth(prov))
         assert ok.status_code == 200
         assert ok.json()["agents"][0]["hostname"] == "cust-edge"
+
+
+async def test_tenant_agents_endpoint_is_tenant_scoped():
+    r = _redis(); await _provision(r)
+    await _seed_agent(r, "acme-edge", tenant="acme", hostname="cust-edge", last_seen=999)
+    await _seed_agent(r, "globex-db", tenant="globex", hostname="globex-db", last_seen=999)
+    sid = await _sid_tenant(r)
+    from aoip.console.app import create_tenant_app
+    async with _client(create_tenant_app(r)) as c:
+        resp = await c.get("/api/tenant/v1/agents", headers=_auth(sid))
+    assert resp.status_code == 200
+    assert [a["agent_id"] for a in resp.json()["agents"]] == ["acme-edge"]

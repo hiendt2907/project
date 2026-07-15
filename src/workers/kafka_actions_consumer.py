@@ -516,47 +516,70 @@ async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: di
         logger.info("[%s] EXECUTE_MUTATE skipped (auto_execute disabled)", trace)
         return
 
-    # ── SRE-Autonomous tier gate (shadow|minimal|autonomous) ─────────────────
+    # ── SRE-Autonomous tenant-scoped tier gate (shadow|minimal|autonomous) ───
     # Kill-switch (auto_execute) đã qua ở trên. Khi operator đặt mode tường minh
     # (OMNI_AUTONOMY_TIER hoặc DB/cache), ma trận tier × risk × plan_origin quyết
     # định mutate này có TỰ chạy không:
     #   shadow     → SUGGEST (không chạy — observe-only).
     #   minimal    → chỉ origin tin cậy (RAG recall/deterministic) risk LOW; LLM tự do → skip.
     #   autonomous → LOW+MEDIUM auto (gồm LLM ReAct); HIGH → HITL (không tự chạy).
-    # Không set mode → giữ NGUYÊN hành vi legacy (auto chạy mọi tool).
+    # Tier luôn resolve từ Redis → PG → env. Không được hardcode tenant=default:
+    # một action của tenant A không thể dùng policy của tenant B.
     from workers.tier_gate import (
         ALLOW as _TG_ALLOW,
         gate_decision_for_tool,
-        normalize_tier,
+        effective_tier,
         resolve_tier,
     )
 
-    if normalize_tier(getattr(ws, "omni_autonomy_tier", "")) is not None:
-        _tier = await resolve_tier(settings=ws, redis=ctx.redis, tenant_id="default")
-        _origin = str(data.get("planner_origin") or "llm")
-        _decision, _risk = gate_decision_for_tool(tool_name, tier=_tier, plan_origin=_origin)
-        if _decision != _TG_ALLOW:
-            executor_execute_skipped_inc(f"tier_{_decision.lower()}")
-            await publish_action_feedback(
-                ctx,
-                trace_id=trace,
-                tool_name=tool_name or "unknown",
-                correlation_id=correlation_id,
-                stdout="",
-                stderr="",
-                exit_code=-1,
-                status="skipped",
-                skipped_reason=(
-                    f"autonomy tier={_tier} decision={_decision} risk={_risk} "
-                    f"origin={_origin} — mutate not auto-run."
-                ),
-                mutate_args=args,
-            )
-            logger.info(
-                "[%s] EXECUTE_MUTATE tier-gated tier=%s decision=%s risk=%s origin=%s tool=%s",
-                trace, _tier, _decision, _risk, _origin, tool_name,
-            )
-            return
+    scoped_identity = bool(data.get("tenant_id") or data.get("tenant"))
+    tenant_id = str(data.get("tenant_id") or data.get("tenant") or "default").strip() or "default"
+    # Old lab envelopes without tenant identity retain the legacy auto path;
+    # production envelopes are required to carry tenant_id and always take the
+    # scoped gate below. This keeps replay fixtures/backward compatibility from
+    # silently borrowing a different tenant's policy.
+    explicit_tier = bool(getattr(ws, "omni_autonomy_tier", ""))
+    if not scoped_identity and not explicit_tier:
+        _tier = None
+    else:
+        _tenant_tier = await resolve_tier(
+            settings=ws, redis=ctx.redis, repo=getattr(ctx, "admin_repo", None),
+            tenant_id=tenant_id,
+        )
+    # Remote-agent actions may carry a host identity.  A missing score is 0 and
+    # therefore shadow; K8s-only actions have no remote-host ceiling.
+    host = str(args.get("host") or args.get("hostname") or data.get("host") or "").strip()
+    confidence_score = None
+    if host:
+        from anomaly.remote_host_baseline import get_confidence_score
+        confidence_score = await get_confidence_score(ctx.redis, tenant_id=tenant_id, host=host)
+    if scoped_identity or explicit_tier:
+        _tier = effective_tier(_tenant_tier, confidence_score)
+    _origin = str(data.get("planner_origin") or "llm")
+    _decision, _risk = gate_decision_for_tool(tool_name, tier=_tier, plan_origin=_origin) if _tier else (_TG_ALLOW, "legacy")
+    if _tier and _decision != _TG_ALLOW:
+        executor_execute_skipped_inc(f"tier_{_decision.lower()}")
+        await publish_action_feedback(
+            ctx,
+            trace_id=trace,
+            tool_name=tool_name or "unknown",
+            correlation_id=correlation_id,
+            stdout="",
+            stderr="",
+            exit_code=-1,
+            status="skipped",
+            skipped_reason=(
+                f"autonomy tenant={tenant_id} tier={_tier} decision={_decision} risk={_risk} "
+                f"confidence={confidence_score if confidence_score is not None else 'n/a'} "
+                f"origin={_origin} — mutate not auto-run."
+            ),
+            mutate_args=args,
+        )
+        logger.info(
+            "[%s] EXECUTE_MUTATE tier-gated tenant=%s tier=%s decision=%s risk=%s confidence=%s origin=%s tool=%s",
+            trace, tenant_id, _tier, _decision, _risk, confidence_score, _origin, tool_name,
+        )
+        return
 
     if await _is_rate_limited(ctx, tool_name, args):
         executor_execute_skipped_inc("rate_limited")

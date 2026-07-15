@@ -1172,6 +1172,7 @@ async def _emit_suggest_remediation(
         thought_process=thought_process,
         invariant_id=invariant_id,
         reasoning_chain=reasoning_chain,
+        tenant_id=getattr(ctx, "current_tenant_id", None),
     )
     try:
         await k.send_dict(ctx.settings.kafka_topic_actions, {"data": json.dumps(body, ensure_ascii=False)})
@@ -1237,6 +1238,7 @@ async def _emit_suggest_os_runbook(
         commands=commands,
         reasoning_chain=reasoning_chain,
         verification_evidence_digest=verification_evidence_digest,
+        tenant_id=getattr(ctx, "current_tenant_id", None),
     )
     try:
         data_obj = body.get("data") if isinstance(body.get("data"), dict) else {}
@@ -2292,6 +2294,9 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
     except Exception:
         ev_doc = {"kind": "parse_error", "raw": raw[:8000]}
     ev_doc = coerce_evidence_dict(ev_doc)
+    # Preserve tenant identity for every action envelope emitted later in this
+    # diagnostic flow; autonomy policy is tenant-scoped at the executor.
+    ctx.current_tenant_id = str(ev_doc.get("tenant_id") or ev_doc.get("tenant") or "").strip() or None
     trace = str(ev_doc.get("trace_id") or "evidence-unknown")
 
     # Remote agent evidence (all domains: os, database, services, storage, k8s, logs)

@@ -293,6 +293,7 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
         "platform": body.platform,
         "k8s_namespace": body.k8s_namespace,
         "tenant_id": tenant_id,
+        "environment_id": getattr(ctx, "environment_id", None),
         "registered_at": now,
         "last_seen": now,
         "type": "remote",

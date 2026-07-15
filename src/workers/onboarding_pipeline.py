@@ -55,7 +55,8 @@ async def accumulate_discovery_evidence(ctx: WorkerHandlerContext, ev_doc: dict[
         await dd.regenerate_diagrams(ctx.redis, tenant_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("onboarding_pipeline: diagram regen failed tenant=%s err=%s", tenant_id, exc)
-    await recompute_readiness(ctx, tenant_id)
+    readiness = await recompute_readiness(ctx, tenant_id)
+    await _persist_onboarding_mission(ctx, tenant_id, readiness=readiness, probe=probe)
 
     # Slice O1 (additive, dual-write): project the same evidence into the canonical
     # AOIP Observation/Fact/SystemModel twin. Isolated on purpose — a failure here
@@ -276,3 +277,34 @@ async def recompute_readiness(ctx: WorkerHandlerContext, tenant_id: str) -> dict
     except Exception as exc:  # noqa: BLE001
         logger.warning("onboarding_pipeline: readiness persist failed tenant=%s err=%s", tenant_id, exc)
         return None
+
+
+async def _persist_onboarding_mission(
+    ctx: WorkerHandlerContext, tenant_id: str, *, readiness: dict[str, Any] | None, probe: str,
+) -> None:
+    """Project discovery progress into the durable AOIP Mission read-model.
+
+    This is an additive worker-side projection: the discovery document and PG
+    readiness state remain their own sources of truth.  Missing PG readiness is
+    represented as an active mission with zero completion, never as success.
+    """
+    from aoip.mission import Mission, MissionState
+    from aoip.mission_store import MissionStore
+
+    ready = bool(readiness and readiness.get("readiness_flag"))
+    mission = Mission(
+        mission_id=f"onboarding:{tenant_id}", goal="onboard_tenant", scope=tenant_id,
+    ).to(MissionState.PLANNED).to(MissionState.ASSIGNED).to(MissionState.IN_PROGRESS)
+    completion = 1.0 if ready else 0.0
+    state = MissionState.COMPLETED if ready else MissionState.IN_PROGRESS
+    from dataclasses import replace
+    mission = replace(mission, state=state, completion=completion,
+                      dod_passed=("readiness_gate",) if ready else (),
+                      dod_failed=() if ready else ("readiness_gate",))
+    try:
+        await MissionStore(ctx.redis).save(
+            tenant_id, mission, last_activity=f"discovery probe: {probe}",
+            next_action=None if ready else "collect remaining onboarding evidence",
+        )
+    except Exception as exc:  # noqa: BLE001 — projection cannot drop evidence
+        logger.warning("onboarding_pipeline: mission projection failed tenant=%s err=%s", tenant_id, exc)

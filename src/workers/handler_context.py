@@ -35,6 +35,9 @@ class WorkerHandlerContext:
     scout_ready: asyncio.Event = field(default_factory=asyncio.Event)
     # Same id as Kafka omni-alerts / evidence / actions when set by consumer loops (ContextVar mirrors this).
     inbound_trace_id: str = "unknown"
+    # Tenant identity for the current evidence/action envelope. Required for
+    # tenant-scoped autonomy evaluation; None means legacy unscoped lab input.
+    current_tenant_id: str | None = None
     llm_slot_held: bool = False
     inbound_proactive: bool = False
     k8s_mutated: bool = False

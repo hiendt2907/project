@@ -94,10 +94,12 @@ async def _command_state(redis: Any, tenant_id: str, agent_id: str) -> dict[str,
     return {"state": "idle", "pending": 0}
 
 
-async def build_provider_agents(redis: Any, *, now: float) -> dict[str, Any]:
+async def build_provider_agents(redis: Any, *, now: float,
+                                tenant_id: str | None = None) -> dict[str, Any]:
     keys = await redis.keys(f"{_REMOTE_PREFIX}*")
     agents: list[dict[str, Any]] = []
     manifest = await _load_release_manifest(redis)
+    tenant_filter = tenant_id
 
     for key in sorted(keys):
         raw = await redis.get(key)
@@ -106,19 +108,21 @@ async def build_provider_agents(redis: Any, *, now: float) -> dict[str, Any]:
             continue
 
         agent_id = str(rec.get("agent_id") or str(key).replace(_REMOTE_PREFIX, ""))
-        tenant_id = str(rec.get("tenant_id") or "unknown")
+        record_tenant_id = str(rec.get("tenant_id") or "unknown")
+        if tenant_filter is not None and record_tenant_id != tenant_filter:
+            continue
         hostname = str(rec.get("hostname") or rec.get("host") or agent_id)
         last_seen = int(float(rec.get("last_seen") or 0))
         age = max(0, int(now - last_seen)) if last_seen else 10**9
         capabilities = [str(c) for c in (rec.get("capabilities") or [])]
         latest_check = await _latest_check(redis, agent_id)
-        command = await _command_state(redis, tenant_id, agent_id)
+        command = await _command_state(redis, record_tenant_id, agent_id)
 
         metrics = _loads(await redis.get(f"{_METRICS_PREFIX}{agent_id}"))
         aoip_bundle_sha256 = str(rec.get("aoip_bundle_sha256") or "")
         agents.append({
             "agent_id": agent_id,
-            "tenant_id": tenant_id,
+            "tenant_id": record_tenant_id,
             "hostname": hostname,
             "status": _status(age),
             "online": age <= _ONLINE_SEC,

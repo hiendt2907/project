@@ -62,6 +62,8 @@ async def understand_host_mission(
     engine: EvidenceCompletionEngine,
     mission_id: str | None = None,
     parent_mission_id: str | None = None,
+    mission_store=None,
+    tenant_id: str | None = None,
 ) -> Mission:
     """Chạy capability 'understand_host' như một Mission, trả Mission đã chấm DoD."""
     mission = Mission(
@@ -70,7 +72,13 @@ async def understand_host_mission(
         scope=ctx.scope,
         parent_mission_id=parent_mission_id,
     )
-    return await run_mission(mission, ctx, plan=_host_plan(engine), dod=_host_dod())
+    result = await run_mission(mission, ctx, plan=_host_plan(engine), dod=_host_dod())
+    if mission_store is not None and tenant_id is not None:
+        await mission_store.save(
+            tenant_id, result, last_activity="understand_host completed",
+            next_action="collect more evidence" if result.state is not MissionState.COMPLETED else None,
+        )
+    return result
 
 
 async def understand_tenant_mission(
@@ -78,6 +86,7 @@ async def understand_tenant_mission(
     tenant_scope: str,
     contexts: list,
     engine_factory,
+    mission_store=None,
 ) -> tuple[Mission, list[Mission]]:
     """Mission cấp tenant: sinh sub-Mission per host, gộp Mission Completion.
 
@@ -88,7 +97,8 @@ async def understand_tenant_mission(
     subs: list[Mission] = []
     for ctx in contexts:
         sub = await understand_host_mission(
-            ctx, engine=engine_factory(), parent_mission_id=tenant_id
+            ctx, engine=engine_factory(), parent_mission_id=tenant_id,
+            mission_store=mission_store, tenant_id=tenant_scope,
         )
         subs.append(sub)
 
@@ -103,12 +113,15 @@ async def understand_tenant_mission(
         MissionState.IN_PROGRESS
     )
     final = MissionState.COMPLETED if all_done else MissionState.BLOCKED
-    return (
-        tenant.to(
+    final_mission = tenant.to(
             final,
             completion=completion,
             dod_passed=tuple(s.mission_id for s in subs if s.state is MissionState.COMPLETED),
             dod_failed=tuple(s.mission_id for s in subs if s.state is not MissionState.COMPLETED),
-        ),
-        subs,
-    )
+        )
+    if mission_store is not None:
+        await mission_store.save(
+            tenant_scope, final_mission, last_activity="understand_tenant completed",
+            next_action="resolve blocked host missions" if final is MissionState.BLOCKED else None,
+        )
+    return final_mission, subs

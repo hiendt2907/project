@@ -1,4 +1,4 @@
-"""Idempotency ledger — mỗi mutation chạy ĐÚNG MỘT LẦN dù giao trùng/agent restart.
+"""Idempotency ledger — effectively-once qua idempotency + reconciliation.
 
 Vì sao tồn tại (Living Operations Runtime): mission/command có thể được GIAO HAI LẦN
 (at-least-once delivery), agent có thể CRASH sau mutation trước khi report. Không có
@@ -16,6 +16,9 @@ import hashlib
 import json
 
 STATUS_CLAIMED = "claimed"
+STATUS_MUTATION_STARTED = "mutation_started"
+STATUS_VERIFYING = "verifying"
+STATUS_RECONCILE_REQUIRED = "reconcile_required"
 STATUS_TERMINAL = frozenset({"recovered", "escalated", "aborted", "completed"})
 _TTL_CLAIM_S = 900       # claim sống 15' (đủ cho 1 mutation + verify); crash → tự hết
 _TTL_TERMINAL_S = 604800  # record terminal giữ 7 ngày để dedup giao trùng muộn
@@ -72,6 +75,26 @@ class IdempotencyLedger:
         """Ghi kết quả terminal (overwrite claim), TTL dài để dedup giao trùng muộn."""
         payload = json.dumps({"status": status, "outcome": outcome})
         await self._r.set(key, payload, ex=_TTL_TERMINAL_S)
+
+    async def set_phase(self, key: str, *, phase: str, holder: str,
+                        meta: dict | None = None) -> None:
+        """Persist a non-terminal execution phase before/after side effects.
+
+        A phase is deliberately durable evidence, not a lock. If the process dies
+        after ``mutation_started``, a redelivery must reconcile or escalate rather
+        than assume that the host mutation did not happen.
+        """
+        if phase not in {STATUS_CLAIMED, STATUS_MUTATION_STARTED, STATUS_VERIFYING,
+                         STATUS_RECONCILE_REQUIRED}:
+            raise ValueError(f"invalid idempotency phase: {phase}")
+        current = await self.get(key)
+        if (current is not None and current.get("holder") not in (None, holder)
+                and phase != STATUS_RECONCILE_REQUIRED):
+            raise RuntimeError("idempotency phase ownership changed")
+        payload = {"status": phase, "holder": holder}
+        if meta:
+            payload["meta"] = meta
+        await self._r.set(key, json.dumps(payload), ex=_TTL_CLAIM_S)
 
     async def release_claim(self, key: str) -> None:
         """Xoá claim chưa terminal (vd gate chặn trước mutation) để cho phép thử lại."""

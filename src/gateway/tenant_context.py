@@ -14,6 +14,7 @@ _AGENT_REGISTRY_PREFIX = "omni:remote_agent:registry:"
 class TenantContext:
     tenant_id: str
     is_admin: bool
+    environment_id: str | None = None
 
 
 def get_tenant_ctx(request: Any) -> TenantContext | None:

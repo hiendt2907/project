@@ -29,6 +29,7 @@ class _Row(dict):
 class _Store:
     def __init__(self) -> None:
         self.tenant: dict[str, dict[str, Any]] = {}
+        self.environment: dict[tuple[str, str], dict[str, Any]] = {}
         self.enroll_token: dict[int, dict[str, Any]] = {}
         self.credential: dict[int, dict[str, Any]] = {}
         self._id = 0
@@ -59,7 +60,7 @@ class _FakeConn:
             return 1 if args[0] in s.tenant else None
         if "INSERT INTO omni_admin.agent_enroll_token" in sql:
             tid = s.next_id()
-            tenant, token_hash, token_prefix, label, actor, expires_at = args
+            tenant, environment_id, token_hash, token_prefix, label, actor, expires_at = args
             s.enroll_token[tid] = {"id": tid, "tenant_id": tenant, "token_prefix": token_prefix}
             return tid
         raise AssertionError(f"fetchval chưa hỗ trợ: {sql[:80]}")
@@ -76,6 +77,8 @@ class _FakeConn:
                       "active_keys": 0})
                 for tid, rec in s.tenant.items()
             ]
+        if "FROM omni_admin.environment WHERE tenant_id = $1" in sql:
+            return [_Row(rec) for rec in s.environment.values() if rec["tenant_id"] == args[0]]
         if "UPDATE omni_admin.agent_credential" in sql and "RETURNING id, key_hash" in sql:
             tenant, agent_id = args
             out = []
@@ -120,6 +123,7 @@ def _seed_credential(store: _Store, *, tenant: str, agent_id: str, key_hash: str
     cid = store.next_id()
     store.credential[cid] = {
         "id": cid, "tenant_id": tenant, "agent_id": agent_id, "hostname": "h",
+        "environment_id": None,
         "key_hash": key_hash, "key_prefix": key_hash[:8], "status": "active",
         "created_at": None, "revoked_at": None,
     }

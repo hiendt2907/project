@@ -179,8 +179,14 @@ async def execute_rollout_restart(namespace: str, deployment_name: str) -> str:
         ann = dep.spec.template.metadata.annotations or {}
         ann = dict(ann)
         ann["kubectl.kubernetes.io/restartedAt"] = datetime.now(UTC).isoformat(timespec="seconds")
-        dep.spec.template.metadata.annotations = ann
-        await apps.replace_namespaced_deployment(deployment_name, namespace, dep)
+        # Patch only the pod-template annotation. Replacing the full object
+        # races with controller/status updates and can fail with 409 even
+        # though the requested restart is still safe to apply.
+        await apps.patch_namespaced_deployment(
+            deployment_name,
+            namespace,
+            {"spec": {"template": {"metadata": {"annotations": ann}}}},
+        )
         return (
             f"[DATA] rollout_restart_ok deployment={deployment_name} ns={namespace}\n"
             "[DIAGNOSIS] Đã set restartedAt (tương đương kubectl rollout restart)."

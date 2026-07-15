@@ -100,3 +100,16 @@ async def test_understanding_endpoint_enforces_provider_rbac():
         ok = await c.get("/api/provider/v1/understanding", headers=_auth(prov))
         assert ok.status_code == 200
         assert ok.json()["tenants"][0]["tenant_id"] == "acme"
+
+
+async def test_tenant_understanding_endpoint_returns_only_membership_scope():
+    r = _redis(); await _provision(r); await _seed_twin(r)
+    await fold_and_persist(r, "globex", [Fact(subject="host:globex", predicate="runs_service",
+                                               obj="api", confidence=0.9, provenance=("test",))],
+                           source="test")
+    sid = await _sid_tenant(r)
+    from aoip.console.app import create_tenant_app
+    async with _client(create_tenant_app(r)) as c:
+        resp = await c.get("/api/tenant/v1/understanding", headers=_auth(sid))
+    assert resp.status_code == 200
+    assert [t["tenant_id"] for t in resp.json()["tenants"]] == ["acme"]

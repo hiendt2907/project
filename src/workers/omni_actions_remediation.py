@@ -20,6 +20,7 @@ def build_suggest_remediation_body(
     thought_process: list[str] | None = None,
     invariant_id: str | None = None,
     reasoning_chain: dict[str, Any] | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Inner Kafka JSON body (wrapped by producer as envelope ``data`` string)."""
     data: dict[str, Any] = {
@@ -28,6 +29,8 @@ def build_suggest_remediation_body(
         "source": source,
         "suggested_tool": (suggested_tool or "").strip()[:256],
     }
+    if tenant_id:
+        data["tenant_id"] = str(tenant_id)[:128]
     if reasoning_chain is not None and isinstance(reasoning_chain, dict):
         data["reasoning_chain"] = reasoning_chain
     else:
@@ -59,6 +62,7 @@ def build_suggest_os_runbook_body(
     commands: list[dict[str, Any]],
     reasoning_chain: dict[str, Any] | None = None,
     verification_evidence_digest: str = "",
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     data: dict[str, Any] = {
         "diagnosis": (diagnosis or "").strip()[:16000],
@@ -68,6 +72,8 @@ def build_suggest_os_runbook_body(
         "commands": list(commands or [])[:24],
         "verification_evidence_digest": (verification_evidence_digest or "").strip()[:2000],
     }
+    if tenant_id:
+        data["tenant_id"] = str(tenant_id)[:128]
     if isinstance(reasoning_chain, dict) and reasoning_chain:
         data["reasoning_chain"] = reasoning_chain
     return {

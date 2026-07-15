@@ -30,6 +30,29 @@ ASSIST: Final = "assist"
 AUTO: Final = "auto"
 VALID_TIERS: Final = (SHADOW, ASSIST, AUTO)
 
+
+def confidence_ceiling(score: int | float | None) -> str:
+    """Map understanding confidence to the highest safe autonomy tier.
+
+    A host with no learned baseline is shadow-only.  Confidence is a ceiling,
+    never an override: the tenant policy can still reduce it further.
+    """
+    value = max(0.0, min(100.0, float(score or 0)))
+    if value >= 75:
+        return AUTO
+    if value >= 50:
+        return ASSIST
+    return SHADOW
+
+
+def effective_tier(tenant_tier: str, confidence_score: int | float | None = None) -> str:
+    """Return ``min(tenant_tier, confidence ceiling)`` with fail-closed input."""
+    resolved = normalize_tier(tenant_tier) or SHADOW
+    if confidence_score is None:
+        return resolved
+    ceiling = confidence_ceiling(confidence_score)
+    return resolved if VALID_TIERS.index(resolved) <= VALID_TIERS.index(ceiling) else ceiling
+
 # Operator-facing SRE-Autonomous mode names → canonical tier (MASTER_PLAN §3).
 #   shadow      — read-only, observe & learn, mọi mutate → SUGGEST.
 #   minimal     — auto-remediate CHỈ lỗi cơ bản từ RAG/deterministic ReAct (origin
@@ -142,11 +165,11 @@ async def resolve_tier(
     """
     cached = normalize_tier(await read_tier_cached(redis, tenant_id))
     if cached in VALID_TIERS:
-        return cached
+        return await _apply_plan_ceiling(cached, repo, tenant_id)
     if repo is not None:
         db_tier = normalize_tier(await repo.get_tier(tenant_id))
         if db_tier in VALID_TIERS:
-            return db_tier
+            return await _apply_plan_ceiling(db_tier, repo, tenant_id)
     # env fallback — chấp nhận tên mode (shadow|minimal|autonomous) lẫn canonical.
     env_tier = normalize_tier(getattr(settings, "omni_autonomy_tier", ""))
     if env_tier in VALID_TIERS:
@@ -155,4 +178,21 @@ async def resolve_tier(
         tier = derive_tier_from_legacy(bool(getattr(settings, "omni_auto_execute_enabled", False)))
     # nạp cache để hot path lần sau khỏi tính lại
     await write_through_cache(redis, cache_key_tier(tenant_id), tier)
-    return tier
+    return await _apply_plan_ceiling(tier, repo, tenant_id)
+
+
+async def _apply_plan_ceiling(tier: str, repo: Any, tenant_id: str) -> str:
+    """Apply optional provider plan ceiling; missing plan never grants access."""
+    if repo is None:
+        return tier
+    getter = getattr(repo, "get_autonomy_ceiling", None)
+    if getter is None:
+        return tier
+    try:
+        ceiling = normalize_tier(await getter(tenant_id))
+    except Exception as exc:  # noqa: BLE001 — fail closed on entitlement lookup
+        logger.warning("tier_gate: plan ceiling lookup failed tenant=%s err=%s", tenant_id, exc)
+        return SHADOW
+    if ceiling is None:
+        return SHADOW
+    return tier if VALID_TIERS.index(tier) <= VALID_TIERS.index(ceiling) else ceiling

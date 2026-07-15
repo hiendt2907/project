@@ -32,8 +32,12 @@ class _Row(dict):
 class _Store:
     def __init__(self) -> None:
         self.tenant: dict[str, dict[str, Any]] = {}
+        self.environment: dict[tuple[str, str], dict[str, Any]] = {}
         self.enroll_token: dict[int, dict[str, Any]] = {}
         self.credential: dict[int, dict[str, Any]] = {}
+        self.plan: dict[str, dict[str, Any]] = {
+            "staging-sim": {"agent_limit": 10, "enabled": True},
+        }
         self.audit: list[tuple[str, tuple]] = []
         self._id = 0
 
@@ -66,9 +70,10 @@ class _FakeConn:
             return 1 if args[0] in s.tenant else None
         if "INSERT INTO omni_admin.agent_enroll_token" in sql:
             tid = s.next_id()
-            tenant, token_hash, token_prefix, label, actor, expires_at = args
+            tenant, environment_id, token_hash, token_prefix, label, actor, expires_at = args
             s.enroll_token[tid] = {
                 "id": tid, "tenant_id": tenant, "token_hash": token_hash,
+                "environment_id": environment_id,
                 "token_prefix": token_prefix, "label": label, "status": "issued",
                 "created_by": actor, "expires_at": expires_at,
                 "used_at": None, "used_by_agent": None,
@@ -76,18 +81,30 @@ class _FakeConn:
             return tid
         if "INSERT INTO omni_admin.agent_credential" in sql:
             cid = s.next_id()
-            tenant, agent_id, hostname, key_hash, key_prefix, token_id = args
+            tenant, environment_id, agent_id, hostname, key_hash, key_prefix, token_id = args
             s.credential[cid] = {
                 "id": cid, "tenant_id": tenant, "agent_id": agent_id,
+                "environment_id": environment_id,
                 "hostname": hostname, "key_hash": key_hash,
                 "key_prefix": key_prefix, "status": "active",
                 "enrolled_via_token": token_id, "created_at": None, "revoked_at": None,
             }
             return cid
+        if "SELECT COUNT(*) FROM omni_admin.agent_credential" in sql:
+            tenant, agent_id = args
+            return sum(1 for rec in s.credential.values()
+                       if rec["tenant_id"] == tenant and rec["agent_id"] != agent_id
+                       and rec["status"] == "active")
         raise AssertionError(f"fetchval chưa hỗ trợ: {sql[:80]}")
 
     async def fetchrow(self, sql: str, *args: Any) -> _Row | None:
         s = self._s
+        if "SELECT status FROM omni_admin.environment" in sql:
+            rec = s.environment.get((args[0], args[1]))
+            return _Row({"status": rec["status"]}) if rec else None
+        if "FROM omni_admin.tenant_plan" in sql:
+            plan = s.plan.get(args[0])
+            return _Row(plan) if plan else None
         if "UPDATE omni_admin.agent_enroll_token" in sql and "RETURNING id, tenant_id" in sql:
             token_hash, agent_id = args
             now = datetime.now(timezone.utc)
@@ -97,12 +114,14 @@ class _FakeConn:
                         and (expires is None or expires > now)):
                     rec["status"] = "used"
                     rec["used_by_agent"] = agent_id
-                    return _Row({"id": rec["id"], "tenant_id": rec["tenant_id"]})
+                    return _Row({"id": rec["id"], "tenant_id": rec["tenant_id"],
+                                 "environment_id": rec.get("environment_id")})
             return None
-        if "SELECT tenant_id, agent_id FROM omni_admin.agent_credential" in sql:
+        if "SELECT tenant_id, agent_id" in sql and "FROM omni_admin.agent_credential" in sql:
             for rec in s.credential.values():
                 if rec["key_hash"] == args[0] and rec["status"] == "active":
-                    return _Row({"tenant_id": rec["tenant_id"], "agent_id": rec["agent_id"]})
+                    return _Row({"tenant_id": rec["tenant_id"], "agent_id": rec["agent_id"],
+                                 "environment_id": rec.get("environment_id")})
             return None
         raise AssertionError(f"fetchrow chưa hỗ trợ: {sql[:80]}")
 
@@ -203,6 +222,21 @@ class TestEnrollTokenRepo:
         )
         assert second is None
 
+    async def test_environment_bound_token_returns_environment_identity(self, repo, store):
+        store.environment[("staging-sim", "prod")] = {"status": "active"}
+        await repo.create_enroll_token(
+            tenant_id="staging-sim", environment_id="prod",
+            token_hash=_sha("tok-prod"), token_prefix="tok-prod", actor="test",
+        )
+        result = await repo.consume_enroll_token_and_issue_credential(
+            token_hash=_sha("tok-prod"), agent_id="prod-agent", hostname="prod-1",
+            key_hash=_sha("key-prod"), key_prefix="key-prod",
+        )
+        assert result["environment_id"] == "prod"
+        assert await repo.lookup_agent_credential(_sha("key-prod")) == {
+            "tenant_id": "staging-sim", "agent_id": "prod-agent", "environment_id": "prod",
+        }
+
     async def test_expired_token_rejected(self, repo):
         await repo.create_enroll_token(
             tenant_id="staging-sim", token_hash=_sha("tok-exp"), token_prefix="tok-exp",
@@ -228,7 +262,22 @@ class TestEnrollTokenRepo:
         # key cũ bị revoke, key mới active
         assert await repo.lookup_agent_credential(_sha("key-1")) is None
         rec = await repo.lookup_agent_credential(_sha("key-2"))
-        assert rec == {"tenant_id": "staging-sim", "agent_id": "cust-app-agent"}
+        assert rec == {"tenant_id": "staging-sim", "agent_id": "cust-app-agent",
+                       "environment_id": None}
+
+    async def test_plan_agent_limit_blocks_new_agent_but_allows_reenroll(self, repo, store):
+        store.plan["staging-sim"]["agent_limit"] = 1
+        await repo.create_enroll_token(tenant_id="staging-sim", token_hash=_sha("tok-l1"),
+                                       token_prefix="tok-l1", actor="test")
+        await repo.consume_enroll_token_and_issue_credential(
+            token_hash=_sha("tok-l1"), agent_id="agent-1", hostname="h1",
+            key_hash=_sha("key-l1"), key_prefix="key-l1")
+        await repo.create_enroll_token(tenant_id="staging-sim", token_hash=_sha("tok-l2"),
+                                       token_prefix="tok-l2", actor="test")
+        with pytest.raises(ValueError, match="giới hạn agent"):
+            await repo.consume_enroll_token_and_issue_credential(
+                token_hash=_sha("tok-l2"), agent_id="agent-2", hostname="h2",
+                key_hash=_sha("key-l2"), key_prefix="key-l2")
 
     async def test_revoke_returns_hashes_and_lookup_dies(self, repo):
         await repo.create_enroll_token(

@@ -78,22 +78,25 @@ async def _competency(redis: Any, tenant_id: str, entities: list[str],
     return out
 
 
-async def build_provider_understanding(redis: Any, *, now: float | None = None) -> dict[str, Any]:
+async def build_provider_understanding(redis: Any, *, now: float | None = None,
+                                       tenant_id: str | None = None) -> dict[str, Any]:
     now = time.time() if now is None else now
     keys = sorted(await redis.keys(MODEL_KEY.format(tenant_id="*")))
     tenants: list[dict[str, Any]] = []
 
     for key in keys:
-        tenant_id = _tenant_from_model_key(str(key))
-        model, revision = await load_system_model(redis, tenant_id)
-        contradictions = await load_contradictions(redis, tenant_id)
-        unknowns = await list_unknowns(redis, tenant_id)
-        questions = await list_questions(redis, tenant_id)
+        record_tenant_id = _tenant_from_model_key(str(key))
+        if tenant_id is not None and record_tenant_id != tenant_id:
+            continue
+        model, revision = await load_system_model(redis, record_tenant_id)
+        contradictions = await load_contradictions(redis, record_tenant_id)
+        unknowns = await list_unknowns(redis, record_tenant_id)
+        questions = await list_questions(redis, record_tenant_id)
         entities = sorted(model.known_nodes | model.entities | model.nodes_of_type("svc"))
         facts = sorted(model.facts, key=lambda f: (f.subject, f.predicate, f.obj))
 
         tenants.append({
-            "tenant_id": tenant_id,
+            "tenant_id": record_tenant_id,
             "twin": {
                 "revision": revision,
                 "entity_count": len(entities),
@@ -111,7 +114,7 @@ async def build_provider_understanding(redis: Any, *, now: float | None = None) 
             "unknown_count": len(unknowns),
             "questions": questions,
             "question_count": len(questions),
-            "competency": await _competency(redis, tenant_id, entities, now=now),
+            "competency": await _competency(redis, record_tenant_id, entities, now=now),
         })
 
     return {"generated_at": now, "tenant_count": len(tenants), "tenants": tenants}

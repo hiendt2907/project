@@ -70,13 +70,16 @@ async def enroll_agent(body: AgentEnrollRequest, request: Request) -> JSONRespon
     raw_key = secrets.token_urlsafe(32)
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
 
-    result = await repo.consume_enroll_token_and_issue_credential(
-        token_hash=token_hash,
-        agent_id=body.agent_id,
-        hostname=body.hostname,
-        key_hash=key_hash,
-        key_prefix=raw_key[:8],
-    )
+    try:
+        result = await repo.consume_enroll_token_and_issue_credential(
+            token_hash=token_hash,
+            agent_id=body.agent_id,
+            hostname=body.hostname,
+            key_hash=key_hash,
+            key_prefix=raw_key[:8],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if result is None:
         logger.warning(
             "[AGENT-ENROLL] rejected agent_id=%s (token invalid/used/expired)", body.agent_id,
@@ -92,6 +95,7 @@ async def enroll_agent(body: AgentEnrollRequest, request: Request) -> JSONRespon
         content={
             "status": "enrolled",
             "tenant_id": result["tenant_id"],
+            "environment_id": result.get("environment_id"),
             "agent_id": body.agent_id,
             # plaintext CHỈ trả lần này — PG lưu sha256, không hiển thị lại được.
             "api_key": raw_key,

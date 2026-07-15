@@ -33,6 +33,7 @@ from aoip.console.settings import (
     build_provider_settings, issue_enroll_token, revoke_agent_credential,
 )
 from aoip.console.understanding import build_provider_understanding
+from aoip.mission_store import MissionStore
 from aoip.question_lifecycle import submit_answer
 from aoip.agent.trace import RuntimeTrace
 
@@ -54,6 +55,7 @@ class EnrollTokenBody(BaseModel):
     tenant_id: str = Field(..., min_length=1, max_length=120)
     label: str | None = Field(default=None, max_length=120)
     ttl_seconds: int | None = Field(default=None, ge=60)
+    environment_id: str | None = Field(default=None, max_length=128)
 
 
 class CreateLabIncidentBody(BaseModel):
@@ -62,6 +64,36 @@ class CreateLabIncidentBody(BaseModel):
     host: str = Field(..., min_length=1, max_length=256)
     service: str = Field(..., min_length=1, max_length=128)
     unit: str = Field(..., min_length=1, max_length=128)
+
+
+class CreateEnvironmentBody(BaseModel):
+    environment_id: str = Field(..., min_length=1, max_length=128)
+    display_name: str = Field(..., min_length=1, max_length=256)
+    environment_type: str = Field(..., description="production|staging|development")
+
+
+class CreateTenantBody(BaseModel):
+    tenant_id: str = Field(..., min_length=1, max_length=128)
+    display_name: str = Field(..., min_length=1, max_length=256)
+
+
+class EnvironmentStatusBody(BaseModel):
+    status: str = Field(..., description="onboarding|active|suspended|archived")
+
+
+class AutonomyTierBody(BaseModel):
+    tier: str = Field(..., description="shadow|assist|auto")
+    confirm: bool = False
+    forced: bool = False
+
+
+class TenantPlanBody(BaseModel):
+    plan_code: str = Field(..., min_length=1, max_length=64)
+    agent_limit: int = Field(..., ge=0, le=1_000_000)
+    autonomy_ceiling: str = Field(..., description="shadow|assist|auto")
+    retention_days: int = Field(..., ge=1, le=3650)
+    support_tier: str = Field(default="standard", description="standard|premium|enterprise")
+    enabled: bool = True
 
 
 async def _default_http_json(method: str, url: str, *, data=None, auth=None) -> dict:
@@ -251,6 +283,10 @@ def create_provider_app(redis, *, oidc_http=None) -> FastAPI:
         # System Twin + Competency + Unknowns projection từ AOIP runtime store.
         return await build_provider_understanding(redis, now=time.time())
 
+    @app.get("/api/provider/v1/missions")
+    async def missions(p: Principal = Depends(provider)) -> dict:
+        return {"missions": await MissionStore(redis).list_all(limit=500)}
+
     @app.get("/api/provider/v1/human-inbox")
     async def human_inbox(p: Principal = Depends(provider)) -> dict:
         # Unknown -> Question projection. May open bounded structured questions
@@ -292,7 +328,7 @@ def create_provider_app(redis, *, oidc_http=None) -> FastAPI:
         try:
             return await issue_enroll_token(
                 pool, tenant_id=body.tenant_id, actor=p.subject, label=body.label,
-                ttl_seconds=body.ttl_seconds,
+                ttl_seconds=body.ttl_seconds, environment_id=body.environment_id,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -322,12 +358,163 @@ def create_provider_app(redis, *, oidc_http=None) -> FastAPI:
         return await build_provider_audit(redis, tenant_id=tenant_id)
 
     @app.get("/api/provider/v1/tenants")
-    async def tenants(p: Principal = Depends(provider)) -> dict:
+    async def tenants(request: Request, p: Principal = Depends(provider)) -> dict:
+        # PG tenant lifecycle is canonical when the admin store is configured.
+        # Redis trace projection remains the lab-compatible fallback.
+        pool = getattr(request.app.state, "pool", None)
+        if pool is not None:
+            from services.admin_config.repo import AdminConfigRepo
+            return {"viewer": p.subject, "tenants": await AdminConfigRepo(pool).list_tenants()}
         out = []
         for k in sorted(await redis.keys("trace:index:*")):
             t = k.split("trace:index:", 1)[1]
             out.append({"tenant": t, "incidents": len(await trace.list_timelines(t))})
         return {"viewer": p.subject, "tenants": out}
+
+    @app.post("/api/provider/v1/tenants")
+    async def create_tenant(request: Request, body: CreateTenantBody,
+                            p: Principal = Depends(provider)) -> dict:
+        if not p.can(P_CHANGE_POLICY):
+            raise HTTPException(403, "insufficient permission to create tenants")
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        from services.admin_config.repo import AdminConfigRepo
+        try:
+            result = await AdminConfigRepo(pool).create_tenant(
+                tenant_id=body.tenant_id.strip(), display_name=body.display_name.strip(),
+                actor=p.subject,
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"status": "ok", **result}
+
+    @app.get("/api/provider/v1/tenants/{tenant_id}/environments")
+    async def environments(request: Request, tenant_id: str,
+                           p: Principal = Depends(provider)) -> dict:
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        from services.admin_config.repo import AdminConfigRepo
+        return {"tenant_id": tenant_id,
+                "environments": await AdminConfigRepo(pool).list_environments(tenant_id)}
+
+    @app.post("/api/provider/v1/tenants/{tenant_id}/environments")
+    async def create_environment(request: Request, tenant_id: str,
+                                 body: CreateEnvironmentBody,
+                                 p: Principal = Depends(provider)) -> dict:
+        if not p.can(P_CHANGE_POLICY):
+            raise HTTPException(403, "insufficient permission to create environments")
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        from services.admin_config.repo import AdminConfigRepo
+        try:
+            result = await AdminConfigRepo(pool).create_environment(
+                tenant_id=tenant_id, environment_id=body.environment_id,
+                display_name=body.display_name, environment_type=body.environment_type,
+                actor=p.subject,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"status": "ok", **result}
+
+    @app.post("/api/provider/v1/tenants/{tenant_id}/environments/{environment_id}/status")
+    async def set_environment_status(request: Request, tenant_id: str,
+                                     environment_id: str, body: EnvironmentStatusBody,
+                                     p: Principal = Depends(provider)) -> dict:
+        if not p.can(P_CHANGE_POLICY):
+            raise HTTPException(403, "insufficient permission to change environments")
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        from services.admin_config.repo import AdminConfigRepo
+        try:
+            result = await AdminConfigRepo(pool).set_environment_status(
+                tenant_id=tenant_id, environment_id=environment_id,
+                status=body.status, actor=p.subject,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"status": "ok", **result}
+
+    @app.get("/api/provider/v1/tenants/{tenant_id}/autonomy")
+    async def autonomy(request: Request, tenant_id: str,
+                       p: Principal = Depends(provider)) -> dict:
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        from services.admin_config.repo import AdminConfigRepo
+        repo = AdminConfigRepo(pool)
+        current = await repo.get_tier(tenant_id) or "shadow"
+        raw = await redis.get(f"omni:tier:readiness:{tenant_id}")
+        readiness = None
+        if raw:
+            import json
+            readiness = json.loads(raw)
+        return {"tenant_id": tenant_id, "tier": current, "readiness": readiness}
+
+    @app.get("/api/provider/v1/tenants/{tenant_id}/plan")
+    async def tenant_plan(request: Request, tenant_id: str,
+                          p: Principal = Depends(provider)) -> dict:
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        from services.admin_config.repo import AdminConfigRepo
+        plan = await AdminConfigRepo(pool).get_tenant_plan(tenant_id)
+        if plan is None:
+            raise HTTPException(404, "tenant plan unavailable")
+        return plan
+
+    @app.post("/api/provider/v1/tenants/{tenant_id}/plan")
+    async def set_tenant_plan(request: Request, tenant_id: str, body: TenantPlanBody,
+                              p: Principal = Depends(provider)) -> dict:
+        if not p.can(P_CHANGE_POLICY):
+            raise HTTPException(403, "insufficient permission to change tenant plan")
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        from services.admin_config.repo import AdminConfigRepo
+        try:
+            result = await AdminConfigRepo(pool).set_tenant_plan(
+                tenant_id=tenant_id, plan_code=body.plan_code, agent_limit=body.agent_limit,
+                autonomy_ceiling=body.autonomy_ceiling, retention_days=body.retention_days,
+                support_tier=body.support_tier, enabled=body.enabled, actor=p.subject,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"status": "ok", **result}
+
+    @app.post("/api/provider/v1/tenants/{tenant_id}/autonomy")
+    async def set_autonomy(request: Request, tenant_id: str, body: AutonomyTierBody,
+                           p: Principal = Depends(provider)) -> dict:
+        if not p.can(P_CHANGE_POLICY):
+            raise HTTPException(403, "insufficient permission to change autonomy")
+        if body.tier not in {"shadow", "assist", "auto"}:
+            raise HTTPException(400, "tier không hợp lệ")
+        pool = getattr(request.app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin PG store not configured")
+        from services.admin_config.repo import AdminConfigRepo
+        repo = AdminConfigRepo(pool)
+        current = await repo.get_tier(tenant_id) or "shadow"
+        rank = {"shadow": 0, "assist": 1, "auto": 2}
+        if rank[body.tier] > rank[current] and not body.confirm:
+            raise HTTPException(409, f"Nâng tier {current}→{body.tier} cần confirm=true")
+        raw = await redis.get(f"omni:tier:readiness:{tenant_id}")
+        readiness = {}
+        if raw:
+            import json
+            readiness = json.loads(raw)
+        try:
+            result = await repo.set_tier(
+                tenant_id=tenant_id, tier=body.tier, actor=p.subject,
+                readiness=readiness, forced=body.forced,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"status": "ok", "from": current, "to": body.tier,
+                "promotion": rank[body.tier] > rank[current], **result}
 
     @app.get("/api/provider/v1/operations")
     async def operations(p: Principal = Depends(provider)) -> dict:
@@ -466,6 +653,23 @@ def create_tenant_app(redis, *, oidc_http=None) -> FastAPI:
     @app.get("/api/tenant/v1/approvals")
     async def approvals(p: Principal = Depends(tenant_principal)) -> dict:
         return {"tenant": p.tenant, "pending": await trace.pending_approvals(p.tenant)}
+
+    @app.get("/api/tenant/v1/agents")
+    async def agents(p: Principal = Depends(tenant_principal)) -> dict:
+        # Filter at the projection boundary, before returning any cross-tenant
+        # registry record to the tenant portal.
+        return await build_provider_agents(redis, now=time.time(), tenant_id=p.tenant)
+
+    @app.get("/api/tenant/v1/understanding")
+    async def understanding(p: Principal = Depends(tenant_principal)) -> dict:
+        projection = await build_provider_understanding(redis, now=time.time(), tenant_id=p.tenant)
+        # A tenant principal can only receive its own slice. An empty projection
+        # is a valid no-discovery state, not permission to enumerate other tenants.
+        return projection
+
+    @app.get("/api/tenant/v1/missions")
+    async def tenant_missions(p: Principal = Depends(tenant_principal)) -> dict:
+        return {"tenant": p.tenant, "missions": await MissionStore(redis).list(p.tenant, limit=200)}
 
     @app.post("/api/tenant/v1/logout")
     async def logout(request: Request) -> Response:

@@ -15,11 +15,13 @@ def test_build_execute_mutate_body_correlation_and_chain() -> None:
         attempt_count=0,
         correlation_id="",
         reasoning_chain={"verdict": "x"},
+        tenant_id="acme",
     )
     assert body["action"] == aa.ACTION_EXECUTE_MUTATE
     assert body["data"]["attempt_count"] == 1
     assert "correlation_id" in body["data"] and len(body["data"]["correlation_id"]) > 8
     assert body["data"]["reasoning_chain"]["verdict"] == "x"
+    assert body["data"]["tenant_id"] == "acme"
 
 
 def test_build_action_feedback_body() -> None:

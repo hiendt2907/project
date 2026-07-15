@@ -21,9 +21,11 @@ from workers.tier_gate import (
     derive_tier_from_legacy,
     evaluate_tier_gate,
     gate_decision_for_tool,
+    confidence_ceiling,
     is_trusted_origin,
     normalize_tier,
     resolve_tier,
+    effective_tier,
 )
 
 
@@ -114,6 +116,19 @@ def test_high_always_hitl_every_tier():
         assert evaluate_tier_gate(t, "HIGH") == HITL
 
 
+def test_confidence_is_a_ceiling_for_tenant_autonomy():
+    assert confidence_ceiling(0) == "shadow"
+    assert confidence_ceiling(49) == "shadow"
+    assert confidence_ceiling(50) == "assist"
+    assert confidence_ceiling(74) == "assist"
+    assert confidence_ceiling(75) == "auto"
+    assert effective_tier("auto", 49) == "shadow"
+    assert effective_tier("auto", 60) == "assist"
+    assert effective_tier("auto", 90) == "auto"
+    assert effective_tier("assist", 90) == "assist"
+    assert effective_tier("unknown", 90) == "shadow"
+
+
 def test_derive_tier_from_legacy():
     assert derive_tier_from_legacy(False) == "shadow"
     assert derive_tier_from_legacy(True) == "auto"
@@ -174,9 +189,20 @@ class _FakeRepo:
         return self._tier
 
 
+
 async def test_resolve_tier_db_over_env(redis):
     s = SimpleNamespace(omni_autonomy_tier="shadow", omni_auto_execute_enabled=False)
     assert await resolve_tier(settings=s, repo=_FakeRepo("assist"), redis=redis) == "assist"
+
+
+@pytest.mark.asyncio
+async def test_resolve_tier_applies_provider_plan_ceiling(redis):
+    s = SimpleNamespace(omni_autonomy_tier="auto", omni_auto_execute_enabled=True)
+    class _PlanRepo(_FakeRepo):
+        async def get_autonomy_ceiling(self, tenant_id: str = "default") -> str | None:
+            return "assist"
+    repo = _PlanRepo("auto")
+    assert await resolve_tier(settings=s, repo=repo, redis=redis, tenant_id="acme") == "assist"
 
 
 # ── §5 readiness ──────────────────────────────────────────────────────────────

@@ -11,7 +11,13 @@ import fakeredis.aioredis as aioredis
 import pytest
 
 from aoip import audit
-from aoip.agent.idempotency import IdempotencyLedger, idempotency_key
+from aoip.agent.idempotency import (
+    STATUS_MUTATION_STARTED,
+    IdempotencyLedger,
+    command_identity,
+    idempotency_key,
+    payload_hash,
+)
 from aoip.agent.lease import ExecutionLease
 from aoip.agent.operations import (
     build_recovery_executor,
@@ -107,6 +113,18 @@ async def test_idempotency_claim_once():
     assert await led.claim(k, holder="a2") is False  # đã claim → không claim lại
 
 
+def test_command_identity_separates_incidents_with_same_plan():
+    first = _req()
+    second = RecoveryRequest(**{**first.__dict__, "incident_id": "incident-2",
+                                "mission_id": "mission-2", "decision_id": "decision-2",
+                                "action_id": "action-2", "command_id": "command-2"})
+    first = RecoveryRequest(**{**first.__dict__, "mission_id": "mission-1",
+                               "incident_id": "incident-1", "decision_id": "decision-1",
+                               "action_id": "action-1", "command_id": "command-1"})
+    from aoip.agent.operations import _key_for
+    assert _key_for(first) != _key_for(second)
+
+
 # ── Lease primitive ──────────────────────────────────────────────────────────
 async def test_lease_single_writer():
     r = _redis()
@@ -137,6 +155,24 @@ async def test_duplicate_delivery_mutates_once(tmp_path):
     assert o2.status == "recovered"            # reconcile, không lỗi
     assert t.restarts == 1                      # MUTATE ĐÚNG 1 LẦN
     assert audit.EV_RECOVERY_RECONCILED in log.events()
+
+
+async def test_redelivery_after_mutation_phase_escalates_without_remutation(tmp_path):
+    r = _redis()
+    led = IdempotencyLedger(r)
+    req = _req()
+    from aoip.agent.operations import _key_for
+    key = _key_for(req)
+    await led.claim(key, holder="dead-agent")
+    await led.set_phase(key, phase=STATUS_MUTATION_STARTED, holder="dead-agent",
+                        meta={"unit": "redis-server"})
+
+    t = FakeSystemd(state="inactive")
+    out = await _guard(r, t, req=req, approval=_approval(req), audit_log=_log(tmp_path),
+                       holder="agent-2")
+    assert out.status == "escalated"
+    assert "reconcile_required" in out.reason
+    assert t.restarts == 0
 
 
 # ── (3) Crash after mutation → reconcile, zero mutation ──────────────────────

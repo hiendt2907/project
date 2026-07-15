@@ -18,15 +18,20 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable
 
 from aoip import audit
 from aoip.agent.idempotency import (
     STATUS_CLAIMED,
+    STATUS_MUTATION_STARTED,
+    STATUS_RECONCILE_REQUIRED,
     STATUS_TERMINAL,
+    STATUS_VERIFYING,
     IdempotencyLedger,
+    command_identity,
     idempotency_key,
+    payload_hash,
 )
 from aoip.agent.lease import ExecutionLease
 from aoip.agent.renewal import run_with_renewal
@@ -43,6 +48,14 @@ from aoip.recovery import (
 
 
 def _key_for(req: RecoveryRequest) -> str:
+    # Production commands carry immutable delivery/correlation IDs. Keep the
+    # intent-based key only for legacy direct callers and old tests.
+    if all((req.tenant, req.mission_id, req.incident_id, req.decision_id,
+            req.action_id, req.command_id)):
+        corr_hash = payload_hash(unit=req.unit, verb=req.action.plan,
+                                 port=req.port, failure_mode=req.failure_mode,
+                                 substrate=req.substrate)
+        return command_identity(req, payload_hash=corr_hash)
     return idempotency_key(tenant=req.tenant, scope=req.action.scope,
                            decision_goal=req.action.decision_goal,
                            failure_mode=req.failure_mode, unit=req.unit)
@@ -102,6 +115,28 @@ async def run_guarded_recovery(
                 status=existing["status"],
                 reason=f"idempotent: đã {existing['status']} trước đó (reconciled, zero mutation)")
 
+        if existing and existing.get("status") in {
+            STATUS_MUTATION_STARTED, STATUS_VERIFYING, STATUS_RECONCILE_REQUIRED,
+        }:
+            # A prior process may have dispatched a host side effect. The generic
+            # recovery operator cannot prove its outcome safely, so stop here and
+            # leave a durable escalation for action-specific reconciliation.
+            await ledger.set_phase(
+                key, phase=STATUS_RECONCILE_REQUIRED, holder=holder,
+                meta={"prior_phase": existing["status"], "scope": scope},
+            )
+            reason = ("reconcile_required: prior mutation phase is ambiguous; "
+                      "zero blind re-dispatch")
+            audit_log.append(audit.EV_RECOVERY_RECONCILED,
+                             {"key": key, "prior_status": existing["status"],
+                              "scope": scope, "action": "escalate"}, trace_id=trace)
+            outcome = RecoveryOutcome(
+                action=req.action.at(ActionState.FAILED, verified=False),
+                status="escalated", reason=reason,
+            )
+            await ledger.record(key, status=outcome.status, outcome={"reason": reason})
+            return outcome
+
         # Ta đang giữ lease ⇒ writer cũ (nếu có claim treo) đã biến mất → an toàn
         # nhận quyền. Claim (overwrite claim treo) rồi để execute_recovery tự
         # REVALIDATE current-state (backstop reconcile cho crash-after-mutation).
@@ -111,10 +146,17 @@ async def run_guarded_recovery(
         async def _renew() -> bool:
             return await lease.renew(target, token=token, ttl_s=lease_ttl_s)
 
+        async def _phase_hook(phase: str, meta: dict) -> None:
+            phase_map = {
+                "mutation_started": STATUS_MUTATION_STARTED,
+                "verifying": STATUS_VERIFYING,
+            }
+            await ledger.set_phase(key, phase=phase_map[phase], holder=holder, meta=meta)
+
         renewal = await run_with_renewal(
             execute_recovery(ctx, req=req, transport=transport, audit_log=audit_log, gate=gate,
                              approval=approval, env_auto_execute=env_auto_execute, now=now,
-                             probe_dependent=probe_dependent),
+                             probe_dependent=probe_dependent, phase_hook=_phase_hook),
             renew_fn=_renew, interval_s=renewal_interval, label="execution_lease")
         outcome = renewal.result
 
@@ -263,7 +305,11 @@ def decode_recovery_command(payload: dict) -> tuple[RecoveryRequest, Approval, _
                           substrate=rec_d["substrate"], unit=rec_d["unit"], port=rec_d.get("port"),
                           action=action, risk=float(rec_d["risk"]),
                           diagnosed_at=float(rec_d["diagnosed_at"]),
-                          dependents=tuple(rec_d.get("dependents") or ()), tenant=rec_d["tenant"])
+                          dependents=tuple(rec_d.get("dependents") or ()), tenant=rec_d["tenant"],
+                          mission_id=str(payload.get("mission_id") or rec_d.get("mission_id") or ""),
+                          incident_id=str(payload.get("incident_id") or rec_d.get("incident_id") or ""),
+                          decision_id=str(payload.get("decision_id") or rec_d.get("decision_id") or ""),
+                          command_id=str(payload.get("command_id") or rec_d.get("command_id") or ""))
 
     appr_d = payload.get("approval") or {}
     _require(appr_d, _REQUIRED_APPROVAL_FIELDS, "approval")
@@ -275,6 +321,9 @@ def decode_recovery_command(payload: dict) -> tuple[RecoveryRequest, Approval, _
             issued_at=float(appr_d["issued_at"]), expires_at=float(appr_d["expires_at"]))
     except ValueError as exc:
         raise UnsupportedRecoveryPayload(f"invalid_approval: {exc}") from exc
+    # Bind the immutable action identity from the approval into the request so
+    # idempotency cannot collapse two actions with the same intent.
+        req = replace(req, action_id=approval.action_id)
 
     ev_d = payload.get("evidence") or {}
     findings = [

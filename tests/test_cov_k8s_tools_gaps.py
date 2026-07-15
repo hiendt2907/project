@@ -293,7 +293,7 @@ async def test_execute_rollout_restart_success():
     dep.spec.template.metadata.annotations = {}
     apps = _apps(
         read_namespaced_deployment=AsyncMock(return_value=dep),
-        replace_namespaced_deployment=AsyncMock(return_value=None),
+        patch_namespaced_deployment=AsyncMock(return_value=None),
     )
 
     with (
@@ -303,7 +303,8 @@ async def test_execute_rollout_restart_success():
         result = await execute_rollout_restart("ns", "my-dep")
 
     assert "rollout_restart_ok" in result
-    assert "restartedAt" in str(dep.spec.template.metadata.annotations)
+    body = apps.patch_namespaced_deployment.await_args.args[2]
+    assert "restartedAt" in str(body["spec"]["template"]["metadata"]["annotations"])
 
 
 @pytest.mark.asyncio
@@ -353,7 +354,7 @@ async def test_execute_rollout_restart_from_pending_no_snapshot_executes():
     dep.spec.template.metadata.annotations = {}
     apps = _apps(
         read_namespaced_deployment=AsyncMock(return_value=dep),
-        replace_namespaced_deployment=AsyncMock(return_value=None),
+        patch_namespaced_deployment=AsyncMock(return_value=None),
     )
 
     with (
@@ -1345,7 +1346,7 @@ async def test_tool_k8s_rollout_restart_with_explicit_ns_found_explicit_user():
     dep.spec.template.metadata.annotations = {}
     apps = _apps(
         read_namespaced_deployment=AsyncMock(return_value=dep),
-        replace_namespaced_deployment=AsyncMock(return_value=None),
+        patch_namespaced_deployment=AsyncMock(return_value=None),
     )
 
     with (
@@ -1439,7 +1440,7 @@ async def test_tool_k8s_rollout_restart_proactive_executes():
     dep.spec.template.metadata.annotations = {}
     apps = _apps(
         read_namespaced_deployment=AsyncMock(return_value=dep),
-        replace_namespaced_deployment=AsyncMock(return_value=None),
+        patch_namespaced_deployment=AsyncMock(return_value=None),
     )
 
     with (

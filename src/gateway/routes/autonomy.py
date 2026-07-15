@@ -361,6 +361,18 @@ class ApiKeyRequest(BaseModel):
     actor: str = "admin_ui"
 
 
+class EnvironmentRequest(BaseModel):
+    environment_id: str = Field(..., min_length=1, max_length=128)
+    display_name: str = Field(..., min_length=1, max_length=256)
+    environment_type: str = Field(..., description="production|staging|development")
+    actor: str = "admin_ui"
+
+
+class EnvironmentStatusRequest(BaseModel):
+    status: str = Field(..., description="onboarding|active|suspended|archived")
+    actor: str = "admin_ui"
+
+
 @router.get("/tenants")
 async def get_tenants(request: Request) -> JSONResponse:
     repo = _get_admin_repo(request)
@@ -388,6 +400,46 @@ async def set_tenant_status(request: Request, tenant_id: str, body: TenantStatus
     try:
         result = await repo.set_tenant_status(
             tenant_id=tenant_id, status=body.status, actor=body.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(content={"status": "ok", **result})
+
+
+@router.get("/tenants/{tenant_id}/environments")
+async def get_environments(request: Request, tenant_id: str) -> JSONResponse:
+    repo = _get_admin_repo(request)
+    return JSONResponse(content={"environments": await repo.list_environments(tenant_id)})
+
+
+@router.post("/tenants/{tenant_id}/environments")
+async def create_environment(
+    request: Request, tenant_id: str, body: EnvironmentRequest,
+) -> JSONResponse:
+    _require_admin_ctx(request)
+    repo = _get_admin_repo(request)
+    try:
+        result = await repo.create_environment(
+            tenant_id=tenant_id, environment_id=body.environment_id,
+            display_name=body.display_name, environment_type=body.environment_type,
+            actor=body.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(content={"status": "ok", **result})
+
+
+@router.post("/tenants/{tenant_id}/environments/{environment_id}/status")
+async def set_environment_status(
+    request: Request, tenant_id: str, environment_id: str,
+    body: EnvironmentStatusRequest,
+) -> JSONResponse:
+    _require_admin_ctx(request)
+    repo = _get_admin_repo(request)
+    try:
+        result = await repo.set_environment_status(
+            tenant_id=tenant_id, environment_id=environment_id,
+            status=body.status, actor=body.actor,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -451,6 +503,7 @@ class EnrollTokenRequest(BaseModel):
     ttl_seconds: int | None = Field(
         default=None, ge=60, description="Hạn dùng token (giây); None = không hết hạn (lab)",
     )
+    environment_id: str | None = Field(default=None, max_length=128)
 
 
 @router.post("/tenants/{tenant_id}/enroll-tokens")
@@ -474,6 +527,7 @@ async def create_enroll_token(
         result = await repo.create_enroll_token(
             tenant_id=tenant_id, token_hash=token_hash, token_prefix=raw_token[:8],
             actor=body.actor, label=body.label, expires_at=expires_at,
+            environment_id=body.environment_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

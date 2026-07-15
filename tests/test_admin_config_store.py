@@ -48,6 +48,8 @@ class _FakeConn:
         s = self._s
         if "SELECT 1 FROM omni_admin.tenant WHERE tenant_id" in sql:
             return 1 if args[0] in s.tenant else None
+        if "SELECT 1 FROM omni_admin.environment" in sql:
+            return 1 if (args[0], args[1]) in s.environment else None
         if "INSERT INTO omni_admin.tenant_api_key" in sql and "RETURNING id" in sql:
             tenant, key_hash, key_prefix, label, created_by = args
             kid = s.next_id()
@@ -80,6 +82,11 @@ class _FakeConn:
                                          if kk["tenant_id"] == t["tenant_id"] and kk["status"] == "active")})
                 for t in s.tenant.values()
             ]
+        if "FROM omni_admin.environment WHERE tenant_id = $1" in sql:
+            return [_Row(rec) for rec in s.environment.values() if rec["tenant_id"] == args[0]]
+        if "FROM omni_admin.environment WHERE tenant_id = $1" in sql and "FOR UPDATE" in sql:
+            rec = s.environment.get((args[0], args[1]))
+            return [_Row(rec)] if rec else []
         if "FROM omni_admin.tenant_api_key WHERE tenant_id = $1 ORDER BY" in sql:
             return [_Row(k) for k in s.api_key.values() if k["tenant_id"] == args[0]]
         if "FROM omni_admin.hitl_decision" in sql and "decision = 'PENDING'" in sql:
@@ -158,9 +165,28 @@ class _FakeConn:
             tenant, display_name = args
             s.tenant[tenant] = {"tenant_id": tenant, "display_name": display_name, "status": "active"}
             return "INSERT 0 1"
+        if "INSERT INTO omni_admin.tenant_plan" in sql:
+            s.tenant_plan[args[0]] = {
+                "tenant_id": args[0], "plan_code": "standard", "agent_limit": 10,
+                "autonomy_ceiling": "assist", "retention_days": 30,
+                "support_tier": "standard", "enabled": True, "version": 1,
+            }
+            return "INSERT 0 1"
+        if "INSERT INTO omni_admin.environment " in sql:
+            environment_id, tenant, display_name, environment_type = args
+            s.environment[(tenant, environment_id)] = {
+                "environment_id": environment_id, "tenant_id": tenant,
+                "display_name": display_name, "environment_type": environment_type,
+                "status": "onboarding", "created_at": None, "updated_at": None,
+            }
+            return "INSERT 0 1"
         if "UPDATE omni_admin.tenant SET status=$2" in sql:
             tenant, status = args
             s.tenant[tenant]["status"] = status
+            return "UPDATE 1"
+        if "UPDATE omni_admin.environment SET status=$3" in sql:
+            tenant, environment_id, status = args
+            s.environment[(tenant, environment_id)]["status"] = status
             return "UPDATE 1"
         if "UPDATE omni_admin.tenant_api_key SET status='revoked'" in sql:
             s.api_key[args[0]].update(status="revoked")
@@ -207,6 +233,8 @@ class _Store:
         self.config_change_log: list = []
         self.crat_outbox: list[dict] = []
         self.tenant: dict[str, dict] = {}
+        self.tenant_plan: dict[str, dict] = {}
+        self.environment: dict[tuple[str, str], dict] = {}
         self.api_key: dict[int, dict] = {}
         self.hitl: dict[str, dict] = {}
         self._id = 0
@@ -457,6 +485,7 @@ async def test_create_tenant_and_api_key_then_revoke(pool, redis):
     repo = AdminConfigRepo(pool, redis=redis)
     await repo.create_tenant(tenant_id="acme", display_name="Acme", actor="admin")
     assert pool.store.tenant["acme"]["status"] == "active"
+    assert pool.store.tenant_plan["acme"]["autonomy_ceiling"] == "assist"
     key = await repo.create_api_key(
         tenant_id="acme", key_hash="h", key_prefix="abcd1234", actor="admin",
     )
@@ -483,6 +512,50 @@ async def test_create_tenant_idempotent_true_is_repeatable(pool, redis) -> None:
     # no duplicate row and no extra audit event on the second (no-op) call
     assert len([t for t in pool.store.tenant if t == "replay"]) == 1
     assert len([o for o in pool.store.crat_outbox if o["dedup_key"] == "tenant:replay:create"]) == 1
+
+
+async def test_environment_lifecycle_is_tenant_scoped_and_audited(pool, redis):
+    repo = AdminConfigRepo(pool, redis=redis)
+    await repo.create_tenant(tenant_id="acme", display_name="Acme", actor="admin")
+    created = await repo.create_environment(
+        tenant_id="acme", environment_id="prod", display_name="Production",
+        environment_type="production", actor="admin",
+    )
+    assert created["status"] == "onboarding"
+    assert ("acme", "prod") in pool.store.environment
+    assert any(o["dedup_key"] == "environment:acme:prod:create" for o in pool.store.crat_outbox)
+
+    listed = await repo.list_environments("acme")
+    assert listed[0]["environment_id"] == "prod"
+    assert listed[0]["environment_type"] == "production"
+
+    active = await repo.set_environment_status(
+        tenant_id="acme", environment_id="prod", status="active", actor="admin",
+    )
+    assert active["status"] == "active"
+    with pytest.raises(ValueError, match="không thể chuyển"):
+        await repo.set_environment_status(
+            tenant_id="acme", environment_id="prod", status="onboarding", actor="admin",
+        )
+
+
+async def test_environment_rejects_unknown_tenant_or_duplicate(pool, redis):
+    repo = AdminConfigRepo(pool, redis=redis)
+    with pytest.raises(ValueError, match="không tồn tại"):
+        await repo.create_environment(
+            tenant_id="ghost", environment_id="prod", display_name="Production",
+            environment_type="production", actor="admin",
+        )
+    await repo.create_tenant(tenant_id="acme", display_name="Acme", actor="admin")
+    await repo.create_environment(
+        tenant_id="acme", environment_id="prod", display_name="Production",
+        environment_type="production", actor="admin",
+    )
+    with pytest.raises(ValueError, match="đã tồn tại"):
+        await repo.create_environment(
+            tenant_id="acme", environment_id="prod", display_name="Production 2",
+            environment_type="production", actor="admin",
+        )
 
 
 async def test_decide_hitl_idempotent_and_enqueues_outbox(pool, redis):

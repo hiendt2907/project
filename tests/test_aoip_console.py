@@ -98,6 +98,83 @@ async def test_provider_endpoint_rejects_tenant_principal():
         assert (await c.get("/api/provider/v1/tenants")).status_code == 401  # unauth
 
 
+async def test_provider_can_create_tenant_only_with_change_policy(monkeypatch):
+    r = _redis(); await _provision(r)
+    from services.admin_config.repo import AdminConfigRepo
+
+    async def fake_create(self, *, tenant_id, display_name, actor, idempotent=False):
+        assert actor == "owner@aoip"
+        return {"tenant_id": tenant_id, "display_name": display_name}
+
+    monkeypatch.setattr(AdminConfigRepo, "create_tenant", fake_create)
+    owner = await _sid_provider(r, "owner@aoip")
+    viewer = await _sid_provider(r, "view@aoip")
+    app = create_provider_app(r); app.state.pool = object()
+    async with _client(app) as c:
+        denied = await c.post("/api/provider/v1/tenants", headers=_auth(viewer),
+                              json={"tenant_id": "new", "display_name": "New"})
+        created = await c.post("/api/provider/v1/tenants", headers=_auth(owner),
+                               json={"tenant_id": "new", "display_name": "New"})
+    assert denied.status_code == 403
+    assert created.status_code == 200
+    assert created.json()["tenant_id"] == "new"
+
+
+async def test_provider_autonomy_control_is_tenant_scoped_and_confirmed(monkeypatch):
+    r = _redis(); await _provision(r)
+    from services.admin_config.repo import AdminConfigRepo
+
+    async def fake_get_tier(self, tenant_id):
+        return "shadow"
+
+    async def fake_set_tier(self, **kwargs):
+        assert kwargs["tenant_id"] == "acme"
+        return {"tier": kwargs["tier"], "version": 2, "dedup_key": "tier:acme:2"}
+
+    monkeypatch.setattr(AdminConfigRepo, "get_tier", fake_get_tier)
+    monkeypatch.setattr(AdminConfigRepo, "set_tier", fake_set_tier)
+    owner = await _sid_provider(r, "owner@aoip")
+    app = create_provider_app(r); app.state.pool = object()
+    async with _client(app) as c:
+        blocked = await c.post("/api/provider/v1/tenants/acme/autonomy",
+                               headers=_auth(owner), json={"tier": "assist"})
+        changed = await c.post("/api/provider/v1/tenants/acme/autonomy",
+                               headers=_auth(owner), json={"tier": "assist", "confirm": True})
+    assert blocked.status_code == 409
+    assert changed.status_code == 200 and changed.json()["to"] == "assist"
+
+
+async def test_provider_plan_projection_and_write_are_rbac_scoped(monkeypatch):
+    r = _redis(); await _provision(r)
+    from services.admin_config.repo import AdminConfigRepo
+
+    async def fake_get_plan(self, tenant_id):
+        return {"tenant_id": tenant_id, "plan_code": "standard", "agent_limit": 10,
+                "autonomy_ceiling": "assist", "retention_days": 30,
+                "support_tier": "standard", "enabled": True, "version": 1}
+
+    async def fake_set_plan(self, **kwargs):
+        assert kwargs["tenant_id"] == "acme"
+        return {"tenant_id": "acme", "plan_code": kwargs["plan_code"], "version": 2}
+
+    monkeypatch.setattr(AdminConfigRepo, "get_tenant_plan", fake_get_plan)
+    monkeypatch.setattr(AdminConfigRepo, "set_tenant_plan", fake_set_plan)
+    owner = await _sid_provider(r, "owner@aoip")
+    viewer = await _sid_provider(r, "view@aoip")
+    app = create_provider_app(r); app.state.pool = object()
+    async with _client(app) as c:
+        read = await c.get("/api/provider/v1/tenants/acme/plan", headers=_auth(viewer))
+        denied = await c.post("/api/provider/v1/tenants/acme/plan", headers=_auth(viewer), json={
+            "plan_code": "premium", "agent_limit": 50, "autonomy_ceiling": "auto",
+            "retention_days": 90, "support_tier": "premium"})
+        changed = await c.post("/api/provider/v1/tenants/acme/plan", headers=_auth(owner), json={
+            "plan_code": "premium", "agent_limit": 50, "autonomy_ceiling": "auto",
+            "retention_days": 90, "support_tier": "premium"})
+    assert read.status_code == 200 and read.json()["autonomy_ceiling"] == "assist"
+    assert denied.status_code == 403
+    assert changed.status_code == 200 and changed.json()["plan_code"] == "premium"
+
+
 async def test_tenant_endpoint_rejects_provider_principal():
     r = _redis(); await _provision(r)
     sid = await _sid_provider(r, "owner@aoip")

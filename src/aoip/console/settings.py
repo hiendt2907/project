@@ -19,13 +19,17 @@ async def build_provider_settings(pool: Any) -> dict[str, Any]:
     repo = AdminConfigRepo(pool)
     tenants = await repo.list_tenants()
     credentials_by_tenant = {}
+    environments_by_tenant = {}
     for t in tenants:
         credentials_by_tenant[t["tenant_id"]] = await repo.list_agent_credentials(t["tenant_id"])
-    return {"tenants": tenants, "agent_credentials": credentials_by_tenant}
+        environments_by_tenant[t["tenant_id"]] = await repo.list_environments(t["tenant_id"])
+    return {"tenants": tenants, "agent_credentials": credentials_by_tenant,
+            "environments": environments_by_tenant}
 
 
 async def issue_enroll_token(
-    pool: Any, *, tenant_id: str, actor: str, label: str | None, ttl_seconds: int | None,
+    pool: Any, *, tenant_id: str, actor: str, label: str | None,
+    ttl_seconds: int | None, environment_id: str | None = None,
 ) -> dict[str, Any]:
     """Issue a one-time enroll token. Plaintext is returned exactly once — PG
     only ever stores the sha256 hash (see AdminConfigRepo.create_enroll_token)."""
@@ -40,6 +44,7 @@ async def issue_enroll_token(
     result = await repo.create_enroll_token(
         tenant_id=tenant_id, token_hash=token_hash, token_prefix=raw_token[:8],
         actor=actor, label=label, expires_at=expires_at,
+        environment_id=environment_id,
     )
     return {"enroll_token": raw_token, **result}
 

@@ -30,6 +30,15 @@ CRAT_EVENT_CONFIG_CHANGED = "CONFIG_CHANGED"
 CRAT_EVENT_HITL_DECISION = "HITL_DECISION"
 
 _VALID_TIERS = ("shadow", "assist", "auto")
+_VALID_SUPPORT_TIERS = ("standard", "premium", "enterprise")
+_VALID_ENVIRONMENT_TYPES = ("production", "staging", "development")
+_VALID_ENVIRONMENT_STATUSES = ("onboarding", "active", "suspended", "archived")
+_ENVIRONMENT_TRANSITIONS = {
+    "onboarding": frozenset({"active", "suspended", "archived"}),
+    "active": frozenset({"suspended", "archived"}),
+    "suspended": frozenset({"active", "archived"}),
+    "archived": frozenset(),
+}
 
 
 class OptimisticLockError(RuntimeError):
@@ -90,6 +99,102 @@ class AdminConfigRepo:
             "readiness_flag": bool(row["readiness_flag"]),
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
+
+    async def get_tenant_plan(self, tenant_id: str = "default") -> dict[str, Any] | None:
+        """Read tenant entitlements; missing row is unavailable, never unlimited."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT plan_code, agent_limit, autonomy_ceiling, retention_days, "
+                "support_tier, enabled, updated_by, updated_at, version "
+                "FROM omni_admin.tenant_plan WHERE tenant_id = $1",
+                tenant_id,
+            )
+        if row is None:
+            return None
+        return {
+            "tenant_id": tenant_id,
+            "plan_code": row["plan_code"],
+            "agent_limit": int(row["agent_limit"]),
+            "autonomy_ceiling": row["autonomy_ceiling"],
+            "retention_days": int(row["retention_days"]),
+            "support_tier": row["support_tier"],
+            "enabled": bool(row["enabled"]),
+            "updated_by": row["updated_by"],
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+            "version": int(row["version"]),
+        }
+
+    async def get_autonomy_ceiling(self, tenant_id: str = "default") -> str | None:
+        plan = await self.get_tenant_plan(tenant_id)
+        return plan["autonomy_ceiling"] if plan else None
+
+    async def list_tenant_plans(self) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT tenant_id, plan_code, agent_limit, autonomy_ceiling, retention_days, "
+                "support_tier, enabled, updated_by, updated_at, version "
+                "FROM omni_admin.tenant_plan ORDER BY tenant_id"
+            )
+        return [
+            {"tenant_id": r["tenant_id"], "plan_code": r["plan_code"],
+             "agent_limit": int(r["agent_limit"]), "autonomy_ceiling": r["autonomy_ceiling"],
+             "retention_days": int(r["retention_days"]), "support_tier": r["support_tier"],
+             "enabled": bool(r["enabled"]), "updated_by": r["updated_by"],
+             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+             "version": int(r["version"])}
+        for r in rows
+        ]
+
+    async def set_tenant_plan(
+        self, *, tenant_id: str, plan_code: str, agent_limit: int,
+        autonomy_ceiling: str, retention_days: int, support_tier: str,
+        enabled: bool, actor: str,
+    ) -> dict[str, Any]:
+        if not plan_code.strip() or len(plan_code) > 64:
+            raise ValueError("plan_code phải dài 1-64 ký tự")
+        if agent_limit < 0 or retention_days <= 0:
+            raise ValueError("agent_limit phải >= 0 và retention_days phải > 0")
+        if autonomy_ceiling not in _VALID_TIERS:
+            raise ValueError(f"autonomy_ceiling không hợp lệ: {autonomy_ceiling!r}")
+        if support_tier not in _VALID_SUPPORT_TIERS:
+            raise ValueError(f"support_tier không hợp lệ: {support_tier!r}")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                tenant_exists = await conn.fetchval(
+                    "SELECT 1 FROM omni_admin.tenant WHERE tenant_id = $1", tenant_id,
+                )
+                if not tenant_exists:
+                    raise ValueError(f"tenant {tenant_id!r} không tồn tại")
+                prev = await conn.fetchrow(
+                    "SELECT plan_code, agent_limit, autonomy_ceiling, retention_days, "
+                    "support_tier, enabled, version FROM omni_admin.tenant_plan "
+                    "WHERE tenant_id = $1 FOR UPDATE",
+                    tenant_id,
+                )
+                version = int(prev["version"]) + 1 if prev else 1
+                await conn.execute(
+                    "INSERT INTO omni_admin.tenant_plan "
+                    "(tenant_id, plan_code, agent_limit, autonomy_ceiling, retention_days, "
+                    "support_tier, enabled, updated_by, version) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) "
+                    "ON CONFLICT (tenant_id) DO UPDATE SET plan_code=$2, agent_limit=$3, "
+                    "autonomy_ceiling=$4, retention_days=$5, support_tier=$6, enabled=$7, "
+                    "updated_by=$8, updated_at=now(), version=$9",
+                    tenant_id, plan_code.strip(), agent_limit, autonomy_ceiling,
+                    retention_days, support_tier, enabled, actor, version,
+                )
+                new_value = {"plan_code": plan_code.strip(), "agent_limit": agent_limit,
+                             "autonomy_ceiling": autonomy_ceiling, "retention_days": retention_days,
+                             "support_tier": support_tier, "enabled": enabled}
+                await self._log_and_enqueue(
+                    conn, tenant_id=tenant_id, entity="tenant_plan", entity_key=tenant_id,
+                    action="update", old_value=dict(prev or {}), new_value=new_value,
+                    actor=actor, event_type=CRAT_EVENT_CONFIG_CHANGED,
+                    dedup_key=f"tenant_plan:{tenant_id}:{version}",
+                    payload={"entity": "tenant_plan", "tenant_id": tenant_id,
+                             **new_value, "actor": actor},
+                )
+        return {"tenant_id": tenant_id, **new_value, "version": version}
 
     async def get_tenant_telegram_chat_id(self, tenant_id: str = "default") -> int | None:
         async with self._pool.acquire() as conn:
@@ -473,6 +578,120 @@ class AdminConfigRepo:
             for r in rows
         ]
 
+    async def list_environments(self, tenant_id: str) -> list[dict[str, Any]]:
+        """List provider-managed environments for one tenant."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT environment_id, tenant_id, display_name, environment_type, "
+                "status, created_at, updated_at "
+                "FROM omni_admin.environment WHERE tenant_id = $1 "
+                "ORDER BY created_at, environment_id",
+                tenant_id,
+            )
+        return [
+            {
+                "environment_id": r["environment_id"],
+                "tenant_id": r["tenant_id"],
+                "display_name": r["display_name"],
+                "environment_type": r["environment_type"],
+                "status": r["status"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            }
+            for r in rows
+        ]
+
+    async def create_environment(
+        self, *, tenant_id: str, environment_id: str, display_name: str,
+        environment_type: str, actor: str,
+    ) -> dict[str, Any]:
+        """Create an environment in onboarding state with an audited transaction."""
+        if environment_type not in _VALID_ENVIRONMENT_TYPES:
+            raise ValueError(
+                f"environment_type không hợp lệ: {environment_type!r} "
+                f"(cho phép {_VALID_ENVIRONMENT_TYPES})"
+            )
+        if not environment_id.strip() or len(environment_id) > 128:
+            raise ValueError("environment_id phải dài 1-128 ký tự")
+        if not display_name.strip():
+            raise ValueError("display_name không được rỗng")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                tenant_exists = await conn.fetchval(
+                    "SELECT 1 FROM omni_admin.tenant WHERE tenant_id = $1", tenant_id,
+                )
+                if not tenant_exists:
+                    raise ValueError(f"tenant {tenant_id!r} không tồn tại")
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM omni_admin.environment "
+                    "WHERE tenant_id = $1 AND environment_id = $2",
+                    tenant_id, environment_id,
+                )
+                if exists:
+                    raise ValueError(
+                        f"environment {environment_id!r} đã tồn tại trong tenant {tenant_id!r}"
+                    )
+                await conn.execute(
+                    "INSERT INTO omni_admin.environment "
+                    "(environment_id, tenant_id, display_name, environment_type) "
+                    "VALUES ($1,$2,$3,$4)",
+                    environment_id, tenant_id, display_name, environment_type,
+                )
+                await self._log_and_enqueue(
+                    conn, tenant_id=tenant_id, entity="environment",
+                    entity_key=environment_id, action="create", old_value={},
+                    new_value={"environment_id": environment_id, "display_name": display_name,
+                               "environment_type": environment_type, "status": "onboarding"},
+                    actor=actor, event_type=CRAT_EVENT_CONFIG_CHANGED,
+                    dedup_key=f"environment:{tenant_id}:{environment_id}:create",
+                    payload={"entity": "environment", "tenant_id": tenant_id,
+                             "environment_id": environment_id, "display_name": display_name,
+                             "environment_type": environment_type, "actor": actor},
+                )
+        return {
+            "tenant_id": tenant_id, "environment_id": environment_id,
+            "display_name": display_name, "environment_type": environment_type,
+            "status": "onboarding",
+        }
+
+    async def set_environment_status(
+        self, *, tenant_id: str, environment_id: str, status: str, actor: str,
+    ) -> dict[str, Any]:
+        """Apply the explicit environment lifecycle; archived is terminal."""
+        if status not in _VALID_ENVIRONMENT_STATUSES:
+            raise ValueError(f"status không hợp lệ: {status!r}")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                prev = await conn.fetchrow(
+                    "SELECT display_name, environment_type, status "
+                    "FROM omni_admin.environment WHERE tenant_id = $1 "
+                    "AND environment_id = $2 FOR UPDATE",
+                    tenant_id, environment_id,
+                )
+                if prev is None:
+                    raise ValueError(f"environment {environment_id!r} không tồn tại")
+                if status not in _ENVIRONMENT_TRANSITIONS[prev["status"]]:
+                    raise ValueError(
+                        f"không thể chuyển environment {environment_id!r} "
+                        f"từ {prev['status']!r} sang {status!r}"
+                    )
+                await conn.execute(
+                    "UPDATE omni_admin.environment SET status=$3, updated_at=now() "
+                    "WHERE tenant_id=$1 AND environment_id=$2",
+                    tenant_id, environment_id, status,
+                )
+                await self._log_and_enqueue(
+                    conn, tenant_id=tenant_id, entity="environment",
+                    entity_key=environment_id, action="update",
+                    old_value={"status": prev["status"]}, new_value={"status": status},
+                    actor=actor, event_type=CRAT_EVENT_CONFIG_CHANGED,
+                    dedup_key=f"environment:{tenant_id}:{environment_id}:status:{status}:{_now_token()}",
+                    payload={"entity": "environment", "tenant_id": tenant_id,
+                             "environment_id": environment_id, "status": status,
+                             "actor": actor},
+                )
+        return {"tenant_id": tenant_id, "environment_id": environment_id, "status": status}
+
     async def list_api_keys(self, tenant_id: str) -> list[dict[str, Any]]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -576,6 +795,12 @@ class AdminConfigRepo:
         that mode an existing tenant is returned as-is (no row change, no new
         audit event) instead of raising.
         """
+        tenant_id = tenant_id.strip()
+        display_name = display_name.strip()
+        if not tenant_id or len(tenant_id) > 128:
+            raise ValueError("tenant_id phải dài 1-128 ký tự")
+        if not display_name or len(display_name) > 256:
+            raise ValueError("display_name phải dài 1-256 ký tự")
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 exists = await conn.fetchval(
@@ -591,13 +816,24 @@ class AdminConfigRepo:
                     "INSERT INTO omni_admin.tenant (tenant_id, display_name) VALUES ($1,$2)",
                     tenant_id, display_name,
                 )
+                # A tenant without an entitlement row cannot enroll agents or resolve
+                # autonomy safely. Create the bounded default in the same transaction
+                # so the UI never creates an operationally unusable tenant.
+                await conn.execute(
+                    "INSERT INTO omni_admin.tenant_plan (tenant_id) VALUES ($1)",
+                    tenant_id,
+                )
                 await self._log_and_enqueue(
                     conn, tenant_id=tenant_id, entity="tenant", entity_key=tenant_id,
                     action="create", old_value={}, new_value={"display_name": display_name},
                     actor=actor, event_type=CRAT_EVENT_CONFIG_CHANGED,
                     dedup_key=f"tenant:{tenant_id}:create",
                     payload={"entity": "tenant", "tenant_id": tenant_id,
-                             "display_name": display_name, "actor": actor},
+                             "display_name": display_name,
+                             "default_plan": {"plan_code": "standard", "agent_limit": 10,
+                                              "autonomy_ceiling": "assist", "retention_days": 30,
+                                              "support_tier": "standard", "enabled": True},
+                             "actor": actor},
                 )
         return {"tenant_id": tenant_id, "display_name": display_name}
 
@@ -689,6 +925,7 @@ class AdminConfigRepo:
     async def create_enroll_token(
         self, *, tenant_id: str, token_hash: str, token_prefix: str, actor: str,
         label: str | None = None, expires_at: Any = None,
+        environment_id: str | None = None,
     ) -> dict[str, Any]:
         """Phát one-time enroll token cho tenant. Gotcha FK: tenant phải tồn tại
         trước (post-mortem drift-correction-2026-07-02) — check tường minh để trả
@@ -700,11 +937,21 @@ class AdminConfigRepo:
                 )
                 if not exists:
                     raise ValueError(f"tenant {tenant_id!r} không tồn tại")
+                if environment_id is not None:
+                    env = await conn.fetchrow(
+                        "SELECT status FROM omni_admin.environment "
+                        "WHERE tenant_id = $1 AND environment_id = $2",
+                        tenant_id, environment_id,
+                    )
+                    if env is None:
+                        raise ValueError(f"environment {environment_id!r} không tồn tại")
+                    if env["status"] in ("suspended", "archived"):
+                        raise ValueError(f"environment {environment_id!r} không hoạt động")
                 token_id = await conn.fetchval(
                     "INSERT INTO omni_admin.agent_enroll_token "
-                    "(tenant_id, token_hash, token_prefix, label, created_by, expires_at) "
-                    "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
-                    tenant_id, token_hash, token_prefix, label, actor, expires_at,
+                    "(tenant_id, environment_id, token_hash, token_prefix, label, created_by, expires_at) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+                    tenant_id, environment_id, token_hash, token_prefix, label, actor, expires_at,
                 )
                 await self._log_and_enqueue(
                     conn, tenant_id=tenant_id, entity="agent_enroll_token",
@@ -714,9 +961,11 @@ class AdminConfigRepo:
                     dedup_key=f"enroll_token:{tenant_id}:{token_id}:create",
                     payload={"entity": "agent_enroll_token", "tenant_id": tenant_id,
                              "token_id": token_id, "token_prefix": token_prefix,
+                             "environment_id": environment_id,
                              "actor": actor},
                 )
-        return {"id": token_id, "token_prefix": token_prefix, "tenant_id": tenant_id}
+        return {"id": token_id, "token_prefix": token_prefix, "tenant_id": tenant_id,
+                "environment_id": environment_id}
 
     async def consume_enroll_token_and_issue_credential(
         self, *, token_hash: str, agent_id: str, hostname: str,
@@ -737,12 +986,29 @@ class AdminConfigRepo:
                     "SET status='used', used_at=now(), used_by_agent=$2 "
                     "WHERE token_hash = $1 AND status = 'issued' "
                     "AND (expires_at IS NULL OR expires_at > now()) "
-                    "RETURNING id, tenant_id",
+                    "RETURNING id, tenant_id, environment_id",
                     token_hash, agent_id,
                 )
                 if row is None:
                     return None
                 token_id, tenant_id = row["id"], row["tenant_id"]
+                environment_id = row["environment_id"]
+                plan = await conn.fetchrow(
+                    "SELECT agent_limit, enabled FROM omni_admin.tenant_plan "
+                    "WHERE tenant_id = $1 FOR UPDATE",
+                    tenant_id,
+                )
+                if plan is None or not bool(plan["enabled"]):
+                    raise ValueError(f"tenant {tenant_id!r} không có entitlement agent hoạt động")
+                active_agents = await conn.fetchval(
+                    "SELECT COUNT(*) FROM omni_admin.agent_credential "
+                    "WHERE tenant_id = $1 AND agent_id <> $2 AND status = 'active'",
+                    tenant_id, agent_id,
+                )
+                if int(active_agents or 0) >= int(plan["agent_limit"]):
+                    raise ValueError(
+                        f"tenant {tenant_id!r} đã đạt giới hạn agent ({int(plan['agent_limit'])})"
+                    )
                 await conn.execute(
                     "UPDATE omni_admin.agent_credential "
                     "SET status='revoked', revoked_at=now() "
@@ -751,35 +1017,38 @@ class AdminConfigRepo:
                 )
                 cred_id = await conn.fetchval(
                     "INSERT INTO omni_admin.agent_credential "
-                    "(tenant_id, agent_id, hostname, key_hash, key_prefix, enrolled_via_token) "
-                    "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
-                    tenant_id, agent_id, hostname, key_hash, key_prefix, token_id,
+                    "(tenant_id, environment_id, agent_id, hostname, key_hash, key_prefix, enrolled_via_token) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+                    tenant_id, environment_id, agent_id, hostname, key_hash, key_prefix, token_id,
                 )
                 await self._log_and_enqueue(
                     conn, tenant_id=tenant_id, entity="agent_credential",
                     entity_key=str(cred_id), action="create", old_value={},
                     new_value={"agent_id": agent_id, "key_prefix": key_prefix,
-                               "enrolled_via_token": token_id},
+                               "enrolled_via_token": token_id, "environment_id": environment_id},
                     actor=f"enroll:{agent_id}", event_type=CRAT_EVENT_CONFIG_CHANGED,
                     dedup_key=f"agent_credential:{tenant_id}:{cred_id}:create",
                     payload={"entity": "agent_credential", "tenant_id": tenant_id,
                              "agent_id": agent_id, "credential_id": cred_id,
+                             "environment_id": environment_id,
                              "key_prefix": key_prefix, "token_id": token_id},
                 )
         return {"credential_id": cred_id, "tenant_id": tenant_id,
-                "agent_id": agent_id, "key_prefix": key_prefix}
+                "agent_id": agent_id, "key_prefix": key_prefix,
+                "environment_id": environment_id}
 
     async def lookup_agent_credential(self, key_hash: str) -> dict[str, Any] | None:
         """Auth hot-path: hash → (tenant_id, agent_id) nếu credential active."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT tenant_id, agent_id FROM omni_admin.agent_credential "
+                "SELECT tenant_id, agent_id, environment_id FROM omni_admin.agent_credential "
                 "WHERE key_hash = $1 AND status = 'active'",
                 key_hash,
             )
         if row is None:
             return None
-        return {"tenant_id": row["tenant_id"], "agent_id": row["agent_id"]}
+        return {"tenant_id": row["tenant_id"], "agent_id": row["agent_id"],
+                "environment_id": row["environment_id"]}
 
     async def revoke_agent_credentials(
         self, *, tenant_id: str, agent_id: str, actor: str,
@@ -811,12 +1080,13 @@ class AdminConfigRepo:
     async def list_agent_credentials(self, tenant_id: str) -> list[dict[str, Any]]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, agent_id, hostname, key_prefix, status, created_at, revoked_at "
+                "SELECT id, agent_id, hostname, environment_id, key_prefix, status, created_at, revoked_at "
                 "FROM omni_admin.agent_credential WHERE tenant_id = $1 ORDER BY id",
                 tenant_id,
             )
         return [
             {"id": r["id"], "agent_id": r["agent_id"], "hostname": r["hostname"],
+             "environment_id": r["environment_id"],
              "key_prefix": r["key_prefix"], "status": r["status"],
              "created_at": str(r["created_at"] or ""),
              "revoked_at": str(r["revoked_at"] or "")}

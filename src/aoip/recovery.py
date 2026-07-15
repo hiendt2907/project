@@ -236,6 +236,7 @@ async def execute_recovery(
     ctx, *, req: RecoveryRequest, transport, audit_log: audit.FileAuditLog,
     gate: RecoveryGate, approval: Approval, env_auto_execute: bool, now: float,
     probe_dependent: Callable[[str], Awaitable[bool]] | None = None,
+    phase_hook: Callable[[str, dict], Awaitable[None]] | None = None,
 ) -> RecoveryOutcome:
     """Vòng phục hồi có kiểm soát. Trả RecoveryOutcome; ghi audit từng bước.
 
@@ -291,6 +292,10 @@ async def execute_recovery(
 
     # ── EXECUTE smallest reversible action (mutation thật) ────────────────────
     action = req.action.at(ActionState.EXECUTING)
+    if phase_hook is not None:
+        # This write is a fail-closed precondition: if it cannot be persisted,
+        # do not dispatch the host mutation with an unknown execution phase.
+        await phase_hook("mutation_started", {"before": before, "unit": req.unit})
     out, rc = await op.apply(transport, req.unit, req.port)
     audit_log.append(audit.EV_RECOVERY_EXECUTED,
                      {**audit_context, "node": req.failed_node, "verb": op.action_verb, "rc": rc,
@@ -298,6 +303,8 @@ async def execute_recovery(
     ctx.log("Recover", f"executed {op.action_verb} {req.unit} (rc={rc}) bởi {approval.approver}")
 
     # ── VERIFY: service khỏe lại + dependents hết ảnh hưởng ───────────────────
+    if phase_hook is not None:
+        await phase_hook("verifying", {"rc": rc, "unit": req.unit})
     try:
         service_ok = await op.health(transport, req.unit, req.port)
     except Exception as exc:  # noqa: BLE001 — verification uncertainty must be explicit

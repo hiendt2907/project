@@ -219,6 +219,7 @@ async def emit_execute_mutate(
         attempt_count=attempt_count,
         reasoning_chain=reasoning_chain,
         planner_origin=planner_origin,
+        tenant_id=getattr(ctx, "current_tenant_id", None),
     )
     audit_topic = getattr(ws, "kafka_topic_audit_chain", "omni-audit-chain")
     audit_payload = _mutation_enqueue_audit_payload(body)
@@ -390,6 +391,7 @@ async def emit_hitl_pending(
         args=args,
         attempt_count=attempt_count,
         reasoning_chain=reasoning_chain,
+        tenant_id=(siem_labels.get("siem_tenant") or getattr(ctx, "current_tenant_id", None)),
     )
     # Annotate with HITL metadata so dispatcher knows what to show the operator.
     body["hitl_pending"] = True
