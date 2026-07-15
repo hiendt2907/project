@@ -92,7 +92,7 @@ def _extract_if_archive(src: Path, install_dir: Path) -> tuple[bool, str]:
         try:
             with tarfile.open(src, "r:gz") as tar:
                 members = [m for m in tar.getmembers() if not m.name.startswith("/")]
-                tar.extractall(install_dir, members=members)  # noqa: S202
+                tar.extractall(install_dir, members=members, filter="data")  # noqa: S202
             return True, ""
         except Exception as exc:
             return False, f"extract_error: {exc}"
@@ -205,7 +205,7 @@ async def handle_update_command(
         if tmp_backup.exists():
             try:
                 with tarfile.open(tmp_backup, "r:gz") as tar:
-                    tar.extractall(install_dir.parent)  # noqa: S202
+                    tar.extractall(install_dir.parent, filter="tar")  # noqa: S202 — backup tự tạo, giữ symlink
                 logger.info("[updater] backup restored after install failure")
             except Exception as rb_exc:
                 logger.error("[updater] rollback_failed: %s", rb_exc)
@@ -220,7 +220,7 @@ async def handle_update_command(
         if tmp_backup.exists():
             try:
                 with tarfile.open(tmp_backup, "r:gz") as tar:
-                    tar.extractall(install_dir.parent)  # noqa: S202
+                    tar.extractall(install_dir.parent, filter="tar")  # noqa: S202 — backup tự tạo, giữ symlink
                 await _restart_service()
                 logger.info("[updater] rollback complete, old version restored")
             except Exception as rb_exc:

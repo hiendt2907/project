@@ -126,7 +126,7 @@ def _extract_bundle(data: bytes, install_dir: Path) -> None:
             raise ValueError("bundle_empty_or_unsafe")
         for pkg in _BUNDLE_PACKAGES:
             shutil.rmtree(install_dir / pkg, ignore_errors=True)
-        tar.extractall(install_dir, members=members)  # noqa: S202 — members đã lọc
+        tar.extractall(install_dir, members=members, filter="data")  # noqa: S202 — members đã lọc
 
 
 def restore_previous(install_dir: Path, releases_dir: Path) -> bool:
@@ -139,7 +139,7 @@ def restore_previous(install_dir: Path, releases_dir: Path) -> bool:
         members = _safe_members(tar)
         for pkg in _BUNDLE_PACKAGES:
             shutil.rmtree(install_dir / pkg, ignore_errors=True)
-        tar.extractall(install_dir, members=members)  # noqa: S202
+        tar.extractall(install_dir, members=members, filter="data")  # noqa: S202
     return True
 
 

@@ -478,7 +478,7 @@ async def tool_k8s_rollout_restart(ctx: Any, args: RolloutRestartArgs) -> str:
                     "template": {
                         "metadata": {
                             "annotations": {
-                                "kubectl.kubernetes.io/restartedAt": datetime.datetime.utcnow().isoformat() + "Z"
+                                "kubectl.kubernetes.io/restartedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
                             }
                         }
                     }

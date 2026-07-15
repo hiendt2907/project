@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -327,7 +327,7 @@ class AnalystAdvisory(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     trace_id: str = Field(description="Trace ID for correlation")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     verdict: Literal["NORMAL", "INVESTIGATE", "URGENT", "CRITICAL"]
     root_cause: str = Field(
         description="Concise technical explanation of what is broken (one sentence, no speculation)",

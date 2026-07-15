@@ -73,7 +73,7 @@ def _payload_for(bundle: bytes, install: Path | None = None, *, version="9.9.9")
         for pkg in ("remote_agent", "aoip"):
             (stage / pkg).mkdir(parents=True, exist_ok=True)
         with tarfile.open(fileobj=io.BytesIO(bundle), mode="r:gz") as tar:
-            tar.extractall(stage)  # noqa: S202 — fixture cục bộ
+            tar.extractall(stage, filter="data")  # noqa: S202 — fixture cục bộ
         p["bundle_sha256"] = compute_bundle_hash(stage / "remote_agent")
         p["aoip_bundle_sha256"] = compute_bundle_hash(stage / "aoip")
     return p
@@ -343,7 +343,7 @@ class TestPublisher:
         shutil.rmtree(stage, ignore_errors=True)
         stage.mkdir(parents=True)
         with tarfile.open(fileobj=io.BytesIO(tar1), mode="r:gz") as tar:
-            tar.extractall(stage)  # noqa: S202 — nội dung do chính repo build
+            tar.extractall(stage, filter="data")  # noqa: S202 — nội dung do chính repo build
         assert compute_bundle_hash(stage / "remote_agent") == manifest["bundle_sha256"]
         assert compute_bundle_hash(stage / "aoip") == manifest["aoip_bundle_sha256"]
         shutil.rmtree(stage, ignore_errors=True)
