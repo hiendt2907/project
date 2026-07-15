@@ -1,6 +1,6 @@
 # Current Session Handoff
 
-Updated: 2026-07-14
+Updated: 2026-07-15
 
 ## Outcome
 
@@ -70,10 +70,71 @@ logical commits — control-plane backend + migrations (`b6941d5`), portal UI
   `assets/auto_state.json` in `claude-ytb`, then start P0.1 (concurrency and state
   locking). No code written yet per explicit user instruction.
 
-## Known follow-ups
+## Follow-up resolution (2026-07-15)
 
-- Clean the non-blocking deprecation and unawaited-`AsyncMock` warnings.
-- Reconcile the accumulated open onboarding questions and verify stale replay-agent
-  heartbeat records.
-- Keep autonomy in shadow/kill-switch mode until an explicit production-governance
-  decision is made.
+- **Onboarding questions reconciled at the root cause.** `expires_at` existed but no
+  code enforced it, so PENDING questions accumulated forever. Added
+  `question_lifecycle.expire_stale_questions()` (TDD, 4 tests) and wired it into
+  `build_provider_human_inbox` before the paced re-ask step. Live Redis reconciled:
+  720 stale questions expired (staging-sim 363, tenant-replay-01 357); remaining
+  PENDING are all within TTL.
+- **Replay-agent heartbeats verified — NOT stale and NOT zombies.**
+  `tenant-replay-01_cust-edge/app` are the intentional cross-tenant isolation rig
+  (PRODUCT_PROOF.md Iteration 9/25), live via `omni-remote-agent-replay01.service`
+  on the VMs, agent v1.1.3 (older than staging-sim fleet v1.3.2 — known state).
+  `loyalty_*` registry entries are REAL external UAT hosts (10.210.14.x) pushed
+  through the autossh reverse tunnel. Do not delete either group.
+- **Autonomy re-verified on the live cluster (2026-07-15):**
+  `OMNI_AUTO_EXECUTE_ENABLED=false`, `OMNI_SIEM_SUGGEST_ONLY=true`, no env tier
+  override on `omni-fullstack`; PG `autonomy_tier_state` has `default=shadow`;
+  `tenant_plan` ceilings are `assist` for all three tenants. Keep shadow/kill-switch
+  until an explicit production-governance decision.
+- **Warning hygiene:** replaced `datetime.utcnow` (advisory schema default,
+  restartedAt annotation), added explicit `tarfile.extractall(filter=...)` in both
+  updaters and test fixtures. Test-side mock hygiene applied across 10 test files —
+  three patterns: (1) mocked `asyncio.wait_for`/`run_until_complete` must close the
+  coroutine passed in (`_wf_return`/`_wf_timeout` helpers), (2) bare `AsyncMock`
+  for `llm.embed`/`telegram.send_message`/`analyze_cluster` must return real
+  dict/MagicMock (otherwise `.get()`/`.model_dump()` spawn unawaited coroutines),
+  (3) `side_effect=noop` instead of `return_value=noop()` plus
+  `await asyncio.gather(*tasks, ...)` after cancel.
+
+## Working tree at handoff time (2026-07-15, RELEASED)
+
+Final confirmation suite: `6154 passed, 5 deselected, 2 warnings` — both
+remaining warnings are external/benign (StarletteDeprecationWarning from the
+`fastapi.testclient` import; `runpy` notice for `services.analyst.__main__`).
+All changes below were committed as `0582392` (feat(aoip) question expiry),
+`f4a50ce` (fix datetime/tarfile), `7cebb22` (fix(tests) mock hygiene), plus a
+docs commit, and pushed to `main`. Working tree is clean.
+
+The change list that went into those commits:
+
+- `src/aoip/question_lifecycle.py` — new `expire_stale_questions()`.
+- `src/aoip/console/human_inbox.py` — expiry wired before `_ensure_questions`.
+- `src/pkg/reasoning/analyst_advisory_schema.py`, `src/workers/k8s_cluster_tools.py`
+  — timezone-aware datetime.
+- `src/aoip/agent/updater.py`, `src/remote_agent/updater.py` — tar extract filters
+  (`data` for downloaded bundles, `tar` for self-created rollback backups).
+- Tests: `test_aoip_question_lifecycle.py` (+4 expiry tests),
+  `test_cov_omni_worker_gaps.py`, `test_cov_baseline_snapshot_gaps.py`,
+  `test_cov_lab_shell.py`, `test_cov_kubectl_cluster.py`, `test_services_tools.py`,
+  `test_remote_agent.py`, `test_cov_remote_agent_pipeline.py`,
+  `test_telegram_chunk_boundary.py`, `test_aoip_agent_updater.py`,
+  `test_cov_cluster_alert.py`, `test_remote_agent_database.py`,
+  `test_database_collector.py`.
+- This handoff file.
+
+Progress evidence: full suite after the first hygiene wave was `6154 passed,
+5 warnings` (down from 105). The last three fixable warning sources
+(cluster-alert bare `llm` AsyncMock, two database-collector `wait_for` timeout
+patches) were then fixed; targeted runs are green (51 passed clean). A final
+confirmation full-suite run is in flight in the background.
+
+**Next step:** none pending from this session — all three follow-up items
+(release, warning hygiene, questions/heartbeats/autonomy reconciliation) are
+closed. A fresh session starts from a clean tree on `main`. Note the deployed
+pods still run the pre-`0582392` image; `expire_stale_questions` runs in-pod
+only after the next `make docker-worker deploy-worker deploy-gateway` rebuild
+(until then the provider inbox in the deployed portal does not expire questions
+— the live data was already reconciled manually this session).
