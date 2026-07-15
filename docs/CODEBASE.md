@@ -1,5 +1,30 @@
 # Omni SRE — Codebase Map
 
+## Current verified state (2026-07-14)
+
+The latest full frontend/backend/business-logic audit is recorded in
+[frontend-backend-logic-verification-2026-07-14](reports/frontend-backend-logic-verification-2026-07-14.md).
+The product release gate is green: backend `6150 passed, 5 deselected, 173 warnings`,
+boundary/safety `61 passed`, portal E2E `18/18`, pre-deploy `17/17`, both portal
+builds/typechecks passed, and production dependency audit reported zero high-severity
+vulnerabilities.
+
+The runtime boundary is intentional: `src/workers/` remains the execution engine;
+`src/aoip/` is the product/domain/control-plane layer. They are not physically merged.
+Shared contracts belong in `src/pkg/`, and gateway/AOIP code must not import workers.
+See [ADR-004](architecture/ADR-004-runtime-convergence.md).
+
+The current control-plane path includes tenant/environment lifecycle, scoped agent
+enrollment, durable missions and command idempotency, tenant-scoped autonomy, and
+plan/entitlement enforcement. PostgreSQL migrations `0007`, `0008`, and `0009` are
+part of this path. Tenant creation provisions a bounded default `tenant_plan` in the
+same transaction; provider `/licenses` exposes the plan operation surface.
+
+Latest UI fixes include shared form wrapping/min-width rules, the tenant active-context
+header, role rendering, and the `aoip-btn` class correction. Next.js is pinned to
+`16.2.6` across portals, unused `next-auth` was removed, and production PostCSS is
+overridden to `8.5.10`.
+
 ## Architecture Overview
 
 ### Customer System Understanding (updated 2026-07-14)

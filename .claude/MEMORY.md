@@ -10,5 +10,8 @@
 | Customer topology + API sequence contract | `docs/architecture/customer-system-understanding.md` |
 | Shadow OS command governance | `docs/runbooks/shadow_os_command_mode.md` |
 | Trace audit `gw-prom-f58ffe43e85e` | `docs/reports/trace-audit-gw-prom-f58ffe43e85e.md` |
+| Latest frontend/backend/business verification | `docs/reports/frontend-backend-logic-verification-2026-07-14.md` |
+| Runtime boundary decision | `docs/architecture/ADR-004-runtime-convergence.md` |
+| Current session handoff | `docs/handoffs/CURRENT_SESSION.md` |
 
 **When saving a new trace audit:** add `docs/reports/trace-audit-<trace_id>.md`, link it here and in `docs/DOCUMENTATION_INDEX.md`, and add a one-line pointer under `LabVsRealAlertTesting` in `project-memory.md`.

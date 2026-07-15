@@ -1,6 +1,7 @@
 # Living Operations Runtime — Hardening Plan (pre-Gateway)
 
-> Trạng thái: **PLAN — chưa code**. Chốt trước khi wiring Gateway/systemd.
+> Trạng thái: **IMPLEMENTED INCREMENTALLY**. Gateway/systemd durable runtime đã có; các
+> hardening item được triển khai theo vertical slice và phải tiếp tục giữ regression xanh.
 > Nguồn: review P0/P1 của Slice 1 safety substrate. Không thêm kiến trúc mới —
 > chỉ siết chặt nền idempotency/lease/approval/reconcile/audit đã có.
 
@@ -42,6 +43,10 @@ canonical_scope, timestamp, state_before, state_after, reason, evidence_refs, co
 - Không đổi hành vi, chỉ ngữ nghĩa + đặt kỳ vọng đúng.
 
 ### #2 Execution-phase persistence (không nhả claim sau khi mutation có thể đã bắt đầu)
+
+> **Implemented:** `IdempotencyLedger` lưu `CLAIMED → MUTATION_STARTED → VERIFYING`;
+> redelivery ở phase không xác định chuyển `RECONCILE_REQUIRED` và escalate, không
+> blind re-dispatch. `execute_recovery` nhận phase hook fail-closed trước mutation.
 - `idempotency.py`: mở rộng trạng thái key:
   `CLAIMED → MUTATION_STARTED → VERIFYING → <terminal> | RECONCILE_REQUIRED`.
   Thêm hằng `STATUS_MUTATION_STARTED`, `STATUS_VERIFYING`, `STATUS_RECONCILE_REQUIRED`.
@@ -134,8 +139,13 @@ canonical_scope, timestamp, state_before, state_after, reason, evidence_refs, co
 > - Gateway: `src/gateway/routes/agent_runtime.py` (self-contained, không import aoip).
 > - Agent core: `src/aoip/agent/{delivery,inbox,delivery_loop,daemon}.py`.
 > - systemd: `deploy/systemd/aoip-agent.service`.
-> - Còn lại (follow-up): nối `executor` daemon vào recovery mutation thật (hiện no-op an toàn);
->   portal projection đọc `/webhook/agent/rt/commands/record` (nav stub sẵn).
+> - Executor daemon đã nối vào `build_recovery_executor` khi `AOIP_AGENT_MODE=mutation_enabled`;
+>   observe-only/no-op chỉ là mode test/dev explicit. Portal projection đọc durable runtime.
+
+> **Autonomy follow-up implemented:** EXECUTE_MUTATE now carries tenant identity and the
+> executor applies tenant tier plus remote-host confidence ceiling before risk gating. The
+> compatibility path for unscoped lab envelopes is explicitly isolated and is not the
+> production contract.
 
 - **Trước tiên** inspect delivery semantics `/commands/{agent_id}` hiện có.
   GIẢ ĐỊNH quan trọng: **GET ≠ ACK**. Command chỉ được ACK sau khi Gateway chấp nhận

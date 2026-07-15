@@ -14,9 +14,10 @@ backend đã có, KHÔNG phải product portal. **NGỪNG mở rộng product sc
   frontend-invented state). Chỉ optionally show "backend not supported" khi hữu ích vận hành.
 - KHÔNG frontend-led domain (license/billing/CRM/deployment/policy-editor/onboarding-wizard/
   config screen) trừ khi backend tương ứng đã production-ready.
-- **Nav chỉ 8 vùng runtime-backed:** Overview · Agents · Understanding · Missions · Incidents ·
-  Human Inbox · Audit · Account. Thêm vùng mới CHỈ khi backend capability tồn tại + enforced + có
-  data thật.
+- **Nav chỉ vùng runtime-backed:** Overview · Customers · Pipeline · KPI · Agents · Understanding ·
+  Missions · Incidents · Operations · Human Inbox · Settings · Audit · Account · Gói dịch vụ.
+  Thêm vùng mới CHỈ khi backend capability tồn tại + enforced + có data thật. Gói dịch vụ được
+  thêm sau khi `tenant_plan` có API/RBAC/audit và enrollment/autonomy runtime enforcement.
 - **Backend-first:** tiếp tục Living Operations Runtime roadmap (Gateway/systemd long-running loop,
   durable command delivery+ack, explicit execution phases, crash reconciliation, lease renewal/
   fencing, continuous observation, mission resume sau restart, E2E audit correlation). Mỗi khi
@@ -26,8 +27,8 @@ backend đã có, KHÔNG phải product portal. **NGỪNG mở rộng product sc
   fixture/invented business state.
 
 **Hệ quả với ledger bên dưới:** roadmap product B→G (Tenant Lifecycle/License/Enrollment wizard…)
-**KHÔNG còn là hướng đi**; chỉ triển khai phần map tới capability runtime đã có. Nav 15-mục ở §3 đã
-thay bằng 8 vùng. Các file product-domain đã tạo (route stubs customers/licenses/… + overview.py
+**KHÔNG còn là hướng đi**; chỉ triển khai phần map tới capability runtime đã có. Nav product 15-mục ở §3 đã
+thay bằng các vùng runtime-backed. Các file product-domain đã tạo (route stubs customers/licenses/… + overview.py
 metric license/version-drift đã gỡ) **giữ trên đĩa để tái dùng sau**, không liệt kê trong nav.
 
 ## 0. Nguyên tắc thực thi (đã chốt với người dùng 2026-07-01)
@@ -95,10 +96,10 @@ Image rebuilt: `multi-agent-system:latest` (backend console) + `aoip-provider-we
 | Metric | Nguồn thật | Trạng thái slice A |
 |---|---|---|
 | tenants total/active/suspended | PG `omni_admin.tenant` GROUP BY status | ✅ thật |
-| tenants onboarding | (chưa có onboarding lifecycle state) | ⛔ unavailable → Sub-slice B |
+| tenants onboarding | (PG readiness state; aggregate projection chưa tách riêng) | ⛔ unavailable → follow-up |
 | agents online/offline | Redis `omni:remote_agent:registry:*`, online nếu now-last_seen ≤ 120s | ✅ thật |
 | agent version drift | (chưa có expected-version baseline) | ⛔ unavailable → Sub-slice C/G |
-| missions running/blocked/failed | mission runtime derived, chưa persist | ⛔ unavailable → Sub-slice D |
+| missions running/blocked/failed | Redis `omni:mission:*` MissionStore projection | ✅ thật khi có mission |
 | active incidents | Trace Spine: correlation chưa terminal | ✅ thật |
 | pending approvals | Trace `pending_approvals` mọi tenant | ✅ thật |
 | pending human questions | (chưa có question store queryable) | ⛔ unavailable → Sub-slice E |
@@ -113,6 +114,72 @@ Image rebuilt: `multi-agent-system:latest` (backend console) + `aoip-provider-we
 - FE: `ui/apps/provider-portal/app/{layout,page}.tsx`, `app/account/page.tsx`, nav + section stubs, `ui/packages/{shared-types,ui-kit}`
 - E2E: `tests/e2e_portals/provider_overview.spec.ts`
 - Deploy: rebuild image `multi-agent-system` + `aoip-provider-web`, redeploy pods
+
+### Sub-slice B0 — Environment lifecycle + scoped enrollment — ✅ **DONE (2026-07-14)**
+
+Provider tạo/quản lý tenant và environment theo tenant (onboarding/active/suspended/archived), có
+API/UI thật và audit/outbox transaction. Enrollment token mới có thể bind vào environment;
+credential, registry và tenant context giữ `environment_id`. Legacy tenant-wide credential
+vẫn được đọc để backward compatibility và phải được migrate dần.
+
+Verification: targeted backend tests xanh; tenant/environment boundary tests; provider portal
+build xanh. Nguồn: `migrations/omni_admin/0007_environment.sql`,
+`0008_agent_environment_binding.sql`, `AdminConfigRepo`, provider `/tenants/{tenant}/environments`.
+
+### Sub-slice C1 — Tenant operational projection — ✅ **DONE (2026-07-14)**
+
+Tenant API/UI có fleet agent, System Twin, incident list và approval queue; mọi projection
+được lọc server-side theo session membership, không nhận tenant identity từ browser.
+Provider fleet projection vẫn across-tenant; tenant projection chỉ trả đúng tenant.
+
+Verification: tenant isolation tests + tenant portal production build. Còn lại: command
+mutation/approval UI đầy đủ và agent lifecycle controls phải nối tiếp từ durable runtime.
+
+### Sub-slice C2 — Durable mission/onboarding projection — ✅ **DONE (2026-07-14)**
+
+`MissionStore` lưu lifecycle, completion, last activity và next action vào Redis theo tenant;
+onboarding discovery dual-write progress mà không thay thế discovery document hay PG readiness.
+Provider/tenant `/missions`, portal screens và Overview mission counts đều đọc read-model thật.
+
+Verification: mission store isolation/update tests + provider/tenant portal production builds.
+
+### Sub-slice D1 — Tenant-scoped autonomy graduation — ✅ **IMPLEMENTED (2026-07-14)**
+
+Executor resolves tier Redis → Postgres → env using the action's tenant identity; remote-host
+confidence is a ceiling (`effective_tier = min(tenant_tier, confidence_ceiling)`), and missing
+confidence is fail-closed to `shadow`. Evidence/action contracts now carry `tenant_id` through
+the worker context. Legacy unscoped lab envelopes remain compatibility-only; production action
+envelopes must be tenant-scoped.
+
+Verification: tier matrix, confidence ceiling, action-contract and worker regression tests.
+
+### Sub-slice B1/F1 — Tenant plan and entitlement enforcement — ✅ **IMPLEMENTED (2026-07-14)**
+
+`omni_admin.tenant_plan` is the provider-managed source for plan code, agent limit, retention,
+support tier, enabled state and autonomy ceiling. Provider API/UI exposes the plan; executor
+enforces the ceiling and enrollment rejects disabled/over-limit agents transactionally.
+Missing entitlement fails closed rather than granting unlimited access.
+
+Verification: migration applied in cluster (`tenant_plan` exists with 3 rows), enrollment limit
+regression, plan RBAC route test, autonomy-ceiling test, release gate.
+
+### Sub-slice B2 — Provider plan operations surface — ✅ **IMPLEMENTED (2026-07-14)**
+
+`/licenses` is now a real provider operational surface, backed by the tenant-plan API. It
+shows and updates plan code, active-agent limit, autonomy ceiling, retention, support tier,
+and enabled state. The write remains protected by `P_CHANGE_POLICY`, audited by
+`AdminConfigRepo`, and enforced by enrollment/tier runtime paths; it is now included in
+provider navigation because the backend capability is production-ready.
+
+Verification: provider portal production build passes; backend plan RBAC/enrollment tests and
+the full product release gate remain green.
+
+### Verification refresh — ✅ 2026-07-14
+
+The complete frontend/backend/business-logic release gate is green: backend `6150` passed,
+boundary/safety `61` passed, portal E2E `18/18`, pre-deploy `17/17`, both portal
+builds/typechecks passed, and production npm audit found zero vulnerabilities. Detailed
+evidence: `docs/reports/frontend-backend-logic-verification-2026-07-14.md`.
 
 **DoD A:** provider login → thấy Overview số thật (không giả), nav 15 mục (mục chưa làm = unavailable),
 trang identity chuyển sang /account; backend enforce provider RBAC cho /overview; BE+E2E test pass;

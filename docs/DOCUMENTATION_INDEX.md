@@ -12,6 +12,7 @@ Mục tiêu: **giảm rời rạc** — mọi file dưới đây được xếp 
 | [vendor/OMNI_LABEL_SCHEMA.md](vendor/OMNI_LABEL_SCHEMA.md) | Golden Link: Resource / Signal / Telemetry / Incident / Resolution labels. |
 | [vendor/knownbase.md](vendor/knownbase.md) | Symptom → fix (sau incident). |
 | [reports/project-memory.md](reports/project-memory.md) | Invariants, failure patterns, guardrails. |
+| [reports/frontend-backend-logic-verification-2026-07-14.md](reports/frontend-backend-logic-verification-2026-07-14.md) | Latest full frontend/backend/business-logic verification and release gate evidence. |
 
 ---
 
@@ -33,6 +34,7 @@ Mục tiêu: **giảm rời rạc** — mọi file dưới đây được xếp 
 | [reports/lab_nginx_missing_configmap_e2e.md](reports/lab_nginx_missing_configmap_e2e.md) | Lab một luồng: nginx-test thiếu ConfigMap → gateway → prober evidence FailedMount. |
 | [reports/trace-audit-gw-prom-f58ffe43e85e.md](reports/trace-audit-gw-prom-f58ffe43e85e.md) | Trace audit (Loki + pipeline + fixes) — lab missing ConfigMap. |
 | [runbooks/claude_code_prompt_trace_memory.md](runbooks/claude_code_prompt_trace_memory.md) | Prompt copy-paste cho Claude Code: verify trace + sync `docs/` + `.claude/MEMORY.md`. |
+| [handoffs/CURRENT_SESSION.md](handoffs/CURRENT_SESSION.md) | Exact handoff for the next Claude/Codex session. |
 | [../src/workers/memory/initial_symptom.py](../src/workers/memory/initial_symptom.py) | **InitialSymptom** (Prometheus/Alertmanager) → `OmniTraceMemory` + `<INITIAL_SYMPTOM>` trong planner; `run_agentic_mutate_plan` reload Redis mỗi vòng ReAct. Env: `OMNI_PLANNER_LLM_SOLE_EVALUATOR` (tắt regex hints credential/broken-spec), `OMNI_TRACE_MEMORY_TOOL_OUTPUT_MAX_CHARS`. |
 
 ---
@@ -50,6 +52,7 @@ Thư mục [architecture/](architecture/) — contract, SLO gates, state machine
 | [architecture/north_star_spec.md](architecture/north_star_spec.md) |
 | [architecture/security_policy_by_adapter.md](architecture/security_policy_by_adapter.md) |
 | [architecture/transition_contract.md](architecture/transition_contract.md) |
+| [architecture/ADR-004-runtime-convergence.md](architecture/ADR-004-runtime-convergence.md) | Decision: workers remain execution engine; AOIP remains product/control plane. |
 
 Tài liệu tóm tắt / slide / whitepaper (có thể mô tả “một worker” tập trung — đối chiếu canonical):
 
