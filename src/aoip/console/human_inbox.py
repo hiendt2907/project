@@ -8,6 +8,7 @@ from aoip.competency_matrix import FACET_PREDICATE
 from aoip.question_lifecycle import (
     UNKNOWNS_KEY,
     ensure_question_for_unknown,
+    expire_stale_questions,
     list_questions,
     list_unknowns,
 )
@@ -53,6 +54,7 @@ async def build_provider_human_inbox(redis: Any, *, now: float | None = None) ->
 
     for key in keys:
         tenant_id = _tenant_from_unknowns_key(str(key))
+        await expire_stale_questions(redis, tenant_id, now=now)
         unknowns = await list_unknowns(redis, tenant_id)
         await _ensure_questions(redis, tenant_id, unknowns, now=now)
         questions = []

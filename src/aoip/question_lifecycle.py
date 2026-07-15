@@ -262,6 +262,46 @@ def render_telegram_text(question: dict[str, Any]) -> str:
     return question["text"]
 
 
+async def expire_stale_questions(redis: Any, tenant_id: str, *, now: float | None = None) -> int:
+    """Chuyển PENDING question đã quá ``expires_at`` sang EXPIRED và mở lại
+    Unknown tương ứng (QUESTION_PENDING → OPEN) để paced caller có thể re-ask.
+
+    Không có bước này, question PENDING tích lũy vô hạn: ``expires_at`` được
+    ghi lúc tạo nhưng không nơi nào thực thi nó. Trả về số question đã expire.
+    """
+    resolved_now = now if now is not None else time.time()
+    q_key = QUESTIONS_KEY.format(tenant_id=tenant_id)
+    u_key = UNKNOWNS_KEY.format(tenant_id=tenant_id)
+    expired = 0
+
+    raw = await redis.hgetall(q_key)
+    for field, value in raw.items():
+        try:
+            question = json.loads(value)
+        except Exception:  # noqa: BLE001
+            logger.warning("question_lifecycle: malformed question key=%s field=%s", q_key, field)
+            continue
+        if question.get("status") != QuestionStatus.PENDING.value:
+            continue
+        expires_at = question.get("expires_at")
+        if expires_at is None or expires_at >= resolved_now:
+            continue
+
+        question["status"] = QuestionStatus.EXPIRED.value
+        await _put(redis, q_key, field, question)
+        expired += 1
+
+        unknown = await _get(redis, u_key, question["unknown_id"])
+        if unknown is not None and unknown["status"] == UnknownStatus.QUESTION_PENDING.value:
+            unknown["status"] = UnknownStatus.OPEN.value
+            unknown["last_seen_at"] = resolved_now
+            await _put(redis, u_key, question["unknown_id"], unknown)
+
+    if expired:
+        logger.info("question_lifecycle: expired %d stale questions tenant=%s", expired, tenant_id)
+    return expired
+
+
 # ── Answer-as-Claim (Bước 4) ──────────────────────────────────────────────
 
 async def submit_answer(

@@ -17,6 +17,7 @@ from aoip.question_lifecycle import (
     get_question,
     list_questions,
     list_unknowns,
+    expire_stale_questions,
     submit_answer,
     sync_unknowns_from_competency,
 )
@@ -281,3 +282,64 @@ class TestDataResidency:
         huge = "x" * 5000
         answer = await submit_answer(r, "acme", question["question_id"], answered_by="alice", value=huge, now=1100.0)
         assert len(answer["value"]) <= 500
+
+
+class TestExpiry:
+    @pytest.mark.asyncio
+    async def test_pending_question_past_expires_at_becomes_expired(self):
+        r = _redis()
+        comp = _service_comp()
+        touched = await sync_unknowns_from_competency(r, "acme", comp, now=1000.0)
+        owner_unknown = next(u for u in touched if u["facet"] == "owner")
+        question = await ensure_question_for_unknown(r, "acme", owner_unknown, now=1000.0)
+        assert question["expires_at"] == 1000.0 + 7 * 86400.0
+
+        expired = await expire_stale_questions(r, "acme", now=1000.0 + 8 * 86400.0)
+        assert expired >= 1
+
+        q = await get_question(r, "acme", question["question_id"])
+        assert q["status"] == QuestionStatus.EXPIRED.value
+        unknowns = {u["unknown_id"]: u for u in await list_unknowns(r, "acme")}
+        assert unknowns[question["unknown_id"]]["status"] == UnknownStatus.OPEN.value
+
+    @pytest.mark.asyncio
+    async def test_fresh_pending_question_not_expired(self):
+        r = _redis()
+        comp = _service_comp()
+        touched = await sync_unknowns_from_competency(r, "acme", comp, now=1000.0)
+        owner_unknown = next(u for u in touched if u["facet"] == "owner")
+        question = await ensure_question_for_unknown(r, "acme", owner_unknown, now=1000.0)
+
+        expired = await expire_stale_questions(r, "acme", now=2000.0)
+        assert expired == 0
+        q = await get_question(r, "acme", question["question_id"])
+        assert q["status"] == QuestionStatus.PENDING.value
+
+    @pytest.mark.asyncio
+    async def test_answered_question_never_expired(self):
+        r = _redis()
+        comp = _service_comp()
+        touched = await sync_unknowns_from_competency(r, "acme", comp, now=1000.0)
+        owner_unknown = next(u for u in touched if u["facet"] == "owner")
+        question = await ensure_question_for_unknown(r, "acme", owner_unknown, now=1000.0)
+        await submit_answer(r, "acme", question["question_id"], answered_by="alice", value="team-a", now=1100.0)
+
+        expired = await expire_stale_questions(r, "acme", now=1000.0 + 30 * 86400.0)
+        assert expired == 0
+        q = await get_question(r, "acme", question["question_id"])
+        assert q["status"] == QuestionStatus.ANSWERED.value
+
+    @pytest.mark.asyncio
+    async def test_expired_question_can_be_reasked(self):
+        r = _redis()
+        comp = _service_comp()
+        touched = await sync_unknowns_from_competency(r, "acme", comp, now=1000.0)
+        owner_unknown = next(u for u in touched if u["facet"] == "owner")
+        await ensure_question_for_unknown(r, "acme", owner_unknown, now=1000.0)
+        await expire_stale_questions(r, "acme", now=1000.0 + 8 * 86400.0)
+
+        unknowns = {u["unknown_id"]: u for u in await list_unknowns(r, "acme")}
+        reopened = unknowns[owner_unknown["unknown_id"]]
+        q2 = await ensure_question_for_unknown(r, "acme", reopened, now=1000.0 + 8 * 86400.0)
+        assert q2 is not None
+        assert q2["status"] == QuestionStatus.PENDING.value
