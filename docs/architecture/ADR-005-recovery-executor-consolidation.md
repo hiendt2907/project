@@ -174,11 +174,84 @@ explicitly authorized both steps in the same session. Both are now live:
 allowlist + current-state revalidation, all live). It does **not** mean
 anything mutates automatically — no live caller currently produces
 `RecoveryRequest`/`Approval` payloads for these hosts; the only way to
-trigger a real recovery today is the operator CLI
-(`aoip.console.approve_systemd_restart`) issuing an explicitly approved
-command by hand. Wiring an automated diagnosis→decision→approval→dispatch
-path remains out of scope (that's the Phase 1-6 vertical-slice work, not
-this ADR).
+trigger a real recovery today is a hand-authored, explicitly approved
+command dispatched to `/webhook/agent/rt/commands/enqueue`. Wiring an
+automated diagnosis→decision→approval→dispatch path remains out of scope
+(that's the Phase 1-6 vertical-slice work, not this ADR).
+
+**Correction found during the real drill below:** the sentence above
+originally said "via the operator CLI
+(`aoip.console.approve_systemd_restart`)". That CLI builds a **Stack A**
+typed payload (`capability`/`target`/`reason` shape, via
+`command_bridge.build_durable_command` →
+`capabilities/systemd_restart.build_typed_payload`) — but the live daemon's
+configured executor is **Stack B** (`operations.build_recovery_executor`),
+whose `decode_recovery_command()` expects a completely different
+`recovery`/`approval`/`evidence` shape. **The CLI tool cannot currently
+drive the deployed daemon at all** — this is live confirmation of exactly
+the mismatch this ADR describes, not a hypothetical. A hand-built
+Stack-B-shaped payload was required for the drill to work. Fixing the CLI
+to emit the shape the live executor actually consumes (or building the
+capability-dispatch layer discussed in "Options considered" above) is
+follow-up work, not done in this ADR.
+
+## Real drill executed (2026-07-20) — end-to-end proof on live infrastructure
+
+User explicitly authorized a full real drill, including opening the global
+master kill-switch (`OMNI_AUTO_EXECUTE_ENABLED`) temporarily — a boundary
+this session otherwise treats as absolute. Scope and safety:
+
+- Opened **only** on `omni-gateway`'s own deployment env (`kubectl set env
+  deployment/omni-gateway OMNI_AUTO_EXECUTE_ENABLED=true`) — not
+  `omni-fullstack`, not the broader `omni-fullstack-autoexec-lab.yaml` K8s
+  overlay (that overlay is for the unrelated K8s executor lane and changes
+  far more than needed: `OMNI_AUTONOMY_TIER`, `OMNI_SIEM_SUGGEST_ONLY`,
+  etc. — deliberately not touched).
+- Window: ~11 minutes, 3 controlled test commands only, reverted
+  immediately after the third command reached a terminal state — confirmed
+  back to `false` via both `kubectl exec ... printenv` and
+  `GET /autonomy/mutation` (`effective: false, reason:
+  master_kill_switch_off`) before ending this step.
+- Per-tenant flag `aoip_mutation_enabled` for `staging-sim` was already
+  `true` from earlier work — not touched.
+
+Three commands enqueued via `/webhook/agent/rt/commands/enqueue` for
+`staging-sim_cust-app`, unit `payment-api.service` (the lab's explicitly
+"(simulated)" drill service, port 8080, a plain `http.server`):
+
+1. **First attempt**: `FAILED`, `executor_exception: Timeout connecting to
+   server` (Redis). A direct connectivity check immediately after
+   (`redis.asyncio` PING from the VM) succeeded cleanly — read as a
+   transient cold-connection blip, not a systemic issue; the identical
+   command shape succeeded on the next two attempts.
+2. **Second attempt** (service still healthy): `COMPLETED`,
+   `status=aborted, outcome=NO_ACTION_NEEDED, reason="service đang HEALTHY
+   ngay trước execute — không tác động (zero mutation)"` — proves the
+   current-state revalidation safety check is real: it refused to "fix" a
+   service that wasn't actually broken, exactly as designed.
+3. `sudo systemctl stop payment-api.service` on the VM (real, reversible,
+   simulates an actual incident).
+4. **Third attempt**: `COMPLETED`, `status=recovered,
+   reason="service + dependents verified", verified: true`. Confirmed
+   independently on the VM: `payment-api.service` `active (running)` with a
+   fresh PID and start timestamp, `curl localhost:8080` → `HTTP 200`.
+
+**Audit trail** (`/var/lib/aoip/recovery-audit.jsonl` on the VM, real
+hash-chain, `prev_hash`/`block_hash` linked): `RECOVERY_PLANNED` →
+`RECOVERY_GATE_BLOCKED` (attempt 2, `blocked: ["current_state_broken"]`) →
+`RECOVERY_PLANNED` → `RECOVERY_BEFORE_STATE` (`before.active_state:
+"inactive"`) → `RECOVERY_EXECUTED` (`verb: restart, rc: 0, approver:
+claude-drill-2026-07-20`) → `RECOVERY_COMPLETED`
+(`verification.confidence: 1.0`).
+
+This is the first confirmed, real, end-to-end proof that the durable
+recovery pipeline (delivery/fencing → lease → idempotency → gate →
+allowlist → execute → verify → audit) works correctly against live
+infrastructure, not just unit tests. Test artifacts left in place
+(durable command records `omni:cmd:rec:staging-sim:cmd-drill-*`, 7-day TTL,
+clearly ID'd as drill records) — not deleted, same reasoning as the P0-1
+CRAT verification earlier this session: an immutable/durable record of a
+real test is evidence, not noise to clean up.
 
 <details>
 <summary>Original deferred-rollout note (superseded above)</summary>

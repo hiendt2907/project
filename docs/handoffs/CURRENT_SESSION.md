@@ -711,11 +711,63 @@ Toàn bộ chi tiết + rationale đầy đủ đã cập nhật vào
 - Working tree sạch, `main` đã push (bao gồm commit `4b46da2` fix auth
   header). Cluster K8s + VM fleet đều chạy code mới nhất, đã verify runtime
   thật (không phải chỉ test pass).
-- **Chưa có gì tự động dùng `mutation_enabled` mới bật** — cần 1 quyết định
-  riêng tiếp theo nếu muốn: (a) chạy thử 1 drill thật (approve 1 lệnh restart
-  `payment-api.service` qua CLI, xác nhận toàn bộ vòng lease/idempotency/
-  audit/verify chạy đúng trên hạ tầng thật), hoặc (b) bắt đầu nối một caller
-  tự động (diagnosis→decision→approval) — quy mô Phase 1-6.
+
+## Drill thật đã chạy — end-to-end PASS trên hạ tầng live (2026-07-20)
+
+User chỉ thị rõ "chạy thử drill thật đi". Route drill cần dùng
+(`/webhook/agent/rt/commands/enqueue`) có gate `_enforce_mutation_toggle()`
+yêu cầu **master kill-switch** `OMNI_AUTO_EXECUTE_ENABLED=true` trên
+gateway — đúng cái AGENTS.md ghi "never open". Đã dừng lại hỏi rõ qua
+AskUserQuestion trước khi làm (không tự ý mở dù có "toàn quyền" trước đó) —
+user xác nhận "mở tạm để drill, tắt ngay sau khi xong".
+
+**Đã làm, đúng cam kết:**
+- Mở CHỈ trên `omni-gateway` deployment (`kubectl set env`), KHÔNG đụng
+  `omni-fullstack`/overlay K8s autoexec-lab (phạm vi rộng hơn nhiều, không
+  cần). Cửa sổ mở: ~11 phút, đúng 3 lệnh test, tắt lại ngay sau khi lệnh thứ
+  3 vào terminal state. Đã xác nhận tắt thật qua cả `printenv` lẫn
+  `GET /autonomy/mutation` (`effective: false`).
+- **Phát hiện quan trọng giữa chừng:** CLI `aoip.console.approve_systemd_restart`
+  build payload theo shape Stack A (`capability`/`target`), nhưng daemon
+  thật đang chạy dùng executor Stack B (`operations.py`) — expect shape
+  khác hẳn (`recovery`/`approval`/`evidence`). **CLI này KHÔNG THỂ điều
+  khiển daemon thật hiện tại** — xác nhận sống đúng cái ADR-005 đã cảnh báo,
+  không còn là suy đoán. Phải tự build payload đúng shape Stack B để drill
+  chạy được.
+- 3 lệnh enqueue cho `staging-sim_cust-app`/`payment-api.service`:
+  1. Lần 1: `FAILED` (Redis timeout thoáng qua — connect test riêng ngay
+     sau đó PASS sạch, 2 lần sau cũng PASS, kết luận không phải lỗi hệ
+     thống).
+  2. Lần 2 (service đang khỏe): `COMPLETED, NO_ACTION_NEEDED` — xác nhận
+     current-state revalidation THẬT hoạt động, từ chối "sửa" cái không hỏng.
+  3. `sudo systemctl stop payment-api.service` thật (mô phỏng sự cố, an
+     toàn, reversible).
+  4. Lần 3: **`COMPLETED, status=recovered, verified=true`**. Xác nhận độc
+     lập trên VM: `payment-api.service active (running)` PID mới, uptime
+     mới, `curl localhost:8080` → HTTP 200.
+- **Audit trail hash-chain thật** trên VM
+  (`/var/lib/aoip/recovery-audit.jsonl`): PLANNED→GATE_BLOCKED (lần 2)→
+  PLANNED→BEFORE_STATE(inactive)→EXECUTED(rc=0)→COMPLETED
+  (verification.confidence=1.0). `prev_hash`/`block_hash` nối đúng chuỗi.
+
+**Kết luận:** đây là bằng chứng đầu tiên, thật, end-to-end rằng toàn bộ
+pipeline durable recovery (delivery/fencing→lease→idempotency→gate→
+allowlist→execute→verify→audit) chạy ĐÚNG trên hạ tầng sống, không chỉ unit
+test. Chi tiết đầy đủ đã ghi vào ADR-005 (section "Real drill executed").
+Test record (`omni:cmd:rec:staging-sim:cmd-drill-*`, TTL 7 ngày) giữ
+nguyên, không xoá — cùng lý do với CRAT test block trước đó trong phiên:
+bằng chứng test thật, không phải rác cần dọn.
+
+### Next step thật (2026-07-20, chốt phiên — sau drill)
+
+- Kill-switch đã tắt lại `false`, xác nhận qua HTTP thật. Không có gì đang
+  mở, không có rủi ro treo lại từ phiên này.
+- Working tree sạch (drill chỉ dùng payload runtime, không tạo thay đổi
+  source code mới — chỉ 2 file docs được sửa/commit).
+- **Việc thật còn mở:** CLI `approve_systemd_restart.py` cần fix để build
+  đúng shape Stack B (hoặc build capability-dispatch layer) — hiện tại
+  KHÔNG dùng được với daemon thật, chỉ payload hand-built mới chạy. Đây là
+  bug thật phát hiện qua drill, chưa fix trong phiên này.
 - Phase 0-6 của roadmap "Omni Autonomous Productization" (canonical
   contracts, vertical slice, multi-tenant mở rộng) — quy mô nhiều tuần thiết
   kế, chưa bắt đầu, cần một phiên riêng bắt đầu bằng thiết kế trước khi viết
