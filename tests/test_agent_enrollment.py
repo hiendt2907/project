@@ -434,6 +434,109 @@ class TestPerAgentCredentialAuth:
         assert r.status_code == 401
 
 
+# ── P0-4 fix: per-agent credential must not impersonate a different agent_id ──
+# Root cause: TenantContext dropped the credential's own agent_id binding (PG
+# already stores it — omni_admin.agent_credential — but _resolve_agent_credential
+# never propagated it), so require_agent_tenant() could only check tenant-level
+# ownership. Any host holding tenant T's per-agent credential could therefore
+# register/push-evidence/poll-commands as ANY agent_id under T, not just the
+# one it was enrolled for.
+class TestPerAgentCredentialScoping:
+    async def _enroll(self, repo, *, tenant_id: str, agent_id: str, raw_token: str, raw_key: str):
+        await repo.create_enroll_token(
+            tenant_id=tenant_id, token_hash=_sha(raw_token), token_prefix="pfx", actor="test",
+        )
+        result = await repo.consume_enroll_token_and_issue_credential(
+            token_hash=_sha(raw_token), agent_id=agent_id, hostname=agent_id,
+            key_hash=_sha(raw_key), key_prefix=raw_key[:8],
+        )
+        assert result is not None
+        return result
+
+    def _webhook_app(self, repo, redis) -> FastAPI:
+        from unittest.mock import AsyncMock
+
+        from gateway.api import _require_api_key
+        from gateway.routes.agent_webhook import router
+
+        app = FastAPI()
+        app.state.admin_repo = repo
+        app.state.redis = redis
+        app.state.kafka = AsyncMock()
+        app.state.kafka_topic_evidence = "omni-diagnostic-evidence"
+        app.include_router(router, dependencies=[Depends(_require_api_key)])
+        return app
+
+    async def test_credential_cannot_register_a_different_agent_id(self, repo, monkeypatch):
+        monkeypatch.setenv("OMNI_ADMIN_API_KEYS", "admin-secret-key")
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await self._enroll(repo, tenant_id="staging-sim", agent_id="agent-A",
+                           raw_token="enroll-token-scope-a-0000000", raw_key="key-agent-a")
+        app = self._webhook_app(repo, redis)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            resp = await c.post(
+                "/webhook/agent/register",
+                headers={"Authorization": "Bearer key-agent-a"},
+                json={"agent_id": "agent-B", "hostname": "h"},
+            )
+        assert resp.status_code == 403
+
+    async def test_credential_can_register_its_own_agent_id(self, repo, monkeypatch):
+        monkeypatch.setenv("OMNI_ADMIN_API_KEYS", "admin-secret-key")
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await self._enroll(repo, tenant_id="staging-sim", agent_id="agent-A",
+                           raw_token="enroll-token-scope-b-0000000", raw_key="key-agent-a2")
+        app = self._webhook_app(repo, redis)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            resp = await c.post(
+                "/webhook/agent/register",
+                headers={"Authorization": "Bearer key-agent-a2"},
+                json={"agent_id": "agent-A", "hostname": "h"},
+            )
+        assert resp.status_code == 200
+
+    async def test_agent_id_survives_cache_round_trip(self, repo, monkeypatch):
+        """Regression: the cache blob used to drop agent_id/environment_id,
+        silently degrading a per-agent credential into a plain tenant-shared
+        key on every request served from the 60s Redis cache."""
+        from types import SimpleNamespace
+
+        from gateway.api import _resolve_agent_credential
+
+        monkeypatch.setenv("OMNI_ADMIN_API_KEYS", "admin-secret-key")
+        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        await self._enroll(repo, tenant_id="staging-sim", agent_id="agent-cache",
+                           raw_token="enroll-token-cache-0000000", raw_key="key-agent-cache")
+        app = self._webhook_app(repo, redis)
+        request = SimpleNamespace(app=app)
+
+        ctx_fresh = await _resolve_agent_credential(request, "key-agent-cache")
+        assert ctx_fresh is not None and ctx_fresh.agent_id == "agent-cache"
+
+        ctx_cached = await _resolve_agent_credential(request, "key-agent-cache")
+        assert ctx_cached is not None and ctx_cached.agent_id == "agent-cache"
+
+    async def test_pg_lookup_succeeds_without_redis(self, repo):
+        """Regression: when redis is unavailable, a valid PG credential lookup
+        used to implicitly `return None` (→ 401), instead of authenticating
+        without the optional cache."""
+        from types import SimpleNamespace
+
+        from gateway.api import _resolve_agent_credential
+
+        await self._enroll(repo, tenant_id="staging-sim", agent_id="agent-noredis",
+                           raw_token="enroll-token-noredis-000000", raw_key="key-agent-noredis")
+        app = FastAPI()
+        app.state.admin_repo = repo
+        app.state.redis = None
+        request = SimpleNamespace(app=app)
+
+        ctx = await _resolve_agent_credential(request, "key-agent-noredis")
+        assert ctx is not None
+        assert ctx.tenant_id == "staging-sim"
+        assert ctx.agent_id == "agent-noredis"
+
+
 # ── Admin gate: agent credential KHÔNG được phát token / revoke ───────────────
 class TestEnrollTokenAdminGate:
     async def test_agent_credential_cannot_issue_enroll_token(self, repo, monkeypatch):

@@ -471,6 +471,36 @@ class TestRequireAgentTenant:
             await require_agent_tenant(redis, "ag-1", ctx)
         assert exc.value.status_code == 403
 
+    @pytest.mark.asyncio
+    async def test_per_agent_credential_rejected_for_different_agent_id(self):
+        """A credential scoped to agent-A (ctx.agent_id set) must not be usable
+        to target agent-B, even with no registry record yet for agent-B and
+        even under the SAME tenant — this is the P0-4 fix."""
+        from fastapi import HTTPException
+        from gateway.tenant_context import require_agent_tenant
+        redis = FakeRedis(decode_responses=True)
+        ctx = TenantContext(tenant_id="tenantA", is_admin=False, agent_id="agent-A")
+        with pytest.raises(HTTPException) as exc:
+            await require_agent_tenant(redis, "agent-B", ctx)
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_per_agent_credential_allowed_for_own_agent_id(self):
+        from gateway.tenant_context import require_agent_tenant
+        redis = FakeRedis(decode_responses=True)
+        ctx = TenantContext(tenant_id="tenantA", is_admin=False, agent_id="agent-A")
+        await require_agent_tenant(redis, "agent-A", ctx)  # no raise
+
+    @pytest.mark.asyncio
+    async def test_tenant_shared_key_unaffected_by_agent_scoping(self):
+        """ctx.agent_id=None (tenant-shared key, not a per-agent credential) keeps
+        the pre-existing first-claim-wins behavior — this fix must not regress
+        tenant-shared-key deployments that never adopted per-agent enrollment."""
+        from gateway.tenant_context import require_agent_tenant
+        redis = FakeRedis(decode_responses=True)
+        ctx = TenantContext(tenant_id="tenantA", is_admin=False, agent_id=None)
+        await require_agent_tenant(redis, "brand-new-agent", ctx)  # no raise
+
 
 # ── agent_webhook tenant isolation ────────────────────────────────────────────
 
