@@ -20,6 +20,8 @@ from typing import Any
 from pkg.reasoning.domain_signals import detect_domain
 from pkg.reasoning.evidence_cluster import upsert_cluster
 from pkg.reasoning.evidence_fingerprint import fingerprint_evidence
+from services.audit_ledger.chain_writer import write_audit_block
+from services.audit_ledger.signer import AuditLedgerError
 from workers.handler_context import WorkerHandlerContext
 from workers.remote_advisor import analyze_cluster
 from workers.remote_diagnostic_archiver import write_lessons
@@ -399,6 +401,8 @@ async def _run_diagnosis_and_notify(
     INVARIANT INV_DIAG_STORED: session must be stored in Redis before emit.
     """
     from services.analyst.diagnosis_loop import run_diagnosis_loop
+    _lane = str(ev_doc.get("lane") or "")
+    tenant_id = str(ev_doc.get("tenant_id") or ev_doc.get("tenant") or "default")
     try:
         session = await run_diagnosis_loop(
             redis=ctx.redis,
@@ -409,17 +413,50 @@ async def _run_diagnosis_and_notify(
             model=model,
             num_ctx=num_ctx,
         )
-        _lane = str(ev_doc.get("lane") or "")
         _turns = getattr(session, "total_turns", None)
         if _turns is None and isinstance(session, dict):
             _turns = session.get("total_turns")
         await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"diagnosis session stored turns={_turns}", lane=_lane)
+
+        # CRAT fail-closed (AGENTS.md INVARIANT: write_audit_block() MUST succeed
+        # before Telegram emit / action dispatch — applies to this lane too, not
+        # only the K8s/advisory lane).
+        _final = session.get("final") if isinstance(session, dict) else {}
+        audit_payload = {
+            "agent_id": agent_id,
+            "probe": ev_doc.get("probe", ""),
+            "lane": _lane,
+            "root_cause": (_final or {}).get("root_cause", ""),
+            "confidence": (_final or {}).get("confidence", 0.0),
+            "affected_components": (_final or {}).get("affected_components", []),
+            "total_turns": _turns,
+            "degraded": session.get("degraded") if isinstance(session, dict) else None,
+        }
+        try:
+            await write_audit_block(
+                event_type="ADVISORY_DECISION",
+                trace_id=trace,
+                payload=audit_payload,
+                redis=ctx.redis,
+                kafka=ctx.kafka,
+                kafka_topic=getattr(ctx.settings, "kafka_topic_audit_chain", "omni-audit-chain"),
+                tenant_id=tenant_id,
+            )
+        except AuditLedgerError as _audit_err:
+            logger.critical(
+                "event=audit_chain_write_failed phase=remote_agent_diagnosis trace=%s err=%s FAIL_CLOSED",
+                trace, _audit_err,
+            )
+            await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed", lane=_lane)
+            return  # fail-closed: do NOT emit Telegram without a successful audit block
+
+        await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="diagnosis audit block written", lane=_lane)
         await emit_diagnosis_to_telegram(ctx, session, chat_id)
         await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail="diagnosis emitted (Telegram)", lane=_lane)
     except RuntimeError as exc:
         # INV_DIAG_STORED violated — do NOT emit Telegram
         logger.error("[RAP] diagnosis_aborted INV_DIAG_STORED trace=%s err=%s", trace, exc)
-        await mark_stage(ctx.redis, trace, "SCHEMA", "fail", detail=f"diagnosis aborted: {exc}", lane=str(ev_doc.get("lane") or ""))
+        await mark_stage(ctx.redis, trace, "SCHEMA", "fail", detail=f"diagnosis aborted: {exc}", lane=_lane)
     except Exception as exc:
         logger.error("[RAP] diagnosis_loop_error trace=%s err=%s", trace, exc)
-        await mark_stage(ctx.redis, trace, "LLM", "fail", detail=f"diagnosis_loop_error: {exc}", lane=str(ev_doc.get("lane") or ""))
+        await mark_stage(ctx.redis, trace, "LLM", "fail", detail=f"diagnosis_loop_error: {exc}", lane=_lane)
