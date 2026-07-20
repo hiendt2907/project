@@ -53,7 +53,8 @@ def _log(tmp_path, name="a.jsonl"):
 def _gate():
     return RecoveryGate(allowed_failure_modes=frozenset({"process_down"}),
                         allowed_substrates=frozenset({"systemd"}), max_risk=0.5,
-                        scope_prefix="svc:", min_diagnosis_confidence=0.0, max_diagnosis_age_s=1e9)
+                        scope_prefix="svc:", min_diagnosis_confidence=0.0, max_diagnosis_age_s=1e9,
+                        allowed_targets=frozenset({"nginx.service", "other.service", "OTHER.service"}))
 
 
 def _policy(*units):

@@ -13,6 +13,7 @@ from aoip.agent.runtime_config import (
     STATUS_ACTIVE,
     STATUS_DISABLED,
     AgentBootstrapError,
+    _build_gate,
     build_agent_runtime,
 )
 
@@ -25,6 +26,7 @@ _FULL_MUTATION_ENV = {
     "AOIP_GATE_MAX_RISK": "0.5",
     "AOIP_GATE_MIN_DIAGNOSIS_CONFIDENCE": "0.7",
     "AOIP_GATE_MAX_DIAGNOSIS_AGE_S": "300",
+    "AOIP_ALLOWED_SYSTEMD_UNITS": "nginx.service,redis-server",
 }
 
 
@@ -52,6 +54,33 @@ def test_mutation_enabled_missing_gate_config_fails_closed():
     env = {k: v for k, v in _FULL_MUTATION_ENV.items() if k != "AOIP_GATE_MAX_RISK"}
     with pytest.raises(AgentBootstrapError, match="AOIP_GATE_MAX_RISK"):
         build_agent_runtime(mode=MODE_MUTATION_ENABLED, agent_id="agent-1", env=env)
+
+
+def test_mutation_enabled_missing_allowed_units_fails_closed():
+    """ADR-005: the per-unit allowlist is a required dependency, same as the
+    other gate fields — mutation_enabled must not silently start with an
+    unrestricted (or accidentally empty-but-unnoticed) target gate."""
+    env = {k: v for k, v in _FULL_MUTATION_ENV.items() if k != "AOIP_ALLOWED_SYSTEMD_UNITS"}
+    with pytest.raises(AgentBootstrapError, match="AOIP_ALLOWED_SYSTEMD_UNITS"):
+        build_agent_runtime(mode=MODE_MUTATION_ENABLED, agent_id="agent-1", env=env)
+
+
+def test_gate_allowed_targets_parsed_from_env():
+    gate = _build_gate(_FULL_MUTATION_ENV)
+    assert gate.allowed_targets == frozenset({"nginx.service", "redis-server"})
+
+
+def test_gate_allowed_targets_whitespace_only_fails_closed():
+    env = dict(_FULL_MUTATION_ENV, AOIP_ALLOWED_SYSTEMD_UNITS="   ")
+    with pytest.raises(AgentBootstrapError, match="AOIP_ALLOWED_SYSTEMD_UNITS"):
+        _build_gate(env)
+
+
+def test_gate_allowed_targets_only_commas_parses_to_empty_fail_closed():
+    """Non-blank-but-no-real-entries (e.g. ',,') passes the presence check but
+    must still parse to an EMPTY allowlist — never accidentally permit-all."""
+    gate = _build_gate(dict(_FULL_MUTATION_ENV, AOIP_ALLOWED_SYSTEMD_UNITS=" , ,"))
+    assert gate.allowed_targets == frozenset()
 
 
 def test_mutation_enabled_invalid_numeric_gate_config_fails_closed():

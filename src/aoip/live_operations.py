@@ -46,7 +46,8 @@ def _graph():
 def _gate():
     return RecoveryGate(allowed_failure_modes=frozenset({"process_down"}),
                         allowed_substrates=frozenset({"systemd"}), max_risk=0.5,
-                        scope_prefix="svc:", min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0)
+                        scope_prefix="svc:", min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0,
+                        allowed_targets=frozenset({"redis-server"}))
 
 
 def _ctx(backend):

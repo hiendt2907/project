@@ -71,6 +71,7 @@ def _gate():
         allowed_substrates=frozenset({"systemd"}),
         max_risk=0.5, scope_prefix="svc:",
         min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0,
+        allowed_targets=frozenset({"redis-server", "mariadb", "nginx"}),
     )
 
 
@@ -197,7 +198,8 @@ async def test_risk_over_gate_zero_mutation(tmp_path):
     t = FakeSystemd(state="inactive")
     gate = RecoveryGate(allowed_failure_modes=frozenset({"process_down"}),
                         allowed_substrates=frozenset({"systemd"}), max_risk=0.1,
-                        scope_prefix="svc:", min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0)
+                        scope_prefix="svc:", min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0,
+                        allowed_targets=frozenset({"redis-server"}))
     outcome, _ = await _run(tmp_path, t, gate=gate)
     assert outcome.status == "aborted" and t.restarts == 0
 
@@ -206,7 +208,8 @@ async def test_out_of_scope_zero_mutation(tmp_path):
     t = FakeSystemd(state="inactive")
     gate = RecoveryGate(allowed_failure_modes=frozenset({"process_down"}),
                         allowed_substrates=frozenset({"systemd"}), max_risk=0.5,
-                        scope_prefix="host:", min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0)
+                        scope_prefix="host:", min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0,
+                        allowed_targets=frozenset({"redis-server"}))
     outcome, _ = await _run(tmp_path, t, gate=gate)
     assert outcome.status == "aborted" and t.restarts == 0
 

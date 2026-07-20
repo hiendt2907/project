@@ -1,9 +1,11 @@
 # ADR-005: Recovery Executor Consolidation (systemd_restart vs operations)
 
 **Date:** 2026-07-20
-**Status:** Proposed — decision needed before wiring more capabilities onto the
-durable agent daemon. No code changed by this ADR; it documents a finding from
-this session's audit (see `docs/handoffs/CURRENT_SESSION.md`, "P0-2").
+**Status:** Accepted, option 2 implemented — user granted explicit go-ahead
+for the recommended fix after reviewing this finding (see
+`docs/handoffs/CURRENT_SESSION.md`, "P0-2"). Code + tests are in; **not yet
+released to the VM fleet** (see "Rollout" section below — that is a separate
+decision from writing the code).
 
 ## Context
 
@@ -114,21 +116,51 @@ separately for whether its payload-hash tamper-binding should also move into
 the generic contract (Phase 0 canonical-contract work) or stay specific to the
 CLI-authored path.
 
-## Why this ADR does not implement the fix
+## Implementation (2026-07-20, after sign-off)
 
-Per `AGENTS.md` and this session's standing constraints: changes to the live
-production mutation authority scope (what a systemd unit an agent daemon is
-allowed to restart) are explicitly the kind of change that must not be made
-unilaterally — "never self-elevate production autonomy," "never bypass
-allowlist," and the general rule that widening or narrowing what a hardened
-executor is authorized to touch needs human review, not just green tests. The
-current session instead: (a) confirmed and precisely evidenced the gap with
-file:line references, (b) proposes the safer of the two structural options, and
-(c) leaves the actual `RecoveryGate` change and `runtime_config.py` wiring for
-explicit approval, since it changes what the already-deployed VM lab daemons
-are authorized to do at the next redeploy.
+Option 2 implemented as proposed:
 
-## Consequences if left unresolved
+- `RecoveryGate` (`src/aoip/recovery.py`) gained
+  `allowed_targets: frozenset[str] = frozenset()` — same fail-closed
+  convention as `SystemdRestartPolicy.allowed_units`: empty means restart
+  nothing, never permit-all. `_gate_checks()` gained a `target_allowlisted`
+  check (`req.unit in gate.allowed_targets`) alongside the existing
+  `scope_in_authority` check — any gate failure is zero-mutation, same as
+  every other check in that list.
+- `runtime_config.py::_build_gate()` now reads `AOIP_ALLOWED_SYSTEMD_UNITS`
+  via the same `_require()` helper used for every other gate field —
+  `mutation_enabled` mode fails startup (`AgentBootstrapError`) if it's
+  unset or blank, rather than silently building an unrestricted-by-omission
+  gate. This matches the file's own stated philosophy ("MUTATION_ENABLED
+  thiếu bất kỳ dependency nào phải làm startup THẤT BẠI").
+- 11 pre-existing `RecoveryGate(...)` call sites (2 demo/CLI scripts,
+  9 test files) updated to declare their unit(s) explicitly — they were all
+  relying on the implicit "no restriction" default that no longer exists.
+- New tests in `tests/test_aoip_runtime_config.py`: allowlist parses from
+  env correctly, missing/blank env fails closed at startup, and a
+  comma-only value (non-blank string, zero real entries) still parses to an
+  empty — not permit-all — allowlist.
+
+Full suite: `6211 passed, 5 deselected` after the change, zero regressions.
+
+## Rollout — separate decision from writing the code
+
+**This fix has zero live behavior impact today.** All 3 lab VMs
+(`cust-edge`, `cust-app`, `cust-db`) run `aoip-agent.service` with
+`AOIP_AGENT_MODE=observe_only` (confirmed via `orb -m <vm> sudo systemctl
+show aoip-agent.service -p Environment`), which short-circuits before
+`_build_gate()`/`RecoveryGate` are ever constructed
+(`daemon.py`/`runtime_config.py:94-95`). The fix only takes effect once
+BOTH: (a) a new agent release containing this code is published and
+installed on a VM (via the IT-5 safe-update mechanism, `make
+publish-agent-release` + the durable update/rollback channel — not a direct
+file edit on the VM), AND (b) an operator deliberately sets
+`AOIP_AGENT_MODE=mutation_enabled` with `AOIP_ALLOWED_SYSTEMD_UNITS` set —
+itself already a distinct, gated decision this ADR does not touch.
+Publishing a new agent release to the fleet is accordingly left as an
+explicit follow-up, not bundled into this ADR.
+
+## Consequences if left unresolved (pre-implementation baseline, for record)
 
 - Any future automated caller of the durable command channel (not just the
   `approve_systemd_restart` CLI) that produces a Stack-B-shaped payload can
@@ -143,9 +175,9 @@ Read-only: `src/aoip/agent/daemon.py`, `src/aoip/agent/operations.py`,
 `src/aoip/agent/runtime_config.py`, `src/aoip/capabilities/systemd_restart.py`,
 `src/aoip/recovery.py`, `src/aoip/command_bridge.py`,
 `src/aoip/console/approve_systemd_restart.py`, `ADR-001-canonical-agent-runtime.md`.
-No code was changed. No test was run against this claim beyond re-reading
-`tests/test_capability_systemd_restart.py` and `tests/test_aoip_operations.py`
-to confirm neither test suite exercises the *other* stack's executor (i.e.
-`test_aoip_operations.py`'s `build_recovery_executor` tests never assert an
-allowlist check — confirming the gap isn't just untested, it's structurally
-absent from that path).
+Confirmed neither test suite exercised the *other* stack's executor before
+the fix (`test_aoip_operations.py`'s `build_recovery_executor` tests never
+asserted an allowlist check — the gap was structurally absent from that
+path, not just untested). After implementation: full suite green, plus a
+live check on the VM fleet that `AOIP_AGENT_MODE=observe_only` on all 3
+hosts confirms this session's change carries zero live risk.

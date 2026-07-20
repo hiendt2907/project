@@ -64,11 +64,18 @@ def _build_gate(env: dict) -> RecoveryGate:
         max_age_s = float(_require(env, "AOIP_GATE_MAX_DIAGNOSIS_AGE_S"))
     except ValueError as exc:
         raise AgentBootstrapError(f"invalid numeric gate config: {exc}") from exc
+    # ADR-005: same env var + same fail-closed convention as
+    # capabilities.systemd_restart.SystemdRestartPolicy.load_policy_from_env —
+    # missing/empty → allowlist RỖNG (KHÔNG restart gì), never permit-all.
+    # Required (not _require-optional) so MUTATION_ENABLED can't silently
+    # start with an unrestricted target gate.
+    allowed_units = _require(env, "AOIP_ALLOWED_SYSTEMD_UNITS")
     return RecoveryGate(
         allowed_failure_modes=frozenset(m.strip() for m in modes.split(",") if m.strip()),
         allowed_substrates=frozenset(s.strip() for s in substrates.split(",") if s.strip()),
         max_risk=max_risk, scope_prefix=scope_prefix,
-        min_diagnosis_confidence=min_conf, max_diagnosis_age_s=max_age_s)
+        min_diagnosis_confidence=min_conf, max_diagnosis_age_s=max_age_s,
+        allowed_targets=frozenset(u.strip() for u in allowed_units.split(",") if u.strip()))
 
 
 def _build_transport(env: dict):

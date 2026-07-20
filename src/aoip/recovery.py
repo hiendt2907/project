@@ -106,6 +106,15 @@ class RecoveryGate:
     scope_prefix: str                  # node được phép tác động (vd "svc:")
     min_diagnosis_confidence: float
     max_diagnosis_age_s: float
+    # Target-level allowlist (unit name for systemd today; the concept
+    # generalizes to other substrates later). Fail-closed like
+    # capabilities.systemd_restart.SystemdRestartPolicy.allowed_units: rỗng =
+    # KHÔNG restart gì, KHÔNG phải wildcard-allow. ADR-005: trước bản vá này,
+    # daemon production (operations.build_recovery_executor) chỉ có
+    # scope_prefix thô (node namespace) — không allowlist theo unit cụ thể —
+    # trong khi operator cấu hình AOIP_ALLOWED_SYSTEMD_UNITS tưởng nó có hiệu
+    # lực toàn hệ thống.
+    allowed_targets: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -229,6 +238,8 @@ def _gate_checks(ctx, req: RecoveryRequest, gate: RecoveryGate, approval: Approv
          f"risk {req.risk} > max {gate.max_risk}"),
         ("scope_in_authority", req.failed_node.startswith(gate.scope_prefix),
          f"node {req.failed_node} ngoài scope {gate.scope_prefix!r}"),
+        ("target_allowlisted", req.unit in gate.allowed_targets,
+         f"unit {req.unit!r} không nằm trong allowed_targets (rỗng = KHÔNG restart gì)"),
     ]
 
 
