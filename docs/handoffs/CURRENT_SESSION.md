@@ -602,3 +602,48 @@ daemon thật cần quyết định riêng, không tự ý dù có quyền truy 
 - Phase 0 (canonical contracts `src/pkg/`) và Phase 1-6 (vertical slice mở
   rộng) của roadmap "Omni Autonomous Productization" — vẫn NOT_IMPLEMENTED,
   quy mô nhiều tuần thiết kế xuyên hệ thống, chưa động tới trong phiên này.
+
+## Commit + push (2026-07-20, cuối phiên) — 6 commit lên main
+
+User chọn "Commit + push trước", sau đó "làm tiếp đi" cho ADR-005. Đã push
+`957148f..c1f432d` (7 commit tổng, 6 của phiên này):
+1. `25bcbee` feat(advisory) anti-hallucination guardrails (dòng công việc cũ 07-15/16).
+2. `c98014d` fix(workers) P0-1 CRAT trước Telegram dispatch.
+3. `de1c539` fix(aoip) action_id idempotency binding bug.
+4. `2cc4c7a` fix(gateway) P0-4 per-agent credential agent_id scoping.
+5. `9ca2340` docs(architecture) ADR-005 ban đầu (Proposed, chưa implement).
+6. `e42990b` docs(handoffs) đóng phiên (bản trước bản này).
+7. `c1f432d` fix(aoip) implement ADR-005 — `RecoveryGate.allowed_targets`
+   fail-closed, wire `AOIP_ALLOWED_SYSTEMD_UNITS` vào `runtime_config.py`,
+   sửa 11 call site `RecoveryGate(...)` cũ (2 demo script + 9 test file),
+   +5 test mới (`test_aoip_runtime_config.py`). Full suite `6211 passed,
+   5 deselected`, không regression.
+
+**ADR-005 status cập nhật: Accepted, đã implement.** Zero live-behavior
+impact xác nhận bằng cách đọc trực tiếp `AOIP_AGENT_MODE` trên cả 3 VM lab
+(`orb -m <vm> sudo systemctl show aoip-agent.service -p Environment`) — cả
+3 đều `observe_only`, code path `_build_gate()`/`RecoveryGate` chưa từng
+được daemon thật gọi tới. Fix chỉ có hiệu lực khi VỪA (a) release mới chứa
+code này được publish lên VM qua kênh update chính thức (IT-5,
+`make publish-agent-release`, KHÔNG sửa file trực tiếp trên VM) VỪA (b)
+operator chủ động bật `AOIP_AGENT_MODE=mutation_enabled` — quyết định riêng,
+chưa làm trong phiên này.
+
+K8s image (`omni-fullstack`, `omni-gateway`) đã rebuild+redeploy lại để đồng
+bộ với git HEAD sau commit cuối — cả 2 pod Running, `/healthz`+`/readyz`
+xanh. Lưu ý: code AOIP trong K8s image KHÔNG được K8s pod thực thi (daemon
+chạy trên VM qua systemd, không qua K8s) — redeploy K8s chỉ là vệ sinh đồng
+bộ image↔git, không phải "deploy fix" theo nghĩa runtime-proof cho chính
+ADR-005.
+
+### Next step thật (2026-07-20, chốt phiên)
+
+- Working tree sạch, `main` đã push, cluster K8s đồng bộ HEAD.
+- **Việc thật còn mở duy nhất liên quan trực tiếp phiên này:** quyết định có
+  publish agent release mới (chứa ADR-005 fix) lên VM fleet hay không — và
+  nếu có, quyết định riêng có bật `mutation_enabled` ở đâu đó hay tiếp tục
+  `observe_only`. Cả 2 đều là quyết định vận hành, không phải việc code.
+- Phase 0-6 của roadmap "Omni Autonomous Productization" (canonical
+  contracts, vertical slice, multi-tenant mở rộng) — quy mô nhiều tuần thiết
+  kế, chưa bắt đầu, cần một phiên riêng bắt đầu bằng thiết kế trước khi viết
+  code migration.
