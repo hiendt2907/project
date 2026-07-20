@@ -396,6 +396,34 @@ def test_decode_recovery_command_builds_request_and_approval():
     assert ctx.diagnosis_confidence == 0.787 and len(ctx.findings) == 2
 
 
+def test_decode_recovery_command_binds_action_id_from_approval():
+    """req.action_id must come from the issued approval — this is the correlation
+    identity _key_for() needs to pick the per-command idempotency key instead of
+    the coarser legacy intent-based key (see operations._key_for)."""
+    req, approval, _ctx = decode_recovery_command(_payload())
+    assert req.action_id == approval.action_id == "act-1"
+
+
+def test_key_for_uses_correlation_identity_when_payload_fully_bound():
+    """A fully-bound production payload (mission/incident/decision/action/command
+    ids all present) must produce the correlation-based key, not the legacy
+    intent-only key — else two distinct approved commands for the same
+    target+failure_mode+unit would collide and the second mutation would be
+    silently skipped as 'already done'."""
+    from aoip.agent.operations import _key_for
+
+    payload = _payload()
+    payload["mission_id"] = "mission-1"
+    payload["incident_id"] = "incident-1"
+    payload["decision_id"] = "decision-1"
+    payload["command_id"] = "command-1"
+    req, _approval, _ctx = decode_recovery_command(payload)
+
+    corr_hash = payload_hash(unit=req.unit, verb=req.action.plan, port=req.port,
+                             failure_mode=req.failure_mode, substrate=req.substrate)
+    assert _key_for(req) == command_identity(req, payload_hash=corr_hash)
+
+
 def test_decode_recovery_command_missing_field_raises():
     bad = _payload()
     del bad["recovery"]["unit"]

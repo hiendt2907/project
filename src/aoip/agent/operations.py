@@ -323,7 +323,7 @@ def decode_recovery_command(payload: dict) -> tuple[RecoveryRequest, Approval, _
         raise UnsupportedRecoveryPayload(f"invalid_approval: {exc}") from exc
     # Bind the immutable action identity from the approval into the request so
     # idempotency cannot collapse two actions with the same intent.
-        req = replace(req, action_id=approval.action_id)
+    req = replace(req, action_id=approval.action_id)
 
     ev_d = payload.get("evidence") or {}
     findings = [
