@@ -25,8 +25,11 @@ ALERT_KIND_UNKNOWN = "unknown"
 
 # Self-monitoring / KPI alert families emitted by Omni about itself. These have no
 # customer-cluster remediation target.
+# OmniBaseline* (recording rules omni:mem:z / omni:cpu:z) thiếu ở đây từng để
+# OmniBaselineMemZHigh rơi vào RAG+LLM và bị parrot thành advisory bịa
+# (trace gw-prom-84cd18edddb2, 2026-07-15).
 _META_SELF_RE = re.compile(
-    r"^(Omni(Worker|Redis|LLM|Advisory|FalsePositive|Health|Kafka|Pipeline)"
+    r"^(Omni(Worker|Redis|LLM|Advisory|FalsePositive|Health|Kafka|Pipeline|Baseline)"
     r"|OmniAdvisoryAcceptanceRateLow|OmniFalsePositiveRateHigh)",
     re.I,
 )

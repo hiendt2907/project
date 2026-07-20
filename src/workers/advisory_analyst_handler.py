@@ -26,6 +26,8 @@ from pkg.reasoning.analyst_advisory_schema import (
 )
 from services.audit_ledger.chain_writer import write_audit_block
 from services.audit_ledger.signer import AuditLedgerError
+from workers.advisory_grounding_gate import apply_advisory_grounding_gate
+from workers.advisory_verdict_guard import apply_verdict_consistency_guard
 from workers.advisory_mode_system_prompt import build_advisory_system_prompt
 from workers.handler_context import WorkerHandlerContext
 from workers.llm_context_budget import effective_reply_max_words, truncate_for_llm
@@ -279,7 +281,7 @@ async def run_advisory_analyst(
         if isinstance(dm, str) and dm.strip():
             model = dm.strip()
 
-        system_prompt = build_advisory_system_prompt(ws)
+        system_prompt = build_advisory_system_prompt(ws, evidence_text=evidence_text)
         max_words = effective_reply_max_words(ws)
         num_predict = int(getattr(ws, "omni_advisory_num_predict", 1024))
         _raw_ctx = getattr(ws, "llm_num_ctx", None)
@@ -413,6 +415,36 @@ async def run_advisory_analyst(
 
         # Guardrail: correct LLM escalation misclassification for infra SIEM categories.
         advisory = _correct_escalation_reason(advisory, evidence_text)
+
+        # Grounding gate (INV_DIAG_GROUNDED): neutralize claims not traceable to the
+        # evidence the model actually saw. Must run BEFORE tier computation so the
+        # tier reflects the gated verdict/confidence, not the fabricated ones.
+        advisory, _ungrounded = apply_advisory_grounding_gate(advisory, evidence_text)
+        if _ungrounded:
+            log_llm_trace(
+                ws,
+                trace=trace,
+                phase="advisory_grounding_gate",
+                model=model,
+                parse_ok=True,
+                raw_response=raw_llm[:800],
+                detail=f"ungrounded={','.join(_ungrounded[:10])[:400]}",
+            )
+
+        # Verdict consistency guard: an extreme verdict requires at least one
+        # concrete failure signal in the evidence (the prompt-side SDK/METRIC
+        # CONSISTENCY rule, enforced deterministically).
+        advisory, _verdict_gated = apply_verdict_consistency_guard(advisory, evidence_text)
+        if _verdict_gated:
+            log_llm_trace(
+                ws,
+                trace=trace,
+                phase="advisory_verdict_guard",
+                model=model,
+                parse_ok=True,
+                raw_response=raw_llm[:800],
+                detail="extreme verdict without failure signal → INVESTIGATE",
+            )
 
         # Compute escalation tier from corrected advisory fields (immutable update).
         tier = _compute_escalation_tier(advisory)

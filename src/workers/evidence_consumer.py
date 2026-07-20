@@ -2771,6 +2771,20 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     except Exception:
                         pass
 
+                # System Twin: cho bộ não thấy bản đồ hệ thống khách hàng đã verify
+                # (dependency thật cho impact_chain thay vì đoán). Fail-open: twin
+                # trống/lỗi → block rỗng, advisory tiếp tục bình thường.
+                from workers.system_twin_context import build_system_twin_block
+
+                _twin_block = await build_system_twin_block(
+                    ctx.redis, _tenant_id_from_batch(batch)
+                )
+                if _twin_block:
+                    sanitized_text = f"{sanitized_text}\n\n{_twin_block}"
+                    logger.info(
+                        "event=system_twin_injected trace=%s chars=%s", trace, len(_twin_block)
+                    )
+
                 # Pipeline stage: RAG — Redis Stack runs as Omni's SECOND BRAIN here.
                 # Instead of a single one-shot recall, run a multi-turn RAG loop over the
                 # vector store within ONE session for this alert (run_redis_brain). It
@@ -3029,11 +3043,15 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                                 )
                     # Emit as SUGGEST_REMEDIATION (not mutations); tier is metadata only at this point.
                     _tier = getattr(advisory, "escalation_tier", "L2_SUGGEST")
+                    from pkg.reasoning.analyst_advisory_schema import confidence_to_float
+
                     await _emit_suggest_remediation(
                         ctx,
                         trace=trace,
                         diagnosis=advisory.root_cause,
-                        confidence=0.9,
+                        # Honest projection of the advisory confidence literal — a medium/low
+                        # LLM verdict must not reach the operator inflated to 0.9.
+                        confidence=confidence_to_float(advisory.confidence),
                         source=f"ADVISORY_MODE_ANALYST/{_tier}",
                         suggested_tool="kubectl_describe",
                         audit=False,  # CRAT (ADVISORY_DISPATCHED) written above at the killswitch gate

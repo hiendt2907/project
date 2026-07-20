@@ -38,6 +38,9 @@ class TestAdvisoryAnalystLLMHash:
         mock_advisory = MagicMock()
         mock_advisory.model_dump.return_value = {"verdict": "CRITICAL", "root_cause": "OOM"}
         mock_advisory.model_copy.return_value = mock_advisory  # _compute_escalation_tier calls model_copy
+        # grounding gate đọc các field text thật — mock phải trả string, không MagicMock
+        mock_advisory.root_cause = "OOM"
+        mock_advisory.affected_workload = "unknown"
 
         with (
             patch("workers.advisory_analyst_handler._parse_advisory_json", return_value={"verdict": "CRITICAL", "root_cause": "OOM"}),
@@ -78,6 +81,9 @@ class TestAdvisoryAnalystLLMHash:
         mock_advisory = MagicMock()
         mock_advisory.model_dump.return_value = {"verdict": "OK"}
         mock_advisory.model_dump_json.return_value = '{"verdict": "OK"}'
+        # grounding gate đọc các field text thật — mock phải trả string, không MagicMock
+        mock_advisory.root_cause = "none"
+        mock_advisory.affected_workload = "unknown"
 
         with (
             patch("workers.advisory_analyst_handler._parse_advisory_json", return_value={"verdict": "OK"}),

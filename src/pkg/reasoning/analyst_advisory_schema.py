@@ -454,6 +454,15 @@ VALID_CONFIDENCE_LEVELS: frozenset[str] = frozenset(_confidence_args)
 DEFAULT_VERDICT: str = "INVESTIGATE"
 DEFAULT_CONFIDENCE: str = "medium"
 
+# Honest numeric projection of the advisory confidence literal for downstream
+# SUGGEST_REMEDIATION payloads — never inflate a medium/low advisory to 0.9.
+CONFIDENCE_TO_FLOAT: dict[str, float] = {"high": 0.9, "medium": 0.6, "low": 0.3}
+
+
+def confidence_to_float(level: str) -> float:
+    """Map a confidence literal to its numeric value; unknown input degrades to low."""
+    return CONFIDENCE_TO_FLOAT.get(str(level).strip().lower(), CONFIDENCE_TO_FLOAT["low"])
+
 # Derived from sub-model field Literal types.
 DEFAULT_LAYER: str = VerificationStep.model_fields["layer"].default
 DEFAULT_FORECAST_METHOD: str = get_args(ForecastTimeline.model_fields["method"].annotation)[2]  # "heuristic"

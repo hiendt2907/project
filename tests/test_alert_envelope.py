@@ -47,6 +47,15 @@ def test_meta_self_with_null_ns_pod_still_meta_self():
     assert c.mutate_eligible is False
 
 
+def test_baseline_z_alerts_are_meta_self():
+    # Regression trace gw-prom-84cd18edddb2 (2026-07-15): OmniBaselineMemZHigh không khớp
+    # _META_SELF_RE nên rơi vào RAG+LLM và LLM parrot ví dụ prompt thành advisory bịa.
+    for name in ("OmniBaselineMemZHigh", "OmniBaselineCpuZHigh", "OmniBaselineDiskZHigh"):
+        c = classify_alert(_payload(name))
+        assert c.kind == ALERT_KIND_META_SELF, name
+        assert c.mutate_eligible is False, name
+
+
 # --------------------------------------------------------------------------- #
 # workload alerts                                                              #
 # --------------------------------------------------------------------------- #

@@ -158,7 +158,9 @@ def _make_advisory_for(evidence_lower: str) -> dict:
         if fingerprint in evidence_lower:
             advisory = {
                 "verdict": tmpl["verdict"],
-                "affected_workload": "multi-agent/target-workload",
+                # "unknown" — stub không biết workload thật; bịa một tên không có trong
+                # evidence sẽ bị advisory grounding gate trung hoà (đúng thiết kế).
+                "affected_workload": "unknown",
                 "root_cause": tmpl["root_cause"],
                 "verification_steps": [
                     {"command": "kubectl get pods -n multi-agent", "rationale": "check pod status"},
@@ -180,7 +182,7 @@ def _make_advisory_for(evidence_lower: str) -> dict:
     # Should not reach here if all 20 golden cases have fingerprints above.
     return {
         "verdict": "INVESTIGATE",
-        "affected_workload": "multi-agent/unknown",
+        "affected_workload": "unknown",
         "root_cause": "Anomaly detected in workload. Investigation required.",
         "verification_steps": [
             {"command": "kubectl get pods -n multi-agent", "rationale": "check pod status"},

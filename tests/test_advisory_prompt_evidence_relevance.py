@@ -31,3 +31,20 @@ def test_prompt_has_explicit_meta_self_alert_handling() -> None:
 def test_prompt_forbids_borrowing_unrelated_resource_baseline() -> None:
     prompt = build_advisory_system_prompt()
     assert "NEVER repurpose a CPU/memory/disk number" in prompt
+
+
+def test_prompt_has_anti_parroting_block() -> None:
+    # Regression trace gw-prom-84cd18edddb2 (2026-07-15): model copy nguyên văn ví dụ
+    # "Pod nginx-test bị OOMKilled..." + placeholder "<copy from input>" vào advisory thật.
+    prompt = build_advisory_system_prompt()
+    assert "ANTI-PARROTING" in prompt
+    assert "ILLUSTRATIVE ONLY" in prompt
+    assert "FABRICATION" in prompt
+    # phải nêu đích danh các giá trị mẫu dễ bị parrot nhất
+    assert prompt.count("nginx-test") >= 2  # ví dụ + cảnh báo cấm copy
+    assert "deterministic grounding gate" in prompt
+
+
+def test_prompt_meta_self_covers_baseline_family() -> None:
+    prompt = build_advisory_system_prompt()
+    assert "OmniBaseline" in prompt
