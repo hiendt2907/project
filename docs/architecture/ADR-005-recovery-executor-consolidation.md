@@ -143,7 +143,45 @@ Option 2 implemented as proposed:
 
 Full suite: `6211 passed, 5 deselected` after the change, zero regressions.
 
-## Rollout — separate decision from writing the code
+## Rollout — DONE (2026-07-20, explicit user instruction "bật multi agent lên chạy")
+
+Originally deferred as a separate decision (see history below); the user
+explicitly authorized both steps in the same session. Both are now live:
+
+1. **Release 1.3.3 published and installed on all 3 lab VMs**
+   (`staging-sim_cust-app/cust-db/cust-edge`, confirmed
+   `drift_status=current` via `/webhook/agent/versions`). Required standing
+   up lab TLS for the update channel (`INV_HTTPS_ONLY`) and fixing an
+   unrelated pre-existing bug found along the way — the bundle download had
+   no Authorization header and 401'd on any cluster with real API keys (see
+   `fix(remote_agent): send Authorization header...` commit). Bootstrapped
+   via one direct file sync (self-update cannot fix its own auth bug — the
+   old code is what's trying and failing to download the fix); every update
+   from 1.3.3 onward goes through the real channel.
+2. **`AOIP_AGENT_MODE=mutation_enabled` set on all 3 VMs**, each with a
+   real `RecoveryGate` (`AOIP_REDIS_URL` pointed at the in-cluster Redis,
+   reachable directly from the VMs over OrbStack's flat network;
+   `AOIP_AUDIT_LOG_PATH=/var/lib/aoip/recovery-audit.jsonl`) and a
+   deliberately narrow `AOIP_ALLOWED_SYSTEMD_UNITS` per host: `nginx.service`
+   (cust-edge), `payment-api.service` (cust-app — explicitly the
+   "(simulated)" lab drill service), `mariadb.service,redis-server.service`
+   (cust-db). All 3 daemons are stably `active` (`aoip-agent.service`
+   restart counts stopped incrementing after the fix), telemetry/evidence
+   flow confirmed unaffected post-change.
+
+**What this does and does not mean:** the daemons can now execute an
+*approved* recovery command end-to-end (lease + idempotency + gate +
+allowlist + current-state revalidation, all live). It does **not** mean
+anything mutates automatically — no live caller currently produces
+`RecoveryRequest`/`Approval` payloads for these hosts; the only way to
+trigger a real recovery today is the operator CLI
+(`aoip.console.approve_systemd_restart`) issuing an explicitly approved
+command by hand. Wiring an automated diagnosis→decision→approval→dispatch
+path remains out of scope (that's the Phase 1-6 vertical-slice work, not
+this ADR).
+
+<details>
+<summary>Original deferred-rollout note (superseded above)</summary>
 
 **This fix has zero live behavior impact today.** All 3 lab VMs
 (`cust-edge`, `cust-app`, `cust-db`) run `aoip-agent.service` with
@@ -159,6 +197,8 @@ file edit on the VM), AND (b) an operator deliberately sets
 itself already a distinct, gated decision this ADR does not touch.
 Publishing a new agent release to the fleet is accordingly left as an
 explicit follow-up, not bundled into this ADR.
+
+</details>
 
 ## Consequences if left unresolved (pre-implementation baseline, for record)
 

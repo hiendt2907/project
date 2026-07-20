@@ -636,13 +636,86 @@ chạy trên VM qua systemd, không qua K8s) — redeploy K8s chỉ là vệ sin
 bộ image↔git, không phải "deploy fix" theo nghĩa runtime-proof cho chính
 ADR-005.
 
+## Rollout thật lên VM fleet (2026-07-20, cuối phiên) — user chỉ thị "bật multi agent lên chạy"
+
+User xác nhận rõ (AskUserQuestion): cả (1) publish release mới VÀ (2) bật
+`mutation_enabled` thật. Đã làm cả hai, tuần tự, với 2 bug thật phát hiện
+giữa chừng (không phải do phiên này gây ra — lộ ra khi thử làm thật):
+
+**1. Publish release 1.3.3 lên cả 3 VM lab thật:**
+- Bump `src/remote_agent/VERSION` 1.3.2→1.3.3, `make publish-agent-release`.
+- **Bug thật #1 (hạ tầng, không phải code):** kênh update cần HTTPS
+  (`INV_HTTPS_ONLY`) nhưng cluster này CHƯA từng có TLS cho
+  `gateway.ai-agent.local` — chỉ HTTP. Dựng self-signed CA lab (openssl),
+  tạo K8s TLS secret `omni-gateway-tls`, thêm Ingress `omni-gateway-https`
+  (entrypoint `websecure`, Traefik đã sẵn port 443) vào
+  `k8s/ingress/ai-agent-local.yaml`. Trust CA trên cả 3 VM
+  (`update-ca-certificates`) — verify TLS thật không cần `-k`. Set
+  `OMNI_AGENT_UPDATE_ALLOWED_HOSTS=gateway.ai-agent.local` vào
+  `omni-worker-configmap.yaml` (đọc bởi gateway).
+- **Bug thật #2 (code, đã fix + test + commit):** venv Python trên VM dùng
+  `certifi` bundle riêng, KHÔNG dùng system trust store → vẫn
+  `CERTIFICATE_VERIFY_FAILED` dù đã trust CA ở OS. Append CA cert vào
+  `certifi.where()` path trong venv (không tracked git — riêng từng VM).
+- **Bug thật #3 (code, đã fix + test + commit, PHÁT HIỆN QUAN TRỌNG):**
+  `/webhook/agent/release/bundle` nằm sau `_require_api_key` như mọi route
+  agent khác, nhưng `remote_agent/updater.py::_download()` CHƯA BAO GIỜ gửi
+  credential nào → HTTP 401 trên bất kỳ cluster nào có key thật cấu hình
+  (tức mọi deployment không phải lab-no-auth). Đây là gap có thật, không
+  phải do phiên này gây ra — chỉ lộ ra vì lần đầu thử update thật kể từ khi
+  cluster có key. Fix: `_download`/`handle_update_command`/`execute_batch`
+  nhận thêm `api_key`, `agent.py` truyền `cfg.api_key` — commit
+  `4b46da2`, +6 test mới, full suite `6214 passed`.
+- **Bootstrap khó:** code cũ trên VM có chính bug #3 nên tự-update qua kênh
+  chính thức không tự sửa được chính nó (vòng luẩn quẩn). Lần đầu chỉ patch
+  3 file lẻ (`updater.py`/`command_executor.py`/`agent.py`) → gây crash-loop
+  MỚI (agent.py bản HEAD import hàm không tồn tại trong `collectors/logs.py`
+  bản cũ còn lại trên VM — version-skew giữa các file). Fix đúng: sync
+  NGUYÊN block `src/remote_agent/` + `src/aoip/` nhất quán (build lại tarball
+  release, giải nén thẳng vào `/opt/omni-remote-agent/`), không patch từng
+  file lẻ. Bài học: bootstrap một agent tự-update bị hỏng PHẢI đồng bộ toàn
+  bộ package, không vá từng file.
+- Kết quả xác nhận qua HTTP thật: `staging-sim_cust-app/cust-db/cust-edge`
+  đều `version=1.3.3 drift_status=current`. Evidence/register vẫn chạy bình
+  thường sau update (xác nhận qua gateway log).
+
+**2. Bật `mutation_enabled` thật trên cả 3 VM:**
+- Set `AOIP_AGENT_MODE=mutation_enabled` + `AOIP_REDIS_URL` (Redis trong
+  K8s, VM reach trực tiếp qua network phẳng OrbStack — đã test TCP connect
+  thật) + `AOIP_AUDIT_LOG_PATH=/var/lib/aoip/recovery-audit.jsonl` +
+  `AOIP_GATE_*` (process_down/systemd, max_risk 0.5, scope_prefix `svc:`) +
+  `AOIP_ALLOWED_SYSTEMD_UNITS` RIÊNG từng host (chọn có chủ đích, không
+  wildcard): `nginx.service` (cust-edge), `payment-api.service` (cust-app —
+  đúng service lab đánh dấu "(simulated)", an toàn nhất để drill), `mariadb
+  .service,redis-server.service` (cust-db).
+- **Bug thật #4:** venv agent thiếu package `redis` (chỉ cần cho
+  `mutation_enabled`, `observe_only` không cần — comment trong code đã nói
+  rõ). `AgentBootstrapError` đúng thiết kế (fail loudly, không silent
+  fallback) → cài `redis[hiredis]>=5.0.0` vào venv cả 3 VM.
+- Sau 2 fix trên: cả 3 `aoip-agent.service` **active, ổn định** (restart
+  counter dừng tăng), evidence/register vẫn chạy — xác nhận qua gateway log.
+- **Ý nghĩa thật, không phóng đại:** daemon nay CÓ THỂ thực thi 1 recovery
+  command đã approve, đầy đủ lease+idempotency+gate+allowlist+revalidate —
+  NHƯNG chưa có caller tự động nào tạo `RecoveryRequest`/`Approval` cho các
+  host này. Cách duy nhất trigger mutation thật hôm nay là operator CLI
+  (`python -m aoip.console.approve_systemd_restart`) ký tay 1 lệnh. Chưa nối
+  diagnosis→decision→approval→dispatch tự động (đó là việc Phase 1-6, ngoài
+  phạm vi phiên này).
+
+Toàn bộ chi tiết + rationale đầy đủ đã cập nhật vào
+`docs/architecture/ADR-005-recovery-executor-consolidation.md` (section
+"Rollout — DONE").
+
 ### Next step thật (2026-07-20, chốt phiên)
 
-- Working tree sạch, `main` đã push, cluster K8s đồng bộ HEAD.
-- **Việc thật còn mở duy nhất liên quan trực tiếp phiên này:** quyết định có
-  publish agent release mới (chứa ADR-005 fix) lên VM fleet hay không — và
-  nếu có, quyết định riêng có bật `mutation_enabled` ở đâu đó hay tiếp tục
-  `observe_only`. Cả 2 đều là quyết định vận hành, không phải việc code.
+- Working tree sạch, `main` đã push (bao gồm commit `4b46da2` fix auth
+  header). Cluster K8s + VM fleet đều chạy code mới nhất, đã verify runtime
+  thật (không phải chỉ test pass).
+- **Chưa có gì tự động dùng `mutation_enabled` mới bật** — cần 1 quyết định
+  riêng tiếp theo nếu muốn: (a) chạy thử 1 drill thật (approve 1 lệnh restart
+  `payment-api.service` qua CLI, xác nhận toàn bộ vòng lease/idempotency/
+  audit/verify chạy đúng trên hạ tầng thật), hoặc (b) bắt đầu nối một caller
+  tự động (diagnosis→decision→approval) — quy mô Phase 1-6.
 - Phase 0-6 của roadmap "Omni Autonomous Productization" (canonical
   contracts, vertical slice, multi-tenant mở rộng) — quy mô nhiều tuần thiết
   kế, chưa bắt đầu, cần một phiên riêng bắt đầu bằng thiết kế trước khi viết
