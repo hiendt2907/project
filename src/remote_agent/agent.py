@@ -294,7 +294,7 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
                     logger.info(
                         "omni-agent: received %d command(s) from Omni", len(commands)
                     )
-                    results = await execute_batch(commands)
+                    results = await execute_batch(commands, api_key=cfg.api_key)
                     await emitter.submit_command_results(results)
             except Exception as exc:
                 logger.warning("omni-agent: command channel error (non-fatal): %s", exc)

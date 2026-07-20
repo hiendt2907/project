@@ -354,7 +354,7 @@ class TestE2ESelfUpdateGuardRails:
         # proving the checksum guard runs for real even with a faked transfer.
         from remote_agent import updater
 
-        async def fake_download(url, dest):
+        async def fake_download(url, dest, api_key=""):
             dest.write_bytes(b"totally-different-content")
             return True, ""
 

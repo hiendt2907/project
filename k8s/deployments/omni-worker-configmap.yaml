@@ -12,6 +12,11 @@ metadata:
   labels:
     app: omni-worker
 data:
+  # INV_HOST_WHITELIST (agent_commands.py): hosts the gateway will accept as an
+  # UPDATE_AGENT download_url target. Only omni-gateway reads this; harmless
+  # for omni-fullstack (shared ConfigMap). Lab TLS: self-signed CA trusted on
+  # the 3 lab VMs, see k8s/ingress/ai-agent-local.yaml (omni-gateway-https).
+  OMNI_AGENT_UPDATE_ALLOWED_HOSTS: "gateway.ai-agent.local"
   OMNI_OOM_DETERMINISTIC_REMEDIATE_ENABLED: "false"
   # Lab: deterministic OOM memory patch (requires alert labels + flag)
   OMNI_PROMETHEUS_URL: "prometheus.monitor.svc.cluster.local:9090"

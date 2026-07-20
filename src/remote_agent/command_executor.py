@@ -167,6 +167,7 @@ async def execute_command(
 async def execute_batch(
     commands: list[dict[str, Any]],
     current_version: str = "unknown",
+    api_key: str = "",
 ) -> list[dict[str, Any]]:
     """Execute a list of command dicts from the command channel poll response.
 
@@ -184,6 +185,7 @@ async def execute_batch(
                 download_url=str(cmd.get("download_url", "")),
                 sha256_checksum=str(cmd.get("sha256_checksum", "")),
                 current_version=current_version,
+                api_key=api_key,
             )
         else:
             result = await execute_command(

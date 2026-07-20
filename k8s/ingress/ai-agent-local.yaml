@@ -41,6 +41,37 @@ spec:
                 port:
                   number: 80
 
+# ── multi-agent: Omni Gateway HTTPS (websecure) — agent self-update bundle ────
+# INV_HTTPS_ONLY (agent_commands.py): the agent's UPDATE_AGENT download_url must
+# be https://. Self-signed lab CA (docs/handoffs — "gateway lab TLS", 2026-07-20);
+# CA cert distributed + trusted on the 3 lab VMs so aoip.agent.updater's httpx
+# client (default cert verification, no verify=False) accepts it.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omni-gateway-https
+  namespace: multi-agent
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - gateway.ai-agent.local
+      secretName: omni-gateway-tls
+  rules:
+    - host: gateway.ai-agent.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: omni-gateway
+                port:
+                  number: 80
+
 # ── multi-agent: SSE-only routes (NO buffering middleware) ───────────────────
 # The body-limit-10m middleware is a Traefik `buffering` middleware which buffers
 # the RESPONSE and breaks Server-Sent Events. These dedicated, more-specific paths

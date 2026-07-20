@@ -147,6 +147,74 @@ class TestRestartService:
         assert "timed out" in err
 
 
+class TestDownloadSendsAuthHeader:
+    """/webhook/agent/release/bundle sits behind the same _require_api_key
+    guard as every other agent route — without an Authorization header the
+    download 401s on any cluster with a key configured (i.e. every non-lab
+    deployment). Caught live: an agent update to a real OrbStack lab cluster
+    failed with http_401 until this header was added."""
+
+    @pytest.mark.asyncio
+    async def test_sends_bearer_header_when_api_key_provided(self, tmp_path):
+        captured = {}
+
+        class _FakeResp:
+            status_code = 200
+            content = b"data"
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def get(self, url, headers=None):
+                captured["headers"] = headers
+                return _FakeResp()
+
+        with patch("httpx.AsyncClient", return_value=_FakeClient()):
+            ok, err = await updater._download(
+                "https://gateway.example.com/bundle", tmp_path / "out", api_key="secret-key",
+            )
+        assert ok is True
+        assert captured["headers"] == {"Authorization": "Bearer secret-key"}
+
+    @pytest.mark.asyncio
+    async def test_no_header_when_api_key_empty(self, tmp_path):
+        captured = {}
+
+        class _FakeResp:
+            status_code = 200
+            content = b"data"
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def get(self, url, headers=None):
+                captured["headers"] = headers
+                return _FakeResp()
+
+        with patch("httpx.AsyncClient", return_value=_FakeClient()):
+            await updater._download("https://gateway.example.com/bundle", tmp_path / "out")
+        assert captured["headers"] is None
+
+    @pytest.mark.asyncio
+    async def test_handle_update_command_threads_api_key_to_download(self, monkeypatch):
+        monkeypatch.setenv(updater._ALLOWED_HOSTS_ENV, "cdn.example.com")
+        with patch("remote_agent.updater._download", AsyncMock(return_value=(False, "x"))) as mock_dl:
+            await updater.handle_update_command(
+                "c1", "1.2.0", "https://cdn.example.com/x.tar.gz", GOOD_CHECKSUM,
+                api_key="agent-secret",
+            )
+        mock_dl.assert_called_once()
+        assert mock_dl.call_args.kwargs["api_key"] == "agent-secret"
+
+
 class TestHandleUpdateCommand:
     @pytest.mark.asyncio
     async def test_url_blocked_when_no_allowed_hosts(self, monkeypatch):
@@ -181,7 +249,7 @@ class TestHandleUpdateCommand:
     async def test_checksum_mismatch_aborts_install(self, monkeypatch, tmp_path):
         monkeypatch.setenv(updater._ALLOWED_HOSTS_ENV, "cdn.example.com")
 
-        async def fake_download(url, dest):
+        async def fake_download(url, dest, api_key=""):
             dest.write_bytes(b"different-content-than-expected")
             return True, ""
 
@@ -199,7 +267,7 @@ class TestHandleUpdateCommand:
         (install_dir / "old-binary").write_bytes(b"old")
         monkeypatch.setenv(updater._INSTALL_DIR_ENV, str(install_dir))
 
-        async def fake_download(url, dest):
+        async def fake_download(url, dest, api_key=""):
             dest.write_bytes(GOOD_CHECKSUM_INPUT)
             return True, ""
 
@@ -221,7 +289,7 @@ class TestHandleUpdateCommand:
         (install_dir / "old-binary").write_bytes(b"old-content")
         monkeypatch.setenv(updater._INSTALL_DIR_ENV, str(install_dir))
 
-        async def fake_download(url, dest):
+        async def fake_download(url, dest, api_key=""):
             dest.write_bytes(GOOD_CHECKSUM_INPUT)
             return True, ""
 

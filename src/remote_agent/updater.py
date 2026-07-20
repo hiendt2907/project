@@ -70,14 +70,20 @@ def _get_install_dir() -> Path:
     return Path(sys.argv[0]).resolve().parent
 
 
-async def _download(url: str, dest: Path) -> tuple[bool, str]:
+async def _download(url: str, dest: Path, api_key: str = "") -> tuple[bool, str]:
+    """Download the release bundle. The gateway's /webhook/agent/release/bundle
+    route sits behind _require_api_key like every other agent route — without
+    this header the download 401s whenever the cluster has any key configured
+    (i.e. every non-lab deployment), even though the enqueue/poll/enroll calls
+    all authenticate correctly."""
     try:
         import httpx
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
         async with httpx.AsyncClient(
             follow_redirects=False,
             timeout=_DOWNLOAD_TIMEOUT_S,
         ) as client:
-            resp = await client.get(url)
+            resp = await client.get(url, headers=headers)
             if resp.status_code != 200:
                 return False, f"http_{resp.status_code}"
             dest.write_bytes(resp.content)
@@ -129,6 +135,7 @@ async def handle_update_command(
     download_url: str,
     sha256_checksum: str,
     current_version: str = "unknown",
+    api_key: str = "",
 ) -> dict:
     """Execute self-update. Returns result dict compatible with command result schema.
 
@@ -171,7 +178,7 @@ async def handle_update_command(
 
     # Step 3 — download
     logger.info("[updater] downloading version=%s url=%s", version, download_url)
-    ok, err = await _download(download_url, tmp_new)
+    ok, err = await _download(download_url, tmp_new, api_key=api_key)
     if not ok:
         tmp_new.unlink(missing_ok=True)
         logger.error("[updater] DOWNLOAD_FAIL cmd_id=%s err=%s", cmd_id, err)

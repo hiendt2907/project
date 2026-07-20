@@ -162,8 +162,9 @@ class TestExecuteBatch:
             "remote_agent.updater.handle_update_command",
             AsyncMock(return_value={"cmd_id": "u1", "update_status": "success"}),
         ) as mock_update:
-            results = await execute_batch(cmds, current_version="1.1.0")
+            results = await execute_batch(cmds, current_version="1.1.0", api_key="agent-secret")
         mock_update.assert_awaited_once()
+        assert mock_update.call_args.kwargs["api_key"] == "agent-secret"
         assert results[0]["update_status"] == "success"
 
     @pytest.mark.asyncio

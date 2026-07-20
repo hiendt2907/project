@@ -82,7 +82,7 @@ async def test_checksum_mismatch_aborts_and_cleans_tmp():
     fake_content = b"fake agent binary"
     wrong_checksum = "a" * 64  # wrong hash
 
-    async def mock_download(url: str, dest: Path) -> tuple[bool, str]:
+    async def mock_download(url: str, dest: Path, api_key: str = "") -> tuple[bool, str]:
         dest.write_bytes(fake_content)
         return True, ""
 
@@ -108,7 +108,7 @@ async def test_checksum_mismatch_aborts_and_cleans_tmp():
 async def test_download_fail_returns_error():
     from remote_agent.updater import handle_update_command
 
-    async def mock_download(url: str, dest: Path) -> tuple[bool, str]:
+    async def mock_download(url: str, dest: Path, api_key: str = "") -> tuple[bool, str]:
         return False, "http_404"
 
     with (
@@ -134,7 +134,7 @@ async def test_successful_update_calls_restart(tmp_path):
     fake_content = b"agent binary content"
     correct_checksum = _sha256_bytes(fake_content)
 
-    async def mock_download(url: str, dest: Path) -> tuple[bool, str]:
+    async def mock_download(url: str, dest: Path, api_key: str = "") -> tuple[bool, str]:
         dest.write_bytes(fake_content)
         return True, ""
 
@@ -174,7 +174,7 @@ async def test_restart_fail_restores_backup(tmp_path):
     fake_content = b"new agent binary"
     correct_checksum = _sha256_bytes(fake_content)
 
-    async def mock_download(url: str, dest: Path) -> tuple[bool, str]:
+    async def mock_download(url: str, dest: Path, api_key: str = "") -> tuple[bool, str]:
         dest.write_bytes(fake_content)
         return True, ""
 
@@ -243,6 +243,7 @@ async def test_execute_batch_routes_update_agent():
         download_url="https://cdn.example.com/agent.tar.gz",
         sha256_checksum="a" * 64,
         current_version="1.0.0",
+        api_key="",
     )
     assert results[0]["update_status"] == "success"
 
