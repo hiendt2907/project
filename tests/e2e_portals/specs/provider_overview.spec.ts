@@ -116,6 +116,35 @@ test("Pipeline: drill-down SỰ CỐ hiển thị 12 bước; tín hiệu học 
   }
 });
 
+// Port của ui/app/trace/[id] (audit 2026-07-21): thay vì trang riêng, phần chẩn đoán
+// (session đa lượt / advisory một lượt / trạng thái chưa có) là section bổ sung ngay
+// dưới 12 bước trên pipeline/[traceId] — đúng như audit đề xuất.
+test("Pipeline drill-down: chi tiết chẩn đoán hiển thị đúng MỘT trong 3 trạng thái (session/advisory/rỗng)", async ({ page }) => {
+  await login(page, "owner@aoip.dev");
+  await page.goto(PROVIDER + "/pipeline");
+  const incidentLink = page.getByTestId("pipeline-table").locator(".aoip-trace-link").first();
+  if ((await incidentLink.count()) === 0) return; // không có sự cố nào lúc chạy test — bỏ qua, không phải lỗi.
+
+  await incidentLink.click();
+  const turns = page.getByTestId("diag-turns");
+  const advisory = page.getByTestId("diag-advisory");
+  const empty = page.getByTestId("diag-empty");
+  await expect(turns.or(advisory).or(empty).first()).toBeVisible();
+
+  // Nếu là session đa lượt: mỗi lượt là <details> có thể mở, lượt 1 mở sẵn.
+  if ((await turns.count()) > 0) {
+    await expect(page.getByTestId("diag-turn-1")).toHaveAttribute("open", /.*/);
+  }
+  // Nếu là advisory một lượt: có nhãn "Kết luận" (KeyVal render sẵn).
+  if ((await advisory.count()) > 0) {
+    await expect(advisory).toContainText("Kết luận");
+  }
+  // Nếu rỗng: giải thích rõ đây là bình thường, không phải lỗi.
+  if ((await empty.count()) > 0) {
+    await expect(empty).toContainText("bình thường");
+  }
+});
+
 test("KPI: số liệu 24h thật, không số giả", async ({ page }) => {
   await login(page, "owner@aoip.dev");
   await page.goto(PROVIDER + "/kpi");

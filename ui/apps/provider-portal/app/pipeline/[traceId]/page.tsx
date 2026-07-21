@@ -9,6 +9,8 @@ import {
   STAGE_VI,
   stageStatusVI,
 } from "@/lib/pipeline";
+import { fetchTraceAdvisory, fetchTraceSession } from "@/lib/trace-diagnosis";
+import { TraceDiagnosisSection } from "./TraceDiagnosisSection";
 import "../pipeline.css";
 
 function timeVI(ts: number): string {
@@ -22,7 +24,15 @@ export default async function TraceDetailPage({
   params: Promise<{ traceId: string }>;
 }) {
   const { traceId } = await params;
-  const result = await fetchTracePipeline(traceId);
+  // Ba nguồn độc lập — gọi song song, tránh waterfall (session/advisory chỉ
+  // dùng khi lane là sự cố chẩn đoán thật, nhưng biết lane cần đợi pipeline
+  // trả về trước; gọi song song rẻ hơn round-trip nối tiếp cho trang chi tiết
+  // vận hành nội bộ này).
+  const [result, sessionResult, advisoryResult] = await Promise.all([
+    fetchTracePipeline(traceId),
+    fetchTraceSession(traceId),
+    fetchTraceAdvisory(traceId),
+  ]);
 
   return (
     <>
@@ -97,6 +107,8 @@ export default async function TraceDetailPage({
               })}
             </ol>
           </Card>
+
+          <TraceDiagnosisSection session={sessionResult} advisory={advisoryResult} />
         </>
       )}
     </>

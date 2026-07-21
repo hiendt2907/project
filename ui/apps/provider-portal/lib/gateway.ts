@@ -30,3 +30,29 @@ export async function fetchGatewaySection<T>(path: string): Promise<GatewaySecti
     return { data: null, error: `gateway ${path.split("?")[0]} unreachable` };
   }
 }
+
+/**
+ * Like {@link fetchGatewaySection}, but for endpoints where 404 is an honest
+ * "nothing stored" response rather than a transport error — the body still
+ * decodes to valid JSON (e.g. `{found: false, ...}`) and callers render that
+ * as an empty state, not an error card. See /trace/{id}/session and
+ * /trace/{id}/advisory in src/gateway/routes/trace.py.
+ */
+export async function fetchGatewayOptional<T>(path: string): Promise<GatewaySectionResult<T>> {
+  if (!GATEWAY_URL) {
+    return { data: null, error: "OMNI_GATEWAY_URL not configured" };
+  }
+  try {
+    const res = await fetch(`${GATEWAY_URL}${path}`, {
+      headers: GATEWAY_API_KEY ? { Authorization: `Bearer ${GATEWAY_API_KEY}` } : {},
+      cache: "no-store",
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok && res.status !== 404) {
+      return { data: null, error: `gateway ${path.split("?")[0]} ${res.status}` };
+    }
+    return { data: (await res.json()) as T, error: null };
+  } catch {
+    return { data: null, error: `gateway ${path.split("?")[0]} unreachable` };
+  }
+}

@@ -137,3 +137,73 @@
   margin-left: auto;
   white-space: nowrap;
 }
+
+/* ── Chi tiết chẩn đoán (session đa lượt / advisory một lượt) ────────────── */
+.aoip-diag-turn {
+  border: 1px solid var(--content-line, #dcd6c9);
+  border-radius: var(--radius-md, 6px);
+  margin-bottom: var(--space-2, 0.5rem);
+  overflow: hidden;
+}
+
+.aoip-diag-turn:last-child {
+  margin-bottom: 0;
+}
+
+.aoip-diag-turn-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3, 0.75rem);
+  padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+  cursor: pointer;
+  font-weight: 650;
+  background: var(--content-surface-2, #f0ece2);
+}
+
+.aoip-diag-turn-body {
+  padding: var(--space-3, 0.75rem);
+  border-top: 1px solid var(--content-line, #dcd6c9);
+}
+
+.aoip-diag-pre {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text-xs, 0.75rem);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.aoip-diag-cmd-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 0.5rem);
+}
+
+.aoip-diag-cmd {
+  border: 1px solid var(--content-line, #dcd6c9);
+  border-radius: var(--radius-sm, 4px);
+  padding: var(--space-2, 0.5rem);
+}
+
+.aoip-diag-cmd-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+}
+
+.aoip-diag-cmd-head code {
+  font-size: var(--text-xs, 0.75rem);
+  overflow-wrap: anywhere;
+}
+
+.aoip-diag-steps,
+.aoip-diag-chain {
+  padding-left: 1.25rem;
+}
+
+.aoip-diag-steps li,
+.aoip-diag-chain li {
+  margin-bottom: var(--space-2, 0.5rem);
+}
