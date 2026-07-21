@@ -210,6 +210,35 @@ def issue_capability_command(
             "findings": [{"claim": f.claim, "references": list(f.references),
                          "verdict": f.verdict, "confidence": f.confidence} for f in findings],
         },
+        # Cross-lane compatibility (fixes a live defect found 2026-07-20): the deployed
+        # daemon's actual configured executor is operations.build_recovery_executor,
+        # whose decode_recovery_command() requires a top-level "recovery" key with this
+        # exact shape — it does NOT understand the capability/target/reason shape above.
+        # Emitting both means a payload built here works against either decoder without
+        # changing what the already-verified-safe daemon does. See ADR-005.
+        #
+        # mission_id/incident_id/decision_id included (live drill 2026-07-21 found this
+        # was required, not optional): operations._key_for() only uses the correlation-
+        # based idempotency key when ALL of tenant/mission_id/incident_id/decision_id/
+        # action_id/command_id are present on the decoded RecoveryRequest. Without them
+        # here it silently fell back to the coarse legacy key
+        # (tenant+scope+decision_goal+failure_mode+unit) — a SEPARATE later incident for
+        # the same unit got a false "already recovered" reconcile without re-executing
+        # or re-verifying current state, because it collided with an unrelated earlier
+        # drill's cached idempotency record.
+        "recovery": {
+            "failed_node": f"svc:{unit}",
+            "failure_mode": action.result["failure_mode"],
+            "substrate": action.result["substrate"],
+            "unit": unit,
+            "risk": action.result["risk"],
+            "diagnosed_at": issued_at,
+            "tenant": tenant,
+            "dependents": [],
+            "mission_id": typed_payload["reason"]["mission_id"],
+            "incident_id": typed_payload["reason"]["incident_id"],
+            "decision_id": typed_payload["reason"]["decision_id"],
+        },
     }
 
 
