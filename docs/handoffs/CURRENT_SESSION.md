@@ -30,18 +30,48 @@ pattern now apply uniformly to both the K8s and VM lanes. Recorded in new
 `docs/architecture/ADR-006-evidence-command-contract-convergence.md`, pointed to
 from `docs/CODEBASE.md`.
 
-Commits this session: `e5e2a41`/`5deabdf` (Phase 4), `0419c4a` (Phase 5), plus
-this session's final Phase 6 docs commit (see `git log -1`). All live-cluster/VM
-drill state reverted to safe defaults and confirmed after every phase (kill-switch
-`false`, tenant tiers back to `shadow`, VM identities/configs restored). Full
-suite green throughout (6269 passed, stable — no phase from 4 onward changed
-production code, only docs/tests). Working tree is clean.
+Commits this session: `e5e2a41`/`5deabdf` (Phase 4), `0419c4a` (Phase 5),
+`4e1991b` (Phase 6 docs). All live-cluster/VM drill state reverted to safe
+defaults and confirmed after every phase (kill-switch `false`, tenant tiers
+back to `shadow`, VM identities/configs restored).
 
-**Next step:** none pending from this roadmap — it is complete. If there is
-follow-up appetite, the two honestly-deferred items are: (1) wire-shape
-migration onto `src/pkg/contracts/` (ADR-006, deferred — not free, revisit only
-if a concrete pain point justifies it), (2) tenant-namespacing the VM-side
-`ExecutionLease` scope (Phase 5, deferred — currently fail-safe, not urgent).
+## Post-roadmap fix (same session) — discovery service-loss bug, DONE, `9955860`
+
+While reviewing a Telegram diagnosis card mid-drill, the user flagged that
+`payment-api.service`'s own failure was sometimes shown as a generic
+`SYS_RESOURCE`-lane advisory (`ps`/`free` commands, no auto-recovery) instead
+of the `SYS_HARD_FAIL` lane that has Phase 4's auto-recovery wiring — for the
+*same* incident that, in a concurrent diagnosis session, correctly
+auto-recovered. Root-caused live (not guessed): `remote_agent/discovery.py`'s
+`_collect_running_services()` queried `systemctl list-units --state=running`,
+so a service that crashes — the exact case that matters — silently drops out
+of the VM's discovered-service snapshot at the moment it fails.
+`remote_agent/agent.py` feeds that snapshot straight into
+`collectors/services.py`'s critical-service allowlist, **replacing** (not
+unioning with) the hardcoded default — so an app-level unit like
+`payment-api`, absent from the hardcoded list, loses its "critical"
+classification specifically because it's down, causing its own failure
+evidence to non-deterministically land in the wrong lane depending on
+discovery timing.
+
+Fix: dropped the `--state=running` filter (systemd keeps a failed unit
+"loaded"/in-memory until `reset-failed`, so it's still discoverable without
+it) and now reports the real ACTIVE-column state instead of a hardcoded
+`"running"`. 2 new regression tests in `tests/test_remote_agent.py`. Full
+suite green: `6271 passed` (was 6269; +2 new tests, no regressions). Published
+`remote_agent` v1.3.9, deployed to all 3 VMs (`cust-app`/`cust-edge`/`cust-db`)
+via the established stop/sync/start bootstrap; all confirmed `active`, no
+errors in `journalctl` post-deploy.
+
+Full suite green throughout the session (6269 → 6271 passed). Working tree is
+clean.
+
+**Next step:** none pending — the roadmap is complete and this follow-up fix
+is deployed. If there is follow-up appetite, the two honestly-deferred items
+from Phase 6/5 are: (1) wire-shape migration onto `src/pkg/contracts/`
+(ADR-006, deferred — not free, revisit only if a concrete pain point
+justifies it), (2) tenant-namespacing the VM-side `ExecutionLease` scope
+(Phase 5, deferred — currently fail-safe, not urgent).
 
 **Working tree (uncommitted):**
 - `src/services/analyst/diagnosis_loop.py` — added `suggested_recovery` field to the
