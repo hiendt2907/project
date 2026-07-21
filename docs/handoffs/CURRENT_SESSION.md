@@ -34,34 +34,49 @@ Workflow `wf_4a2349dd-ec8`: 2 parallel worktree coding agents + 1 aggregator.
 → **6376 passed, 0 failed, 5 deselected** (was 6367 right after merge, 6323
 baseline before Phase 7 — zero regressions). `scripts/deploy_aoip_gate_config.sh --self-test` → ALL PASS.
 
-**NOT done yet (next step, same discipline as the reset_failed round —
-kept under direct supervision, not delegated):**
-1. Deploy BOTH `src/aoip/` AND `src/remote_agent/` to all 3 VMs (lesson from
-   last round: they are separately-deployed packages under
-   `/opt/omni-remote-agent/{aoip,remote_agent}/` — deploying only one leaves
-   the other stale).
-2. Run `scripts/deploy_aoip_gate_config.sh` for real against
-   cust-app/cust-edge/cust-db (only `--self-test` has run so far).
-3. Confirm live: `python3 -c "from aoip.capabilities import
-   systemd_journal_vacuum"` on each VM, and `AOIP_ALLOWED_SYSTEMD_UNITS`
-   contains `systemd-journald.service` in each VM's `run.env` post-restart.
-4. `make e2e-proactive` + `make e2e-incident-matrix`.
-5. Live supervised drill for `systemd.journal_vacuum` on a real VM — reuse
+**Update — deploy + E2E now DONE, only the live drill remains:**
+
+1. **Deploy DONE.** Both `src/aoip/` and `src/remote_agent/` tarred
+   (`COPYFILE_DISABLE=1`) and pushed via `orb push` to all 3 VMs, service
+   stopped/extracted/restarted. `python3 -c "from aoip.capabilities import
+   systemd_journal_vacuum; print(CAPABILITY_NAME)"` → `systemd.journal_vacuum`
+   confirmed live on cust-app, cust-edge, cust-db.
+2. **Gate config DONE, against real VMs (not just `--self-test`).**
+   `scripts/deploy_aoip_gate_config.sh cust-app cust-edge cust-db` → PASS on
+   all 3, all managed keys (incl. `AOIP_ALLOWED_SYSTEMD_UNITS=payment-api.service,systemd-journald.service`)
+   match canonical. Ran a **second time** to prove real idempotency: all 3
+   VMs reported `run.env already up to date — skip write + restart`.
+3. **K8s side DONE.** `make deploy-worker` rolled out `omni-fullstack`
+   cleanly; `kubectl exec ... python3 -c "from aoip.capabilities import
+   systemd_journal_vacuum"` confirmed live in the running pod (not just
+   pushed-and-hoped).
+4. **`make e2e-proactive`: PASS** (`summary.pass=true`, `failed_checks: []`).
+5. **`make e2e-incident-matrix`: 5/5 PASS** (`wave_a1_rbac_manifest`,
+   `wave_a1_rbac_permissions`, `phase_b_pytest` [6376 passed], `phase_b_unit_full`
+   [6376 passed], `nginx_waiting_fault` [real K8s ConfigMap-fault injection,
+   Omni produced `action=unknown` correctly]). Report at
+   `reports/incident-matrix/latest.json` (git-dirty, generated, not committed).
+
+**Still pending — the one item left in this phase:**
+6. Live supervised drill for `systemd.journal_vacuum` on a real VM — reuse
    the three-layer-gate pattern (kill-switch → tenant mutation toggle →
    tier promotion) proven in
    `/Users/hiendang/.claude/jobs/71b56e60/tmp/e2e_reset_failed_drill.py`,
    adapted for `capability="systemd.journal_vacuum"`,
    `failure_mode="disk_pressure_journal"`, unit `systemd-journald.service`
-   — force real journal growth (e.g. flood-log a test unit or lower the
-   threshold env var temporarily) rather than faking state.
-6. `git push` once drill passes (not yet asked for this round — confirm
-   with user before pushing, per standing "only push when asked" rule; user
-   asked for push last round explicitly, has not re-asked this round yet).
+   — force real disk pressure (lower `AOIP_JOURNAL_VACUUM_THRESHOLD_BYTES`
+   on the VM below the current journal size, or flood-log) rather than
+   faking state. Build the command through the real
+   `aoip.command_bridge.build_durable_command`, not hand JSON. Revert all
+   narrow-window gate elevations in a `finally` block with fresh-read
+   confirmation, same as last round.
+7. `git push` once drill passes (not yet asked for this round — confirm
+   with user before pushing, per standing "only push when asked" rule).
 
 **Working tree at this checkpoint:** clean except
-`reports/incident-matrix/latest.json` (stale generated report from an
-earlier `make e2e-incident-matrix` run this session, harmless, not
-committed).
+`reports/incident-matrix/latest.json` (generated report from the
+`make e2e-incident-matrix` run just above, harmless, not committed). All
+code/config changes for Phase 7 are committed through `979373f`.
 
 **Git state:** 5 local commits ahead of `origin/main` (`d2e0666..1f78e85`
 range from this session) — NOT pushed.
