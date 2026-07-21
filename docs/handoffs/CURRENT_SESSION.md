@@ -2,15 +2,21 @@
 
 Updated: 2026-07-21
 
-## Session 2026-07-21 — Phase 4 (0-6 roadmap): closed-loop diagnosis→dispatch, IN PROGRESS
+## Session 2026-07-21 — Phase 4 (0-6 roadmap): closed-loop diagnosis→dispatch, DONE
 
 Plan: `/Users/hiendang/.claude/plans/temporal-sparking-ember.md`. Ledger:
-`docs/handoffs/PHASE_0_6_PROGRESS.md`. Phase 0-3 DONE (committed through `dc49b77`).
-Phase 4 code is implemented, tested (full suite 6269 passed), and deployed — but the
-live E2E drill (real VM crash → natural auto-dispatch → real recovery, zero manually
-authored JSON) has NOT yet completed successfully this session. Two real bugs were
-found and fixed along the way (see below); the redeployed fix has not yet been
-re-verified against a fresh live drill.
+`docs/handoffs/PHASE_0_6_PROGRESS.md`. Phase 0-4 DONE, committed+pushed through
+`e5e2a41`. **Phase 4's live E2E drill succeeded for real**: a crash-looped
+`payment-api.service` on cust-app was detected, diagnosed, auto-dispatched, and
+recovered end-to-end with zero manually authored JSON — `omni:trace:stages` shows
+`AUTO_RECOVERY ok`, the command's terminal record shows
+`outcome={"status":"recovered","verified":true}`, and
+`systemctl is-active payment-api.service` → `active` was confirmed live. Full detail
++ exact trace/command IDs in `PHASE_0_6_PROGRESS.md`'s Phase 4 section. Two real bugs
+were found and fixed along the way (see below). All test/live-cluster state has been
+reverted to safe defaults (kill-switch false, staging-sim tier back to shadow,
+VM config restored) — confirmed via direct checks, not assumed. Working tree is
+clean; next step is Phase 5.
 
 **Working tree (uncommitted):**
 - `src/services/analyst/diagnosis_loop.py` — added `suggested_recovery` field to the
@@ -70,19 +76,10 @@ yet re-verified live). **Before ending the session**: kill-switch reverted to `f
 (confirmed), `payment-api.service` restored to healthy/`active` on cust-app (confirmed)
 — the VM and cluster are back in a safe, clean state.
 
-**Next step:** re-run the live drill fresh against the redeployed fix — crash-loop
-`payment-api.service` again (`sudo systemctl kill -s SIGKILL payment-api.service` ×6
-within 10s to hit systemd's rate limit and reach `failed` state; a clean `systemctl
-stop` leaves it `inactive`, which the collector does NOT treat as a failure — only
-`failed`/`activating` states are collected), open the kill-switch on `omni-gateway`
-only, watch for a diagnosis session with `suggested_recovery` populated, confirm
-`auto_recovery_bridge` dispatches through the gateway (tier_gate should ALLOW: `
-staging-sim` is capped at `assist` tier per the plan-ceiling rule, LOW risk → ALLOW),
-and confirm the VM actually recovers (`systemctl is-active payment-api.service` →
-`active`). Capture the real trace_id/command_id/audit block. If it works, mark Phase 4
-DONE in `PHASE_0_6_PROGRESS.md` with the real captured output, commit+push (nothing
-from this session has been committed yet), then continue Phase 5-6. If genuinely
-blocked again, mark BLOCKED with the exact gap — do not fabricate success.
+**Next step (superseded — see the top "DONE" section):** the live drill described
+below was re-run successfully in a later part of this same session — Phase 4 is DONE,
+committed as `e5e2a41`, pushed. Next step is now Phase 5 (multi-tenant/multi-agent
+concurrency proof) per the plan.
 
 ## Outcome
 
