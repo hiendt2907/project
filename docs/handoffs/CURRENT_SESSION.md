@@ -2,6 +2,41 @@
 
 Updated: 2026-07-21
 
+## Post-roadmap fix #2 — automatic package-origin classification, DONE, `dcdabb2`
+
+User flagged (correctly) that the discovery service-loss fix (`9955860`)
+still left a hardcoded `_CRITICAL_SERVICES` name list in
+`collectors/services.py` gating which systemd failures count as
+`SYS_HARD_FAIL`. Asked for a real, automatic, per-VM determination instead —
+verified analytically first (K8s lane vs VM/systemd lane are already
+separate; this hardcode only affects the VM lane) and live on the VMs before
+writing any code: `dpkg -S <FragmentPath>` reliably distinguishes a
+distro-package-owned unit (nginx→nginx-common, cron, mariadb, redis-server,
+rpcbind, nfs-*, udev — all correctly owned) from a hand-installed/customer
+unit (`payment-api`, `aoip-agent` itself, and a few lab scripts — all
+correctly "no path found").
+
+Shipped: new `src/remote_agent/pkg_origin.py` (`classify_unit_origin()` via
+dpkg/rpm, zero hardcoded names); `collectors/services.py::collect_systemd_units()`
+now routes ANY failed/activating unit to `SYS_HARD_FAIL` (severity no longer
+gates visibility), origin carried as evidence context
+(`failed_units_origin` dict, `critical_failed_units` repurposed to mean
+"non-package-owned"); `discovery.py::_collect_running_services()` tags every
+discovered service (not just failed ones) with `origin`, so the general
+onboarding/System-Twin profile gets this too; `agent.py` simplified (dropped
+the now-obsolete `critical_services=` gate). 9 new tests. Full suite: `6280
+passed` (was 6271, no regressions).
+
+Published `remote_agent` v1.3.10, deployed to all 3 VMs, confirmed live via
+the real Redis profile: `payment-api`/`aoip-agent` → `custom`,
+`cron`/`mariadb`/`redis-server`/`nginx`/`rpcbind`/etc. → `package:<name>`,
+across all 3 hosts, no errors in `journalctl` post-deploy. Committed
+`dcdabb2`, pushed.
+
+**Next step:** user asked for a full test-run + project completion-percentage
+report now that this is deployed — in progress in this same turn, not a
+separate session task.
+
 ## Session 2026-07-21 — Phase 0-6 roadmap ALL DONE
 
 Plan: `/Users/hiendang/.claude/plans/temporal-sparking-ember.md`. Ledger:
