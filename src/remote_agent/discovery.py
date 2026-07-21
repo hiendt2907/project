@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import platform
 import re
 import socket
@@ -268,22 +269,62 @@ async def load_discovery_snapshot(
     tenant_id: str,
     agent_id: str,
 ) -> dict[str, Any] | None:
-    """Load snapshot trước đó. Trả None nếu chưa có."""
+    """Load snapshot trước đó. Trả None chỉ khi key thật sự chưa tồn tại.
+
+    Lỗi đọc/parse THẬT (Redis timeout, JSON hỏng, ...) được ném ra thay vì
+    nuốt thành None -- None trước đây dùng chung cho cả "chưa từng có
+    snapshot" lẫn "đọc thất bại", khiến một lần Redis chập chờn bị hiểu
+    nhầm thành lần chạy đầu tiên và chu kỳ diff đó bị bỏ qua âm thầm.
+    Caller (kafka_knowledge_evidence_loop) đã có sẵn retry+poison-ack cho
+    đúng việc này -- để lỗi thật đi qua đó thay vì nuốt tại đây.
+    """
     if redis is None:
         return None
-    try:
-        raw = await redis.get(_snapshot_key(tenant_id, agent_id))
-        if raw is None:
-            return None
-        return json.loads(raw)
-    except Exception as exc:
-        logger.warning("discovery: load_snapshot failed agent=%s err=%r", agent_id, exc)
+    raw = await redis.get(_snapshot_key(tenant_id, agent_id))
+    if raw is None:
         return None
+    return json.loads(raw)
 
 
 _SUSPECT_STREAK_KEY_PREFIX = "omni:knowledge:discovery_suspect_streak:"
-_SUSPECT_STREAK_TTL = 6 * 3600  # vài chu kỳ discovery (1h/lần) kèm jitter
-SUSPECT_CONFIRM_THRESHOLD = 2
+
+_ENV_SUSPECT_STREAK_TTL_S = "OMNI_DISCOVERY_SUSPECT_STREAK_TTL_S"
+# Default: vài chu kỳ discovery (1h/lần) kèm jitter, đủ để 2 lần suspect liên
+# tiếp không bị hết hạn giữa chừng trên cadence thật.
+_DEFAULT_SUSPECT_STREAK_TTL_S = 6 * 3600
+
+_ENV_SUSPECT_CONFIRM_THRESHOLD = "OMNI_DISCOVERY_SUSPECT_CONFIRM_THRESHOLD"
+# Default: 2 chu kỳ suspect liên tiếp mới chấp nhận là thật (không phải
+# collector blip thoáng qua).
+_DEFAULT_SUSPECT_CONFIRM_THRESHOLD = 2
+
+
+def _suspect_streak_ttl_s(env: dict | None = None) -> int:
+    """TTL (giây) cho streak-key đếm chu kỳ suspect liên tiếp — đọc từ env,
+    KHÔNG hardcode. Thiếu/không parse được/không dương → default an toàn."""
+    env = os.environ if env is None else env
+    raw = (env.get(_ENV_SUSPECT_STREAK_TTL_S) or "").strip()
+    if not raw:
+        return _DEFAULT_SUSPECT_STREAK_TTL_S
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_SUSPECT_STREAK_TTL_S
+    return value if value > 0 else _DEFAULT_SUSPECT_STREAK_TTL_S
+
+
+def suspect_confirm_threshold(env: dict | None = None) -> int:
+    """Số chu kỳ suspect liên tiếp cần để chấp nhận là thật — đọc từ env,
+    KHÔNG hardcode. Thiếu/không parse được/<1 → default an toàn."""
+    env = os.environ if env is None else env
+    raw = (env.get(_ENV_SUSPECT_CONFIRM_THRESHOLD) or "").strip()
+    if not raw:
+        return _DEFAULT_SUSPECT_CONFIRM_THRESHOLD
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_SUSPECT_CONFIRM_THRESHOLD
+    return value if value >= 1 else _DEFAULT_SUSPECT_CONFIRM_THRESHOLD
 
 
 def is_snapshot_suspect(old: dict[str, Any], new: dict[str, Any]) -> bool:
@@ -309,7 +350,7 @@ async def bump_suspect_streak(redis: Any, *, tenant_id: str, agent_id: str) -> i
     key = _suspect_streak_key(tenant_id, agent_id)
     try:
         streak = await redis.incr(key)
-        await redis.expire(key, _SUSPECT_STREAK_TTL)
+        await redis.expire(key, _suspect_streak_ttl_s())
         return int(streak)
     except Exception as exc:
         logger.warning("discovery: bump_suspect_streak failed agent=%s err=%r", agent_id, exc)

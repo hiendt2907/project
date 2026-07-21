@@ -124,7 +124,7 @@ async def _handle_discovery(
         is_snapshot_suspect,
         bump_suspect_streak,
         reset_suspect_streak,
-        SUSPECT_CONFIRM_THRESHOLD,
+        suspect_confirm_threshold,
     )
 
     probe = str(ev_doc.get("probe") or "unknown")
@@ -133,65 +133,63 @@ async def _handle_discovery(
     if not isinstance(discovery_data, dict):
         return
 
-    # Services snapshot (từ service_topology probe) — compare và detect changes
+    # Services snapshot (từ service_topology probe) — compare và detect changes.
+    # KHÔNG bọc try/except nuốt lỗi ở đây: một lỗi Redis đọc/ghi thật (không
+    # phải "key chưa tồn tại", xem load_discovery_snapshot) phải văng ra tới
+    # caller (kafka_knowledge_evidence_loop) để đi qua retry+poison-ack sẵn
+    # có, thay vì bị nuốt âm thầm khiến chu kỳ diff đó biến mất không dấu vết.
     if probe == "service_topology":
         new_snapshot = discovery_data
-        try:
-            old_snapshot = await load_discovery_snapshot(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
-            suspect = old_snapshot is not None and is_snapshot_suspect(old_snapshot, new_snapshot)
-            if suspect:
-                streak = await bump_suspect_streak(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
-                if streak < SUSPECT_CONFIRM_THRESHOLD:
-                    # 1 chu kỳ rỗng bất thường có thể là collector blip thoáng qua
-                    # (systemctl timeout/dbus hiccup) — KHÔNG diff, KHÔNG ghi đè
-                    # baseline, tránh làm hỏng vĩnh viễn system model từ 1 lần lỗi.
-                    logger.warning(
-                        "knowledge_pipeline: discovery snapshot suspect (services=0, "
-                        "prev=%d, streak=%d/%d) tenant=%s host=%s — skip diff+baseline overwrite",
-                        len(old_snapshot.get("services", [])), streak, SUSPECT_CONFIRM_THRESHOLD,
-                        tenant_id, hostname,
-                    )
-                    return
-                # Xác nhận qua >=2 chu kỳ liên tiếp — chấp nhận là thật (vd. toàn bộ
-                # service trên host thật sự down), không còn coi là collector blip.
-                await reset_suspect_streak(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
-            elif old_snapshot is not None:
-                await reset_suspect_streak(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
+        old_snapshot = await load_discovery_snapshot(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
+        suspect = old_snapshot is not None and is_snapshot_suspect(old_snapshot, new_snapshot)
+        if suspect:
+            threshold = suspect_confirm_threshold()
+            streak = await bump_suspect_streak(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
+            if streak < threshold:
+                # 1 chu kỳ rỗng bất thường có thể là collector blip thoáng qua
+                # (systemctl timeout/dbus hiccup) — KHÔNG diff, KHÔNG ghi đè
+                # baseline, tránh làm hỏng vĩnh viễn system model từ 1 lần lỗi.
+                logger.warning(
+                    "knowledge_pipeline: discovery snapshot suspect (services=0, "
+                    "prev=%d, streak=%d/%d) tenant=%s host=%s — skip diff+baseline overwrite",
+                    len(old_snapshot.get("services", [])), streak, threshold,
+                    tenant_id, hostname,
+                )
+                return
+            # Xác nhận qua >=2 chu kỳ liên tiếp — chấp nhận là thật (vd. toàn bộ
+            # service trên host thật sự down), không còn coi là collector blip.
+            await reset_suspect_streak(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
+        elif old_snapshot is not None:
+            await reset_suspect_streak(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
 
-            if old_snapshot is not None:
-                changes = diff_discovery(old_snapshot, new_snapshot)
-                for change in changes:
-                    await _emit_change_detected(ctx, tenant_id, hostname, change, agent_id)
-            # Lưu snapshot mới (baseline cập nhật)
-            await save_discovery_snapshot(ctx.redis, tenant_id=tenant_id, agent_id=agent_id, snapshot=new_snapshot)
-        except Exception as exc:
-            logger.warning(
-                "knowledge_pipeline: discovery diff err tenant=%s host=%s err=%s",
-                tenant_id, hostname, exc,
-            )
+        if old_snapshot is not None:
+            changes = diff_discovery(old_snapshot, new_snapshot)
+            for change in changes:
+                await _emit_change_detected(ctx, tenant_id, hostname, change, agent_id)
+        # Lưu snapshot mới (baseline cập nhật). Đặt SAU khi diff+emit đã xong
+        # để 1 retry (do bước forward bên dưới lỗi) load lại baseline == snapshot
+        # mới, diff ra rỗng — không phát trùng change-detected/Telegram.
+        await save_discovery_snapshot(ctx.redis, tenant_id=tenant_id, agent_id=agent_id, snapshot=new_snapshot)
 
-    # Forward to omni-discovery-evidence so onboarding worker accumulates facts
+    # Forward to omni-discovery-evidence so onboarding worker accumulates facts.
+    # Không nuốt lỗi: 1 lần Kafka chập chờn đúng lúc forward trước đây làm
+    # evidence biến mất vĩnh viễn (offset nguồn đã commit ngay sau khi hàm
+    # này return không lỗi) — để lỗi văng ra cho retry+poison-ack xử lý.
     kafka = getattr(ctx, "kafka", None)
     if kafka is not None:
-        try:
-            discovery_topic = getattr(
-                ctx.settings, "kafka_topic_discovery_evidence", "omni-discovery-evidence"
-            )
-            trace = str(ev_doc.get("trace_id") or agent_id)
-            await kafka.send_dict(
-                discovery_topic,
-                {"data": json.dumps(ev_doc, ensure_ascii=False)},
-                key=trace.encode("utf-8", errors="ignore"),
-            )
-            logger.info(
-                "knowledge_pipeline: discovery forwarded tenant=%s probe=%s topic=%s",
-                tenant_id, probe, discovery_topic,
-            )
-        except Exception as exc:
-            logger.warning(
-                "knowledge_pipeline: discovery forward err tenant=%s probe=%s err=%s",
-                tenant_id, probe, exc,
-            )
+        discovery_topic = getattr(
+            ctx.settings, "kafka_topic_discovery_evidence", "omni-discovery-evidence"
+        )
+        trace = str(ev_doc.get("trace_id") or agent_id)
+        await kafka.send_dict(
+            discovery_topic,
+            {"data": json.dumps(ev_doc, ensure_ascii=False)},
+            key=trace.encode("utf-8", errors="ignore"),
+        )
+        logger.info(
+            "knowledge_pipeline: discovery forwarded tenant=%s probe=%s topic=%s",
+            tenant_id, probe, discovery_topic,
+        )
 
     logger.debug("knowledge_pipeline: discovery probe=%s agent=%s", probe, agent_id)
 

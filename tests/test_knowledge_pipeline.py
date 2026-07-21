@@ -203,6 +203,53 @@ def test_is_snapshot_suspect_false_when_both_empty():
     assert is_snapshot_suspect({"services": []}, {"services": []}) is False
 
 
+# ---------------------------------------------------------------------------
+# suspect_confirm_threshold / streak TTL must be env-driven, never hardcoded
+# (no code path may bake in a fixed number that ops can't tune per-tenant).
+# ---------------------------------------------------------------------------
+
+def test_suspect_confirm_threshold_default_when_unset(monkeypatch):
+    from remote_agent.discovery import suspect_confirm_threshold
+    monkeypatch.delenv("OMNI_DISCOVERY_SUSPECT_CONFIRM_THRESHOLD", raising=False)
+    assert suspect_confirm_threshold() == 2
+
+
+def test_suspect_confirm_threshold_reads_env_override(monkeypatch):
+    from remote_agent.discovery import suspect_confirm_threshold
+    monkeypatch.setenv("OMNI_DISCOVERY_SUSPECT_CONFIRM_THRESHOLD", "5")
+    assert suspect_confirm_threshold() == 5
+
+
+def test_suspect_confirm_threshold_falls_back_on_invalid_or_nonpositive(monkeypatch):
+    from remote_agent.discovery import suspect_confirm_threshold
+    monkeypatch.setenv("OMNI_DISCOVERY_SUSPECT_CONFIRM_THRESHOLD", "not-a-number")
+    assert suspect_confirm_threshold() == 2
+    monkeypatch.setenv("OMNI_DISCOVERY_SUSPECT_CONFIRM_THRESHOLD", "0")
+    assert suspect_confirm_threshold() == 2
+
+
+def test_suspect_streak_ttl_s_reads_env_override(monkeypatch):
+    from remote_agent.discovery import _suspect_streak_ttl_s
+    monkeypatch.setenv("OMNI_DISCOVERY_SUSPECT_STREAK_TTL_S", "600")
+    assert _suspect_streak_ttl_s() == 600
+
+
+@pytest.mark.asyncio
+async def test_discovery_suspect_confirm_threshold_1_accepts_on_first_cycle(redis, monkeypatch):
+    """Env override actually changes runtime behavior, not just the getter."""
+    from remote_agent.discovery import save_discovery_snapshot
+    monkeypatch.setenv("OMNI_DISCOVERY_SUSPECT_CONFIRM_THRESHOLD", "1")
+    ctx = _ctx(redis)
+    baseline = {"services": [{"name": "nginx"}, {"name": "mysql"}]}
+    await save_discovery_snapshot(redis, tenant_id="t1", agent_id="a1", snapshot=baseline)
+
+    await handle_knowledge_evidence(ctx, _discovery_ev("t1", "a1", []))
+
+    reloaded = await load_discovery_snapshot(redis, tenant_id="t1", agent_id="a1")
+    assert reloaded == {"services": []}, "threshold=1 must accept a suspect snapshot on the FIRST cycle"
+    assert await _change_pending_count(redis, "t1") == 2
+
+
 def _discovery_ev(tenant_id: str, agent_id: str, services: list[dict[str, str]], hostname: str = "host-1") -> dict:
     return {
         "signal_type": "DISCOVERY",
@@ -262,6 +309,60 @@ async def test_discovery_partial_change_not_treated_as_suspect(redis):
 
     reloaded = await load_discovery_snapshot(redis, tenant_id="t1", agent_id="a1")
     assert reloaded == {"services": [{"name": "nginx"}]}
+    assert await _change_pending_count(redis, "t1") == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 (#2, #3): a genuine infra failure (Redis read, Kafka forward) must
+# propagate to the caller's existing retry+poison-ack instead of being
+# silently swallowed into "nothing happened this cycle".
+# ---------------------------------------------------------------------------
+
+class _RaisingRedisGet:
+    """Simulates a real Redis read failure -- distinct from FakeRedis's
+    legitimate 'key missing' None."""
+
+    async def get(self, key):
+        raise ConnectionError("redis blip (simulated)")
+
+
+class _RaisingKafka:
+    async def send_dict(self, *args, **kwargs):
+        raise ConnectionError("kafka blip (simulated)")
+
+
+@pytest.mark.asyncio
+async def test_load_discovery_snapshot_propagates_real_read_failure():
+    with pytest.raises(ConnectionError):
+        await load_discovery_snapshot(_RaisingRedisGet(), tenant_id="t1", agent_id="a1")
+
+
+@pytest.mark.asyncio
+async def test_discovery_redis_read_failure_propagates_not_swallowed():
+    ctx = _ctx(_RaisingRedisGet())
+    with pytest.raises(ConnectionError):
+        await handle_knowledge_evidence(ctx, _discovery_ev("t1", "a1", [{"name": "nginx"}]))
+
+
+@pytest.mark.asyncio
+async def test_discovery_kafka_forward_failure_propagates_not_swallowed(redis):
+    from remote_agent.discovery import save_discovery_snapshot
+    ctx = _ctx(redis)
+    ctx.kafka = _RaisingKafka()
+    baseline = {"services": [{"name": "nginx"}]}
+    await save_discovery_snapshot(redis, tenant_id="t1", agent_id="a1", snapshot=baseline)
+
+    with pytest.raises(ConnectionError):
+        await handle_knowledge_evidence(
+            ctx, _discovery_ev("t1", "a1", [{"name": "nginx"}, {"name": "mysql"}])
+        )
+
+    # Diff+save (and change-detected emit) must already have completed BEFORE
+    # the forward step raised -- a retry re-runs handle_knowledge_evidence and
+    # sees old==new, so it won't duplicate the ADDED event, only re-attempt
+    # the forward.
+    reloaded = await load_discovery_snapshot(redis, tenant_id="t1", agent_id="a1")
+    assert reloaded == {"services": [{"name": "nginx"}, {"name": "mysql"}]}
     assert await _change_pending_count(redis, "t1") == 1
 
 
