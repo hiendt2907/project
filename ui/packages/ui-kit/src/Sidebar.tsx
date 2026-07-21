@@ -50,7 +50,7 @@ function iconFor(href: string): string {
   const icons: Record<string, string> = {
     "/": "⌂", "/tenants": "▦", "/pipeline": "⌁", "/kpi": "▥",
     "/agents": "◉", "/understanding": "◇", "/incidents": "△",
-    "/operations": "!", "/human-inbox": "□", "/settings": "⚙", "/audit": "≡",
+    "/operations": "!", "/human-inbox": "□", "/kb": "✎", "/settings": "⚙", "/audit": "≡",
   };
   return icons[href] ?? "·";
 }
