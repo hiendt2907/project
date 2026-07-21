@@ -53,6 +53,21 @@ class TestExtractSuggestedRecovery:
             "capability": "systemd.restart_unit", "unit": "payment-api.service",
         }
 
+    def test_valid_extraction_reset_failed(self):
+        """Capability #2 (reset_failed) is recognized the same way as restart_unit
+        — this function is capability-agnostic beyond the supported-set check."""
+        final = {"suggested_recovery": {"capability": "systemd.reset_failed",
+                                        "unit": "payment-api.service"}}
+        assert extract_suggested_recovery(final) == {
+            "capability": "systemd.reset_failed", "unit": "payment-api.service",
+        }
+
+    def test_bare_unit_name_normalized_for_reset_failed_too(self):
+        final = {"suggested_recovery": {"capability": "systemd.reset_failed", "unit": "payment-api"}}
+        assert extract_suggested_recovery(final) == {
+            "capability": "systemd.reset_failed", "unit": "payment-api.service",
+        }
+
 
 class TestBuildDispatchAdvisory:
     def test_shapes_advisory_correctly(self):
@@ -75,6 +90,17 @@ class TestBuildDispatchAdvisory:
             mission_id="m", decision_id="d", incident_id="i",
         )
         assert "redis-server" in advisory["summary"]
+
+    def test_shapes_advisory_for_reset_failed(self):
+        final = {"root_cause": "payment-api.service stuck failed, dependency now healthy",
+                "confidence": 0.9}
+        suggested = {"capability": "systemd.reset_failed", "unit": "payment-api.service"}
+        advisory = build_dispatch_advisory(
+            final=final, suggested=suggested,
+            mission_id="mis-1", decision_id="dec-1", incident_id="inc-1",
+        )
+        assert advisory["capability"] == "systemd.reset_failed"
+        assert advisory["unit"] == "payment-api.service"
 
 
 class TestDispatchIfEligible:
@@ -141,6 +167,34 @@ class TestDispatchIfEligible:
         assert payload["payload"]["capability"] == "systemd.restart_unit"
         assert payload["payload"]["target"]["unit"] == "payment-api.service"
         assert payload["payload"]["approval"]["approver"] == "auto-recovery:diagnosis_loop"
+
+    async def test_dispatches_reset_failed_and_posts_to_real_enqueue_endpoint_shape(self):
+        """Same wiring path as restart_unit's dispatch test, proving capability #2
+        flows through command_bridge's registry correctly end to end."""
+        final = {"confidence": 0.95,
+                "root_cause": "payment-api.service stuck failed, dependency now healthy",
+                "suggested_recovery": {"capability": "systemd.reset_failed",
+                                       "unit": "payment-api.service"}}
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"command_id": "cmd-y", "state": "QUEUED"}
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=mock_resp)
+
+        settings = SimpleNamespace(
+            omni_gateway_api_key="test-key",
+            omni_gateway_internal_url="http://omni-gateway.multi-agent.svc.cluster.local:80",
+        )
+        result = await dispatch_if_eligible(
+            settings=settings, http_client=client, final=final,
+            agent_id="staging-sim_cust-app", tenant_id="staging-sim", trace_id="tr-real-2",
+        )
+
+        assert result["dispatched"] is True
+        payload = client.post.call_args.kwargs["json"]["payload"]
+        assert payload["capability"] == "systemd.reset_failed"
+        assert payload["target"]["unit"] == "payment-api.service"
+        assert payload["approval"]["approver"] == "auto-recovery:diagnosis_loop"
 
     async def test_reports_gateway_rejection_without_raising(self):
         """A 423 from the gateway's tier_gate (Phase 2) is a normal, expected

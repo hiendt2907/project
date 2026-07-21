@@ -115,6 +115,33 @@ class TestGroundingGate:
         out = _apply_grounding_gate(final, "")
         assert out["suggested_recovery"] is None
 
+    def test_grounded_reset_failed_suggestion_passes_untouched(self):
+        """Capability #2 (reset_failed) goes through the SAME grounding check
+        as restart_unit — the gate only inspects .unit, not .capability."""
+        final = {
+            "root_cause": "payment-api.service stuck in failed state, mariadb dependency now active",
+            "remediation_steps": [],
+            "confidence": 0.9,
+            "suggested_recovery": {"capability": "systemd.reset_failed", "unit": "payment-api.service"},
+        }
+        corpus = "systemctl is-failed payment-api.service: failed\nsystemctl is-active mariadb: active"
+        out = _apply_grounding_gate(final, corpus)
+        assert out["suggested_recovery"] == {
+            "capability": "systemd.reset_failed", "unit": "payment-api.service",
+        }
+        assert out["confidence"] == 0.9
+
+    def test_ungrounded_reset_failed_unit_dropped(self):
+        final = {
+            "root_cause": "disk /var/log is 97% full",
+            "remediation_steps": ["sudo du -sh /var/log"],
+            "confidence": 0.9,
+            "suggested_recovery": {"capability": "systemd.reset_failed", "unit": "phantom-service.service"},
+        }
+        corpus = "df output: /dev/vdb1 97% /var/log"
+        out = _apply_grounding_gate(final, corpus)
+        assert out["suggested_recovery"] is None
+
 
 class TestParseSuggestedRecovery:
     def test_none_when_not_a_dict(self):
@@ -134,6 +161,13 @@ class TestParseSuggestedRecovery:
     def test_valid_shape_parsed(self):
         raw = {"capability": "systemd.restart_unit", "unit": "payment-api.service"}
         assert _parse_suggested_recovery(raw) == raw
+
+    def test_reset_failed_capability_accepted(self):
+        raw = {"capability": "systemd.reset_failed", "unit": "payment-api.service"}
+        assert _parse_suggested_recovery(raw) == raw
+
+    def test_none_when_unit_missing_for_reset_failed(self):
+        assert _parse_suggested_recovery({"capability": "systemd.reset_failed"}) is None
 
 
 # ── 2. Host-share mount scoping ───────────────────────────────────────────────

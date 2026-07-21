@@ -85,9 +85,46 @@ _SYSTEMD_PROCESS_DOWN = RecoveryOperator(
     is_broken=_sd_is_broken, capture_before=_sd_capture, apply=_sd_apply, health=_sd_health,
 )
 
+
+# ── systemd / failed_state_stale operator (capability #2: reset-failed) ──────
+# Dọn một unit còn kẹt ActiveState=failed (vd hit StartLimitBurst) SAU KHI có
+# bằng chứng khác cho thấy vấn đề gốc đã hết. CỐ Ý không dùng chung operator
+# với process_down: apply() ở đây chỉ dọn failed bookkeeping
+# (`systemctl reset-failed`) — KHÔNG bao giờ start/stop/restart unit, nên
+# không có rủi ro downtime (khác _sd_apply — restart thật). is_broken/health
+# đều dựa vào `is-failed` (không phải `is-active`) vì đó chính xác là state
+# operator này tác động.
+async def _sd_is_failed(t, unit, port) -> bool:
+    out, _ = await t.run(["systemctl", "is-failed", unit])
+    return out.strip().lower() == "failed"
+
+
+async def _sd_reset_failed_capture(t, unit, port) -> dict:
+    is_failed, _ = await t.run(["systemctl", "is-failed", unit])
+    active_state, _ = await t.run(["systemctl", "is-active", unit])
+    return {"unit": unit, "is_failed_state": is_failed.strip(), "active_state": active_state.strip()}
+
+
+async def _sd_reset_failed_apply(t, unit, port) -> tuple[str, int]:
+    # Action nhỏ nhất: chỉ dọn failed bookkeeping — KHÔNG start/stop/restart unit.
+    return await t.run(["sudo", "systemctl", "reset-failed", unit], timeout=15.0)
+
+
+async def _sd_reset_failed_health(t, unit, port) -> bool:
+    out, _ = await t.run(["systemctl", "is-failed", unit])
+    return out.strip().lower() != "failed"
+
+
+_SYSTEMD_FAILED_STATE_STALE = RecoveryOperator(
+    failure_mode="failed_state_stale", substrate=SUBSTRATE_SYSTEMD, action_verb="reset-failed",
+    is_broken=_sd_is_failed, capture_before=_sd_reset_failed_capture,
+    apply=_sd_reset_failed_apply, health=_sd_reset_failed_health,
+)
+
 # Registry: (failure_mode, substrate) → operator. Thêm cặp mới = 1 entry, KHÔNG sửa loop.
 OPERATORS: dict[tuple[str, str], RecoveryOperator] = {
     ("process_down", SUBSTRATE_SYSTEMD): _SYSTEMD_PROCESS_DOWN,
+    ("failed_state_stale", SUBSTRATE_SYSTEMD): _SYSTEMD_FAILED_STATE_STALE,
 }
 
 
@@ -208,7 +245,13 @@ def plan_recovery(
 
 def _gate_checks(ctx, req: RecoveryRequest, gate: RecoveryGate, approval: Approval, now: float):
     """Trả list (name, ok, reason) — kiểm NGAY TRƯỚC execute. Bất kỳ fail → zero mutation."""
-    incident_verified = any(f.verdict and "DOWN" in f.claim for f in ctx.findings)
+    # "DOWN" là cách diễn đạt lịch sử của failure_mode process_down; tổng quát
+    # hoá theo req.failure_mode (thay vì chỉ "DOWN" cứng) để capability mới
+    # (vd failed_state_stale) tự diễn đạt claim riêng mà vẫn qua được gate,
+    # KHÔNG hardcode logic riêng cho từng loại failure_mode ở đây.
+    incident_verified = any(
+        f.verdict and ("DOWN" in f.claim or req.failure_mode in f.claim) for f in ctx.findings
+    )
     diag = ctx.diagnosis_confidence
     positive_root = any(f.verdict and req.failure_mode in f.claim for f in ctx.findings) \
         or (diag is not None and diag >= gate.min_diagnosis_confidence)

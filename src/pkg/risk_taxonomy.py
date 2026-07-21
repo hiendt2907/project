@@ -61,6 +61,11 @@ _STATIC_MUTATE: Final = {
     # the table), forcing HITL at every tier including auto — not wrong,
     # but not the intended parity with the K8s lane either.
     "systemd.restart_unit": LOW,
+    # Capability #2 (VM/AOIP lane) — clears leftover systemd "failed" state
+    # only, never starts/stops/restarts the unit. Lower blast radius than
+    # restart_unit (zero downtime risk) but kept at LOW rather than inventing
+    # a class below it — still goes through the same tier_gate/HITL path.
+    "systemd.reset_failed": LOW,
     "k8s_create_or_patch_configmap": LOW,   # cố định (bỏ phân loại động — QĐ #3)
     "sandbox_cleanup": LOW,                 # dọn sandbox, không đụng cluster
     "k8s_scale_resource": MEDIUM,

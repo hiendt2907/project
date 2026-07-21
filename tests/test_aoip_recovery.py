@@ -18,6 +18,7 @@ from aoip.recovery import (
     RecoveryGate,
     RecoveryRequest,
     execute_recovery,
+    operator_for,
     plan_recovery,
 )
 
@@ -231,6 +232,110 @@ async def test_same_operator_recovers_three_services(tmp_path, unit, port):
     outcome, _ = await _run(tmp_path, t, req=req)
     assert outcome.status == "recovered"
     assert t.restarts == 1
+
+
+# ── Operator #2: failed_state_stale (systemd.reset_failed capability) ────────
+# Registry test — new operator entry, KHÔNG sửa execute_recovery loop.
+def test_failed_state_stale_operator_registered():
+    op = operator_for("failed_state_stale", "systemd")
+    assert op is not None
+    assert op.action_verb == "reset-failed"
+
+
+def test_plan_recovery_reset_failed_verb():
+    action = plan_recovery(failed_node="svc:payment-api", failure_mode="failed_state_stale",
+                           substrate="systemd", unit="payment-api", port=None, risk=0.1)
+    assert action.state == ActionState.PLANNED
+    assert action.result["verb"] == "reset-failed"
+    assert "payment-api" in action.plan
+
+
+class FakeSystemdFailedState:
+    """Transport giả cho operator failed_state_stale — is-failed/reset-failed.
+
+    KHÔNG có restart/is-active heal path: operator này chỉ dọn bookkeeping,
+    không bao giờ start/stop tiến trình (zero downtime).
+    """
+
+    target = "h"
+
+    def __init__(self, *, is_failed=True, heal_on_reset=True):
+        self.is_failed_state = is_failed
+        self.heal_on_reset = heal_on_reset
+        self.resets = 0
+
+    async def run(self, argv, *, timeout=15.0):
+        cmd = " ".join(argv)
+        if "reset-failed" in cmd:
+            self.resets += 1
+            if self.heal_on_reset:
+                self.is_failed_state = False
+            return ("", 0)
+        if "is-failed" in cmd:
+            return ("failed\n" if self.is_failed_state else "active\n", 0)
+        return ("", 0)
+
+
+def _failed_state_request(unit="payment-api", *, approved_state=True):
+    action = plan_recovery(failed_node="svc:payment-api", failure_mode="failed_state_stale",
+                           substrate="systemd", unit=unit, port=None, risk=0.1)
+    if approved_state:
+        action = action.at(ActionState.APPROVED)
+    return RecoveryRequest(
+        failed_node="svc:payment-api", failure_mode="failed_state_stale", substrate="systemd",
+        unit=unit, port=None, action=action, risk=0.1, diagnosed_at=NOW,
+    )
+
+
+@dataclass
+class FailedStateCtx:
+    """Claim mentions the failure_mode itself, NOT 'DOWN' — proves the
+    generalized incident_verified gate check (aoip.recovery._gate_checks)
+    accepts a capability-specific claim instead of only the legacy 'DOWN'
+    phrasing hardcoded for process_down."""
+
+    diagnosis_confidence: float | None = 0.9
+    findings: list = field(default_factory=lambda: [
+        Finding(claim="svc:payment-api failed_state_stale (dependency now healthy)",
+               references=("i",), verdict=True, confidence=0.9),
+    ])
+    trace: list = field(default_factory=list)
+
+    def log(self, verb, detail):
+        self.trace.append(f"{verb}: {detail}")
+
+
+async def test_reset_failed_operator_clears_stale_flag(tmp_path):
+    t = FakeSystemdFailedState(is_failed=True, heal_on_reset=True)
+    req = _failed_state_request()
+    log = audit.FileAuditLog(tmp_path / "audit.jsonl")
+    outcome = await execute_recovery(
+        FailedStateCtx(), req=req, transport=t, audit_log=log,
+        gate=RecoveryGate(allowed_failure_modes=frozenset({"failed_state_stale"}),
+                          allowed_substrates=frozenset({"systemd"}), max_risk=0.5,
+                          scope_prefix="svc:", min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0,
+                          allowed_targets=frozenset({"payment-api"})),
+        approval=Approval(approved=True, approver="alice", action_scope=req.action.scope),
+        env_auto_execute=False, now=NOW)
+    assert outcome.status == "recovered"
+    assert t.resets == 1
+    assert t.is_failed_state is False
+
+
+async def test_reset_failed_operator_zero_mutation_when_not_failed(tmp_path):
+    t = FakeSystemdFailedState(is_failed=False)  # đã không còn failed
+    req = _failed_state_request()
+    log = audit.FileAuditLog(tmp_path / "audit.jsonl")
+    outcome = await execute_recovery(
+        FailedStateCtx(), req=req, transport=t, audit_log=log,
+        gate=RecoveryGate(allowed_failure_modes=frozenset({"failed_state_stale"}),
+                          allowed_substrates=frozenset({"systemd"}), max_risk=0.5,
+                          scope_prefix="svc:", min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0,
+                          allowed_targets=frozenset({"payment-api"})),
+        approval=Approval(approved=True, approver="alice", action_scope=req.action.scope),
+        env_auto_execute=False, now=NOW)
+    assert outcome.status == "aborted"
+    assert t.resets == 0
 
 
 # ── Audit hash-chain tamper-evident ──────────────────────────────────────────

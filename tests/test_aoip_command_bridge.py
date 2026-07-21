@@ -135,6 +135,53 @@ def test_capability_hash_stable_across_diagnosed_at_float_jitter():
     assert capability_payload_hash(base) != capability_payload_hash(tampered)
 
 
+def test_advisory_to_durable_command_routes_reset_failed_capability():
+    """command_bridge must dispatch to the RIGHT typed adapter based on the
+    advisory's declared capability, not just restart_unit — this is the
+    parameterized-by-capability-name registry, not a hardcoded branch."""
+    from aoip.agent.operations import decode_recovery_command
+    from aoip.capabilities.systemd_reset_failed import _decode as reset_failed_decode
+    from aoip.command_bridge import build_durable_command
+
+    advisory = {
+        "mission_id": "m1", "decision_id": "d1", "incident_id": "i1",
+        "capability": "systemd.reset_failed", "unit": "payment-api.service",
+        "summary": "stuck failed, dependency now healthy", "confidence": 0.91,
+        "evidence_refs": ["probe:systemctl:1"],
+    }
+    command = build_durable_command(
+        advisory, tenant="acme", agent_id="agent-1", approver="alice", now=100.0, ttl_s=300
+    )
+    payload = command["payload"]
+    assert payload["capability"] == "systemd.reset_failed"
+
+    # Stack B decoder (the one the live daemon actually uses)
+    req, approval, ctx = decode_recovery_command(payload)
+    assert req.unit == "payment-api.service"
+    assert req.failure_mode == "failed_state_stale"
+    assert req.substrate == "systemd"
+    assert approval.approved is True
+
+    # Stack A decoder (capability-specific CLI/console path)
+    req2, approval2, ctx2, preflight_cfg = reset_failed_decode(payload, tenant="acme")
+    assert req2.unit == "payment-api.service"
+    assert approval2.approved is True
+
+
+def test_advisory_bridge_still_rejects_truly_unsupported_capability():
+    from aoip.command_bridge import build_durable_command
+
+    advisory = {
+        "mission_id": "m1", "decision_id": "d1", "incident_id": "i1",
+        "capability": "k8s.delete_pod", "unit": "nginx.service",
+        "summary": "x", "confidence": 0.91, "evidence_refs": ["probe:1"],
+    }
+    with pytest.raises(ValueError, match="unsupported capability"):
+        build_durable_command(
+            advisory, tenant="acme", agent_id="agent-1", approver="alice", now=100.0, ttl_s=300
+        )
+
+
 def test_stack_b_decoder_skips_hash_check_for_non_typed_payload():
     """A generic (non-capability) payload — the shape hand-authored tests
     throughout this session use, and the only shape possible before
