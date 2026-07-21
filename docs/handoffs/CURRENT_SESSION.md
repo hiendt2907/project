@@ -1,6 +1,146 @@
 # Current Session Handoff
 
-Updated: 2026-07-21 (Phase 8 in progress — verification running)
+Updated: 2026-07-21 (Phase 8 #2+#3 + hardcode-removal — ALL DONE, verified live, committed `8fc60ab`)
+
+## Phase 8 — ALL 3 candidates now DONE, verified with real data/code/tests (user explicitly demanded this verification level: "xác thật % với dữ liệu, code, test thật")
+
+Final state, checked directly against the repo and live cluster (not
+recalled from earlier notes):
+- Code: `git log --oneline -1` → `8fc60ab fix(knowledge-pipeline): stop
+  swallowing real Redis/Kafka failures in discovery evidence path`.
+- Tests: `pytest tests/ -q --ignore=tests/integration` → **6390 passed, 0
+  failed** (confirmed via `--collect-only` too: 6390/6395 collected, 5
+  deselected — matches).
+- Deployed: `make deploy-worker` rolled out `omni-fullstack`+`omni-gateway`;
+  `kubectl exec ... python3 -c "from remote_agent.discovery import
+  suspect_confirm_threshold; ..."` confirmed live in the running pod AND
+  confirmed the env-override actually works (`OMNI_DISCOVERY_SUSPECT_CONFIRM_THRESHOLD=7`
+  → function returns `7`, not the hardcoded default).
+- Sanity check (non-destructive, real Kafka+Redis+pod): republished the
+  REAL current 33-service snapshot for `staging-sim_cust-app` unchanged —
+  confirmed baseline stayed at 33 services after the cycle (no regression
+  from removing the try/except swallows).
+- `make e2e-proactive` → `summary.pass=true, failed_checks: []`.
+
+## Follow-up — remove hardcoded threshold/TTL from Phase 8 #1, per explicit user instruction ("cấm tuyệt đối hardcode nhé")
+
+## Follow-up — remove hardcoded threshold/TTL from Phase 8 #1, per explicit user instruction ("cấm tuyệt đối hardcode nhé")
+
+`SUSPECT_CONFIRM_THRESHOLD = 2` and `_SUSPECT_STREAK_TTL = 6*3600` (both
+introduced in Phase 8 #1, commit `e15a633`) were plain hardcoded module
+constants — flagged by the user mid-session as a standing violation of this
+project's own established pattern (`src/aoip/recovery.py`'s
+`_journal_vacuum_threshold_bytes()`: env-driven, read at call time, never an
+import-time constant).
+
+**Fix in `src/remote_agent/discovery.py`:** both are now functions reading
+`os.environ` at call time, defaults unchanged (2 cycles, 6h TTL):
+- `suspect_confirm_threshold(env=None) -> int` — env
+  `OMNI_DISCOVERY_SUSPECT_CONFIRM_THRESHOLD`, falls back to default on
+  missing/unparseable/`<1`.
+- `_suspect_streak_ttl_s(env=None) -> int` — env
+  `OMNI_DISCOVERY_SUSPECT_STREAK_TTL_S`, falls back to default on
+  missing/unparseable/non-positive.
+`src/workers/knowledge_pipeline.py::_handle_discovery` now calls
+`suspect_confirm_threshold()` per-invocation instead of importing a static
+constant.
+
+**+5 tests** in `tests/test_knowledge_pipeline.py` (default-when-unset,
+env-override, invalid/non-positive-falls-back-to-default ×2, and an
+end-to-end behavioral test proving the override actually changes runtime
+behavior — `threshold=1` accepts a suspect snapshot on the FIRST cycle
+instead of requiring 2). `tests/test_knowledge_pipeline.py -q`: 32/32
+passed.
+
+---
+
+## Phase 8 #2+#3 — silent evidence loss on Kafka forward / Redis read ambiguity — CODE DONE, TDD GREEN, DEPLOY+SANITY-CHECK PENDING
+
+Continuation of Phase 8 (see full section below for #1, already DONE). This
+increment addresses the other 2 candidates from the original Explore-agent
+survey, both user-requested by name ("xử lý #2 và #3 đi").
+
+**#3 fix — `src/remote_agent/discovery.py::load_discovery_snapshot`:**
+previously returned `None` for BOTH "key genuinely doesn't exist" (legit
+first-run) AND "the Redis read/parse itself failed" (transient blip) —
+indistinguishable to the caller, so a real Redis hiccup silently skipped
+that cycle's diff with zero signal. Now only the genuine-missing-key case
+returns `None`; a real read/parse exception propagates.
+
+**#2 fix — `src/workers/knowledge_pipeline.py::_handle_discovery`:** the
+Kafka-forward-to-`omni-discovery-evidence` step (feeds onboarding
+projection) was wrapped in a bare `try/except: log warning` — since the
+SOURCE topic's offset commits right after this function returns without
+raising, a transient Kafka blip during forward silently dropped that
+cycle's evidence forever (no retry, no DLQ). Removed the swallow so it
+propagates to `kafka_knowledge_evidence_loop`'s EXISTING retry+poison-ack
+mechanism (3 retries w/ 0.5s backoff, then a loud `poison_ack` error log —
+not a silent drop). Also reordered: diff+save+emit now completes BEFORE the
+forward attempt, so a forward-triggered retry re-diffs old==new (no
+duplicate SERVICE_ADDED/REMOVED events, no duplicate Telegram messages) and
+only re-attempts the forward itself.
+
+Both fixes follow the same principle as #1: stop collapsing "real
+infrastructure failure" and "legitimate edge case" into the same
+silently-swallowed outcome; let real failures reach the retry
+infrastructure that already exists for exactly this purpose.
+
+**TDD (+3 tests in `tests/test_knowledge_pipeline.py`, using deterministic
+`_RaisingRedisGet`/`_RaisingKafka` stubs against the REAL production
+functions `load_discovery_snapshot`/`handle_knowledge_evidence`, not
+reimplemented logic):**
+- `test_load_discovery_snapshot_propagates_real_read_failure` — a raising
+  `.get()` propagates instead of returning `None`.
+- `test_discovery_redis_read_failure_propagates_not_swallowed` — same,
+  through the full `handle_knowledge_evidence` entry point.
+- `test_discovery_kafka_forward_failure_propagates_not_swallowed` — a
+  raising `kafka.send_dict` propagates, AND confirms diff+save already
+  completed (baseline updated, 1 change-detected event) before the forward
+  step's exception surfaces — proves retry-safety.
+- `tests/test_knowledge_pipeline.py -q`: 27/27 passed (24 pre-existing +
+  Phase-8-#1's 6, minus overlap... exact count: was 24 after #1, +3 here =
+  27, confirmed).
+
+**Deliberate scope decision — no destructive live chaos drill against
+shared Redis/Kafka for #2/#3** (unlike #1's live drill against the real
+pod): Redis and Kafka are shared infrastructure backing kill-switch state,
+tier cache, audit chain, and lease ownership across the ENTIRE `multi-agent`
+namespace — deliberately breaking either, even briefly and narrowly, to
+prove a code path here would risk collateral across unrelated live systems
+for a proof the TDD tests (exercising the real production functions
+directly with deterministic failure injection) already provide honestly.
+Recorded this reasoning explicitly rather than either skipping verification
+silently or taking on disproportionate risk to look thorough.
+
+**Verification status: pytest full suite (`bwukad1s1`'s successor,
+`b4kv1vphm`) STILL RUNNING as of this handoff write (was at ~70% at last
+check) — NOT YET CONFIRMED GREEN.** `bwukad1s1` (the run BEFORE the
+hardcode-removal follow-up, i.e. #2/#3 code alone) already confirmed
+**6385 passed, 0 failed**. `b4kv1vphm` re-runs the full suite AFTER the
+hardcode-removal follow-up on top of that — expect ~6390 passed (6385 + 5
+new env-driven tests). Check that job's output (or re-run
+`pytest tests/ -q --ignore=tests/integration` if stale) before treating
+this DONE. `make deploy-worker` + a lightweight non-destructive post-deploy
+sanity check (publish 1 normal DISCOVERY message to the real Kafka topic,
+confirm still processes correctly — NOT a fault-injection drill against
+shared Redis/Kafka, see reasoning above) + `make e2e-proactive` are the
+remaining steps before commit.
+
+**Working tree at this checkpoint:** `src/remote_agent/discovery.py`,
+`src/workers/knowledge_pipeline.py`, `tests/test_knowledge_pipeline.py`,
+`docs/handoffs/CURRENT_SESSION.md` all modified, NOT yet committed (only
+Phase 8 #1's code is committed, at `e15a633`/`672a025`).
+`reports/incident-matrix/latest.json` also dirty (pre-existing, harmless,
+not committed).
+
+**Next step:** (1) confirm job `b4kv1vphm` green; (2) `make deploy-worker`;
+(3) lightweight sanity check (not a fault-injection drill, per above); (4)
+`make e2e-proactive`; (5) commit code (#2/#3 fix + hardcode-removal
+follow-up together) + this handoff; (6) report to user: Phase 8 all 3
+candidates now DONE, hardcode fix confirmed, refresh the overall %
+estimate; (7) do NOT push to origin unless explicitly asked.
+
+---
 
 ## Phase 8 — discovery/onboarding chaos hardening — code+deploy+live-drill DONE, full-suite/e2e-proactive verification IN PROGRESS
 
