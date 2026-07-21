@@ -69,12 +69,17 @@ discipline as kill-switch/tier drills. Script:
   KHÔNG chứng minh đã deploy" lesson applies to live drills too, not just
   unit tests.
 
-**Verification status:** `pytest tests/ -q --ignore=tests/integration` and
-`make e2e-proactive` both launched in tracked background (job IDs
-`b95wi26bi`, `bwd02cg0z`) — NOT YET CONFIRMED GREEN as of this handoff
-write; check those job outputs (or re-run if stale) before treating Phase 8
-as fully closed. `omni-fullstack` + `omni-gateway` pods both `1/1 Running`
-post-redeploy.
+**Verification status: DONE, both green.** `pytest tests/ -q --ignore=tests/
+integration` -> **6382 passed, 5 deselected, 0 failed** (unchanged count
+from the pre-redeploy run — confirms zero regressions across 2 consecutive
+runs, before and after `make deploy-worker`). `make e2e-proactive` ->
+`summary.pass=true, failed_checks: []`. `omni-fullstack` + `omni-gateway`
+pods both `1/1 Running` post-redeploy. Code committed: `e15a633`.
+
+**Phase 8 status: DONE** (this increment). 1 real chaos-hardening bug found,
+fixed with TDD, deployed, and live-drilled against real Kafka+Redis+the
+real running pod. 2 more candidates from the same survey remain unstarted
+(see below) — optional future increments, not blocking.
 
 **Not yet done (2 more candidates from the same Explore-agent survey,
 lower priority, not started):**
@@ -89,17 +94,22 @@ lower priority, not started):**
    for that cycle (lower priority: broader blast radius, harder to isolate
    in a drill).
 
-**Working tree at this checkpoint:** `src/remote_agent/discovery.py`,
-`src/workers/knowledge_pipeline.py`, `tests/test_knowledge_pipeline.py`
-modified, NOT yet committed. `reports/incident-matrix/latest.json` also
-dirty (generated report, harmless, pre-existing).
+**Working tree at this checkpoint:** clean except
+`reports/incident-matrix/latest.json` (generated report, harmless,
+pre-existing, not committed). Phase 8 code committed at `e15a633`, this
+handoff update pending its own commit.
 
-**Next step:** (1) confirm jobs `b95wi26bi`/`bwd02cg0z` both green; (2) if
-green, commit the Phase 8 fix; (3) give the user the %-completion report
-(Phase 0-6 100% DONE, Phase 7 100% DONE, improvement-plan fixes DONE, Phase 8
-this fix DONE + 2 candidates remaining, Phase 9 portal-parity NOT STARTED
-— blocked on product decision re: 9 zero-port UI routes, Phase 10 SIEM
-re-audit NOT STARTED); (4) do NOT push to origin unless explicitly asked.
+**Git state:** 10 local commits ahead of `origin/main` as of this
+checkpoint (`992a055`..`e15a633` range, this session) — NOT pushed. User
+has not re-asked for push this round.
+
+**Next step:** (1) report the %-completion status to the user (done, same
+turn); (2) ask whether to push the accumulated local commits; (3) if
+continuing the roadmap: either pick up 1 of the 2 remaining Phase 8
+candidates (Kafka-forward-failure DLQ, Redis-read-failure ambiguity), or
+move to Phase 9 (portal parity — needs a product decision from the user
+first on the 9 zero-port UI routes before any deletion/porting work starts),
+or Phase 10 (SIEM + chaos re-audit).
 
 ## Phase 7 — VM capability #3 (systemd.journal_vacuum) + gate-config hygiene — MERGED, CODE-SIDE DONE, DEPLOY/DRILL PENDING
 
