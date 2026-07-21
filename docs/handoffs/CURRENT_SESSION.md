@@ -57,26 +57,55 @@ baseline before Phase 7 — zero regressions). `scripts/deploy_aoip_gate_config.
    Omni produced `action=unknown` correctly]). Report at
    `reports/incident-matrix/latest.json` (git-dirty, generated, not committed).
 
-**Still pending — the one item left in this phase:**
-6. Live supervised drill for `systemd.journal_vacuum` on a real VM — reuse
-   the three-layer-gate pattern (kill-switch → tenant mutation toggle →
-   tier promotion) proven in
-   `/Users/hiendang/.claude/jobs/71b56e60/tmp/e2e_reset_failed_drill.py`,
-   adapted for `capability="systemd.journal_vacuum"`,
-   `failure_mode="disk_pressure_journal"`, unit `systemd-journald.service`
-   — force real disk pressure (lower `AOIP_JOURNAL_VACUUM_THRESHOLD_BYTES`
-   on the VM below the current journal size, or flood-log) rather than
-   faking state. Build the command through the real
-   `aoip.command_bridge.build_durable_command`, not hand JSON. Revert all
-   narrow-window gate elevations in a `finally` block with fresh-read
-   confirmation, same as last round.
-7. `git push` once drill passes (not yet asked for this round — confirm
-   with user before pushing, per standing "only push when asked" rule).
+**Update — LIVE DRILL PASSED. Phase 7 is now fully DONE (code, deploy, E2E,
+live proof), same closing bar as the reset_failed round.**
+
+6. **Live drill for `systemd.journal_vacuum` — PASSED on cust-app, first
+   attempt.** Script:
+   `/Users/hiendang/.claude/jobs/71b56e60/tmp/e2e_journal_vacuum_drill.py`
+   (adapted from `e2e_reset_failed_drill.py`). Real disk pressure, not
+   faked: read cust-app's actual `journalctl --disk-usage` (168.4M),
+   computed a threshold below it (~88.3M) and a target below that (42M),
+   wrote both as a narrow-window override into cust-app's `run.env`
+   (`AOIP_JOURNAL_VACUUM_THRESHOLD_BYTES`/`AOIP_JOURNAL_VACUUM_TARGET_SIZE`
+   — NOT part of the canonical `AOIP_GATE_*` managed-key set, so orthogonal
+   to `deploy_aoip_gate_config.sh`), restarted `aoip-agent.service` so the
+   operator's `os.environ`-read checks saw genuine pressure. Built the
+   envelope through the real `aoip.command_bridge.build_durable_command`
+   (capability=`systemd.journal_vacuum`, unit=`systemd-journald.service`),
+   enqueued via gateway, polled to terminal:
+   `state=COMPLETED, outcome={status: recovered, verified: true, rc: 0}`.
+   VM confirmed: journal usage **168.4M → 40.0M** (real
+   `journalctl --vacuum-size=42M` ran). Matching `RECOVERY_COMPLETED` audit
+   block found in the VM's real audit log
+   (`action_id` ending `...dec-jv-c6cf390f-systemd-journald.service`).
+   - Gates exercised for real: kill-switch (`omni-gateway` only) →
+     `aoip_mutation_enabled` toggle (`staging-sim`) → tier `shadow`→`assist`
+     (LOW risk needs ≥assist). All 3 reverted + confirmed via fresh reads in
+     `finally`: tier back to `shadow` (fresh GET), mutation toggle back to
+     `false`/`tenant_toggle_off` (fresh GET), kill-switch back to `false`
+     (fresh `kubectl exec printenv`). `run.env` override keys removed
+     entirely (`grep -c AOIP_JOURNAL_VACUUM` → `0`), `aoip-agent.service` +
+     `omni-remote-agent.service` both confirmed `active` post-cleanup.
+   - Unlike the `reset_failed` drill, no deployment/config gaps were hit
+     this time — Phase 7's own gate-config-hygiene deliverable
+     (`deploy_aoip_gate_config.sh`) plus the coordinator fixup (unit
+     allowlist) meant the capability worked end-to-end on the first real
+     attempt.
+
+**Phase 7 status: DONE.** Capability #3 (`systemd.journal_vacuum`) is live
+on K8s (`omni-fullstack`) and all 3 VMs, gate-config is git-tracked and
+deployed for real, both E2E suites pass, live drill proven. Roadmap can
+move to Phase 8 (discovery/onboarding chaos hardening) next.
+
+7. `git push` — NOT yet done this round. User asked for push explicitly
+   last round (Phase 0-6/improvement-plan round); has not re-asked this
+   round. Confirm before pushing — 9 local commits ahead of `origin/main`
+   (`d2e0666`..`ccad5e7` range, this session).
 
 **Working tree at this checkpoint:** clean except
-`reports/incident-matrix/latest.json` (generated report from the
-`make e2e-incident-matrix` run just above, harmless, not committed). All
-code/config changes for Phase 7 are committed through `979373f`.
+`reports/incident-matrix/latest.json` (generated report, harmless, not
+committed). All Phase 7 code/config changes committed through `ccad5e7`.
 
 **Git state:** 5 local commits ahead of `origin/main` (`d2e0666..1f78e85`
 range from this session) — NOT pushed.
