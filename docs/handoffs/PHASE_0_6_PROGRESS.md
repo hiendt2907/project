@@ -207,8 +207,91 @@ gateway pod, both pods Running, `payment-api.service active`.
 
 | Item | Status | Verification | Notes |
 |---|---|---|---|
-| unify Stack A/Stack B capability dispatch | NOT_STARTED | — | |
-| durable PG-backed agent identity (TTL-squatting fix) | NOT_STARTED | — | |
+| unify Stack A/Stack B capability dispatch (payload-hash tamper-binding) | DONE | see below | 2026-07-21 |
+| durable PG-backed agent identity (TTL-squatting fix) | DONE | see below | 2026-07-21 |
+
+### Phase 3a verification (payload-hash unification, real, captured)
+
+Moved `capability_payload_hash()` out of `capabilities/systemd_restart.py`
+(Stack A, never live-wired) into `agent/operations.py` (Stack B, the actual
+deployed executor) — `systemd_restart.py` now imports it back (no circular
+import: it already imports `run_guarded_recovery` from `operations.py`, so
+the shared definition must live there). `decode_recovery_command()` now
+verifies `approved_payload_hash` whenever `payload["capability"]` is
+present — the live daemon gained real tamper-binding it never had.
+
+**Real bug found deploying this** (not hypothetical): the FIRST live drill
+after deploying the hash check failed with `payload_hash_mismatch` on a
+genuinely untampered payload from the real CLI — a 100% false positive that
+would have broken every real recovery command. Root cause:
+`reason.diagnosed_at` (a full-precision Unix timestamp float) does not
+reliably round-trip to a byte-identical JSON string across the real
+transport chain (CLI's `json.dumps` → gateway's Pydantic/pydantic-core →
+Redis storage → VM daemon's httpx) even though the underlying float value is
+unchanged. Fixed: `capability_payload_hash()` strips `reason.diagnosed_at`
+before hashing (a freshness-metadata field, not an identity field — the
+security-relevant fields — `capability`, `target.unit`,
+`reason.mission_id/decision_id/incident_id/summary` — remain hashed and
+protected; `approval.issued_at/expires_at` bound the freshness separately
+and are not part of this hash's input at all).
+
+```
+.venv/bin/python -m pytest tests/test_capability_systemd_restart.py tests/test_aoip_operations.py tests/test_aoip_command_bridge.py tests/test_m1_systemd_recovery_e2e.py tests/test_aoip_console.py -q
+88 passed
+
+.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
+6233 passed, 5 deselected, 2 warnings   (was 6230 after Phase 2; +3 net after both the hash-check tests and the diagnosed_at-jitter regression test)
+```
+
+Published release 1.3.7 (includes both the hash-binding fix and the
+diagnosed_at fix) to all 3 VMs, `drift_status=current` confirmed. Real drill
+via `scripts/e2e_recovery_drill.py --runs 2`: **2/2 passed** with the hash
+check active end-to-end — `COMPLETED status=recovered verified=true` both
+runs, no false positives. Kill-switch + tier reverted to their pre-test
+state (`shadow`) after.
+
+### Phase 3b verification (durable agent identity, real, captured)
+
+**Scope correction found during investigation**: the original framing
+("registry TTL-expiry squatting") undersold how much was already fixed —
+per-agent credentials (IT-3, this session's earlier P0-4 fix) already
+protect any agent using one, since `ctx.agent_id` is checked before the
+registry is even consulted. Checked the real fleet: **2 of 3 real VMs
+(cust-edge, cust-db) still authenticate with the tenant-SHARED key, not a
+per-agent credential** (`cust-app` is the only one migrated) — so this gap
+is live on real infrastructure today, not hypothetical.
+
+New: `migrations/omni_admin/0010_agent_identity_claim.sql` — durable, no-TTL
+`(agent_id PRIMARY KEY, tenant_id, first_claimed_at)` table.
+`AdminConfigRepo.get_or_claim_agent_owner()` — atomic
+`INSERT ... ON CONFLICT (agent_id) DO NOTHING RETURNING tenant_id`, single
+round-trip, race-safe. `require_agent_tenant()` now takes an optional
+`repo` param — when the Redis registry has no live record, consults this
+durable table instead of falling open to "first claim always wins"; when
+`repo=None` (lightweight harnesses), behavior is unchanged (backward
+compatible — confirmed by the full suite passing with zero test
+modifications needed at the 13 existing call sites).
+
+```
+.venv/bin/python -m pytest tests/test_agent_identity_claim.py -q
+8 passed
+
+.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
+6241 passed, 5 deselected, 2 warnings   (was 6233; +8 new tests, zero existing
+tests modified — the repo=None fallback path)
+```
+
+**Real live proof against real PG** (not just unit tests — the Exit
+Criteria explicitly asked for this): registered a disposable agent_id under
+the real `staging-sim` tenant key → confirmed a durable claim row landed in
+`omni_admin.agent_identity_claim` on the real Postgres pod → deleted the
+Redis registry key directly (`redis-cli DEL`, simulating the 120s TTL
+having elapsed) → attempted registration of the **same agent_id** using the
+real `tenant-replay-01` tenant key → **`HTTP 403 {"detail": "agent_id is
+registered to a different tenant"}`** — blocked, exactly as designed (before
+this fix, this would have silently succeeded as a "first claim"). Confirmed
+the original owner (`staging-sim`) can still re-register normally
+afterward. Test data cleaned up (PG row deleted, Redis key already gone).
 
 ## Phase 4 — Automated diagnosis→decision→approval→dispatch
 

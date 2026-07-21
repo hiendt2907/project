@@ -159,7 +159,8 @@ async def poll_commands(agent_id: str, request: Request) -> JSONResponse:
     if not _AGENT_ID_RE.fullmatch(agent_id):
         raise HTTPException(status_code=422, detail="Invalid agent_id")
     redis = _get_redis(request)
-    await require_agent_tenant(redis, agent_id, get_tenant_ctx(request))
+    await require_agent_tenant(redis, agent_id, get_tenant_ctx(request),
+                               repo=getattr(request.app.state, "admin_repo", None))
     queue_key = f"{_CMD_QUEUE_PREFIX}{agent_id}"
 
     commands: list[dict] = []
@@ -181,7 +182,8 @@ async def receive_command_result(
 ) -> JSONResponse:
     """Agent POSTs command execution results. Stored for diagnosis loop to read."""
     redis = _get_redis(request)
-    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request),
+                               repo=getattr(request.app.state, "admin_repo", None))
     stored = 0
     for result in body.results:
         key = f"{_CMD_RESULT_PREFIX}{result.cmd_id}"
@@ -210,7 +212,8 @@ async def receive_command_result(
 async def store_agent_profile(body: VMProfileRequest, request: Request) -> JSONResponse:
     """Agent POSTs VM discovery profile. Stored in Redis for analyst use."""
     redis = _get_redis(request)
-    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request),
+                               repo=getattr(request.app.state, "admin_repo", None))
     profile = body.model_dump()
     profile["stored_at"] = int(time.time())
     key = f"{_PROFILE_KEY_PREFIX}{body.agent_id}"
@@ -226,7 +229,8 @@ async def store_agent_profile(body: VMProfileRequest, request: Request) -> JSONR
 async def enqueue_commands(body: EnqueueCommandsRequest, request: Request) -> JSONResponse:
     """Omni analyst enqueues diagnostic commands for agent to execute (whitelist enforced)."""
     redis = _get_redis(request)
-    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request),
+                               repo=getattr(request.app.state, "admin_repo", None))
     queue_key = f"{_CMD_QUEUE_PREFIX}{body.agent_id}"
 
     depth = await redis.llen(queue_key)

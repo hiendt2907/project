@@ -303,7 +303,8 @@ async def enqueue_command(body: EnqueueRuntimeCommand, request: Request) -> JSON
     redis = _get_redis(request)
     if not _AGENT_ID_RE.fullmatch(body.agent_id):
         raise HTTPException(status_code=422, detail="Invalid agent_id")
-    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request),
+                               repo=getattr(request.app.state, "admin_repo", None))
     tenant = _tenant_of(request, body.tenant_id)
     await _enforce_mutation_toggle(request, tenant, body.payload)
     _validate_typed_mutation_payload(body.payload)
@@ -346,7 +347,8 @@ async def poll_commands(agent_id: str, request: Request) -> JSONResponse:
         raise HTTPException(status_code=422, detail="Invalid agent_id")
     redis = _get_redis(request)
     ctx = get_tenant_ctx(request)
-    await require_agent_tenant(redis, agent_id, ctx)
+    await require_agent_tenant(redis, agent_id, ctx,
+                               repo=getattr(request.app.state, "admin_repo", None))
     tenant = ctx.tenant_id if ctx and not is_admin_ctx(ctx) else None
     # admin poll cần tenant tường minh; agent key = tenant của chính agent
     if tenant is None:
@@ -450,7 +452,8 @@ def _conflict_response(command_id: str, exc: _OwnershipConflict) -> JSONResponse
 @router.post("/commands/accept")
 async def accept_command(body: AckDelivered, request: Request) -> JSONResponse:
     redis = _get_redis(request)
-    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request),
+                               repo=getattr(request.app.state, "admin_repo", None))
     tenant = _tenant_of(request, body.tenant_id)
     try:
         rec = await _advance(redis, tenant, body.command_id, body.agent_id, ST_ACCEPTED,
@@ -469,7 +472,8 @@ async def progress_command(body: AckProgress, request: Request) -> JSONResponse:
     if body.phase not in _PROGRESS:
         raise HTTPException(status_code=422, detail=f"invalid phase {body.phase!r}")
     redis = _get_redis(request)
-    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request),
+                               repo=getattr(request.app.state, "admin_repo", None))
     tenant = _tenant_of(request, body.tenant_id)
     try:
         rec = await _advance(redis, tenant, body.command_id, body.agent_id, body.phase,
@@ -488,7 +492,8 @@ async def heartbeat_command(body: AckDelivered, request: Request) -> JSONRespons
     """Gia hạn ``visibility_deadline`` trong lúc RUNNING/RECONCILING — KHÔNG đổi
     ``delivery_attempt``, KHÔNG cấp ``fencing_token`` mới, KHÔNG revive terminal/expired."""
     redis = _get_redis(request)
-    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request),
+                               repo=getattr(request.app.state, "admin_repo", None))
     tenant = _tenant_of(request, body.tenant_id)
     raw = await redis.get(_rec_key(tenant, body.command_id))
     if raw is None:
@@ -544,7 +549,8 @@ async def terminal_command(body: Terminal, request: Request) -> JSONResponse:
     if body.state not in TERMINAL:
         raise HTTPException(status_code=422, detail=f"state không terminal: {body.state!r}")
     redis = _get_redis(request)
-    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
+    await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request),
+                               repo=getattr(request.app.state, "admin_repo", None))
     tenant = _tenant_of(request, body.tenant_id)
     raw = await redis.get(_rec_key(tenant, body.command_id))
     if raw is None:

@@ -281,7 +281,8 @@ async def register_agent(body: AgentRegisterRequest, request: Request) -> JSONRe
     # A non-admin caller (tenant API key) can only register agents under their
     # own tenant — self-declared body.tenant_id is ignored for them.
     ctx = get_tenant_ctx(request)
-    await require_agent_tenant(redis, body.agent_id, ctx)
+    await require_agent_tenant(redis, body.agent_id, ctx,
+                               repo=getattr(request.app.state, "admin_repo", None))
     tenant_id = body.tenant_id if is_admin_ctx(ctx) else ctx.tenant_id
 
     record: dict[str, Any] = {
@@ -351,7 +352,8 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
     # A non-admin caller (tenant API key) can only push evidence under their
     # own tenant — self-declared body.tenant_id is ignored for them.
     ctx = get_tenant_ctx(request)
-    await require_agent_tenant(redis, body.agent_id, ctx)
+    await require_agent_tenant(redis, body.agent_id, ctx,
+                               repo=getattr(request.app.state, "admin_repo", None))
     tenant_id = body.tenant_id if is_admin_ctx(ctx) else ctx.tenant_id
 
     # Circuit breaker check

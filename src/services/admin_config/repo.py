@@ -1093,6 +1093,39 @@ class AdminConfigRepo:
             for r in rows
         ]
 
+    async def get_or_claim_agent_owner(self, agent_id: str, tenant_id: str) -> str:
+        """Durable, no-TTL first-claim-wins agent_id ownership (Phase 3, 0-6
+        roadmap — migrations/omni_admin/0010_agent_identity_claim.sql).
+
+        Closes a gap the ephemeral Redis registry (TTL=120s) cannot: for
+        tenant-shared-key deployments (no per-agent credential row to bind
+        ownership durably — see agent_credential/0005), a registry TTL expiry
+        used to mean ANY tenant's key could re-claim that agent_id string
+        until the original host re-registered. This table remembers the
+        FIRST tenant to ever claim a given agent_id, permanently — a
+        different tenant can never claim it later, even across arbitrarily
+        long outages.
+
+        Atomic: INSERT ... ON CONFLICT DO NOTHING, single round-trip, race-safe
+        under concurrent first-registration attempts. Always returns the
+        durable owner tenant_id (the caller's own tenant_id if this call just
+        claimed it, or the existing owner's tenant_id if already claimed).
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO omni_admin.agent_identity_claim (agent_id, tenant_id) "
+                "VALUES ($1, $2) ON CONFLICT (agent_id) DO NOTHING "
+                "RETURNING tenant_id",
+                agent_id, tenant_id,
+            )
+            if row is not None:
+                return row["tenant_id"]
+            owner = await conn.fetchrow(
+                "SELECT tenant_id FROM omni_admin.agent_identity_claim WHERE agent_id = $1",
+                agent_id,
+            )
+        return owner["tenant_id"] if owner is not None else tenant_id
+
     # ---- shared TX tail: config_change_log + crat_outbox ------------------
 
     async def _log_and_enqueue(

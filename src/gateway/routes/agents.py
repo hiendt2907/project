@@ -287,7 +287,8 @@ async def deregister_remote_agent(agent_id: str, request: Request) -> JSONRespon
     if not _AGENT_ID_RE.fullmatch(agent_id):
         raise HTTPException(status_code=422, detail="Invalid agent_id")
     redis = _get_redis(request)
-    await require_agent_tenant(redis, agent_id, get_tenant_ctx(request))
+    await require_agent_tenant(redis, agent_id, get_tenant_ctx(request),
+                               repo=getattr(request.app.state, "admin_repo", None))
 
     keys_to_delete = [
         f"{_REMOTE_PREFIX}{agent_id}",
