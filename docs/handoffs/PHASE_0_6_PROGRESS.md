@@ -105,7 +105,43 @@ touches this module yet.
 
 | Item | Status | Verification | Notes |
 |---|---|---|---|
-| scripts/e2e_recovery_drill.py | NOT_STARTED | — | depends on 0a |
+| scripts/e2e_recovery_drill.py | DONE | see below | 2026-07-21 |
+
+### Phase 1 verification (real, captured)
+
+`scripts/e2e_recovery_drill.py` — non-destructive, real CLI
+(`aoip.console.approve_systemd_restart`, not hand-built JSON), against real
+`staging-sim_cust-app`/`payment-api.service`. Manages its own
+`kubectl port-forward` and restarts it after every kill-switch flip (a real
+bug found running this the first time: `kubectl set env` on omni-gateway
+triggers a pod rollout, which silently kills any existing port-forward
+tunnel — first run failed with `Connection refused` on the teardown check
+before this was fixed).
+
+Exit Criteria run (verbatim, 2 consecutive runs as required):
+```
+.venv/bin/python scripts/e2e_recovery_drill.py --runs 2
+--- run 1/2 (run_id=5ef6da21) ---
+[PASS] {"run_id": "5ef6da21", "pre_stop_active": false,
+  "command_id": "cmd-f2b0f4c838134d24", "state": "COMPLETED",
+  "outcome": {"status": "recovered", "reason": "service + dependents verified",
+    "evidence": ["before=inactive", "service_health=ok", "dependents=n/a"],
+    "rc": 0, "verified": true},
+  "service_http_code": "200", "audit_block_found": true}
+--- run 2/2 (run_id=9277d838) ---
+[PASS] {"run_id": "9277d838", ... same shape, command_id=cmd-900f2be608dc48db,
+  "service_http_code": "200", "audit_block_found": true}
+[TEARDOWN] kill-switch reverted, effective mutation state:
+  {'tenant_id': 'staging-sim', 'requested': True, 'master_kill_switch': False,
+   'effective': False, 'reason': 'master_kill_switch_off'}
+=== 2 passed, 0 failed (of 2) ===
+```
+Post-run confirmed independently: `OMNI_AUTO_EXECUTE_ENABLED=false` on the
+live gateway pod, `omni-gateway` pod Running, `payment-api.service` active
+(correct end state — recovered, left running).
+
+Full suite unaffected: `6225 passed, 5 deselected` (unchanged from Phase 0b
+— this script is not a pytest test, it's a standalone E2E runner).
 
 ## Phase 2 — tier_gate parity for VM mutation lane
 
