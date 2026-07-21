@@ -16,7 +16,7 @@ more.
 | Item | Status | Verification | Notes |
 |---|---|---|---|
 | 0a: fix CLI payload shape mismatch | DONE | see below | 2026-07-21, commits d987e9c/9db8a50/194f417 |
-| 0b: canonical contracts in src/pkg/contracts/ | NOT_STARTED | — | |
+| 0b: canonical contracts in src/pkg/contracts/ | DONE | see below | 2026-07-21 |
 
 ### 0a verification (real, captured)
 
@@ -59,6 +59,47 @@ killed by its own `systemctl restart` before reporting a result. Worked
 around this session via direct file sync + external restart (same pattern
 used successfully earlier this session). Root-causing the self-restart race
 is not in scope for Phase 0a; flagged for Phase 1 or a dedicated follow-up.
+
+### 0b verification (real, captured)
+
+New module `src/pkg/contracts/` (identity.py, evidence.py) — pure
+dataclasses, stdlib-only, additive (no existing call site wired to it yet —
+that is explicitly out of scope per the module's own docstring; the K8s and
+VM Evidence shapes are semantically close enough that forcing every call
+site onto the canonical shape immediately would be a bigger, riskier change
+than "freeze the contract and prove it's lossless").
+
+Scope actually delivered vs. the phase's original framing: Evidence
+unification is real and tested. Command/CommandResult unification is
+narrowed to `CorrelationIdentity` (the 6 shapes' shared identity fields) —
+the six shapes' transport envelopes themselves are NOT unified here; that is
+Phase 3's "pick one canonical capability-dispatch path," not this phase.
+Recorded here instead of silently expanding scope to match the original
+one-line description.
+
+```
+.venv/bin/python -m pytest tests/test_pkg_contracts.py -q
+6 passed
+
+.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
+6225 passed, 5 deselected, 2 warnings   (was 6219 after Phase 0a; +6 new tests)
+```
+
+Deploy + smoke: `make deploy-worker docker-gateway deploy-gateway` — both
+pods Running; `/healthz`/`/readyz` green; confirmed the module actually
+imports and runs INSIDE the live `omni-fullstack` pod (not just "image
+built"):
+```
+kubectl exec -n multi-agent deploy/omni-fullstack -- python3 -c "
+from pkg.contracts.evidence import from_diagnostic_evidence_dict
+from pkg.contracts.identity import CorrelationIdentity
+e = from_diagnostic_evidence_dict({'trace_id':'t','probe':'p','result':'FAILED'})
+print('in-pod import+use OK:', e.trace_id, e.probe, e.result)
+"
+in-pod import+use OK: t p FAILED
+```
+Zero runtime behavior change intended or observed — no existing pipeline
+touches this module yet.
 
 ## Phase 1 — Vertical slice E2E script (no hand-authored JSON)
 
