@@ -396,7 +396,128 @@ here via a temporary `Restart=no` override) is what got a populated
 
 | Item | Status | Verification | Notes |
 |---|---|---|---|
-| concurrent real drills, 2 tenants | NOT_STARTED | — | |
+| concurrent real drills, 2 tenants | DONE | see below | 2026-07-21 |
+
+### Phase 5 verification (real, captured)
+
+**Setup.** Only 3 real VMs exist in the lab (`cust-edge`/`cust-app`/`cust-db`, all
+running `staging-sim` agents). `tenant-replay-01` is a real, already-provisioned
+tenant (row in `omni_admin.tenant`, real key in the gateway's `OMNI_TENANT_APIKEYS`
+secret) with no live VM daemon of its own. To get a genuine second *live* agent
+process for a second tenant without provisioning new infra, `cust-edge` was
+temporarily re-identified: stopped `aoip-agent.service`, backed up `run.env`,
+rewrote it to `OMNI_AGENT_ID=tenant-replay-01_cust-edge` /
+`OMNI_AGENT_TENANT_ID=tenant-replay-01` / `OMNI_AGENT_API_KEY=<tenant-replay-01's
+real gateway key>` (target unit unchanged: `nginx.service`, already the VM's real
+service — no re-scoping needed), restarted. Confirmed evidence flowing under the
+new identity via `omni:remote_agent:registry:tenant-replay-01_cust-edge`
+`last_seen` within 5s of restart, no 401/403 in `journalctl`. `staging-sim`
+continued using `cust-app`/`payment-api.service` (same target as Phase 4).
+Narrow-window elevation for the drill (same pattern as Phase 4, via the real
+`/autonomy/mutation` + `/autonomy/tier` Admin API, not hand-edited PG rows):
+`tenant-replay-01` mutation toggle → `true`; both tenants' tier → `auto`
+(confirmed capped to `assist` by the `standard`-plan ceiling, same as Phase 4);
+Redis tier cache (`omni:cfg:tier:{tenant}`) `DEL`'d after each `set_tier` call
+(same known write-through gap as Phase 4); kill-switch opened on `omni-gateway`
+only, confirmed via `printenv` after `set env`.
+
+**Concurrent trigger.** `payment-api.service` (temporary `Restart=no` override,
+same as Phase 4 — makes a single `SIGKILL` land in a clean, unambiguous `failed`
+state instead of a self-healing loop) and `nginx.service` (already `Restart=no`
+by default) were `SIGKILL`'d in the same shell command
+(`... kill ... & ... kill ... & wait`) — both VMs reached `failed` within the
+same second.
+
+**Real concurrent processing observed** (`kubectl logs deploy/omni-fullstack`,
+timestamps are Unix epoch seconds):
+```
+1784604815.27  [diag-loop] START trace=ra-b79b97f5a146 agent=tenant-replay-01_cust-edge
+1784604819.85  [diag-loop] START trace=ra-787d2614c23e agent=staging-sim_cust-app
+1784604837.93  [diag-loop] START trace=ra-c9d015160d55 agent=tenant-replay-01_cust-edge
+1784604842.54  [diag-loop] START trace=ra-59e51a5336a7 agent=staging-sim_cust-app
+```
+Two tenants' diagnosis sessions genuinely interleaved on the same single
+`omni-fullstack` replica (1/1) — not sequential batches.
+
+**Outcome — both tenants recovered end-to-end via the real automated path,**
+captured directly from the durable command records in Redis:
+
+- `staging-sim`: trace `ra-59e51a5336a7` → `omni:cmd:rec:staging-sim:cmd-f529db38f04a4fda`
+  — `tenant_id=staging-sim`, `canonical_scope=staging-sim:svc:payment-api.service`,
+  `state=COMPLETED`, `outcome={"status":"recovered","verified":true}`.
+- `tenant-replay-01`: trace `ra-c0af42aaad8c` (its 5th diagnosis attempt on this
+  incident — the LLM declined `suggested_recovery` on 4 earlier, unambiguous
+  single-failure attempts for `nginx`, a non-determinism the Phase 4 ledger already
+  documented for `payment-api`; not something this phase changes) →
+  `omni:cmd:rec:tenant-replay-01:cmd-1b5a042e2fcb47d2` — `tenant_id=tenant-replay-01`,
+  `canonical_scope=tenant-replay-01:svc:nginx.service`, `state=COMPLETED`,
+  `outcome={"status":"recovered","verified":true}`.
+
+Both records confirmed live via `systemctl is-active` on their respective VMs
+(→ `active`). Distinct `command_id`, `trace_id`/`incident_id`, `mission_id`,
+`decision_id`, `fencing_token`, and `canonical_scope` for every field checked —
+no value from one tenant's record appears in the other's.
+
+**Isolation mechanism audit (live-verified, not just read):**
+- **Idempotency** (`aoip/agent/idempotency.py::command_identity()`): key = hash of
+  `tenant + mission_id + incident_id + decision_id + action_id + command_id +
+  payload_hash` — tenant is part of the hash input, so two tenants can never
+  collide on this key even with identical unit names/payloads. Confirmed by
+  inspection of both real records above (different `tenant_id` on every level).
+- **Command/audit layer** (`aoip.agent.runtime.EnqueueRuntimeCommand` /
+  `CommandRecord`): `canonical_scope` is `"{tenant}:svc:{unit}"` — tenant-prefixed
+  at this layer, confirmed directly from both real records
+  (`staging-sim:svc:payment-api.service` vs. `tenant-replay-01:svc:nginx.service`).
+- **VM-side `ExecutionLease`** (`aoip/agent/lease.py`, used inside
+  `run_guarded_recovery` as the single-writer lock on `req.failed_node`, i.e.
+  `svc:{unit}` — **bare unit name, NOT tenant-prefixed**): this drill's two real
+  units (`payment-api.service` / `nginx.service`) never collided naturally, so a
+  live VM drill could not exercise the same-name case. Verified it directly
+  against the real shared Redis instead (`kubectl exec deploy/omni-fullstack`,
+  `aoip.agent.lease.ExecutionLease`, real `redis.multi-agent.svc.cluster.local`):
+  `lease.acquire("svc:collision-test-unit.service", holder="staging-sim-holder")`
+  → token; a second `acquire()` for the same scope with
+  `holder="tenant-replay-01-holder"` → `None` (denied), `holder_token()` still
+  shows the first holder. **Residual finding, not fixed this phase**: the lease
+  key itself has no tenant namespace, so two tenants with an identically-named
+  allowed unit would contend for the same Redis lock. Confirmed this is
+  fail-safe, not fail-open: a denied `acquire()` returns `None` →
+  `run_guarded_recovery` aborts with zero mutation
+  (`aoip/agent/operations.py` lease-denied branch), and even if it weren't
+  denied, each VM's `transport` (`LocalTransport`/`SSHTransport`) is bound to
+  that specific agent process at startup from its own env — a lease held by
+  tenant A can never cause tenant B's daemon to execute anything, since there is
+  no code path from "won a lease" to "mutate a different agent's host." Net
+  effect of the gap: possible false contention (one tenant's legitimate op
+  denied because of a same-named unit on another tenant), never cross-tenant
+  mutation. Recommended for future hardening (not done here, out of this
+  narrow phase's scope): prefix the lease scope with tenant, e.g.
+  `f"{tenant}:svc:{unit}"`, matching the pattern the command/audit layer
+  already uses.
+
+**Unrelated observation surfaced mid-drill (not a Phase 5 defect):** the
+Telegram-delivered advisory for trace `ra-787d2614c23e` came from the
+`SYS_RESOURCE` (3σ resource-anomaly) lane, not the `SYS_HARD_FAIL`
+(systemd-units collector) lane Phase 4 wired auto-recovery into — it reacted to
+the crash's side effects with generic `ps`/`free` commands and correctly stayed
+advisory-only (no `suggested_recovery` field exists in that lane's schema). The
+lane that *is* wired (`SYS_HARD_FAIL`) ran independently on the same incident and
+recovered it for real (`cmd-f529db38f04a4fda` above). Two lanes producing two
+separate advisories for one underlying incident is existing, pre-Phase-4
+behavior — out of scope to change here, noted for Phase 6 documentation.
+
+**Cleanup after the drill (all confirmed, not assumed):** both tenants' tier
+reverted to `shadow` via `/autonomy/tier` (real API call, `dedup_key` returned);
+both mutation toggles reverted to `false` via `/autonomy/mutation`; Redis tier
+cache `DEL`'d again; kill-switch reverted to `false` on `omni-gateway`, confirmed
+via `printenv` on the live pod; `cust-edge` stopped, `run.env` restored from
+backup (`OMNI_AGENT_ID=staging-sim_cust-edge` confirmed), agent restarted,
+evidence flowing again under the original identity confirmed
+(`omni:remote_agent:registry:staging-sim_cust-edge` `last_seen` within 17s of
+restart); `payment-api.service`'s temporary `Restart=no` override directory
+removed, `daemon-reload`d, `Restart=always` confirmed restored; both
+`payment-api.service` and `nginx.service` confirmed `active` on their VMs;
+collision-test lease key deleted from Redis; `git status` clean.
 
 ## Phase 6 — Convergence proof + docs close-out
 
