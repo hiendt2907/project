@@ -24,6 +24,7 @@ from aoip import audit
 from aoip.agent.idempotency import IdempotencyLedger, idempotency_key
 from aoip.agent.lease import ExecutionLease
 from aoip.agent.operations import run_guarded_recovery
+from aoip.agent.trace import canonical_scope
 from aoip.capability import CapabilityState
 from aoip.objects import ActionState
 from aoip.recovery import Approval, RecoveryGate, RecoveryRequest, plan_recovery
@@ -94,11 +95,13 @@ async def run():
     async def probe():
         return await backend.probe_port("cust-db", 6379)
 
+    lease_scope = canonical_scope(TENANT, "svc:cust-db")  # khớp lease key thật (tenant-scoped)
+
     async def clean_keys():
         k = idempotency_key(tenant=TENANT, scope="recover_service:svc:cust-db",
                             decision_goal="recover:process_down",
                             failure_mode="process_down", unit="redis-server")
-        await r.delete(k, "lease:svc:cust-db")
+        await r.delete(k, f"lease:{lease_scope}")
 
     async def guard(req, appr, *, holder="agent-1", now=NOW):
         return await run_guarded_recovery(
@@ -144,11 +147,11 @@ async def run():
 
     # (7) two agents same target → only lease holder executes
     await clean_keys()
-    held = await ExecutionLease(r).acquire("svc:cust-db", holder="agent-1")
+    held = await ExecutionLease(r).acquire(lease_scope, holder="agent-1")
     req7 = _req()
     o7 = await guard(req7, _appr(req7), holder="agent-2")  # agent-2 không có lease
     print(f"(7) 2 agents, non-holder  → {o7.status} ({o7.reason[:38]}); redis vẫn DOWN? {not await probe()}")
-    await ExecutionLease(r).release("svc:cust-db", token=held)
+    await ExecutionLease(r).release(lease_scope, token=held)
 
     # cleanup: khôi phục redis
     await _orb("cust-db", "sudo", "systemctl", "start", "redis-server"); await asyncio.sleep(1)

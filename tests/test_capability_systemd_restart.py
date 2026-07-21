@@ -295,14 +295,16 @@ async def test_verification_fails_service_not_active_after_restart(tmp_path):
 
 async def test_ownership_lost_during_mutation_ambiguous(tmp_path):
     from aoip.agent.lease import ExecutionLease
+    from aoip.agent.trace import canonical_scope
     import asyncio
 
     r = _redis()
+    lease_scope = canonical_scope(TENANT, "svc:nginx.service")  # khớp lease key thật (tenant-scoped)
 
     class HijackingSystemd(FakeSystemd):
         async def run(self, argv, *, timeout=15.0):
             if "restart" in " ".join(argv):
-                await r.set("lease:svc:nginx.service", "other-agent-token", ex=120)
+                await r.set(f"lease:{lease_scope}", "other-agent-token", ex=120)
                 await asyncio.sleep(0.03)
             return await super().run(argv, timeout=timeout)
 
