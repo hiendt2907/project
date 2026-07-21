@@ -110,9 +110,34 @@ def _get_admin_repo(request: Request) -> Any:
 
 @router.get("/tier")
 async def get_tier(request: Request, tenant_id: str = Query(default="default")) -> JSONResponse:
-    """Tier hiệu lực hiện tại (source-of-truth Postgres omni_admin)."""
+    """Tier HIỆU LỰC THẬT (cache → Postgres → env-derive) — cùng resolve_tier()
+    mà pkg.autonomy.tier_gate dùng để gate mutation thật.
+
+    Phase 2 fix (0-6 roadmap): trước đây endpoint này đọc thẳng
+    ``repo.get_tier(tenant_id) or "shadow"`` — bỏ qua Redis cache VÀ bỏ qua
+    env-derive fallback từ OMNI_AUTO_EXECUTE_ENABLED. Khi PG chưa có row
+    tường minh cho tenant (phổ biến — không phải mọi tenant đều được set tier
+    tay), operator nhìn thấy "shadow" nhưng gate thật (resolve_tier, đọc bởi
+    cả K8s lane lẫn VM recovery lane từ Phase 2) có thể đang trả "auto" (dẫn
+    xuất từ kill-switch legacy) — hai giá trị lệch nhau, operator bị đánh lừa
+    về mức độ tự động thật sự đang hiệu lực. Caught live 2026-07-21: GET
+    /autonomy/tier trả "shadow" ngay trước một drill mà chính sách hiệu lực
+    thật lại là "auto".
+    """
+    from types import SimpleNamespace
+
+    from pkg.autonomy.tier_gate import resolve_tier
+
     repo = _get_admin_repo(request)
-    tier = await repo.get_tier(tenant_id) or "shadow"
+    redis = getattr(request.app.state, "redis", None)
+    master_enabled = os.getenv("OMNI_AUTO_EXECUTE_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    settings = SimpleNamespace(
+        omni_autonomy_tier=os.getenv("OMNI_AUTONOMY_TIER", ""),
+        omni_auto_execute_enabled=master_enabled,
+    )
+    tier = await resolve_tier(settings=settings, repo=repo, redis=redis, tenant_id=tenant_id)
     return JSONResponse(content={"tier": tier, "tenant_id": tenant_id})
 
 

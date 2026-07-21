@@ -51,6 +51,27 @@ async def test_get_tier():
     assert json.loads(resp.body)["tier"] == "assist"
 
 
+async def test_get_tier_no_pg_row_reflects_env_derived_effective_tier(monkeypatch, redis):
+    """Phase 2 fix (0-6 roadmap): when PG has no explicit tier row, this
+    endpoint used to hardcode "shadow" regardless of what the real gate
+    (pkg.autonomy.tier_gate.resolve_tier) would actually resolve — an
+    operator could see "shadow" while OMNI_AUTO_EXECUTE_ENABLED=true meant
+    the effective tier gating real mutations was "auto". Caught live
+    2026-07-21 right before a recovery drill. Now GET /autonomy/tier uses
+    the exact same resolve_tier() the gate uses."""
+    monkeypatch.setenv("OMNI_AUTO_EXECUTE_ENABLED", "true")
+    repo = _Repo(None)  # no PG row
+    resp = await get_tier(_request(repo, redis), tenant_id="default")
+    assert json.loads(resp.body)["tier"] == "auto"
+
+
+async def test_get_tier_no_pg_row_and_kill_switch_off_stays_shadow(monkeypatch, redis):
+    monkeypatch.setenv("OMNI_AUTO_EXECUTE_ENABLED", "false")
+    repo = _Repo(None)
+    resp = await get_tier(_request(repo, redis), tenant_id="default")
+    assert json.loads(resp.body)["tier"] == "shadow"
+
+
 async def test_set_tier_demotion_no_confirm(redis):
     repo = _Repo("auto")
     body = TierChangeRequest(tier="shadow")  # hạ tier — không cần confirm

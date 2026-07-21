@@ -147,7 +147,61 @@ Full suite unaffected: `6225 passed, 5 deselected` (unchanged from Phase 0b
 
 | Item | Status | Verification | Notes |
 |---|---|---|---|
-| wire resolve_tier into _enforce_mutation_toggle/run_guarded_recovery | NOT_STARTED | — | |
+| wire resolve_tier into _enforce_mutation_toggle/run_guarded_recovery | DONE | see below | 2026-07-21 |
+
+### Phase 2 verification (real, captured)
+
+**Move + wire:** `pkg.autonomy.tier_gate` (new — moved from `workers/tier_gate.py`,
+same pattern as `pkg.risk_taxonomy`/`workers/risk_class.py`, since gateway
+cannot import `workers/`). `workers/tier_gate.py` is now a re-export shim,
+transparent to existing K8s callers (37/37 `test_tier_gate_and_hitl.py`
+unchanged). `agent_runtime.py::_enforce_mutation_toggle` now also calls
+`_enforce_tier_gate()` — same `resolve_tier()`/`gate_decision_for_tool()`
+the K8s lane uses, keyed on the payload's declared `capability` (present on
+every payload since Phase 0a's fix). Added `"systemd.restart_unit": LOW` to
+`pkg/risk_taxonomy.py` (direct VM-lane counterpart of the existing
+`k8s_rollout_restart: LOW` entry) — without it, every VM recovery command
+would fail-closed to HIGH risk (unknown capability) and require HITL at
+every tier, not the intended K8s parity.
+
+**Second real bug found live** (not introduced this phase, pre-existing):
+`GET /autonomy/tier` read `repo.get_tier(tenant_id) or "shadow"` directly —
+bypassing both the Redis cache AND the env-derived fallback `resolve_tier()`
+uses. When PG has no explicit row for a tenant (common), an operator would
+see "shadow" while the REAL gate (now used by both K8s and, as of this
+phase, VM recovery) could be resolving "auto" from the legacy
+`OMNI_AUTO_EXECUTE_ENABLED` env var — the displayed and effective tiers
+diverged. Caught live: `GET /autonomy/tier?tenant_id=staging-sim` returned
+`"shadow"` immediately before a drill whose actual effective tier (kill-switch
+open, no PG row) was `"auto"`. Fixed: `GET /tier` now calls the same
+`resolve_tier()` the gate uses.
+
+```
+.venv/bin/python -m pytest tests/test_gateway_agent_runtime.py tests/test_autonomy_tier_endpoint.py tests/test_tier_gate_and_hitl.py -q
+39 passed
+
+.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
+6230 passed, 5 deselected, 2 warnings   (was 6225 after Phase 1; +5 new tests)
+```
+
+**Real Exit Criteria proof** (both halves, live, via `POST /autonomy/tier`
++ `scripts/e2e_recovery_drill.py`, real gateway/PG/Redis, tenant `staging-sim`):
+- Set tier=`shadow` explicitly → ran drill →
+  `HTTP 423 {"reason": "tier_gate_suggest", "tier": "shadow", "risk_class": "LOW"}`
+  — blocked, exactly as the tier×risk matrix specifies (shadow always SUGGEST
+  for non-READONLY risk). Confirmed the drill's own enqueue call failed
+  closed, not just a unit-test mock.
+- Set tier=`auto` (confirm=true) → discovered live that a pre-existing
+  **provider plan ceiling caps `staging-sim` at `assist`** (matches a
+  2026-07-15 session note: "tenant_plan ceilings are assist for all three
+  tenants" — `_apply_plan_ceiling()` working as designed, not a bug) → ran
+  drill → `COMPLETED status=recovered verified=true` — assist tier + LOW risk
+  = ALLOW, correctly.
+- Reverted tier back to `shadow` (its original ambient value) after the test;
+  confirmed via `GET /autonomy/tier` → `{"tier": "shadow"}`.
+
+Post-verification confirmed: `OMNI_AUTO_EXECUTE_ENABLED=false` on the live
+gateway pod, both pods Running, `payment-api.service active`.
 
 ## Phase 3 — Remaining isolation/architecture gaps
 
