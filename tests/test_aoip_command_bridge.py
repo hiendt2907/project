@@ -80,3 +80,78 @@ def test_durable_command_payload_decodes_via_the_deployed_daemons_actual_decoder
     req2, approval2, ctx2, preflight_cfg = capability_decode(payload, tenant="acme")
     assert req2.unit == "nginx.service"
     assert approval2.approved is True
+
+
+def test_stack_b_decoder_rejects_tampered_target_after_approval(monkeypatch):
+    """Phase 3 (0-6 roadmap): decode_recovery_command() previously had NO
+    payload-hash tamper-binding at all — only the CLI-only Stack A decoder
+    did. A payload built via issue_capability_command(), then modified (e.g.
+    a MITM or compromised transport swapping the target unit after approval
+    was issued), used to decode and execute successfully through the live
+    daemon's actual executor. Now both decoders share one hash definition
+    (operations.capability_payload_hash) and both reject a mismatch."""
+    from aoip.agent.operations import UnsupportedRecoveryPayload, decode_recovery_command
+    from aoip.command_bridge import build_durable_command
+
+    advisory = {
+        "mission_id": "m1", "decision_id": "d1", "incident_id": "i1",
+        "capability": "systemd.restart_unit", "unit": "nginx.service",
+        "summary": "nginx is down", "confidence": 0.91,
+        "evidence_refs": ["probe:systemctl:1"],
+    }
+    command = build_durable_command(
+        advisory, tenant="acme", agent_id="agent-1", approver="alice", now=100.0, ttl_s=300
+    )
+    tampered = dict(command["payload"])
+    tampered["target"] = {"unit": "mariadb.service"}  # approved nginx, tampered to mariadb
+
+    with pytest.raises(UnsupportedRecoveryPayload, match="payload_hash_mismatch"):
+        decode_recovery_command(tampered)
+
+
+def test_capability_hash_stable_across_diagnosed_at_float_jitter():
+    """Regression for a live false-positive found 2026-07-21: a real,
+    untampered payload from the real operator CLI failed hash verification
+    end-to-end because reason.diagnosed_at (a full-precision Unix timestamp
+    float) does not always round-trip to a byte-identical JSON string across
+    the real transport chain (CLI's json.dumps -> gateway's Pydantic/
+    pydantic-core -> Redis storage -> VM daemon's httpx) even though the
+    underlying float value is unchanged. The hash must be robust to that
+    while still catching a REAL tamper (target.unit changed)."""
+    from aoip.agent.operations import capability_payload_hash
+
+    base = {
+        "capability": "systemd.restart_unit", "capability_version": "1",
+        "target": {"unit": "payment-api.service"},
+        "reason": {"mission_id": "m1", "decision_id": "d1", "incident_id": "i1",
+                  "summary": "x", "diagnosed_at": 1784597963.96865},
+        "preconditions": {"require_unit_exists": True, "require_allowlisted": True},
+        "verification": {"require_active_state": True, "health_check": None},
+    }
+    jittered = {**base, "reason": {**base["reason"], "diagnosed_at": 1784597963.968650001}}
+    tampered = {**base, "target": {"unit": "mariadb.service"}}
+
+    assert capability_payload_hash(base) == capability_payload_hash(jittered)
+    assert capability_payload_hash(base) != capability_payload_hash(tampered)
+
+
+def test_stack_b_decoder_skips_hash_check_for_non_typed_payload():
+    """A generic (non-capability) payload — the shape hand-authored tests
+    throughout this session use, and the only shape possible before
+    command_bridge/systemd_restart existed — has nothing typed to bind a
+    hash to, so the check is skipped rather than failing closed on every
+    legacy caller."""
+    from aoip.agent.operations import decode_recovery_command
+
+    payload = {
+        "recovery": {"failed_node": "svc:redis-server", "failure_mode": "process_down",
+                    "substrate": "systemd", "unit": "redis-server", "risk": 0.3,
+                    "diagnosed_at": 100.0, "tenant": "acme", "dependents": []},
+        "approval": {"approver": "alice", "tenant": "acme", "decision_goal": "recover:process_down",
+                    "expires_at": 200.0, "action_id": "act-1",
+                    "canonical_scope": "acme:svc:redis-server", "issued_at": 100.0,
+                    "action_scope": "recover_service:svc:redis-server"},
+        "evidence": {},
+    }
+    req, approval, ctx = decode_recovery_command(payload)
+    assert req.unit == "redis-server"

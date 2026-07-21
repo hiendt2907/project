@@ -24,8 +24,6 @@ entry duy nhất, tra cứu bằng if/else tường minh (xem ``describe_capabil
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import re
 import time
@@ -33,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from aoip import audit
-from aoip.agent.operations import run_guarded_recovery
+from aoip.agent.operations import capability_payload_hash, run_guarded_recovery
 from aoip.agent.timing_config import TimingConfig
 from aoip.objects import Action, ActionState, Finding
 from aoip.recovery import Approval, RecoveryGate, RecoveryOutcome, RecoveryRequest, plan_recovery
@@ -165,13 +163,6 @@ def _plan_action(unit: str) -> Action:
     issuing (``issue_capability_command``) và decode (``_decode``) để không lệch nhau."""
     return plan_recovery(failed_node=f"svc:{unit}", failure_mode="process_down",
                          substrate="systemd", unit=unit, port=None, risk=0.30)
-
-
-def capability_payload_hash(typed_payload: dict) -> str:
-    """Hash canonical (sorted keys, không whitespace) — đổi BẤT KỲ field nào (kể cả
-    reason.summary) sau khi approval issue → hash khác → approval mất hiệu lực."""
-    canonical = json.dumps(typed_payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()[:32]
 
 
 def issue_capability_command(

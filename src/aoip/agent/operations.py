@@ -17,6 +17,8 @@ chỉ qua ``execute_recovery`` (fail-closed, HITL, current-state revalidate).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable
@@ -283,13 +285,84 @@ def _require(d: dict, keys: tuple[str, ...], what: str) -> None:
         raise UnsupportedRecoveryPayload(f"{what} thiếu field: {missing}")
 
 
+# Fields excluded from the hash despite living inside a hashed section —
+# high-precision float timestamps that do not survive re-serialization
+# identically across the JSON libraries a payload actually passes through in
+# production (Python json.dumps on the CLI -> Pydantic/pydantic-core on the
+# gateway -> Redis storage -> httpx on the VM daemon). Caught live 2026-07-21:
+# a real, untampered payload from the real CLI failed hash verification
+# end-to-end (100% false-positive) because reason.diagnosed_at's ~17
+# significant digits round-tripped to a bit-identical float but a
+# byte-different JSON string somewhere in that chain. This is not a security
+# regression — diagnosed_at is freshness metadata (bounded separately by
+# approval.issued_at/expires_at, which ARE NOT part of this hash's input at
+# all), not an identity field. mission_id/decision_id/incident_id/summary
+# inside "reason", and target.unit, remain hashed and protected.
+_HASH_VOLATILE_PATHS: tuple[tuple[str, ...], ...] = (("reason", "diagnosed_at"),)
+
+
+def _strip_volatile_for_hash(typed_payload: dict) -> dict:
+    result = json.loads(json.dumps(typed_payload))  # deep copy, JSON-safe
+    for *parents, leaf in _HASH_VOLATILE_PATHS:
+        node = result
+        for key in parents:
+            node = node.get(key) if isinstance(node, dict) else None
+            if node is None:
+                break
+        if isinstance(node, dict):
+            node.pop(leaf, None)
+    return result
+
+
+# Canonical home for this hash (Phase 3, 0-6 roadmap — unify Stack A/Stack B):
+# was defined only in aoip/capabilities/systemd_restart.py, which the live
+# daemon's executor (build_recovery_executor, below) never called — Stack B's
+# decode_recovery_command() had no payload-hash tamper-binding at all.
+# systemd_restart.py now imports this definition instead of duplicating it
+# (it already imports run_guarded_recovery from this module, so importing in
+# the other direction would be circular — this module must own the shared
+# definition).
+def capability_payload_hash(typed_payload: dict) -> str:
+    """Hash canonical (sorted keys, không whitespace) — đổi BẤT KỲ field nào (kể cả
+    reason.summary) sau khi approval issue → hash khác → approval mất hiệu lực.
+    Volatile-but-non-identity fields (see _HASH_VOLATILE_PATHS) are stripped
+    first so re-serialization jitter across the real transport chain does not
+    produce false-positive tamper detection."""
+    canonical_input = _strip_volatile_for_hash(typed_payload)
+    canonical = json.dumps(canonical_input, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:32]
+
+
+_TYPED_CAPABILITY_HASH_FIELDS = (
+    "capability", "capability_version", "target", "reason", "preconditions", "verification",
+)
+
+
 def decode_recovery_command(payload: dict) -> tuple[RecoveryRequest, Approval, _EvidenceCtx]:
     """Parse durable command payload → (RecoveryRequest, Approval, ctx).
 
     Raise ``UnsupportedRecoveryPayload`` fail-closed nếu thiếu field hoặp không có
     operator cho (failure_mode, substrate) — caller KHÔNG được gọi mutation executor
     khi bắt exception này.
+
+    Payload-hash tamper-binding (Phase 3): when the payload was built via a
+    typed capability (issue_capability_command() always sets
+    "approved_payload_hash" — every real caller today, both the operator CLI
+    and command_bridge.build_durable_command, goes through it), verify the
+    hash before trusting anything else in the payload. A payload missing
+    "capability" entirely (hypothetical future non-typed caller) skips this —
+    there is nothing typed to bind a hash to.
     """
+    if payload.get("capability") is not None:
+        expected_hash = payload.get("approved_payload_hash", "")
+        typed_only = {k: v for k, v in payload.items() if k in _TYPED_CAPABILITY_HASH_FIELDS}
+        actual_hash = capability_payload_hash(typed_only)
+        if not expected_hash or actual_hash != expected_hash:
+            raise UnsupportedRecoveryPayload(
+                f"payload_hash_mismatch: payload đã đổi sau khi approval issue — "
+                f"approval mất hiệu lực (expected={expected_hash!r}, actual={actual_hash!r})"
+            )
+
     rec_d = payload.get("recovery") or {}
     _require(rec_d, _REQUIRED_RECOVERY_FIELDS, "recovery")
     if operator_for(rec_d["failure_mode"], rec_d["substrate"]) is None:
