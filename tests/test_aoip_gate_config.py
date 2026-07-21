@@ -88,17 +88,21 @@ def test_canonical_config_declares_all_required_gate_keys():
 
 
 def test_canonical_config_matches_known_lab_values_for_untouched_keys():
-    """Everything except AOIP_GATE_ALLOWED_FAILURE_MODES must match the
-    values actually running on the 3 lab VMs today (task context
-    2026-07-21) — this file is meant to capture reality, not invent new
-    policy as a side effect of adding disk_pressure_journal."""
+    """Everything except AOIP_GATE_ALLOWED_FAILURE_MODES/AOIP_ALLOWED_SYSTEMD_UNITS
+    must match the values actually running on the 3 lab VMs today (task
+    context 2026-07-21) — this file is meant to capture reality, not invent
+    new policy as a side effect of adding disk_pressure_journal.
+    AOIP_ALLOWED_SYSTEMD_UNITS gained systemd-journald.service once the
+    journal_vacuum operator landed in recovery.py (fixed, hardcoded target
+    for capability #3, not tenant-supplied — see
+    src/aoip/capabilities/systemd_journal_vacuum.py)."""
     parsed = parse_env_file(CONFIG_PATH)
     assert parsed["AOIP_GATE_ALLOWED_SUBSTRATES"] == "systemd"
     assert parsed["AOIP_GATE_SCOPE_PREFIX"] == "svc:"
     assert parsed["AOIP_GATE_MAX_RISK"] == "0.5"
     assert parsed["AOIP_GATE_MIN_DIAGNOSIS_CONFIDENCE"] == "0.5"
     assert parsed["AOIP_GATE_MAX_DIAGNOSIS_AGE_S"] == "300"
-    assert parsed["AOIP_ALLOWED_SYSTEMD_UNITS"] == "payment-api.service"
+    assert parsed["AOIP_ALLOWED_SYSTEMD_UNITS"] == "payment-api.service,systemd-journald.service"
 
 
 def test_canonical_config_numeric_gate_values_are_valid_floats():
