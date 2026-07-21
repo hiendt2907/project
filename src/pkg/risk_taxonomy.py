@@ -54,6 +54,13 @@ _READONLY_TOOLS: Final = frozenset({
 # Bảng TĨNH cho tool MUTATE/control (MASTER_PLAN §2). Readonly resolve qua _READONLY_TOOLS.
 _STATIC_MUTATE: Final = {
     "k8s_rollout_restart": LOW,             # idempotent, tự phục hồi
+    # VM/AOIP recovery lane counterpart of k8s_rollout_restart — same
+    # justification (idempotent, self-healing, smallest reversible action).
+    # Phase 2 of the 0-6 roadmap: without this entry, risk_class_of() would
+    # fail-closed to HIGH for every VM recovery command (tool missing from
+    # the table), forcing HITL at every tier including auto — not wrong,
+    # but not the intended parity with the K8s lane either.
+    "systemd.restart_unit": LOW,
     "k8s_create_or_patch_configmap": LOW,   # cố định (bỏ phân loại động — QĐ #3)
     "sandbox_cleanup": LOW,                 # dọn sandbox, không đụng cluster
     "k8s_scale_resource": MEDIUM,

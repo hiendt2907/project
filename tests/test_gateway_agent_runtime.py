@@ -116,6 +116,87 @@ async def test_typed_mutation_is_blocked_when_tenant_toggle_is_off(monkeypatch):
     assert response.json()["detail"]["reason"] == "tenant_toggle_off"
 
 
+# ── Phase 2 (0-6 roadmap): tier_gate parity for the VM recovery lane ──────────
+# Before this, a tenant's shadow/assist/auto tier setting had zero effect on
+# whether their durable recovery commands executed — only the two binary
+# toggles above (tenant flag + master kill-switch) gated enqueue. These tests
+# use a REAL FakeRedis tier cache (omni:cfg:tier:{tenant}, the same key
+# pkg.autonomy.tier_gate.resolve_tier() reads/writes) — not a mocked
+# resolve_tier — matching the "real Redis-backed" Exit Criteria for this phase.
+
+async def _async_true(*args, **kwargs):
+    return True
+
+
+@pytest.mark.asyncio
+async def test_shadow_tier_recovery_command_blocked_by_tier_gate(monkeypatch):
+    """shadow tier -> evaluate_tier_gate always returns SUGGEST for any
+    non-READONLY risk_class, regardless of the two toggles being on."""
+    redis = FakeRedis(decode_responses=True)
+    await _register(redis)
+    from services.admin_config.cache import cache_key_tier
+    await redis.set(cache_key_tier(TENANT), "shadow")
+    app = _make_app(redis)
+    app.state.admin_repo = SimpleNamespace(get_runtime_flag=_async_true)
+    monkeypatch.setenv("OMNI_AUTO_EXECUTE_ENABLED", "true")
+    command = _cmd(command_id="cmd-shadow-blocked")
+    command["payload"] = {"capability": "systemd.restart_unit"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        response = await c.post("/webhook/agent/rt/commands/enqueue", json=command)
+    assert response.status_code == 423
+    detail = response.json()["detail"]
+    assert detail["reason"] == "tier_gate_suggest"
+    assert detail["tier"] == "shadow"
+    assert detail["risk_class"] == "LOW"
+
+
+@pytest.mark.asyncio
+async def test_auto_tier_low_risk_recovery_command_passes_tier_gate(monkeypatch):
+    """auto tier + LOW risk (systemd.restart_unit) -> ALLOW, enqueue reaches
+    QUEUED. This does not exercise the VM-side executor (that is the E2E
+    drill script's job) — it proves the gate itself lets a legitimate
+    low-risk command through instead of blocking everything unconditionally."""
+    redis = FakeRedis(decode_responses=True)
+    await _register(redis)
+    from services.admin_config.cache import cache_key_tier
+    await redis.set(cache_key_tier(TENANT), "auto")
+    app = _make_app(redis)
+    app.state.admin_repo = SimpleNamespace(get_runtime_flag=_async_true)
+    monkeypatch.setenv("OMNI_AUTO_EXECUTE_ENABLED", "true")
+    command = _cmd(command_id="cmd-auto-allowed")
+    command["payload"] = {
+        "capability": "systemd.restart_unit", "capability_version": "1",
+        "target": {"unit": "payment-api.service"}, "verification": {"require_active_state": True},
+        "approval": {"approved": True},
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        response = await c.post("/webhook/agent/rt/commands/enqueue", json=command)
+    assert response.status_code == 200
+    assert response.json()["state"] == "QUEUED"
+
+
+@pytest.mark.asyncio
+async def test_unknown_capability_fails_closed_to_high_risk_hitl(monkeypatch):
+    """A capability absent from pkg.risk_taxonomy's static table must fail
+    closed to HIGH risk (never silently ALLOW an unclassified mutation),
+    even at auto tier."""
+    redis = FakeRedis(decode_responses=True)
+    await _register(redis)
+    from services.admin_config.cache import cache_key_tier
+    await redis.set(cache_key_tier(TENANT), "auto")
+    app = _make_app(redis)
+    app.state.admin_repo = SimpleNamespace(get_runtime_flag=_async_true)
+    monkeypatch.setenv("OMNI_AUTO_EXECUTE_ENABLED", "true")
+    command = _cmd(command_id="cmd-unknown-cap")
+    command["payload"] = {"capability": "some.unclassified.capability"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        response = await c.post("/webhook/agent/rt/commands/enqueue", json=command)
+    assert response.status_code == 423
+    detail = response.json()["detail"]
+    assert detail["reason"] == "tier_gate_hitl"
+    assert detail["risk_class"] == "HIGH"
+
+
 @pytest.mark.asyncio
 async def test_full_ack_lifecycle_and_terminal_idempotent():
     redis = FakeRedis(decode_responses=True)

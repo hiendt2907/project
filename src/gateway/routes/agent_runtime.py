@@ -173,8 +173,50 @@ def _flag_bool(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-async def _enforce_mutation_toggle(request: Request, tenant: str) -> None:
-    """Guard every durable recovery enqueue with both mutation permission gates."""
+def _env_settings_fallback() -> Any:
+    """Minimal settings stand-in for pkg.autonomy.tier_gate.resolve_tier()'s env
+    fallback path — the gateway has no rich settings object like the worker's
+    WorkerSettings; this mirrors _master_auto_execute_enabled()'s existing
+    direct-env-read pattern rather than inventing a new settings class."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        omni_autonomy_tier=os.getenv("OMNI_AUTONOMY_TIER", ""),
+        omni_auto_execute_enabled=_master_auto_execute_enabled(),
+    )
+
+
+async def _enforce_tier_gate(request: Request, tenant: str, payload: dict) -> None:
+    """Phase 2 (0-6 roadmap): the shadow/assist/auto tier system that already
+    gates K8s mutations did not apply to the VM recovery lane at all — a
+    tenant's tier setting had zero effect on whether their recovery commands
+    executed, only the two binary toggles above did. This closes that gap:
+    same resolve_tier()/evaluate_tier_gate() the K8s lane uses, applied here.
+
+    tool_name for risk classification is the payload's declared capability
+    (e.g. "systemd.restart_unit") — present on every payload built via
+    issue_capability_command() since the Phase 0a fix. Missing/unknown
+    capability fails closed to HIGH risk (pkg.risk_taxonomy's own default),
+    which means HITL at every tier — never silently ALLOW an unclassified
+    capability.
+    """
+    from pkg.autonomy.tier_gate import ALLOW, gate_decision_for_tool, resolve_tier
+
+    repo = getattr(request.app.state, "admin_repo", None)
+    redis = getattr(request.app.state, "redis", None)
+    tier = await resolve_tier(
+        settings=_env_settings_fallback(), repo=repo, redis=redis, tenant_id=tenant,
+    )
+    tool_name = str(payload.get("capability", ""))
+    decision, risk_class = gate_decision_for_tool(tool_name, tier=tier)
+    if decision != ALLOW:
+        raise HTTPException(status_code=423, detail={
+            "reason": f"tier_gate_{decision.lower()}", "tenant_id": tenant,
+            "tier": tier, "risk_class": risk_class, "capability": tool_name,
+        })
+
+
+async def _enforce_mutation_toggle(request: Request, tenant: str, payload: dict) -> None:
+    """Guard every durable recovery enqueue with all three mutation permission gates."""
     repo = getattr(request.app.state, "admin_repo", None)
     if repo is None:
         # Lightweight ASGI/unit harnesses do not wire the control-plane repository.
@@ -192,6 +234,7 @@ async def _enforce_mutation_toggle(request: Request, tenant: str) -> None:
         raise HTTPException(status_code=423, detail={
             "reason": "master_kill_switch_off", "tenant_id": tenant,
         })
+    await _enforce_tier_gate(request, tenant, payload)
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
@@ -262,7 +305,7 @@ async def enqueue_command(body: EnqueueRuntimeCommand, request: Request) -> JSON
         raise HTTPException(status_code=422, detail="Invalid agent_id")
     await require_agent_tenant(redis, body.agent_id, get_tenant_ctx(request))
     tenant = _tenant_of(request, body.tenant_id)
-    await _enforce_mutation_toggle(request, tenant)
+    await _enforce_mutation_toggle(request, tenant, body.payload)
     _validate_typed_mutation_payload(body.payload)
     now = int(time.time())
     expires_at = now + body.ttl_s
