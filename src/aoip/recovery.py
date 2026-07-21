@@ -22,6 +22,8 @@ RecoveryRequest/Approval/RecoveryOutcome là Derived (policy/runtime value, khô
 """
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
@@ -121,10 +123,122 @@ _SYSTEMD_FAILED_STATE_STALE = RecoveryOperator(
     apply=_sd_reset_failed_apply, health=_sd_reset_failed_health,
 )
 
+
+# ── systemd / disk_pressure_journal operator (capability #3: journal_vacuum) ─
+# Fixes SYS_RESOURCE lane's missing auto-remediation gap: journal disk usage
+# growing unbounded fills the root/var partition. Target is CHÍNH unit
+# "systemd-journald.service" (real on every systemd host) — journal vacuum is
+# fundamentally an operation on journald's OWN retained data, so it fits the
+# existing unit-scoped model (canonical_scope, lease, allowlist all assume a
+# single unit target) without generalizing them. apply() ONLY calls the
+# official `journalctl --vacuum-size=<target>` — NEVER a raw rm/find -delete
+# against /var/log/journal — so the blast radius is bounded to what journald
+# itself considers safe to rotate out.
+#
+# Threshold (disk-pressure trigger) and target (post-vacuum retained size) are
+# BOTH env-configurable (see _journal_vacuum_threshold_bytes/_journal_vacuum_
+# target_size below) — never hardcoded, since what counts as "too much
+# journal" depends on the host's partition size, which this module cannot see.
+_ENV_JOURNAL_VACUUM_THRESHOLD_BYTES = "AOIP_JOURNAL_VACUUM_THRESHOLD_BYTES"
+# Default: 2 GiB of retained journal is already excessive on a typical lab VM
+# (small root partitions, 10-20GB) and gives headroom to act BEFORE a Lane 1
+# (SYS_RESOURCE, 3-sigma disk) alert would fire from overall filesystem usage.
+# Journal disk-usage is orthogonal to overall filesystem %, so this is an
+# absolute byte threshold, not a percentage.
+_DEFAULT_JOURNAL_VACUUM_THRESHOLD_BYTES = 2 * 1024**3  # 2 GiB
+
+_ENV_JOURNAL_VACUUM_TARGET_SIZE = "AOIP_JOURNAL_VACUUM_TARGET_SIZE"
+# Default: retain 200M after vacuuming — well below the 2 GiB trigger, so one
+# vacuum run buys meaningful headroom before the operator would fire again.
+# Same string format `journalctl --vacuum-size=` itself accepts (K/M/G/T).
+_DEFAULT_JOURNAL_VACUUM_TARGET_SIZE = "200M"
+
+# Parses `journalctl --disk-usage` output, e.g. "Archived and active journals
+# take up 4.0G in the file system." → 4.0 * 1024**3 bytes. Accepts an optional
+# trailing "B" (some systemd versions/locales append it) and is unit-suffix
+# case-insensitive; bare bytes (no K/M/G/T letter) parse as-is.
+_DISK_USAGE_SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([KMGTPE]?)B?", re.IGNORECASE)
+_DISK_USAGE_MULTIPLIERS = {
+    "": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5, "E": 1024**6,
+}
+
+
+def _journal_vacuum_threshold_bytes(env: dict | None = None) -> int:
+    """Disk-pressure trigger threshold (bytes) — đọc từ env, KHÔNG hardcode.
+    Thiếu/không parse được/không dương → default an toàn (xem hằng số phía trên)."""
+    env = os.environ if env is None else env
+    raw = (env.get(_ENV_JOURNAL_VACUUM_THRESHOLD_BYTES) or "").strip()
+    if not raw:
+        return _DEFAULT_JOURNAL_VACUUM_THRESHOLD_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_JOURNAL_VACUUM_THRESHOLD_BYTES
+    return value if value > 0 else _DEFAULT_JOURNAL_VACUUM_THRESHOLD_BYTES
+
+
+def _journal_vacuum_target_size(env: dict | None = None) -> str:
+    """Post-vacuum retained size passed to `journalctl --vacuum-size=` — đọc
+    từ env, KHÔNG hardcode. Thiếu/rỗng → default an toàn (xem hằng số trên)."""
+    env = os.environ if env is None else env
+    raw = (env.get(_ENV_JOURNAL_VACUUM_TARGET_SIZE) or "").strip()
+    return raw or _DEFAULT_JOURNAL_VACUUM_TARGET_SIZE
+
+
+def _parse_disk_usage_bytes(text: str) -> int | None:
+    """Parse `journalctl --disk-usage` human-readable output → bytes.
+
+    Trả None nếu không parse được — caller PHẢI coi đây là "không đủ bằng
+    chứng disk pressure" (fail-closed KHÔNG mutate), KHÔNG tự suy diễn."""
+    m = _DISK_USAGE_SIZE_RE.search(text)
+    if not m:
+        return None
+    value = float(m.group(1))
+    unit = m.group(2).upper()
+    return int(value * _DISK_USAGE_MULTIPLIERS.get(unit, 1))
+
+
+async def _jv_is_broken(t, unit, port) -> bool:
+    out, _ = await t.run(["journalctl", "--disk-usage"])
+    used = _parse_disk_usage_bytes(out)
+    if used is None:
+        return False  # fail-closed: không đo được → KHÔNG coi là hỏng, KHÔNG mutate
+    return used >= _journal_vacuum_threshold_bytes()
+
+
+async def _jv_capture_before(t, unit, port) -> dict:
+    out, _ = await t.run(["journalctl", "--disk-usage"])
+    used = _parse_disk_usage_bytes(out)
+    return {"unit": unit, "disk_usage_raw": out.strip(), "disk_usage_bytes": used,
+            "threshold_bytes": _journal_vacuum_threshold_bytes()}
+
+
+async def _jv_apply(t, unit, port) -> tuple[str, int]:
+    # Action nhỏ nhất: CHỈ dùng journalctl chính thức để vacuum theo size —
+    # KHÔNG bao giờ tự xoá file trong /var/log/journal (không rm/find -delete).
+    target = _journal_vacuum_target_size()
+    return await t.run(["sudo", "journalctl", f"--vacuum-size={target}"], timeout=60.0)
+
+
+async def _jv_health(t, unit, port) -> bool:
+    out, _ = await t.run(["journalctl", "--disk-usage"])
+    used = _parse_disk_usage_bytes(out)
+    if used is None:
+        return False  # verification uncertainty must be explicit — never assume healthy
+    return used < _journal_vacuum_threshold_bytes()
+
+
+_SYSTEMD_JOURNAL_VACUUM = RecoveryOperator(
+    failure_mode="disk_pressure_journal", substrate=SUBSTRATE_SYSTEMD, action_verb="vacuum",
+    is_broken=_jv_is_broken, capture_before=_jv_capture_before,
+    apply=_jv_apply, health=_jv_health,
+)
+
 # Registry: (failure_mode, substrate) → operator. Thêm cặp mới = 1 entry, KHÔNG sửa loop.
 OPERATORS: dict[tuple[str, str], RecoveryOperator] = {
     ("process_down", SUBSTRATE_SYSTEMD): _SYSTEMD_PROCESS_DOWN,
     ("failed_state_stale", SUBSTRATE_SYSTEMD): _SYSTEMD_FAILED_STATE_STALE,
+    ("disk_pressure_journal", SUBSTRATE_SYSTEMD): _SYSTEMD_JOURNAL_VACUUM,
 }
 
 

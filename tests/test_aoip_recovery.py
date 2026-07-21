@@ -368,3 +368,135 @@ async def test_recovery_audit_carries_end_to_end_correlation(tmp_path):
     assert first["trace_id"] == "trace-1"
     assert first["payload"]["tenant_id"] == "acme"
     assert first["payload"]["command_id"] == "command-1"
+
+
+# ── Operator #3: disk_pressure_journal (systemd.journal_vacuum capability) ───
+# Registry test — new operator entry, KHÔNG sửa execute_recovery loop. First
+# auto-remediation for the SYS_RESOURCE lane (the other two operators are
+# SYS_HARD_FAIL).
+def test_disk_pressure_journal_operator_registered():
+    op = operator_for("disk_pressure_journal", "systemd")
+    assert op is not None
+    assert op.action_verb == "vacuum"
+
+
+def test_plan_recovery_journal_vacuum_verb():
+    action = plan_recovery(failed_node="svc:systemd-journald.service",
+                           failure_mode="disk_pressure_journal", substrate="systemd",
+                           unit="systemd-journald.service", port=None, risk=0.12)
+    assert action.state == ActionState.PLANNED
+    assert action.result["verb"] == "vacuum"
+    assert "systemd-journald.service" in action.plan
+
+
+class FakeSystemdJournal:
+    """Transport giả cho operator disk_pressure_journal — --disk-usage/--vacuum-size=.
+
+    KHÔNG có restart/is-active/is-failed heal path: operator này chỉ dọn dữ
+    liệu journal qua journalctl chính thức, không bao giờ start/stop tiến
+    trình nào.
+    """
+
+    target = "h"
+
+    def __init__(self, *, disk_usage_bytes=3 * 1024**3, heal_on_vacuum=True,
+                post_vacuum_bytes=50 * 1024**2):
+        self.disk_usage_bytes = disk_usage_bytes
+        self.heal_on_vacuum = heal_on_vacuum
+        self.post_vacuum_bytes = post_vacuum_bytes
+        self.vacuums = 0
+
+    async def run(self, argv, *, timeout=15.0):
+        cmd = " ".join(argv)
+        if "--vacuum-size=" in cmd:
+            self.vacuums += 1
+            if self.heal_on_vacuum:
+                self.disk_usage_bytes = self.post_vacuum_bytes
+            return ("", 0)
+        if "--disk-usage" in cmd:
+            gib = self.disk_usage_bytes / (1024**3)
+            return (f"Archived and active journals take up {gib:.2f}G in the file system.\n", 0)
+        return ("", 0)
+
+
+def _journal_request(unit="systemd-journald.service", *, approved_state=True):
+    action = plan_recovery(failed_node="svc:systemd-journald.service",
+                           failure_mode="disk_pressure_journal", substrate="systemd",
+                           unit=unit, port=None, risk=0.12)
+    if approved_state:
+        action = action.at(ActionState.APPROVED)
+    return RecoveryRequest(
+        failed_node="svc:systemd-journald.service", failure_mode="disk_pressure_journal",
+        substrate="systemd", unit=unit, port=None, action=action, risk=0.12, diagnosed_at=NOW,
+    )
+
+
+@dataclass
+class JournalCtx:
+    """Claim mentions the failure_mode itself, NOT 'DOWN' — proves the
+    generalized incident_verified gate check (aoip.recovery._gate_checks)
+    accepts a capability-specific claim instead of only the legacy 'DOWN'
+    phrasing hardcoded for process_down."""
+
+    diagnosis_confidence: float | None = 0.9
+    findings: list = field(default_factory=lambda: [
+        Finding(claim="svc:systemd-journald.service disk_pressure_journal (3.0G retained)",
+               references=("i",), verdict=True, confidence=0.9),
+    ])
+    trace: list = field(default_factory=list)
+
+    def log(self, verb, detail):
+        self.trace.append(f"{verb}: {detail}")
+
+
+async def test_journal_vacuum_operator_clears_disk_pressure(tmp_path):
+    t = FakeSystemdJournal(disk_usage_bytes=3 * 1024**3, heal_on_vacuum=True,
+                           post_vacuum_bytes=50 * 1024**2)
+    req = _journal_request()
+    log = audit.FileAuditLog(tmp_path / "audit.jsonl")
+    outcome = await execute_recovery(
+        JournalCtx(), req=req, transport=t, audit_log=log,
+        gate=RecoveryGate(allowed_failure_modes=frozenset({"disk_pressure_journal"}),
+                          allowed_substrates=frozenset({"systemd"}), max_risk=0.5,
+                          scope_prefix="svc:", min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0,
+                          allowed_targets=frozenset({"systemd-journald.service"})),
+        approval=Approval(approved=True, approver="alice", action_scope=req.action.scope),
+        env_auto_execute=False, now=NOW)
+    assert outcome.status == "recovered"
+    assert t.vacuums == 1
+    assert t.disk_usage_bytes < 2 * 1024**3
+
+
+async def test_journal_vacuum_operator_zero_mutation_when_below_threshold(tmp_path):
+    t = FakeSystemdJournal(disk_usage_bytes=10 * 1024**2)  # 10MiB, already under default 2GiB
+    req = _journal_request()
+    log = audit.FileAuditLog(tmp_path / "audit.jsonl")
+    outcome = await execute_recovery(
+        JournalCtx(), req=req, transport=t, audit_log=log,
+        gate=RecoveryGate(allowed_failure_modes=frozenset({"disk_pressure_journal"}),
+                          allowed_substrates=frozenset({"systemd"}), max_risk=0.5,
+                          scope_prefix="svc:", min_diagnosis_confidence=0.3, max_diagnosis_age_s=300.0,
+                          allowed_targets=frozenset({"systemd-journald.service"})),
+        approval=Approval(approved=True, approver="alice", action_scope=req.action.scope),
+        env_auto_execute=False, now=NOW)
+    assert outcome.status == "aborted"
+    assert t.vacuums == 0
+
+
+# ── Journal disk-usage parsing/threshold helpers (env-configurable, KHÔNG hardcode) ─
+def test_parse_disk_usage_bytes_various_units():
+    from aoip.recovery import _parse_disk_usage_bytes
+
+    assert _parse_disk_usage_bytes("Archived and active journals take up 4.0G in the file system.") \
+        == int(4.0 * 1024**3)
+    assert _parse_disk_usage_bytes("Archived and active journals take up 500.0M in the file system.") \
+        == int(500.0 * 1024**2)
+    assert _parse_disk_usage_bytes("Archived and active journals take up 8.0K in the file system.") \
+        == int(8.0 * 1024)
+
+
+def test_parse_disk_usage_bytes_unparseable_returns_none():
+    from aoip.recovery import _parse_disk_usage_bytes
+
+    assert _parse_disk_usage_bytes("") is None
+    assert _parse_disk_usage_bytes("no numbers here") is None

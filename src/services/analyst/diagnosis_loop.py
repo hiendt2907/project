@@ -118,7 +118,7 @@ OUTPUT FORMAT (strict JSON, no markdown):
   "suggested_recovery": null
 }
 
-SUGGESTED_RECOVERY — for automated dispatch, extremely narrow scope. Two capabilities exist —
+SUGGESTED_RECOVERY — for automated dispatch, extremely narrow scope. Three capabilities exist —
 pick AT MOST ONE, and only when its specific condition is clearly met:
 
 1. "systemd.restart_unit" — the unit is CURRENTLY down/inactive/crash-looping (still broken right
@@ -137,13 +137,26 @@ pick AT MOST ONE, and only when its specific condition is clearly met:
    when the evidence shows the fix already happened and only the stale flag remains.
    Format: {"capability": "systemd.reset_failed", "unit": "<exact unit name copied verbatim>"}
 
-- In both cases the unit name MUST be copied verbatim from the evidence facts or a command output
-  — never invent one, never use a unit name only mentioned in free-text alert prose. Never add or
-  remove a ".service" suffix yourself, copy the string exactly as it appears in the evidence.
-- In every other case (disk full, OOM, inode exhaustion, network issue, unclear root cause,
-  confidence < 0.75, or ANY doubt about which of the two capabilities applies) — set
-  suggested_recovery to null. Leaving it null is always safe; a wrong non-null value could trigger
-  an unwanted automated restart or a premature reset-failed on a unit that is still actually broken.
+3. "systemd.journal_vacuum" — disk pressure is caused by systemd's OWN journal log data (e.g. "df"
+   showing a full/near-full partition together with a large "journalctl --disk-usage" figure seen
+   THIS session, or /var/log/journal appearing as the largest consumer in a "du -sh" output) — NOT
+   by application data, database files, uploads, or anything outside journald's own retained logs.
+   This runs the official "journalctl --vacuum-size=<target>" — it NEVER deletes application data,
+   NEVER restarts/stops any process. The target unit is ALWAYS the literal string
+   "systemd-journald.service" (journal vacuum acts on journald's own data, not on the unit whose
+   disk filled up) — do not substitute any other unit name for this capability.
+   Format: {"capability": "systemd.journal_vacuum", "unit": "systemd-journald.service"}
+
+- In cases 1 and 2 the unit name MUST be copied verbatim from the evidence facts or a command
+  output — never invent one, never use a unit name only mentioned in free-text alert prose. Never
+  add or remove a ".service" suffix yourself, copy the string exactly as it appears in the
+  evidence. Case 3 is the one exception: the unit is always the fixed literal
+  "systemd-journald.service", not copied from evidence.
+- In every other case (disk full from app/database data, OOM, inode exhaustion, network issue,
+  unclear root cause, confidence < 0.75, or ANY doubt about which of the three capabilities
+  applies) — set suggested_recovery to null. Leaving it null is always safe; a wrong non-null value
+  could trigger an unwanted automated restart, a premature reset-failed on a unit that is still
+  actually broken, or a journal vacuum that does not address the real disk consumer.
 
 GROUNDING — NON-NEGOTIABLE (INV_DIAG_GROUNDED):
 - Every number, percentage, file path, mount point, and service name in root_cause,
@@ -229,6 +242,12 @@ _GROUND_PCT_RE = re.compile(r"\b\d{1,3}(?:\.\d+)?%")
 _UNGROUNDED_CONFIDENCE_CAP = 0.3
 _GATE_DROP_NOTE = "[grounding-gate] dropped {n} step(s) referencing paths/numbers absent from evidence"
 
+# systemd.journal_vacuum's target unit is ALWAYS this literal (see diagnosis
+# prompt case 3) — it is never copied from evidence like the other two
+# capabilities' units are, so the grounding gate checks it against this one
+# valid value instead of substring-matching the evidence corpus.
+_JOURNAL_VACUUM_FIXED_UNIT = "systemd-journald.service"
+
 
 def _extract_groundable_claims(text: str) -> set[str]:
     return set(_GROUND_PATH_RE.findall(text)) | set(_GROUND_PCT_RE.findall(text))
@@ -260,10 +279,15 @@ def _apply_grounding_gate(
         kept_steps.append(_GATE_DROP_NOTE.format(n=len(dropped_steps)))
 
     suggested = final.get("suggested_recovery")
-    suggested_unit_ungrounded = (
-        isinstance(suggested, dict)
-        and str(suggested.get("unit", "")) not in evidence_corpus
-    )
+    suggested_unit = str(suggested.get("unit", "")) if isinstance(suggested, dict) else ""
+    if isinstance(suggested, dict) and suggested.get("capability") == "systemd.journal_vacuum":
+        # Fixed-target capability: ground against the one valid literal
+        # instead of the evidence corpus — see _JOURNAL_VACUUM_FIXED_UNIT.
+        suggested_unit_ungrounded = suggested_unit != _JOURNAL_VACUUM_FIXED_UNIT
+    else:
+        suggested_unit_ungrounded = (
+            isinstance(suggested, dict) and suggested_unit not in evidence_corpus
+        )
 
     ungrounded = sorted(set(ungrounded_rc) | set(ungrounded_step_claims))
     if not ungrounded and not suggested_unit_ungrounded:
@@ -302,7 +326,9 @@ def _apply_grounding_gate(
 # capability the bridge does not know how to dispatch must never be suggested
 # here (it would just be silently dropped downstream, better to fail closed
 # at the single source of truth for "what capabilities exist").
-_SUGGESTABLE_CAPABILITIES = frozenset({"systemd.restart_unit", "systemd.reset_failed"})
+_SUGGESTABLE_CAPABILITIES = frozenset({
+    "systemd.restart_unit", "systemd.reset_failed", "systemd.journal_vacuum",
+})
 
 
 def _parse_suggested_recovery(raw: Any) -> dict[str, str] | None:
