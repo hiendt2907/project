@@ -118,21 +118,32 @@ OUTPUT FORMAT (strict JSON, no markdown):
   "suggested_recovery": null
 }
 
-SUGGESTED_RECOVERY — for automated dispatch, extremely narrow scope:
-- ONLY populate when diagnosis_complete=true AND the root cause is a systemd unit that is
-  inactive/failed/crash-looping — confirmed either by the pre-collected "failed_units"/
-  "critical_failed_units" facts in [INITIAL EVIDENCE], OR by "systemctl status <unit>" /
-  "journalctl -u <unit>" output seen this session — AND a plain restart is the correct, sufficient
-  fix — not a symptom of disk/memory/inode exhaustion, not a dependency outage, not something
-  requiring config changes.
-- Format: {"capability": "systemd.restart_unit", "unit": "<exact unit name copied verbatim from
-  the facts' failed_units list, e.g. "payment-api" if that is exactly how it appears there — do
-  NOT add or remove a ".service" suffix yourself, copy the string as-is>"}
-- The unit name MUST be copied verbatim from the evidence facts or a command output — never
-  invent one, never use a unit name only mentioned in free-text alert prose.
+SUGGESTED_RECOVERY — for automated dispatch, extremely narrow scope. Two capabilities exist —
+pick AT MOST ONE, and only when its specific condition is clearly met:
+
+1. "systemd.restart_unit" — the unit is CURRENTLY down/inactive/crash-looping (still broken right
+   now) — confirmed either by the pre-collected "failed_units"/"critical_failed_units" facts in
+   [INITIAL EVIDENCE], OR by "systemctl status <unit>" / "journalctl -u <unit>" output seen this
+   session — AND a plain restart is the correct, sufficient fix — not a symptom of disk/memory/
+   inode exhaustion, not a dependency outage, not something requiring config changes.
+   Format: {"capability": "systemd.restart_unit", "unit": "<exact unit name copied verbatim>"}
+
+2. "systemd.reset_failed" — the unit shows "failed" in "systemctl is-failed <unit>" / status output
+   (e.g. it hit systemd's start-limit and stopped retrying) BUT other evidence THIS session shows
+   the underlying problem is already resolved (e.g. a dependency that was down is now active, or
+   the process is confirmed healthy by another check) — the "failed" flag is stale bookkeeping, not
+   a live problem. This does NOT restart or start the unit — it only clears systemd's failed-state
+   counter so the unit can be started/retried normally afterward. Use this INSTEAD of restart_unit
+   when the evidence shows the fix already happened and only the stale flag remains.
+   Format: {"capability": "systemd.reset_failed", "unit": "<exact unit name copied verbatim>"}
+
+- In both cases the unit name MUST be copied verbatim from the evidence facts or a command output
+  — never invent one, never use a unit name only mentioned in free-text alert prose. Never add or
+  remove a ".service" suffix yourself, copy the string exactly as it appears in the evidence.
 - In every other case (disk full, OOM, inode exhaustion, network issue, unclear root cause,
-  confidence < 0.75, or ANY doubt) — set suggested_recovery to null. Leaving it null is always
-  safe; a wrong non-null value could trigger an unwanted automated restart.
+  confidence < 0.75, or ANY doubt about which of the two capabilities applies) — set
+  suggested_recovery to null. Leaving it null is always safe; a wrong non-null value could trigger
+  an unwanted automated restart or a premature reset-failed on a unit that is still actually broken.
 
 GROUNDING — NON-NEGOTIABLE (INV_DIAG_GROUNDED):
 - Every number, percentage, file path, mount point, and service name in root_cause,
@@ -286,6 +297,14 @@ def _apply_grounding_gate(
     }
 
 
+# Capabilities the diagnosis loop is allowed to suggest for automated dispatch.
+# Keep in sync with workers.auto_recovery_bridge._SUPPORTED_CAPABILITIES — a
+# capability the bridge does not know how to dispatch must never be suggested
+# here (it would just be silently dropped downstream, better to fail closed
+# at the single source of truth for "what capabilities exist").
+_SUGGESTABLE_CAPABILITIES = frozenset({"systemd.restart_unit", "systemd.reset_failed"})
+
+
 def _parse_suggested_recovery(raw: Any) -> dict[str, str] | None:
     """Defensively shape the LLM's raw suggested_recovery field. Any
     malformed/partial shape becomes None — this function never raises, since
@@ -294,7 +313,7 @@ def _parse_suggested_recovery(raw: Any) -> dict[str, str] | None:
         return None
     capability = str(raw.get("capability", "")).strip()
     unit = str(raw.get("unit", "")).strip()
-    if capability != "systemd.restart_unit" or not unit:
+    if capability not in _SUGGESTABLE_CAPABILITIES or not unit:
         return None
     return {"capability": capability, "unit": unit}
 
