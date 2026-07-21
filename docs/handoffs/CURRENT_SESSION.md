@@ -2,6 +2,143 @@
 
 Updated: 2026-07-21
 
+## Improvement-plan fanout (post-report) — 3 fixes merged+deployed, E2E IN PROGRESS
+
+After the Phase 0-6 roadmap + 2 hardcode fixes, user asked for a written
+improvement plan per subsystem, then explicitly asked to spawn parallel
+subagents to implement it, aggregate, deploy, run E2E, and re-report %.
+
+**Workflow fanout (`wf_4f814b5f-9a8`, 6 agents, 782k tokens, ~19min):** 3
+coding agents (each in an isolated git worktree, commit-only-no-push) + 2
+read-only audit agents + 1 aggregator. All 6 `done`, 0 errors, 0 file overlap
+between the 3 code branches (aggregator cross-checked explicitly).
+
+**Merged into main by me directly (not delegated — kept the merge/deploy/
+kill-switch steps under direct supervision per this project's established
+discipline):**
+- `d2e0666` — `collect_service_topology()` in
+  `src/remote_agent/collectors/discovery_evidence.py` had the SAME
+  `--state=running` anti-pattern already fixed in `discovery.py` (a
+  crashed/failed unit vanished from the onboarding topology snapshot exactly
+  when it mattered; status was hardcoded `"running"`). Real bug, found by
+  the audit-first agent, TDD RED-GREEN, 2 new tests.
+- `98a3a5a` — `ExecutionLease` in `run_guarded_recovery()`
+  (`src/aoip/agent/operations.py`) was NOT tenant-namespaced (key was raw
+  `svc:{unit}`), unlike the parallel `intake.py` admission path which already
+  used `canonical_scope(tenant, node)`. Two tenants recovering a same-named
+  unit could collide on the same Redis lease key (deny-only, not fail-open,
+  but wrong isolation — this was the Phase 5 residual gap, now closed). Fix
+  aligns both tracks on `canonical_scope`. 2 new cross-tenant collision
+  tests (primitive-level + through the real `run_guarded_recovery` path).
+- `b1f11c2` — NEW capability `systemd.reset_failed` (2nd VM/AOIP recovery
+  capability, mirrors `systemd_restart.py`'s full vertical slice: typed
+  payload → approval-hash → preflight → `run_guarded_recovery` [same
+  lease/idempotency/audit, not bypassed] → verification). Only runs
+  `systemctl reset-failed`, never start/stop/restart — no downtime risk.
+  Generalized `aoip/recovery.py`'s shared `_gate_checks()` (was hardcoded to
+  require `"DOWN"` in a claim; now also accepts `req.failure_mode`) and
+  replaced `command_bridge.py`'s single hardcoded restart branch with a
+  `_CAPABILITY_ADAPTERS` registry keyed by capability name. +39 tests.
+  **Code + unit-test level only — live VM drill NOT yet run** (deliberately
+  deferred to a supervised narrow-window kill-switch session, not done by
+  the subagent per its own constraints).
+
+**Audit findings (no code changes made from these, by design — reported for
+a human/next-session decision):**
+- `k8s-lane-audit`: 3 low-severity findings only, none reproduce the 3
+  VM-lane bug classes (state-filter drops object / hardcoded critical-list /
+  unsafe rstrip). No fix recommended. Detail: workflow journal
+  `wf_4f814b5f-9a8`, agent `k8s-lane-audit`.
+- `ui-parity-audit`: of 24 routes in the old root `ui/app`, only 9 are
+  safely portable-and-deletable (dashboard, pipeline, incidents, kpi,
+  ledger→audit, remote-agents→agents, understanding, admin/hitl→approvals,
+  login→Dex SSO). 15 are NOT safe to delete: 6 have a stub + documented plan
+  (`config/autonomy` — currently the ONLY UI way to change autonomy policy;
+  `deploy`, `admin/tenants`, `admin/tier` partial, `onboarding`, `workers`),
+  9 have NO port or stub at all (`admin/flags`, `admin/guide`, `admin/kb`,
+  `admin/risk-class`, `playbooks`, `siem`, `simulator`, `operator`,
+  `trace/[id]`). **Do not delete root `ui/` until these are resolved** —
+  supersedes the earlier "safe to delete once parity confirmed" assumption.
+
+**Verification after merge (this session, real commands run):**
+- `pytest tests/ -q --ignore=tests/integration` → **6323 passed, 5
+  deselected** (was 6280 before this fanout; +43 matches the 3 agents' new
+  tests exactly, 0 regressions).
+- `remote_agent` bumped to v1.3.11, deployed to all 3 VMs (stop/sync/start),
+  confirmed `active` + clean `journalctl` on all 3.
+- `make deploy-worker` — rebuilt image, rolled out `omni-fullstack`,
+  `rollout status` succeeded. `curl /healthz` → all checks `ok`; `/readyz` →
+  `ready: true`. Confirmed the NEW capability module is actually live in the
+  running pod via `kubectl exec ... python3 -c "from aoip.capabilities import
+  systemd_reset_failed"` → import OK (guards against the Iteration-1 class of
+  "test pass + push ≠ deployed" drift).
+- `make e2e-proactive` and `make e2e-incident-matrix` launched in background,
+  **results not yet observed as of this handoff write** — check
+  `/private/tmp/claude-501/-Users-hiendang-project/71b56e60-d01c-4477-8b1e-4ca74abddd73/tasks/bm5z7p5ux.output`
+  and `.../bihe4cpfq.output`, or re-run if stale.
+
+**Git state:** 7 local commits ahead of `origin/main`
+(`d11f72e f23bf2e 221ef58 d2e0666 98a3a5a b1f11c2 5e1056f`) — **NOT pushed**,
+per standing rule (only commit/push when explicitly asked; this turn's
+instruction covered code+deploy+test, not push). Working tree otherwise
+clean.
+
+**Update — all verification steps now DONE, real evidence captured:**
+
+- `make e2e-proactive`: PASS (`summary.pass=true`, `failed_checks: []`).
+- `make e2e-incident-matrix`: 5/5 PASS, including a real K8s fault-injection
+  scenario (`nginx_waiting_fault`) confirming the analyst still processes
+  real faults correctly post-deploy.
+- **Live drill for `systemd.reset_failed` (the new capability) — PASSED.**
+  Found and closed 2 real deployment/config gaps along the way (not
+  assumed, discovered by the drill actually failing first):
+  1. **Deployment drift**: `aoip-agent.service` on the VMs runs
+     `python -m aoip.agent.employee` from a SEPARATE deployed copy at
+     `/opt/omni-remote-agent/aoip/` — distinct from `remote_agent/`. Earlier
+     in this turn I had only redeployed `remote_agent` (v1.3.11); the `aoip`
+     package (lease fix + new capability) was still stale on all 3 VMs.
+     Fixed: tarred + deployed `src/aoip/` to all 3 VMs same as
+     `remote_agent`, confirmed via `python -c "from aoip.capabilities import
+     systemd_reset_failed"` live on each VM.
+  2. **Capability-enablement gate config**: VM `run.env`'s
+     `AOIP_GATE_ALLOWED_FAILURE_MODES` was `process_down` only (fail-closed
+     by design). Updated to `process_down,failed_state_stale` on all 3 VMs
+     — a PERMANENT config change (capability rollout, not a narrow-window
+     toggle like kill-switch/tier) since the capability is now tested and
+     merged.
+  - Drill mechanics: forced `payment-api.service` on `cust-app` into a REAL
+    `failed` state (rapid-kill loop hitting systemd's default
+    StartLimitBurst — root cause was never actually broken, exactly the
+    scenario this capability targets), built the command envelope through
+    the real `aoip.command_bridge.build_durable_command` (capability=
+    `systemd.reset_failed`, not hand JSON), enqueued via gateway, polled to
+    terminal: `state=COMPLETED, outcome={status: recovered, verified: true,
+    reason: "service + dependents verified"}`. VM confirmed `is-failed`
+    cleared (`inactive`, not `failed`). Matching `RECOVERY_COMPLETED` audit
+    block found in the VM's real audit log.
+  - Gates exercised for real along the way (each one only discovered by
+    the drill actually hitting it, not predicted in advance): master
+    kill-switch → per-tenant `aoip_mutation_enabled` toggle (`POST
+    /autonomy/mutation`) → tier_gate (`staging-sim` promoted `shadow`→
+    `assist`, since LOW-risk needs at least `assist`) → capability gate
+    config on the VM. All 3 session-scoped elevations (kill-switch, tenant
+    mutation toggle, tier) reverted and confirmed via fresh reads in the
+    script's `finally` block; script + full transcript at
+    `/Users/hiendang/.claude/jobs/71b56e60/tmp/e2e_reset_failed_drill.py`.
+  - Cleanup: `payment-api.service` explicitly restarted after the drill
+    (reset_failed itself never starts/stops the unit, by design) —
+    confirmed `active` + HTTP 200. `journalctl` clean on all 3 VMs
+    post-drill.
+
+**Next step:** (1) report the project completion-percentage re-assessment
+incorporating this round's real results (in progress, same turn); (2) ask
+user whether to push the 8 local commits (7 code + this handoff); (3)
+consider whether `AOIP_GATE_ALLOWED_FAILURE_MODES` / the new gate allowlist
+value should also be captured in a tracked config file (currently only
+live on the 3 VMs' `run.env`, not represented in git — same pattern as the
+pre-existing `AOIP_ALLOWED_SYSTEMD_UNITS` entry, but worth a follow-up
+decision on whether VM `run.env` drift-tracking is needed).
+
 ## Post-roadmap fix #2 — automatic package-origin classification, DONE, `dcdabb2`
 
 User flagged (correctly) that the discovery service-loss fix (`9955860`)
