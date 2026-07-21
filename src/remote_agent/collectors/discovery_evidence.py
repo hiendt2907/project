@@ -103,9 +103,19 @@ async def collect_port_scan(hostname: str) -> dict[str, Any] | None:
 
 
 async def collect_service_topology(hostname: str) -> dict[str, Any] | None:
-    """Running systemd services + their state — coarse topology, no config content."""
+    """Systemd services (any state) + their real state — coarse topology, no
+    config content.
+
+    No --state filter: same anti-pattern already fixed in
+    discovery.py::_collect_running_services (2026-07-21) — filtering to
+    --state=running made a crashed/failed unit invisible to the onboarding
+    topology snapshot exactly when it crashed, which is precisely when the
+    System Twin/entity graph most needs to know the service exists. A failed
+    unit stays loaded/"in memory" until reset-failed, so dropping the state
+    filter (not just widening it) keeps it discoverable.
+    """
     out, rc = await _run(
-        ["systemctl", "list-units", "--type=service", "--state=running",
+        ["systemctl", "list-units", "--type=service",
          "--no-legend", "--no-pager", "--plain"],
         timeout=10.0,
     )
@@ -116,9 +126,13 @@ async def collect_service_topology(hostname: str) -> dict[str, Any] | None:
         parts = line.split(None, 4)
         if not parts:
             continue
+        # Columns: UNIT LOAD ACTIVE SUB DESCRIPTION. SUB is the real,
+        # granular state (running/exited/failed/dead/...), not a literal
+        # hardcoded "running" that was only ever true because of the filter.
+        sub_state = parts[3] if len(parts) > 3 else "unknown"
         services.append({
             "name": parts[0].removesuffix(".service"),
-            "status": "running",
+            "status": sub_state,
             "description": parts[4].strip()[:120] if len(parts) > 4 else "",
         })
     return build_envelope(
