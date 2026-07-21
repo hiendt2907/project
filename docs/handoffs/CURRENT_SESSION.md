@@ -1,6 +1,105 @@
 # Current Session Handoff
 
-Updated: 2026-07-21 (Phase 7 merge checkpoint)
+Updated: 2026-07-21 (Phase 8 in progress — verification running)
+
+## Phase 8 — discovery/onboarding chaos hardening — code+deploy+live-drill DONE, full-suite/e2e-proactive verification IN PROGRESS
+
+Scope chosen via a research-only Explore agent survey of the discovery ->
+knowledge-evidence -> onboarding-projection pipeline for silent-data-loss
+gaps (same bug class as the two service-loss fixes earlier this session:
+`9955860`, `d2e0666`). Top candidate, verified by direct code read before
+acting: `src/workers/knowledge_pipeline.py::_handle_discovery` (pre-fix)
+unconditionally overwrote the onboarding baseline (`omni:knowledge:
+discovery_snapshot:{tenant}:{agent}`) with whatever the `service_topology`
+probe reported, including an implausible empty `services: []` snapshot —
+permanently corrupting the system model from a single bad cycle.
+
+**Important correction made mid-investigation:** the original hypothesis
+("a live VM systemctl outage would trigger this") does NOT hold — read
+`src/remote_agent/collectors/discovery_evidence.py:122`
+(`collect_service_topology`) confirms total collector failure already
+returns `None` (suppresses evidence entirely), so that specific trigger is
+already safe and NOT live-drillable via a VM-side fault. The fix is
+consumer-side defense-in-depth instead (protects against ANY producer,
+current or future, that ever sends an implausible empty snapshot — e.g. a
+malformed/legacy agent, a parsing edge case). Recorded honestly rather than
+overclaiming a VM-side chaos scenario that isn't actually reachable.
+
+**Fix (TDD, +6 tests, `tests/test_knowledge_pipeline.py`):**
+- `src/remote_agent/discovery.py`: new `is_snapshot_suspect(old, new)` (pure,
+  true iff old had services and new has zero), `SUSPECT_CONFIRM_THRESHOLD=2`,
+  Redis-backed `bump_suspect_streak`/`reset_suspect_streak`
+  (`omni:knowledge:discovery_suspect_streak:{tenant}:{agent}`, TTL 6h).
+- `src/workers/knowledge_pipeline.py::_handle_discovery`: a suspect snapshot
+  on its 1st occurrence is logged and SKIPPED (no diff, no baseline
+  overwrite). On the 2nd consecutive suspect occurrence it's accepted as
+  real (e.g. genuine full-host outage), diffed, and saved normally — so a
+  transient blip can no longer permanently corrupt the baseline, while a
+  real sustained outage still surfaces after 2 cycles instead of being
+  silently ignored forever.
+
+**Live drill — PASSED against real infra** (not a unit test): ran INSIDE the
+real `omni-fullstack` pod via `kubectl exec` (real network access, real
+`aiokafka`/`redis.asyncio`), publishing synthetic DISCOVERY evidence
+directly onto the real `omni-knowledge-evidence` Kafka topic, consumed by
+the actual deployed `kafka_knowledge_evidence_loop` ->
+`handle_knowledge_evidence`. Used a narrow-window synthetic 2-service
+baseline (`omni-phase8-drill-svc-a/b`) swapped in for `staging-sim_cust-app`
+instead of the real 33-service baseline, to keep Telegram change-approval
+noise to 2 messages instead of 33+ — same "open narrowly, restore, confirm"
+discipline as kill-switch/tier drills. Script:
+`/Users/hiendang/.claude/jobs/71b56e60/tmp/phase8_discovery_suspect_drill.py`.
+- Cycle 1 (suspect): streak=1, baseline UNCHANGED (still the 2 synthetic
+  services), 0 spurious change-detected events. PASS.
+- Cycle 2 (confirmed): baseline correctly overwritten to `{"services": []}`,
+  streak key reset (deleted), exactly 2 `SERVICE_REMOVED` change-detected
+  events (one per synthetic service, matches real diff). PASS.
+- Cleanup: real 33-service baseline restored and confirmed
+  (`service_count=33`), streak key deleted, drill's change_pending keys
+  deleted. Fresh `redis-cli get`/`keys` after the script exited confirmed
+  clean state (33 services, no streak key, no pending keys).
+- **Gotcha hit and fixed during this drill:** the first attempt failed
+  because the fix was only edited locally, never redeployed — the running
+  pod was still on old code, which unconditionally diffed+saved and produced
+  2 real `SERVICE_REMOVED` events on cycle 1 (proving the OLD bug, not
+  ironically the new fix). Root-caused by reading pod logs (no "suspect" log
+  line appeared, which the new code always emits). Fixed by running
+  `make deploy-worker` before re-running the drill — the drill then passed
+  as described above. Confirms this project's standing "test pass + push
+  KHÔNG chứng minh đã deploy" lesson applies to live drills too, not just
+  unit tests.
+
+**Verification status:** `pytest tests/ -q --ignore=tests/integration` and
+`make e2e-proactive` both launched in tracked background (job IDs
+`b95wi26bi`, `bwd02cg0z`) — NOT YET CONFIRMED GREEN as of this handoff
+write; check those job outputs (or re-run if stale) before treating Phase 8
+as fully closed. `omni-fullstack` + `omni-gateway` pods both `1/1 Running`
+post-redeploy.
+
+**Not yet done (2 more candidates from the same Explore-agent survey,
+lower priority, not started):**
+1. `src/workers/knowledge_pipeline.py:146-166` — the forward of DISCOVERY
+   evidence to `omni-discovery-evidence` (feeds onboarding projection) is a
+   bare `try/except: log warning` with no retry/DLQ; a transient Kafka
+   broker blip during the forward silently drops that cycle's evidence
+   (source-topic offset already committed by then).
+2. `src/remote_agent/discovery.py:274-281` — `load_discovery_snapshot`
+   returns `None` on ANY Redis read exception, indistinguishable from a
+   legitimate first-run — a Redis blip during read silently skips diffing
+   for that cycle (lower priority: broader blast radius, harder to isolate
+   in a drill).
+
+**Working tree at this checkpoint:** `src/remote_agent/discovery.py`,
+`src/workers/knowledge_pipeline.py`, `tests/test_knowledge_pipeline.py`
+modified, NOT yet committed. `reports/incident-matrix/latest.json` also
+dirty (generated report, harmless, pre-existing).
+
+**Next step:** (1) confirm jobs `b95wi26bi`/`bwd02cg0z` both green; (2) if
+green, commit the Phase 8 fix; (3) give the user the %-completion report
+(Phase 0-6 100% DONE, Phase 7 100% DONE, improvement-plan fixes DONE, Phase 8
+this fix DONE + 2 candidates remaining, Phase 9 portal-parity NOT STARTED
+— blocked on product decision re: 9 zero-port UI routes, Phase 10 SIEM
+re-audit NOT STARTED); (4) do NOT push to origin unless explicitly asked.
 
 ## Phase 7 — VM capability #3 (systemd.journal_vacuum) + gate-config hygiene — MERGED, CODE-SIDE DONE, DEPLOY/DRILL PENDING
 
