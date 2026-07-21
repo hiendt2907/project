@@ -117,7 +117,15 @@ async def _handle_discovery(
     hostname: str,
 ) -> None:
     """DISCOVERY → diff với baseline → emit CHANGE_DETECTED nếu có thay đổi."""
-    from remote_agent.discovery import save_discovery_snapshot, load_discovery_snapshot, diff_discovery
+    from remote_agent.discovery import (
+        save_discovery_snapshot,
+        load_discovery_snapshot,
+        diff_discovery,
+        is_snapshot_suspect,
+        bump_suspect_streak,
+        reset_suspect_streak,
+        SUSPECT_CONFIRM_THRESHOLD,
+    )
 
     probe = str(ev_doc.get("probe") or "unknown")
     fact = ev_doc.get("extracted_fact") or {}
@@ -130,6 +138,26 @@ async def _handle_discovery(
         new_snapshot = discovery_data
         try:
             old_snapshot = await load_discovery_snapshot(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
+            suspect = old_snapshot is not None and is_snapshot_suspect(old_snapshot, new_snapshot)
+            if suspect:
+                streak = await bump_suspect_streak(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
+                if streak < SUSPECT_CONFIRM_THRESHOLD:
+                    # 1 chu kỳ rỗng bất thường có thể là collector blip thoáng qua
+                    # (systemctl timeout/dbus hiccup) — KHÔNG diff, KHÔNG ghi đè
+                    # baseline, tránh làm hỏng vĩnh viễn system model từ 1 lần lỗi.
+                    logger.warning(
+                        "knowledge_pipeline: discovery snapshot suspect (services=0, "
+                        "prev=%d, streak=%d/%d) tenant=%s host=%s — skip diff+baseline overwrite",
+                        len(old_snapshot.get("services", [])), streak, SUSPECT_CONFIRM_THRESHOLD,
+                        tenant_id, hostname,
+                    )
+                    return
+                # Xác nhận qua >=2 chu kỳ liên tiếp — chấp nhận là thật (vd. toàn bộ
+                # service trên host thật sự down), không còn coi là collector blip.
+                await reset_suspect_streak(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
+            elif old_snapshot is not None:
+                await reset_suspect_streak(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
+
             if old_snapshot is not None:
                 changes = diff_discovery(old_snapshot, new_snapshot)
                 for change in changes:

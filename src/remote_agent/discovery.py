@@ -281,6 +281,50 @@ async def load_discovery_snapshot(
         return None
 
 
+_SUSPECT_STREAK_KEY_PREFIX = "omni:knowledge:discovery_suspect_streak:"
+_SUSPECT_STREAK_TTL = 6 * 3600  # vài chu kỳ discovery (1h/lần) kèm jitter
+SUSPECT_CONFIRM_THRESHOLD = 2
+
+
+def is_snapshot_suspect(old: dict[str, Any], new: dict[str, Any]) -> bool:
+    """True nếu snapshot mới trông như một chu kỳ discovery lỗi (collector
+    transient fail) thay vì một thay đổi thật.
+
+    `_collect_running_services` chỉ có một kiểu lỗi: trả `[]` toàn bộ khi
+    `systemctl` timeout/lỗi — không có lỗi từng phần. Vì vậy "rỗng hoàn
+    toàn trong khi lần quét trước có service" là tín hiệu đáng ngờ, khác
+    với một vài service rớt (thay đổi thật, không suspect).
+    """
+    return len(old.get("services", [])) > 0 and len(new.get("services", [])) == 0
+
+
+def _suspect_streak_key(tenant_id: str, agent_id: str) -> str:
+    return f"{_SUSPECT_STREAK_KEY_PREFIX}{tenant_id}:{agent_id}"
+
+
+async def bump_suspect_streak(redis: Any, *, tenant_id: str, agent_id: str) -> int:
+    """Tăng streak snapshot đáng ngờ liên tiếp, trả về giá trị mới."""
+    if redis is None:
+        return 1
+    key = _suspect_streak_key(tenant_id, agent_id)
+    try:
+        streak = await redis.incr(key)
+        await redis.expire(key, _SUSPECT_STREAK_TTL)
+        return int(streak)
+    except Exception as exc:
+        logger.warning("discovery: bump_suspect_streak failed agent=%s err=%r", agent_id, exc)
+        return 1
+
+
+async def reset_suspect_streak(redis: Any, *, tenant_id: str, agent_id: str) -> None:
+    if redis is None:
+        return
+    try:
+        await redis.delete(_suspect_streak_key(tenant_id, agent_id))
+    except Exception as exc:
+        logger.warning("discovery: reset_suspect_streak failed agent=%s err=%r", agent_id, exc)
+
+
 def diff_discovery(
     old: dict[str, Any],
     new: dict[str, Any],

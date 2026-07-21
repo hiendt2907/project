@@ -15,11 +15,12 @@ from anomaly.remote_host_baseline import (
     get_confidence_score,
     decay_confidence,
 )
-from remote_agent.discovery import diff_discovery
+from remote_agent.discovery import diff_discovery, is_snapshot_suspect, load_discovery_snapshot
 from workers.knowledge_pipeline import (
     handle_knowledge_evidence,
     handle_telegram_doc_upload,
     _LOG_STORE_MAX,
+    _CHANGE_PENDING_PREFIX,
 )
 
 
@@ -179,6 +180,89 @@ def test_diff_discovery_no_changes():
     snap = {"services": [{"name": "nginx"}], "network_listeners": [{"proto": "tcp", "port": "80"}]}
     changes = diff_discovery(snap, snap)
     assert changes == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: chaos hardening — suspect (implausibly empty) discovery snapshot
+# must not silently corrupt the baseline on a single transient collector blip.
+# ---------------------------------------------------------------------------
+
+def test_is_snapshot_suspect_true_when_new_empty_and_old_nonempty():
+    old = {"services": [{"name": "nginx"}, {"name": "mysql"}]}
+    new = {"services": []}
+    assert is_snapshot_suspect(old, new) is True
+
+
+def test_is_snapshot_suspect_false_for_partial_real_change():
+    old = {"services": [{"name": "nginx"}, {"name": "mysql"}]}
+    new = {"services": [{"name": "nginx"}]}
+    assert is_snapshot_suspect(old, new) is False
+
+
+def test_is_snapshot_suspect_false_when_both_empty():
+    assert is_snapshot_suspect({"services": []}, {"services": []}) is False
+
+
+def _discovery_ev(tenant_id: str, agent_id: str, services: list[dict[str, str]], hostname: str = "host-1") -> dict:
+    return {
+        "signal_type": "DISCOVERY",
+        "tenant_id": tenant_id,
+        "probe": "service_topology",
+        "namespace": hostname,
+        "extracted_fact": {"agent_id": agent_id, "discovery_data": {"services": services}},
+    }
+
+
+async def _change_pending_count(redis_client, tenant_id: str) -> int:
+    keys = await redis_client.keys(f"{_CHANGE_PENDING_PREFIX}{tenant_id}:*")
+    return len(keys)
+
+
+@pytest.mark.asyncio
+async def test_discovery_suspect_snapshot_skips_baseline_overwrite_first_cycle(redis):
+    from remote_agent.discovery import save_discovery_snapshot
+    ctx = _ctx(redis)
+    baseline = {"services": [{"name": "nginx"}, {"name": "mysql"}], "network_listeners": []}
+    await save_discovery_snapshot(redis, tenant_id="t1", agent_id="a1", snapshot=baseline)
+
+    # 1 chu kỳ collector-blip: systemctl fail -> services=[] toàn bộ
+    await handle_knowledge_evidence(ctx, _discovery_ev("t1", "a1", []))
+
+    reloaded = await load_discovery_snapshot(redis, tenant_id="t1", agent_id="a1")
+    assert reloaded == baseline, "baseline must NOT be overwritten by a single suspect (empty) cycle"
+    assert await _change_pending_count(redis, "t1") == 0, "no spurious SERVICE_REMOVED events on a suspect cycle"
+
+
+@pytest.mark.asyncio
+async def test_discovery_suspect_snapshot_confirmed_after_two_consecutive_cycles(redis):
+    from remote_agent.discovery import save_discovery_snapshot
+    ctx = _ctx(redis)
+    baseline = {"services": [{"name": "nginx"}, {"name": "mysql"}], "network_listeners": []}
+    await save_discovery_snapshot(redis, tenant_id="t1", agent_id="a1", snapshot=baseline)
+
+    await handle_knowledge_evidence(ctx, _discovery_ev("t1", "a1", []))  # cycle 1: suspect, skipped
+    await handle_knowledge_evidence(ctx, _discovery_ev("t1", "a1", []))  # cycle 2: confirmed
+
+    reloaded = await load_discovery_snapshot(redis, tenant_id="t1", agent_id="a1")
+    assert reloaded == {"services": []}, (
+        "2 consecutive suspect cycles must be accepted as a real outage, not skipped forever"
+    )
+    assert await _change_pending_count(redis, "t1") == 2, "SERVICE_REMOVED for both services once confirmed"
+
+
+@pytest.mark.asyncio
+async def test_discovery_partial_change_not_treated_as_suspect(redis):
+    from remote_agent.discovery import save_discovery_snapshot
+    ctx = _ctx(redis)
+    baseline = {"services": [{"name": "nginx"}, {"name": "mysql"}], "network_listeners": []}
+    await save_discovery_snapshot(redis, tenant_id="t1", agent_id="a1", snapshot=baseline)
+
+    # 1 service thật sự rớt (không phải toàn bộ rỗng) -> xử lý ngay, không cần streak
+    await handle_knowledge_evidence(ctx, _discovery_ev("t1", "a1", [{"name": "nginx"}]))
+
+    reloaded = await load_discovery_snapshot(redis, tenant_id="t1", agent_id="a1")
+    assert reloaded == {"services": [{"name": "nginx"}]}
+    assert await _change_pending_count(redis, "t1") == 1
 
 
 @pytest.mark.asyncio
