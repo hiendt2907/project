@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import signal
 import time
@@ -901,6 +902,111 @@ async def kafka_knowledge_evidence_loop(ctx: WorkerHandlerContext, stop: asyncio
             await consumer.stop()
 
 
+_ENV_SIEM_CHAIN_MAX_POISON_RETRIES = "OMNI_SIEM_CHAIN_MAX_POISON_RETRIES"
+# Default: mirrors the sibling loops' (kafka_evidence_loop et al.) hardcoded
+# max_poison_retries=3 — a correlated attack chain (CRAT fail-closed audit +
+# advisory emit) deserves at least as much retry budget as ordinary evidence.
+_DEFAULT_SIEM_CHAIN_MAX_POISON_RETRIES = 3
+
+_ENV_SIEM_CHAIN_POISON_RETRY_SLEEP_S = "OMNI_SIEM_CHAIN_POISON_RETRY_SLEEP_S"
+_DEFAULT_SIEM_CHAIN_POISON_RETRY_SLEEP_S = 0.5
+
+
+def siem_chain_max_poison_retries(env: dict | None = None) -> int:
+    """Số lần retry tối đa trước khi poison-ack 1 chain message — đọc từ env,
+    KHÔNG hardcode. Thiếu/không parse được/âm → default an toàn. 0 là override
+    hợp lệ (poison-ack ngay từ lần lỗi đầu, giữ nguyên hành vi cũ nếu muốn)."""
+    env = os.environ if env is None else env
+    raw = (env.get(_ENV_SIEM_CHAIN_MAX_POISON_RETRIES) or "").strip()
+    if not raw:
+        return _DEFAULT_SIEM_CHAIN_MAX_POISON_RETRIES
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_SIEM_CHAIN_MAX_POISON_RETRIES
+    return value if value >= 0 else _DEFAULT_SIEM_CHAIN_MAX_POISON_RETRIES
+
+
+def siem_chain_poison_retry_sleep_s(env: dict | None = None) -> float:
+    """Thời gian chờ (giây) giữa các lần retry chain message — đọc từ env,
+    KHÔNG hardcode. Thiếu/không parse được/âm → default an toàn."""
+    env = os.environ if env is None else env
+    raw = (env.get(_ENV_SIEM_CHAIN_POISON_RETRY_SLEEP_S) or "").strip()
+    if not raw:
+        return _DEFAULT_SIEM_CHAIN_POISON_RETRY_SLEEP_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_SIEM_CHAIN_POISON_RETRY_SLEEP_S
+    return value if value >= 0 else _DEFAULT_SIEM_CHAIN_POISON_RETRY_SLEEP_S
+
+
+async def _process_siem_chain_message(
+    ctx: WorkerHandlerContext,
+    consumer: Any,
+    consumer_obj: Any,
+    msg: Any,
+) -> None:
+    """Process one ``omni-siem-chains`` message with poison-retry, mirroring
+    ``kafka_evidence_loop``'s max_poison_retries loop.
+
+    ``ChainConsumer.handle_chain`` calls ``write_audit_block`` (CRAT
+    fail-closed — raises ``AuditLedgerError`` on any Redis/Kafka blip) and
+    ``_emit`` (raises on Kafka send failure). Previously ANY exception here
+    committed the offset after a single attempt, permanently dropping a
+    correlated attack chain on a one-off transient blip. Now it retries like
+    every sibling loop and, only after exhausting retries, poison-acks AND
+    leaves an observable tombstone (SIEM_CHAIN_CONSUMER_POISON) instead of a
+    silent drop.
+    """
+    from services.analyst.chain_consumer import parse_chain_message
+
+    attempt = 0
+    max_retries = siem_chain_max_poison_retries()
+    retry_sleep_s = siem_chain_poison_retry_sleep_s()
+    chain_id = ""
+    while attempt <= max_retries:
+        try:
+            chain = parse_chain_message(msg.value)
+            if chain is not None:
+                chain_id = str(chain.get("chain_id") or "")
+                await consumer_obj.handle_chain(chain)
+            await consumer.commit()
+            _hc_record_msg()
+            return
+        except Exception as e:
+            attempt += 1
+            await ctx.ledger.record_exception(
+                e, phase="4", component="kafka_siem_chains_loop", swallow_errors=True
+            )
+            logger.exception("kafka_siem_chains_loop message error: %s", e)
+            if attempt > max_retries:
+                logger.error(
+                    "event=siem_chain_consumer_poison_ack partition=%s offset=%s attempts=%s chain_id=%s",
+                    msg.partition,
+                    msg.offset,
+                    attempt,
+                    chain_id,
+                )
+                if chain_id:
+                    try:
+                        await emit_terminal_tombstone(
+                            ctx,
+                            trace_id=chain_id,
+                            reason_code="SIEM_CHAIN_CONSUMER_POISON",
+                            component="kafka_siem_chains_loop",
+                            detail=(
+                                f"partition={msg.partition} offset={msg.offset} "
+                                f"attempts={attempt}"
+                            ),
+                        )
+                    except Exception:
+                        logger.exception("emit_terminal_tombstone_failed chain=%s", chain_id)
+                await consumer.commit()
+                return
+            await asyncio.sleep(retry_sleep_s)
+
+
 async def kafka_siem_chains_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
     """Analyst path: consume ``omni-siem-chains`` correlation chains from brain-go.
 
@@ -910,7 +1016,7 @@ async def kafka_siem_chains_loop(ctx: WorkerHandlerContext, stop: asyncio.Event)
     from aiokafka import AIOKafkaConsumer
     from aiokafka.errors import KafkaConnectionError, UnknownTopicOrPartitionError
 
-    from services.analyst.chain_consumer import ChainConsumer, parse_chain_message
+    from services.analyst.chain_consumer import ChainConsumer
 
     ws = ctx.settings
     await ctx.scout_ready.wait()
@@ -938,19 +1044,7 @@ async def kafka_siem_chains_loop(ctx: WorkerHandlerContext, stop: asyncio.Event)
             async for msg in consumer:
                 if stop.is_set():
                     break
-                try:
-                    chain = parse_chain_message(msg.value)
-                    if chain is not None:
-                        await consumer_obj.handle_chain(chain)
-                    await consumer.commit()
-                    _hc_record_msg()
-                except Exception as e:
-                    await ctx.ledger.record_exception(
-                        e, phase="4", component="kafka_siem_chains_loop", swallow_errors=True
-                    )
-                    logger.exception("kafka_siem_chains_loop message error: %s", e)
-                    # Ack to avoid poison reprocessing — chains are advisory-only.
-                    await consumer.commit()
+                await _process_siem_chain_message(ctx, consumer, consumer_obj, msg)
         except _TRANSIENT_ERRORS as e:
             logger.warning("kafka_siem_chains_loop connection_lost err=%s reconnecting", e)
         finally:
