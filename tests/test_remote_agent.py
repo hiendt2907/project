@@ -793,16 +793,46 @@ class TestCollectSystemdUnits:
         assert "nginx" in result["extracted_fact"]["failed_units"]
 
     @pytest.mark.asyncio
-    async def test_critical_service_failure(self):
+    async def test_any_failed_unit_is_hard_fail_regardless_of_name(self):
+        """No hardcoded service-name list: a failed unit escalates to
+        SYS_HARD_FAIL purely because it's failed, not because its name
+        matches a fixed infra list. Confirmed live 2026-07-21: 'payment-api'
+        (a customer app, not in any hardcoded list) was silently downgraded
+        to SYS_RESOURCE by the old name-matching gate."""
         from remote_agent.collectors import services as svc
 
-        systemctl_out = "mysql.service loaded failed failed MySQL\n"
-        with patch.object(svc, "_run", AsyncMock(return_value=(systemctl_out, "", 0))):
+        systemctl_out = "payment-api.service loaded failed failed payment-api (simulated)\n"
+        with patch.object(svc, "_run", AsyncMock(return_value=(systemctl_out, "", 0))), \
+             patch.object(svc.pkg_origin, "get_fragment_path",
+                          AsyncMock(return_value="/etc/systemd/system/payment-api.service")), \
+             patch.object(svc.pkg_origin, "classify_unit_origin",
+                          AsyncMock(return_value="custom")):
             result = await svc.collect_systemd_units("host1")
 
         assert result is not None
         assert result["lane"] == "SYS_HARD_FAIL"
-        assert "mysql" in result["extracted_fact"]["critical_failed_units"]
+        assert "payment-api" in result["extracted_fact"]["critical_failed_units"]
+        assert result["extracted_fact"]["failed_units_origin"]["payment-api"] == "custom"
+
+    @pytest.mark.asyncio
+    async def test_package_owned_failure_still_hard_fail_but_not_flagged_custom(self):
+        """A distro-package unit (e.g. cron) failing is still SYS_HARD_FAIL
+        (any failure is a hard failure) but is correctly attributed to a real
+        package, not lumped in with the customer's own app services."""
+        from remote_agent.collectors import services as svc
+
+        systemctl_out = "cron.service loaded failed failed regular background program\n"
+        with patch.object(svc, "_run", AsyncMock(return_value=(systemctl_out, "", 0))), \
+             patch.object(svc.pkg_origin, "get_fragment_path",
+                          AsyncMock(return_value="/usr/lib/systemd/system/cron.service")), \
+             patch.object(svc.pkg_origin, "classify_unit_origin",
+                          AsyncMock(return_value="package:cron")):
+            result = await svc.collect_systemd_units("host1")
+
+        assert result is not None
+        assert result["lane"] == "SYS_HARD_FAIL"
+        assert "cron" not in result["extracted_fact"]["critical_failed_units"]
+        assert result["extracted_fact"]["failed_units_origin"]["cron"] == "package:cron"
 
     @pytest.mark.asyncio
     async def test_systemctl_unavailable_returns_none(self):
@@ -1502,3 +1532,94 @@ class TestDiscoveryCollectRunningServices:
 
         assert services[0]["name"] == "payment-api"
         assert services[0]["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_origin_tagged_via_package_manager_not_hardcoded(self):
+        from remote_agent import discovery as disc
+
+        systemctl_out = "payment-api.service loaded active running payment-api (simulated)\n"
+        with patch.object(disc, "_run", AsyncMock(return_value=(systemctl_out, 0))), \
+             patch.object(disc.pkg_origin, "get_fragment_path",
+                          AsyncMock(return_value="/etc/systemd/system/payment-api.service")), \
+             patch.object(disc.pkg_origin, "classify_unit_origin",
+                          AsyncMock(return_value="custom")):
+            services = await disc._collect_running_services()
+
+        assert services[0]["origin"] == "custom"
+
+
+class TestPkgOrigin:
+    """pkg_origin.py — classify a systemd unit's origin (base OS package vs
+    the customer's own app) by asking the real package manager who owns its
+    FragmentPath. No hardcoded service-name list anywhere in this module."""
+
+    @pytest.mark.asyncio
+    async def test_dpkg_owned_file_returns_package_name(self):
+        from remote_agent import pkg_origin
+
+        with patch.object(pkg_origin, "_DPKG", "/usr/bin/dpkg"), \
+             patch.object(pkg_origin, "_RPM", None), \
+             patch.object(pkg_origin, "_run",
+                          AsyncMock(return_value=("nginx-common: /usr/lib/systemd/system/nginx.service\n", "", 0))):
+            origin = await pkg_origin.classify_unit_origin("/usr/lib/systemd/system/nginx.service")
+
+        assert origin == "package:nginx-common"
+
+    @pytest.mark.asyncio
+    async def test_dpkg_unowned_file_is_custom(self):
+        from remote_agent import pkg_origin
+
+        with patch.object(pkg_origin, "_DPKG", "/usr/bin/dpkg"), \
+             patch.object(pkg_origin, "_RPM", None), \
+             patch.object(pkg_origin, "_run",
+                          AsyncMock(return_value=("", "dpkg-query: no path found matching pattern", 1))):
+            origin = await pkg_origin.classify_unit_origin("/etc/systemd/system/payment-api.service")
+
+        assert origin == "custom"
+
+    @pytest.mark.asyncio
+    async def test_rpm_owned_file_returns_package_name(self):
+        from remote_agent import pkg_origin
+
+        with patch.object(pkg_origin, "_DPKG", None), \
+             patch.object(pkg_origin, "_RPM", "/usr/bin/rpm"), \
+             patch.object(pkg_origin, "_run", AsyncMock(return_value=("mariadb-server\n", "", 0))):
+            origin = await pkg_origin.classify_unit_origin("/usr/lib/systemd/system/mariadb.service")
+
+        assert origin == "package:mariadb-server"
+
+    @pytest.mark.asyncio
+    async def test_no_package_manager_available_is_unknown(self):
+        from remote_agent import pkg_origin
+
+        with patch.object(pkg_origin, "_DPKG", None), patch.object(pkg_origin, "_RPM", None):
+            origin = await pkg_origin.classify_unit_origin("/etc/systemd/system/payment-api.service")
+
+        assert origin == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_empty_fragment_path_is_unknown(self):
+        from remote_agent import pkg_origin
+
+        origin = await pkg_origin.classify_unit_origin("")
+
+        assert origin == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_get_fragment_path_returns_value_on_success(self):
+        from remote_agent import pkg_origin
+
+        with patch.object(pkg_origin, "_run",
+                          AsyncMock(return_value=("/etc/systemd/system/payment-api.service\n", "", 0))):
+            path = await pkg_origin.get_fragment_path("payment-api.service")
+
+        assert path == "/etc/systemd/system/payment-api.service"
+
+    @pytest.mark.asyncio
+    async def test_get_fragment_path_empty_on_failure(self):
+        from remote_agent import pkg_origin
+
+        with patch.object(pkg_origin, "_run", AsyncMock(return_value=("", "no such unit", 1))):
+            path = await pkg_origin.get_fragment_path("nonexistent.service")
+
+        assert path == ""

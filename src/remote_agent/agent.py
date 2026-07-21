@@ -245,7 +245,7 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
                 if haproxy_ev:
                     evidence.append(haproxy_ev)
             # Pass discovered services so criticality is per-VM, not hardcoded
-            systemd_ev = await collect_systemd_units(cfg.hostname, critical_services=discovered_service_names)
+            systemd_ev = await collect_systemd_units(cfg.hostname)
             if systemd_ev:
                 evidence.append(systemd_ev)
 

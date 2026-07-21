@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -221,10 +221,14 @@ class TestSystemdDisabledResidue:
                 return "enabled\n", "", 0
             return "", "", 0
 
-        with patch("remote_agent.collectors.services._run", side_effect=fake_run):
-            env = await collect_systemd_units("cust-edge", critical_services=frozenset({"nginx"}))
+        with patch("remote_agent.collectors.services._run", side_effect=fake_run), \
+             patch("remote_agent.collectors.services.pkg_origin.get_fragment_path",
+                   AsyncMock(return_value="/usr/lib/systemd/system/nginx.service")), \
+             patch("remote_agent.collectors.services.pkg_origin.classify_unit_origin",
+                   AsyncMock(return_value="package:nginx-common")):
+            env = await collect_systemd_units("cust-edge")
 
         fact = env["extracted_fact"]
         assert fact["failed_units"] == ["nginx"]
-        assert fact["critical_failed_units"] == ["nginx"]
         assert env["result"] == "FAILED"
+        assert env["lane"] == "SYS_HARD_FAIL"

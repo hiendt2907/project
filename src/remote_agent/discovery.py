@@ -14,6 +14,8 @@ import socket
 import time
 from typing import Any
 
+from remote_agent import pkg_origin
+
 logger = logging.getLogger(__name__)
 
 _SERVICE_LOG_HINTS: dict[str, list[str]] = {
@@ -66,10 +68,7 @@ async def _run(cmd: list[str], timeout: float = 10.0) -> tuple[str, int]:
 async def _collect_running_services() -> list[dict[str, Any]]:
     # No --state filter: systemd keeps a unit "in memory" (loaded) across
     # failed/activating states, not just running — filtering to --state=running
-    # made a crashed unit invisible to discovery precisely when it crashes,
-    # which fed into service_systemd_units' critical-service gate
-    # (collectors/services.py) and silently downgraded its own failure from
-    # SYS_HARD_FAIL to SYS_RESOURCE lane.
+    # made a crashed unit invisible to discovery precisely when it crashes.
     out, rc = await _run([
         "systemctl", "list-units", "--type=service",
         "--no-legend", "--no-pager", "--plain",
@@ -81,13 +80,20 @@ async def _collect_running_services() -> list[dict[str, Any]]:
         parts = line.split(None, 4)
         if not parts:
             continue
-        unit = parts[0].removesuffix(".service")
+        unit_full = parts[0]
+        unit = unit_full.removesuffix(".service")
         active_state = parts[2] if len(parts) > 2 else "unknown"
         description = parts[4].strip() if len(parts) > 4 else ""
         base = unit.split("@")[0].lower()
+        fragment_path = await pkg_origin.get_fragment_path(unit_full)
+        origin = await pkg_origin.classify_unit_origin(fragment_path)
         services.append({
             "name": unit,
             "status": active_state,
+            # Which unit is the customer's own app vs a base OS package,
+            # determined via the real package manager (pkg_origin.py) — not a
+            # hardcoded name list, so Omni gets this per-VM, automatically.
+            "origin": origin,
             "description": description[:120],
             "log_paths": _SERVICE_LOG_HINTS.get(base, []),
             "config_paths": _SERVICE_CONFIG_HINTS.get(base, []),

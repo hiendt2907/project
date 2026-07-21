@@ -2,7 +2,12 @@
 
 Probes:
   service_haproxy        → DOMAIN_SERVICES  lane=SYS_HARD_FAIL / SYS_RESOURCE
-  service_systemd_units  → DOMAIN_SERVICES  lane=SYS_HARD_FAIL
+  service_systemd_units  → DOMAIN_SERVICES  lane=SYS_HARD_FAIL if any unit
+                            failed/activating, else SYS_RESOURCE. Which failed
+                            units are the customer's own app (vs a base OS
+                            package) is determined per-unit via the real
+                            package manager (pkg_origin.py) — never a
+                            hardcoded service-name list.
 
 All commands are read-only; no mutations.
 Uses asyncio.create_subprocess_exec — no blocking subprocess.run().
@@ -14,17 +19,13 @@ import asyncio
 import logging
 from typing import Any
 
+from remote_agent import pkg_origin
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
 
 _HAPROXY_STATS_SOCKET = "/run/haproxy/admin.sock"
 _HAPROXY_STATS_PORT = 9000  # prometheus-haproxy-exporter default
-
-_CRITICAL_SERVICES = frozenset({
-    "mysql", "proxysql", "haproxy", "nginx", "postgresql",
-    "zabbix-server", "kafka", "redis",
-})
 
 
 async def _run(cmd: list[str], stdin: str | None = None, timeout: float = 8.0) -> tuple[str, str, int]:
@@ -160,14 +161,15 @@ def _parse_haproxy_prom_metrics(prom_text: str, hostname: str) -> dict[str, Any]
     )
 
 
-async def collect_systemd_units(
-    hostname: str,
-    critical_services: frozenset[str] | None = None,
-) -> dict[str, Any] | None:
+async def collect_systemd_units(hostname: str) -> dict[str, Any] | None:
     """Collect failed / degraded systemd units (read-only).
 
-    critical_services: set of service names discovered on this VM.
-    Falls back to the hardcoded _CRITICAL_SERVICES if not provided.
+    Any failed/activating unit is a hard failure worth surfacing — severity
+    doesn't depend on the unit's name matching a hardcoded list, which can
+    never know a customer's own service names in advance. Instead, each
+    failed unit's origin (base OS package vs the customer's own app) is
+    determined per-unit via the real package manager (pkg_origin.py) and
+    reported as evidence context, not used to gate whether it's reported.
     """
     out, err, rc = await _run([
         "systemctl", "list-units",
@@ -180,12 +182,10 @@ async def collect_systemd_units(
         logger.warning("[collector.services] systemctl unavailable: %s", err[:200])
         return None
 
-    # Use per-VM discovered services; fall back to hardcoded set if not provided
-    known_critical = critical_services if critical_services is not None else _CRITICAL_SERVICES
-
     failed: list[str] = []
-    critical_failed: list[str] = []
     ignored_disabled: list[str] = []
+    origin_by_unit: dict[str, str] = {}
+    custom_failed: list[str] = []
 
     for line in out.splitlines():
         parts = line.split()
@@ -201,30 +201,37 @@ async def collect_systemd_units(
             ignored_disabled.append(unit)
             continue
         failed.append(unit)
-        unit_lower = unit.lower()
-        if any(unit_lower == c or unit_lower.startswith(c) for c in known_critical):
-            critical_failed.append(unit)
+        fragment_path = await pkg_origin.get_fragment_path(unit_full)
+        origin = await pkg_origin.classify_unit_origin(fragment_path)
+        origin_by_unit[unit] = origin
+        if not origin.startswith("package:"):
+            custom_failed.append(unit)
 
     result = "FAILED" if failed else "PASSED"
     fact: dict[str, Any] = {
         "result": result,
         "failed_units": failed,
         "failed_count": len(failed),
-        "critical_failed_units": critical_failed,
+        # Kept for backward compat with downstream consumers that check
+        # truthiness (os_state_validator.py) — now means "failed units not
+        # owned by a distro package", i.e. very likely the customer's own
+        # app, not "matched a hardcoded infra name".
+        "critical_failed_units": custom_failed,
+        "failed_units_origin": origin_by_unit,
         "ignored_disabled_units": ignored_disabled,
     }
     hint = (
         f"[{hostname}] systemd: {len(failed)} units failed/activating"
-        + (f" CRITICAL: {critical_failed}" if critical_failed else "")
+        + (f" CUSTOM_APP: {custom_failed}" if custom_failed else "")
         if failed else f"[{hostname}] systemd: all monitored services OK"
     )
 
     return build_envelope(
         probe="service_systemd_units",
-        lane="SYS_HARD_FAIL" if critical_failed else ("SYS_RESOURCE" if failed else "SYS_RESOURCE"),
+        lane="SYS_HARD_FAIL" if failed else "SYS_RESOURCE",
         result=result,
         extracted_fact=fact,
-        alert_rule="SystemdCriticalFailed" if critical_failed else ("SystemdUnitsFailed" if failed else "SystemdHealthy"),
+        alert_rule="SystemdUnitsFailed" if failed else "SystemdHealthy",
         alert_hint=hint,
         symptom_group="service_state",
         namespace=hostname,
