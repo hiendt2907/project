@@ -1,0 +1,98 @@
+# Phase 0–6 Progress Ledger
+
+Source plan: see chat history 2026-07-20/21 session (canonical contracts →
+automated closed-loop recovery). This file is the single source of truth for
+what is actually DONE vs NOT_STARTED/BLOCKED — status here must match a real
+command's output, never a description of intended work.
+
+Status values: NOT_STARTED / IN_PROGRESS / BLOCKED / DONE.
+DONE requires the Exit Criteria command to have actually run this session (or
+a prior session, with output preserved below) — never inferred from code
+existing or from a unit test alone when the phase's Exit Criteria calls for
+more.
+
+## Phase 0 — Fix confirmed defect + freeze canonical contracts
+
+| Item | Status | Verification | Notes |
+|---|---|---|---|
+| 0a: fix CLI payload shape mismatch | DONE | see below | 2026-07-21, commits d987e9c/9db8a50/194f417 |
+| 0b: canonical contracts in src/pkg/contracts/ | NOT_STARTED | — | |
+
+### 0a verification (real, captured)
+
+Fixes (3 commits): `issue_capability_command()` now emits a `"recovery"`
+section the live decoder needs (`d987e9c`); `DeliveryLoop` now injects
+`command_id` into the executor payload so correlation-scoped idempotency
+works (`9db8a50`); `_restart_service()` unit name is now env-configurable —
+the real fleet runs `aoip-agent.service`, not the hardcoded `omni-agent`
+(`194f417`).
+
+```
+.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
+6219 passed, 5 deselected, 2 warnings   (was 6215 before Phase 0a; +4 new tests)
+```
+
+Real fleet deploy: published release 1.3.5 to all 3 VMs
+(`staging-sim_cust-app/cust-db/cust-edge`), confirmed
+`drift_status=current` via `/webhook/agent/versions`.
+
+Real CLI drill (the actual Exit Criteria — not a hand-built payload):
+```
+python -m aoip.console.approve_systemd_restart --unit payment-api.service \
+  --tenant staging-sim --agent-id staging-sim_cust-app ... \
+  | curl -X POST .../webhook/agent/rt/commands/enqueue ...
+```
+→ `state: COMPLETED`, `outcome: {"status": "recovered", "reason": "service +
+dependents verified", "evidence": ["before=inactive", "service_health=ok",
+"dependents=n/a"], "verified": true}`. Confirmed independently on the VM:
+`payment-api.service active (running)`, fresh PID, `curl localhost:8080` →
+`HTTP 200`.
+
+Kill-switch (`OMNI_AUTO_EXECUTE_ENABLED`) opened only on `omni-gateway`, only
+for this verification window, confirmed reverted to `false` before moving
+on (`GET /autonomy/mutation` → `effective: false`).
+
+Self-update mechanism note (not blocking, logged for later): the official
+self-update channel (UPDATE_AGENT command) still has a live, separate,
+timing-related gotcha — the daemon restarting itself mid-execution can get
+killed by its own `systemctl restart` before reporting a result. Worked
+around this session via direct file sync + external restart (same pattern
+used successfully earlier this session). Root-causing the self-restart race
+is not in scope for Phase 0a; flagged for Phase 1 or a dedicated follow-up.
+
+## Phase 1 — Vertical slice E2E script (no hand-authored JSON)
+
+| Item | Status | Verification | Notes |
+|---|---|---|---|
+| scripts/e2e_recovery_drill.py | NOT_STARTED | — | depends on 0a |
+
+## Phase 2 — tier_gate parity for VM mutation lane
+
+| Item | Status | Verification | Notes |
+|---|---|---|---|
+| wire resolve_tier into _enforce_mutation_toggle/run_guarded_recovery | NOT_STARTED | — | |
+
+## Phase 3 — Remaining isolation/architecture gaps
+
+| Item | Status | Verification | Notes |
+|---|---|---|---|
+| unify Stack A/Stack B capability dispatch | NOT_STARTED | — | |
+| durable PG-backed agent identity (TTL-squatting fix) | NOT_STARTED | — | |
+
+## Phase 4 — Automated diagnosis→decision→approval→dispatch
+
+| Item | Status | Verification | Notes |
+|---|---|---|---|
+| wire diagnosis_loop → command_bridge.build_durable_command | NOT_STARTED | — | the actual closed-loop proof |
+
+## Phase 5 — Multi-tenant/multi-agent concurrency proof
+
+| Item | Status | Verification | Notes |
+|---|---|---|---|
+| concurrent real drills, 2 tenants | NOT_STARTED | — | |
+
+## Phase 6 — Convergence proof + docs close-out
+
+| Item | Status | Verification | Notes |
+|---|---|---|---|
+| fresh grep audit, before/after shape counts | NOT_STARTED | — | |
