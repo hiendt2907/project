@@ -57,7 +57,7 @@ export interface ProviderOverview {
   tenants: Metric<{ total: number; active: number; suspended: number }>;
   tenants_onboarding: Metric<number>;
   agents: Metric<{ online: number; offline: number; total: number }>;
-  missions: Metric<number>;
+  missions: Metric<{ total: number; in_progress: number; blocked: number; completed: number }>;
   active_incidents: Metric<number>;
   pending_approvals: Metric<number>;
   pending_questions: Metric<number>;

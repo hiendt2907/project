@@ -44,7 +44,8 @@ export default async function ProviderOverviewPage() {
         <Stat label="Agents online" m={ov.agents} render={(v) => v.online}
           hint={statAgentsHint(ov.agents)} />
         <Stat label="Agents offline" m={ov.agents} render={(v) => v.offline} />
-        <Stat label="Missions" m={ov.missions} render={(v) => v} />
+        <Stat label="Missions" m={ov.missions} render={(v) => v.total}
+          hint={statMissionsHint(ov.missions)} />
         <Stat label="Sự cố đang mở" m={ov.active_incidents} render={(v) => v} />
         <Stat label="Chờ phê duyệt" m={ov.pending_approvals} render={(v) => v} />
         <Stat label="Câu hỏi chờ" m={ov.pending_questions} render={(v) => v} />
@@ -77,6 +78,14 @@ function statTenantsHint(m: Metric<{ active: number; suspended: number }>): stri
 
 function statAgentsHint(m: Metric<{ total: number }>): string | undefined {
   return m.available ? `tổng ${m.value.total}` : undefined;
+}
+
+function statMissionsHint(
+  m: Metric<{ in_progress: number; blocked: number; completed: number }>,
+): string | undefined {
+  return m.available
+    ? `đang chạy ${m.value.in_progress} · bị chặn ${m.value.blocked} · hoàn thành ${m.value.completed}`
+    : undefined;
 }
 
 function ComponentHealthCard({ m }: { m: Metric<ComponentHealth[]> }) {
