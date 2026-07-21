@@ -79,14 +79,14 @@ per this session's standing discipline.
   this session, so the test's "zero mission history" assumption no longer holds. Not a
   regression from this round's work; needs its own follow-up (redesign the test, don't rely
   on the shared cluster being pristine).
-- `make e2e-proactive` — launched post-deploy, check job `b949vdtdn` for the result before
-  treating this checkpoint fully closed.
+- `make e2e-proactive` (job `b949vdtdn`) → **`summary.pass=true, failed_checks: []`,
+  confirmed.** This checkpoint is now fully closed with real evidence, nothing pending.
 
 **Worktrees cleaned up:** `wf_808dae50-2f0-{5,6,7}` removed (`git worktree remove` +
 `git branch -D`) after merge, no residue (`git worktree list` clean).
 
-**Not committed/pushed this round yet — pending job `b949vdtdn` confirmation + explicit user
-push request** (standing rule: only push when asked).
+**All code committed through `ad4587d` — NOT pushed** (standing rule: only push when asked;
+user has not re-asked this round).
 
 **Next step (future round, not started):** the 4 PORT_HIGH_EFFORT routes, 2 DELETE_CANDIDATE
 routes, 1 KEEP_NEEDS_STUB route, and 3 remaining SIEM findings (especially #1, the real
