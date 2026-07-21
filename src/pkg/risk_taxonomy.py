@@ -66,6 +66,12 @@ _STATIC_MUTATE: Final = {
     # restart_unit (zero downtime risk) but kept at LOW rather than inventing
     # a class below it — still goes through the same tier_gate/HITL path.
     "systemd.reset_failed": LOW,
+    # Capability #3 (VM/AOIP lane) — first auto-remediation for the
+    # SYS_RESOURCE lane (journal disk pressure). Deletes disposable journal
+    # log data via the official `journalctl --vacuum-size=`, never touches
+    # app/process state — still LOW like the other two VM recovery
+    # capabilities, still gated by the same tier_gate/HITL path.
+    "systemd.journal_vacuum": LOW,
     "k8s_create_or_patch_configmap": LOW,   # cố định (bỏ phân loại động — QĐ #3)
     "sandbox_cleanup": LOW,                 # dọn sandbox, không đụng cluster
     "k8s_scale_resource": MEDIUM,

@@ -68,6 +68,16 @@ class TestExtractSuggestedRecovery:
             "capability": "systemd.reset_failed", "unit": "payment-api.service",
         }
 
+    def test_valid_extraction_journal_vacuum(self):
+        """Capability #3 (journal_vacuum) is recognized the same way as the
+        other two — this function is capability-agnostic beyond the
+        supported-set check. Its unit is always the fixed literal."""
+        final = {"suggested_recovery": {"capability": "systemd.journal_vacuum",
+                                        "unit": "systemd-journald.service"}}
+        assert extract_suggested_recovery(final) == {
+            "capability": "systemd.journal_vacuum", "unit": "systemd-journald.service",
+        }
+
 
 class TestBuildDispatchAdvisory:
     def test_shapes_advisory_correctly(self):
@@ -101,6 +111,16 @@ class TestBuildDispatchAdvisory:
         )
         assert advisory["capability"] == "systemd.reset_failed"
         assert advisory["unit"] == "payment-api.service"
+
+    def test_shapes_advisory_for_journal_vacuum(self):
+        final = {"root_cause": "journal disk usage 3.0G over threshold", "confidence": 0.9}
+        suggested = {"capability": "systemd.journal_vacuum", "unit": "systemd-journald.service"}
+        advisory = build_dispatch_advisory(
+            final=final, suggested=suggested,
+            mission_id="mis-1", decision_id="dec-1", incident_id="inc-1",
+        )
+        assert advisory["capability"] == "systemd.journal_vacuum"
+        assert advisory["unit"] == "systemd-journald.service"
 
 
 class TestDispatchIfEligible:
@@ -194,6 +214,35 @@ class TestDispatchIfEligible:
         payload = client.post.call_args.kwargs["json"]["payload"]
         assert payload["capability"] == "systemd.reset_failed"
         assert payload["target"]["unit"] == "payment-api.service"
+        assert payload["approval"]["approver"] == "auto-recovery:diagnosis_loop"
+
+    async def test_dispatches_journal_vacuum_and_posts_to_real_enqueue_endpoint_shape(self):
+        """Same wiring path as restart_unit/reset_failed's dispatch tests,
+        proving capability #3 (SYS_RESOURCE lane) flows through
+        command_bridge's registry correctly end to end."""
+        final = {"confidence": 0.95,
+                "root_cause": "journal disk usage 3.0G over threshold",
+                "suggested_recovery": {"capability": "systemd.journal_vacuum",
+                                       "unit": "systemd-journald.service"}}
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"command_id": "cmd-z", "state": "QUEUED"}
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=mock_resp)
+
+        settings = SimpleNamespace(
+            omni_gateway_api_key="test-key",
+            omni_gateway_internal_url="http://omni-gateway.multi-agent.svc.cluster.local:80",
+        )
+        result = await dispatch_if_eligible(
+            settings=settings, http_client=client, final=final,
+            agent_id="staging-sim_cust-app", tenant_id="staging-sim", trace_id="tr-real-3",
+        )
+
+        assert result["dispatched"] is True
+        payload = client.post.call_args.kwargs["json"]["payload"]
+        assert payload["capability"] == "systemd.journal_vacuum"
+        assert payload["target"]["unit"] == "systemd-journald.service"
         assert payload["approval"]["approver"] == "auto-recovery:diagnosis_loop"
 
     async def test_reports_gateway_rejection_without_raising(self):

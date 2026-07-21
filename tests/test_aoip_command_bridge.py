@@ -182,6 +182,39 @@ def test_advisory_bridge_still_rejects_truly_unsupported_capability():
         )
 
 
+def test_advisory_to_durable_command_routes_journal_vacuum_capability():
+    """command_bridge must dispatch capability #3 (journal_vacuum) to its OWN
+    typed adapter, same registry mechanism proven for reset_failed above —
+    not a hardcoded branch."""
+    from aoip.agent.operations import decode_recovery_command
+    from aoip.capabilities.systemd_journal_vacuum import _decode as journal_vacuum_decode
+    from aoip.command_bridge import build_durable_command
+
+    advisory = {
+        "mission_id": "m1", "decision_id": "d1", "incident_id": "i1",
+        "capability": "systemd.journal_vacuum", "unit": "systemd-journald.service",
+        "summary": "journal disk usage 3.0G over threshold", "confidence": 0.91,
+        "evidence_refs": ["probe:journalctl:1"],
+    }
+    command = build_durable_command(
+        advisory, tenant="acme", agent_id="agent-1", approver="alice", now=100.0, ttl_s=300
+    )
+    payload = command["payload"]
+    assert payload["capability"] == "systemd.journal_vacuum"
+
+    # Stack B decoder (the one the live daemon actually uses)
+    req, approval, ctx = decode_recovery_command(payload)
+    assert req.unit == "systemd-journald.service"
+    assert req.failure_mode == "disk_pressure_journal"
+    assert req.substrate == "systemd"
+    assert approval.approved is True
+
+    # Stack A decoder (capability-specific CLI/console path)
+    req2, approval2, ctx2, preflight_cfg = journal_vacuum_decode(payload, tenant="acme")
+    assert req2.unit == "systemd-journald.service"
+    assert approval2.approved is True
+
+
 def test_stack_b_decoder_skips_hash_check_for_non_typed_payload():
     """A generic (non-capability) payload — the shape hand-authored tests
     throughout this session use, and the only shape possible before

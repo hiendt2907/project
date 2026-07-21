@@ -142,6 +142,60 @@ class TestGroundingGate:
         out = _apply_grounding_gate(final, corpus)
         assert out["suggested_recovery"] is None
 
+    def test_grounded_journal_vacuum_suggestion_passes_untouched(self):
+        """Capability #3 (journal_vacuum) is fixed-target — its unit is
+        ALWAYS 'systemd-journald.service', which is grounded against that one
+        valid literal instead of the evidence corpus substring check the
+        other two capabilities use (the corpus here deliberately never
+        contains the literal unit string, proving the gate does NOT
+        substring-match for this capability)."""
+        final = {
+            "root_cause": "journal disk usage over threshold, confirmed by journalctl --disk-usage",
+            "remediation_steps": [],
+            "confidence": 0.9,
+            "suggested_recovery": {"capability": "systemd.journal_vacuum",
+                                   "unit": "systemd-journald.service"},
+        }
+        corpus = "journalctl --disk-usage: Archived and active journals take up 3.0G in the file system."
+        out = _apply_grounding_gate(final, corpus)
+        assert out["suggested_recovery"] == {
+            "capability": "systemd.journal_vacuum", "unit": "systemd-journald.service",
+        }
+        assert out["confidence"] == 0.9
+
+    def test_journal_vacuum_wrong_unit_dropped_even_if_in_corpus(self):
+        """The fixed-literal check is STRICTER than substring-matching: even
+        if the LLM's hallucinated unit happens to appear in the evidence
+        corpus for some other reason, journal_vacuum must only ever target
+        systemd-journald.service."""
+        final = {
+            "root_cause": "journal disk usage over threshold",
+            "remediation_steps": [],
+            "confidence": 0.9,
+            "suggested_recovery": {"capability": "systemd.journal_vacuum", "unit": "nginx.service"},
+        }
+        corpus = "systemctl status nginx.service: active\njournalctl --disk-usage: 3.0G"
+        out = _apply_grounding_gate(final, corpus)
+        assert out["suggested_recovery"] is None
+
+    def test_journal_vacuum_unit_not_required_in_corpus(self):
+        """Unlike restart_unit/reset_failed, the correct journal_vacuum unit
+        passes even when the literal string never appears anywhere in the
+        evidence corpus — it is validated against the fixed constant, not
+        evidence text."""
+        final = {
+            "root_cause": "journal disk usage over threshold",
+            "remediation_steps": [],
+            "confidence": 0.9,
+            "suggested_recovery": {"capability": "systemd.journal_vacuum",
+                                   "unit": "systemd-journald.service"},
+        }
+        corpus = "df -h: /dev/vdb1 47G 45G 1.0G 96% /"
+        out = _apply_grounding_gate(final, corpus)
+        assert out["suggested_recovery"] == {
+            "capability": "systemd.journal_vacuum", "unit": "systemd-journald.service",
+        }
+
 
 class TestParseSuggestedRecovery:
     def test_none_when_not_a_dict(self):
@@ -168,6 +222,13 @@ class TestParseSuggestedRecovery:
 
     def test_none_when_unit_missing_for_reset_failed(self):
         assert _parse_suggested_recovery({"capability": "systemd.reset_failed"}) is None
+
+    def test_journal_vacuum_capability_accepted(self):
+        raw = {"capability": "systemd.journal_vacuum", "unit": "systemd-journald.service"}
+        assert _parse_suggested_recovery(raw) == raw
+
+    def test_none_when_unit_missing_for_journal_vacuum(self):
+        assert _parse_suggested_recovery({"capability": "systemd.journal_vacuum"}) is None
 
 
 # ── 2. Host-share mount scoping ───────────────────────────────────────────────

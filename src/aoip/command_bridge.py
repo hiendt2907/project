@@ -10,7 +10,7 @@ import time
 import uuid
 from typing import Any
 
-from aoip.capabilities import systemd_reset_failed, systemd_restart
+from aoip.capabilities import systemd_journal_vacuum, systemd_reset_failed, systemd_restart
 from aoip.command_contract import canonical_payload_hash
 from aoip.objects import Finding
 
@@ -20,7 +20,8 @@ from aoip.objects import Finding
 # Finding.claim this bridge attaches as evidence for the recovery gate's
 # ``incident_verified`` check (aoip.recovery._gate_checks) — each capability
 # supplies its own since the underlying claim differs (a unit being DOWN vs a
-# unit stuck in a stale failed state), but the shape is uniform.
+# unit stuck in a stale failed state vs journal disk pressure), but the shape
+# is uniform.
 _CAPABILITY_ADAPTERS: dict[str, dict[str, Any]] = {
     systemd_restart.CAPABILITY_NAME: {
         "build_typed_payload": systemd_restart.build_typed_payload,
@@ -32,6 +33,11 @@ _CAPABILITY_ADAPTERS: dict[str, dict[str, Any]] = {
         "issue_capability_command": systemd_reset_failed.issue_capability_command,
         "claim_text": lambda unit, summary: f"svc:{unit} failed_state_stale ({summary})",
     },
+    systemd_journal_vacuum.CAPABILITY_NAME: {
+        "build_typed_payload": systemd_journal_vacuum.build_typed_payload,
+        "issue_capability_command": systemd_journal_vacuum.issue_capability_command,
+        "claim_text": lambda unit, summary: f"svc:{unit} disk_pressure_journal ({summary})",
+    },
 }
 
 
@@ -42,9 +48,10 @@ def build_durable_command(
     """Turn one grounded advisory into a ready-to-enqueue durable command.
 
     The bridge supports the typed capabilities registered in
-    ``_CAPABILITY_ADAPTERS`` (today: ``systemd.restart_unit`` and
-    ``systemd.reset_failed``). Unsupported domains must add their own typed
-    capability + registry entry instead of falling back to a raw shell command.
+    ``_CAPABILITY_ADAPTERS`` (today: ``systemd.restart_unit``,
+    ``systemd.reset_failed``, and ``systemd.journal_vacuum``). Unsupported
+    domains must add their own typed capability + registry entry instead of
+    falling back to a raw shell command.
     """
     if not tenant.strip() or not agent_id.strip() or not approver.strip():
         raise ValueError("tenant, agent_id and approver are required")

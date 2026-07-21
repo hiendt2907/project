@@ -30,7 +30,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SUPPORTED_CAPABILITIES = frozenset({"systemd.restart_unit", "systemd.reset_failed"})
+_SUPPORTED_CAPABILITIES = frozenset({
+    "systemd.restart_unit", "systemd.reset_failed", "systemd.journal_vacuum",
+})
 _MIN_DISPATCH_CONFIDENCE = 0.75
 _AUTO_APPROVER = "auto-recovery:diagnosis_loop"
 _DISPATCH_TIMEOUT_S = 15.0
