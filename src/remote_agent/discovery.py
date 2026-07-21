@@ -64,8 +64,14 @@ async def _run(cmd: list[str], timeout: float = 10.0) -> tuple[str, int]:
 
 
 async def _collect_running_services() -> list[dict[str, Any]]:
+    # No --state filter: systemd keeps a unit "in memory" (loaded) across
+    # failed/activating states, not just running — filtering to --state=running
+    # made a crashed unit invisible to discovery precisely when it crashes,
+    # which fed into service_systemd_units' critical-service gate
+    # (collectors/services.py) and silently downgraded its own failure from
+    # SYS_HARD_FAIL to SYS_RESOURCE lane.
     out, rc = await _run([
-        "systemctl", "list-units", "--type=service", "--state=running",
+        "systemctl", "list-units", "--type=service",
         "--no-legend", "--no-pager", "--plain",
     ])
     if rc != 0 or not out.strip():
@@ -76,11 +82,12 @@ async def _collect_running_services() -> list[dict[str, Any]]:
         if not parts:
             continue
         unit = parts[0].removesuffix(".service")
+        active_state = parts[2] if len(parts) > 2 else "unknown"
         description = parts[4].strip() if len(parts) > 4 else ""
         base = unit.split("@")[0].lower()
         services.append({
             "name": unit,
-            "status": "running",
+            "status": active_state,
             "description": description[:120],
             "log_paths": _SERVICE_LOG_HINTS.get(base, []),
             "config_paths": _SERVICE_CONFIG_HINTS.get(base, []),

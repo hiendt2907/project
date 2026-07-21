@@ -1472,3 +1472,33 @@ class TestDiscoveryCollectRunningServices:
             services = await disc._collect_running_services()
 
         assert services[0]["name"] == "nginx"
+
+    @pytest.mark.asyncio
+    async def test_no_state_filter_passed_to_systemctl(self):
+        """Found live 2026-07-21: a --state=running filter made a crashed unit
+        invisible to discovery exactly when it crashed, which fed into
+        collectors/services.py's critical-service gate and silently downgraded
+        the unit's own failure evidence from lane=SYS_HARD_FAIL to
+        lane=SYS_RESOURCE — reproduced live for payment-api.service on a real
+        VM. A failed unit stays loaded/"in memory" until reset-failed, so
+        dropping the state filter (not just widening it) is what keeps it
+        discoverable."""
+        from remote_agent import discovery as disc
+
+        run_mock = AsyncMock(return_value=("", 0))
+        with patch.object(disc, "_run", run_mock):
+            await disc._collect_running_services()
+
+        args = run_mock.await_args.args[0]
+        assert "--state=running" not in args
+
+    @pytest.mark.asyncio
+    async def test_failed_unit_still_discovered_with_real_status(self):
+        from remote_agent import discovery as disc
+
+        systemctl_out = "payment-api.service loaded failed failed payment-api (simulated)\n"
+        with patch.object(disc, "_run", AsyncMock(return_value=(systemctl_out, 0))):
+            services = await disc._collect_running_services()
+
+        assert services[0]["name"] == "payment-api"
+        assert services[0]["status"] == "failed"
