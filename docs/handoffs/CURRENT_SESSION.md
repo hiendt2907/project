@@ -1,6 +1,100 @@
 # Current Session Handoff
 
-Updated: 2026-07-21 (Phase 8 #2+#3 + hardcode-removal — ALL DONE, verified live, committed `8fc60ab`)
+Updated: 2026-07-21 (Phase 9 + Phase 10 first round — merged, deployed, verified live, HEAD `be7983c`)
+
+## Phase 9 (portal parity) + Phase 10 (SIEM re-audit) — first round DONE, real-infra verified
+
+User explicitly asked for multi-agent orchestration ("bật các sub agent để làm cả 9 và 10, 1
+sub agent quản lý các sub agent đó, 1 sub agent tổng hợp, báo cáo"). Ran `Workflow`
+(`wf_808dae50-2f0`, 11 agents, 0 errors, ~1.87M tokens): 4 parallel audit agents (3 route
+groups covering all 9 zero-port UI routes + 1 SIEM/brain-go pipeline audit) → pipeline into
+implement (worktree-isolated) → independent adversarial verify → 1 aggregator. Agents were
+explicitly forbidden from committing/pushing/deleting anything — I (not a subagent) reviewed
+every worktree diff personally, committed, merged into `main`, deployed, and live-verified,
+per this session's standing discipline.
+
+**Audit results (all 9 routes + 4 SIEM findings), full rationale in workflow journal:**
+- `admin/flags` → PORT_HIGH_EFFORT (real feature, but shipping the old generic flags editor
+  would let an operator flip unvetted config across tenants with no per-key safety review —
+  needs a security/product decision, not just a port)
+- `admin/guide` → DELETE_CANDIDATE (static doc page, 3 of 5 documented surfaces no longer
+  match current portal reality)
+- `admin/kb` → PORT_LOW_EFFORT → **IMPLEMENTED**
+- `admin/risk-class` → KEEP_NEEDS_STUB (same missing-tenant-authz gap the team already used
+  to exclude the sibling `/config/autonomy` policy editor — recommend the same SectionStub
+  treatment, not a silent port)
+- `playbooks` → PORT_HIGH_EFFORT (half real backend, half literal no-op stub CRUD that lies
+  to the user — needs real POST/PUT/DELETE endpoints before an honest port)
+- `siem` → DELETE_CANDIDATE (old page's proxy expects a wire shape the real endpoint has
+  never returned; already superseded by `apps/provider-portal/app/incidents`)
+- `simulator` → PORT_HIGH_EFFORT (real tool, but new portals have zero client-side SSE
+  anywhere — needs new streaming architecture, plus a product-scope question of whether a
+  synthetic-incident-injection control belongs in a customer portal at all)
+- `operator` → PORT_HIGH_EFFORT (bundles 5 sub-features; 2 already superseded, HITL
+  approve/reject is a real known-deferred "Slice 2" roadmap item per the portal's own README)
+- `trace/[id]` → PORT_LOW_EFFORT → **IMPLEMENTED**
+- SIEM finding #0 (`kafka_siem_chains_loop` poison-acks on first exception, silently drops
+  correlated attack chains) → **IMPLEMENTED** (top-ranked of 4 findings)
+- SIEM findings #1-3 (siem_bridge.py non-idempotent dual-emit / double-fire risk on
+  `omni-alerts`; `ChainConsumer._emit` silent no-op on `kafka=None`; `ChainConsumer._cohesion`
+  fails open to score=1.0 on embedding error) → NOT attempted this round, no reason given by
+  the workflow for skipping vs #1-3 being real gaps — genuine follow-up work, especially #1
+  (real double-fire risk on the primary alert topic).
+
+**Merged into main, in order (commits, all directly authored/reviewed by me):**
+- `d75d642`/`ac8807a` — SIEM chain poison-retry fix (`src/workers/omni_worker.py` +13 tests,
+  env-driven `OMNI_SIEM_CHAIN_MAX_POISON_RETRIES`/`OMNI_SIEM_CHAIN_POISON_RETRY_SLEEP_S`,
+  mirrors `discovery.py`'s pattern exactly, no hardcode).
+- `979353c`/`40a6b0a` — `admin/kb` port into `apps/provider-portal` (+2 Playwright E2E tests).
+- `6a80594`/`f91926e` — `trace/[id]` port as a new section on the existing
+  `pipeline/[traceId]` page (+1 Playwright E2E test).
+- `be7983c` — **found-and-fixed during MY OWN verification pass** (not delegated): the
+  `admin/kb` agent had disclosed but left unfixed a pre-existing bug where
+  `app/page.tsx` rendered `ov.missions` as a raw React child, crashing the Overview page,
+  because `src/aoip/console/overview.py`'s `missions` field is an object
+  (`{total,in_progress,blocked,completed}`) but `shared-types`' `ProviderOverview.missions`
+  type was stale (`Metric<number>`). Fixed the type + render (mirrors the existing
+  agents/tenants Stat pattern exactly) since it was actively blocking a clean E2E gate for my
+  own merged work — not scope creep, a real regression I needed green to honestly verify.
+
+**Real verification (all commands actually run this round, not recalled):**
+- `pytest tests/ -q --ignore=tests/integration` → **6403 passed, 0 failed** (6390 baseline +
+  13 new SIEM tests).
+- `tsc --noEmit -p apps/provider-portal/tsconfig.json` → clean. `eslint` on all changed files
+  → clean.
+- `docker build -f apps/provider-portal/Dockerfile .` (from `ui/`, per
+  `deploy/aoip-portals/README.md`) → succeeds, `/kb` and `/pipeline/[traceId]` in the route
+  manifest.
+- Deployed for real: `kubectl rollout restart deployment/aoip-provider-web` +
+  `deployment/omni-fullstack`, both confirmed `1/1 Running`. Confirmed live:
+  `curl http://provider.ai-agent.local/kb` → 200, `/api/gateway/kb` → 401 (auth-gated,
+  correct), `kubectl exec ... python3 -c "from workers.omni_worker import
+  siem_chain_max_poison_retries"` → importable in the running pod.
+- `make e2e-portal` (real Playwright against the live cluster): **first run 15/21 passed, 6
+  failed — all landing on the Overview page crash** (confirmed the disclosed-but-unfixed
+  bug was real and currently blocking). After the `be7983c` fix + redeploy: **20/21 passed**.
+  The 1 remaining failure (`Overview: metric chưa có nguồn hiển thị 'chưa khả dụng'`) is
+  confirmed pre-existing and unrelated — byte-identical at the pre-merge baseline (`5004ad0`),
+  fails because this shared lab has accumulated real Mission records over many live drills
+  this session, so the test's "zero mission history" assumption no longer holds. Not a
+  regression from this round's work; needs its own follow-up (redesign the test, don't rely
+  on the shared cluster being pristine).
+- `make e2e-proactive` — launched post-deploy, check job `b949vdtdn` for the result before
+  treating this checkpoint fully closed.
+
+**Worktrees cleaned up:** `wf_808dae50-2f0-{5,6,7}` removed (`git worktree remove` +
+`git branch -D`) after merge, no residue (`git worktree list` clean).
+
+**Not committed/pushed this round yet — pending job `b949vdtdn` confirmation + explicit user
+push request** (standing rule: only push when asked).
+
+**Next step (future round, not started):** the 4 PORT_HIGH_EFFORT routes, 2 DELETE_CANDIDATE
+routes, 1 KEEP_NEEDS_STUB route, and 3 remaining SIEM findings (especially #1, the real
+double-fire risk) all need their own pass — none silently dropped, all listed above with
+rationale. `admin/flags`/`admin/risk-class`/`playbooks`/`simulator`/`operator` each need a
+product/security decision before implementation, not just engineering effort.
+
+---
 
 ## Phase 8 — ALL 3 candidates now DONE, verified with real data/code/tests (user explicitly demanded this verification level: "xác thật % với dữ liệu, code, test thật")
 
