@@ -109,8 +109,18 @@ class DeliveryLoop:
                 processed += 1
                 continue
 
+            # command_id injected into the payload dict (not just tracked as the
+            # inbox/entry key) so executors that decode payload as a standalone
+            # dict — operations.decode_recovery_command() in particular — can see
+            # it. Without this, its _key_for() correlation-based idempotency key
+            # requires command_id and silently falls back to a coarser
+            # (tenant+scope+decision_goal+failure_mode+unit) key, which a later,
+            # unrelated incident for the same unit can collide with (caught live
+            # 2026-07-21: a fresh recovery command reconciled as "already done"
+            # against a prior day's cached idempotency record, without re-checking
+            # current state).
             entry = self._inbox.persist(
-                cid, tenant_id=tenant, payload=cmd.get("payload", {}),
+                cid, tenant_id=tenant, payload={**cmd.get("payload", {}), "command_id": cid},
                 delivery_attempt=cmd.get("delivery_attempt", 0),
                 fencing_token=cmd.get("fencing_token", ""),
                 record_version=cmd.get("record_version", 0))

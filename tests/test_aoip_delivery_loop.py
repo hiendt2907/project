@@ -58,6 +58,29 @@ async def test_tick_executes_once_and_archives(tmp_path):
     assert box.pending() == []                       # archived sau terminal ack
 
 
+async def test_tick_injects_command_id_into_executor_payload(tmp_path):
+    """Regression for a live idempotency defect found 2026-07-21:
+    operations.decode_recovery_command()'s correlation-based idempotency key
+    requires command_id on the decoded payload; without it a later, unrelated
+    incident for the same unit could reconcile as "already recovered" against
+    a stale prior idempotency record instead of re-executing. The executor
+    must see command_id even though callers only pass a bare payload dict —
+    without stitching in the mission/incident/decision correlation fields
+    manually."""
+    box = LocalInbox(str(tmp_path))
+    seen_payloads = []
+
+    async def executor(payload):
+        seen_payloads.append(payload)
+        return "COMPLETED", {"rc": 0}
+
+    client = FakeClient([_cmd("cmd-corr-1")])
+    loop = DeliveryLoop(agent_id=AGENT, client=client, inbox=box, executor=executor)
+    await loop.tick()
+    assert seen_payloads[0]["command_id"] == "cmd-corr-1"
+    assert seen_payloads[0]["verb"] == "restart"  # original payload fields preserved
+
+
 async def test_preack_redelivery_executes_once(tmp_path):
     """Redelivery TRƯỚC terminal-ack (Gateway chưa nhận terminal): re-report, KHÔNG re-mutate.
 
