@@ -523,4 +523,67 @@ collision-test lease key deleted from Redis; `git status` clean.
 
 | Item | Status | Verification | Notes |
 |---|---|---|---|
-| fresh grep audit, before/after shape counts | NOT_STARTED | — | |
+| fresh grep audit, before/after shape counts | DONE | see below | 2026-07-21 |
+
+### Phase 6 verification (real, captured)
+
+Re-ran the same grep-based audit used to size the original plan. Full detail +
+exact grep commands in the new `docs/architecture/ADR-006-evidence-command-
+contract-convergence.md`. Honest result, no false unification claim:
+
+- **Evidence shapes: still 3, unchanged** at their original call sites
+  (`DiagnosticEvidenceDict`, `EvidenceItem`/`AgentEvidenceRequest`,
+  `EvidenceObject`). Phase 0b's canonical `CanonicalEvidence`
+  (`src/pkg/contracts/evidence.py`) exists and is proven lossless but has
+  **zero production import sites** — confirmed via
+  `grep -rln "pkg.contracts.evidence" src/ tests/` → only
+  `tests/test_pkg_contracts.py`.
+- **Command/CommandResult shapes: still 6, unchanged** (`ToolCallPayload`,
+  `CommandItem`/`CommandResultItem`, `EnqueueRuntimeCommand`, `CommandRecord`,
+  `RecoveryRequest`/`decode_recovery_command`, `issue_capability_command`).
+  `CorrelationIdentity` has the same zero-adoption status.
+- This is not a regression — Phase 0b explicitly scoped itself as "freeze the
+  contract and prove it's lossless," not "migrate every call site." Nothing in
+  Phases 1–5 routed through the canonical module. Recorded honestly rather
+  than silently declaring convergence the plan didn't actually deliver.
+
+**What DID converge (real, live-verified across Phases 2/4/5, not just
+read):** the governance/decision layer — one shared `tier_gate` authority
+gating both lanes (Phase 2), one shared `risk_taxonomy` table, the VM lane
+gained the same diagnosis→confidence-gated→auto-dispatch shape the K8s lane
+already had (Phase 4), and multi-tenant isolation at the identity/audit layer
+is provably uniform across both lanes under real concurrency (Phase 5, zero
+cross-tenant leakage). Both lanes already shared the CRAT audit ledger
+pre-dating this roadmap.
+
+**Decision (recorded in ADR-006, not just this ledger):** do not force
+wire-shape migration retroactively — the governance-layer convergence is what
+made the two lanes "one system" in the sense this roadmap's audit originally
+cared about (uniform tier/risk/audit regardless of which lane a mutation came
+through). Wire-shape unification remains available future work
+(`src/pkg/contracts/` is ready) but touches every evidence/command call site
+in both lanes — deferred until a concrete pain point makes that cost worth
+paying.
+
+**Docs updated:** `docs/architecture/ADR-006-evidence-command-contract-
+convergence.md` (new — full audit + decision record);
+`docs/CODEBASE.md`'s "Current verified state" section (new paragraph pointing
+to ADR-006, replacing the implicit "two separate systems" framing with the
+accurate governance-converged / wire-shapes-separate-by-design state).
+
+```
+.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
+6269 passed, 5 deselected, 2 warnings   (unchanged — docs-only phase)
+```
+
+## Roadmap status: Phase 0–6 all DONE
+
+Every phase's Exit Criteria ran for real this session (or a prior session in
+this same continuous effort, with output preserved above) — no phase was
+marked DONE on the strength of code existing or unit tests alone where the
+Exit Criteria called for a live drill. The two most consequential live proofs:
+Phase 4 (a real VM incident detected, diagnosed, and recovered with zero
+manually authored JSON) and Phase 5 (the same loop run concurrently across two
+real tenants with zero cross-tenant leakage, plus one residual gap found and
+honestly documented rather than hidden). Phase 6 closes the loop with an
+honest convergence audit rather than a claimed one.

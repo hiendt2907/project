@@ -14,6 +14,16 @@ The runtime boundary is intentional: `src/workers/` remains the execution engine
 Shared contracts belong in `src/pkg/`, and gateway/AOIP code must not import workers.
 See [ADR-004](architecture/ADR-004-runtime-convergence.md).
 
+The K8s tool-calling lane and the VM/AOIP recovery lane are now governed by one
+shared decision layer — tier gate, risk taxonomy, and audit ledger apply uniformly
+to both, and both have a closed-loop diagnosis→confidence-gated→auto-dispatch path
+(`docs/handoffs/PHASE_0_6_PROGRESS.md`, Phases 2/4/5, live-verified including
+concurrent multi-tenant drills with zero cross-tenant leakage). Their wire-level
+Evidence/Command shapes remain distinct by deliberate scope decision, not oversight
+— a canonical `src/pkg/contracts/` module exists and is proven lossless but has zero
+production call sites; see [ADR-006](architecture/ADR-006-evidence-command-contract-convergence.md)
+for the full before/after shape audit and why migrating call sites was deferred.
+
 The current control-plane path includes tenant/environment lifecycle, scoped agent
 enrollment, durable missions and command idempotency, tenant-scoped autonomy, and
 plan/entitlement enforcement. PostgreSQL migrations `0007`, `0008`, and `0009` are

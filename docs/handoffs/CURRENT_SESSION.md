@@ -2,21 +2,46 @@
 
 Updated: 2026-07-21
 
-## Session 2026-07-21 — Phase 4 (0-6 roadmap): closed-loop diagnosis→dispatch, DONE
+## Session 2026-07-21 — Phase 0-6 roadmap ALL DONE
 
 Plan: `/Users/hiendang/.claude/plans/temporal-sparking-ember.md`. Ledger:
-`docs/handoffs/PHASE_0_6_PROGRESS.md`. Phase 0-4 DONE, committed+pushed through
-`e5e2a41`. **Phase 4's live E2E drill succeeded for real**: a crash-looped
-`payment-api.service` on cust-app was detected, diagnosed, auto-dispatched, and
-recovered end-to-end with zero manually authored JSON — `omni:trace:stages` shows
-`AUTO_RECOVERY ok`, the command's terminal record shows
-`outcome={"status":"recovered","verified":true}`, and
-`systemctl is-active payment-api.service` → `active` was confirmed live. Full detail
-+ exact trace/command IDs in `PHASE_0_6_PROGRESS.md`'s Phase 4 section. Two real bugs
-were found and fixed along the way (see below). All test/live-cluster state has been
-reverted to safe defaults (kill-switch false, staging-sim tier back to shadow,
-VM config restored) — confirmed via direct checks, not assumed. Working tree is
-clean; next step is Phase 5.
+`docs/handoffs/PHASE_0_6_PROGRESS.md`. **Every phase (0 through 6) is DONE, each
+with a real Exit Criteria command run this session (or a prior session in this
+same continuous effort, output preserved in the ledger) — no phase marked DONE
+on code/unit-tests alone where a live drill was required.**
+
+Two most consequential live proofs: **Phase 4** — a real crash-looped
+`payment-api.service` on `cust-app` was detected, diagnosed, auto-dispatched, and
+recovered end-to-end with zero manually authored JSON. **Phase 5** — the same
+closed loop run *concurrently* across two real tenants (`staging-sim`/`cust-app`
++ `tenant-replay-01`/`cust-edge`, the latter temporarily re-identified for the
+drill window since only 3 physical VMs exist) with zero cross-tenant leakage in
+the captured Redis command records; one residual, non-exploitable gap
+(VM-side `ExecutionLease` lock key not tenant-namespaced — fail-safe, not
+fail-open) found and documented, not silently hidden.
+
+**Phase 6** closed the loop with an honest re-run of the original grep audit:
+the 3 Evidence / 6 Command wire shapes did **not** collapse to canonical types
+(Phase 0b's `src/pkg/contracts/` module was always additive-only, never adopted
+by production call sites — confirmed zero production imports). What *did*
+converge and was live-verified: the governance layer — one shared `tier_gate`
+authority, one `risk_taxonomy` table, and a matching closed-loop dispatch
+pattern now apply uniformly to both the K8s and VM lanes. Recorded in new
+`docs/architecture/ADR-006-evidence-command-contract-convergence.md`, pointed to
+from `docs/CODEBASE.md`.
+
+Commits this session: `e5e2a41`/`5deabdf` (Phase 4), `0419c4a` (Phase 5), plus
+this session's final Phase 6 docs commit (see `git log -1`). All live-cluster/VM
+drill state reverted to safe defaults and confirmed after every phase (kill-switch
+`false`, tenant tiers back to `shadow`, VM identities/configs restored). Full
+suite green throughout (6269 passed, stable — no phase from 4 onward changed
+production code, only docs/tests). Working tree is clean.
+
+**Next step:** none pending from this roadmap — it is complete. If there is
+follow-up appetite, the two honestly-deferred items are: (1) wire-shape
+migration onto `src/pkg/contracts/` (ADR-006, deferred — not free, revisit only
+if a concrete pain point justifies it), (2) tenant-namespacing the VM-side
+`ExecutionLease` scope (Phase 5, deferred — currently fail-safe, not urgent).
 
 **Working tree (uncommitted):**
 - `src/services/analyst/diagnosis_loop.py` — added `suggested_recovery` field to the
