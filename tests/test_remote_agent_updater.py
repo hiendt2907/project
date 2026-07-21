@@ -5,6 +5,7 @@ and rollback on install/restart failure.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -145,6 +146,34 @@ class TestRestartService:
             ok, err = await updater._restart_service()
         assert ok is False
         assert "timed out" in err
+
+    def test_service_name_defaults_to_omni_agent(self, monkeypatch):
+        monkeypatch.delenv(updater._SYSTEMD_SERVICE_ENV, raising=False)
+        assert updater._get_systemd_service() == "omni-agent"
+
+    def test_service_name_overridden_by_env(self, monkeypatch):
+        """Regression for a live defect found 2026-07-21: the real fleet runs
+        aoip-agent.service, but the restart step hardcoded 'omni-agent' —
+        every real self-update reached restart_fail (download/backup/install
+        all succeeded, only the final restart step used the wrong unit
+        name)."""
+        monkeypatch.setenv(updater._SYSTEMD_SERVICE_ENV, "aoip-agent")
+        assert updater._get_systemd_service() == "aoip-agent"
+
+    @pytest.mark.asyncio
+    async def test_restart_uses_configured_service_name(self, monkeypatch):
+        monkeypatch.setenv(updater._SYSTEMD_SERVICE_ENV, "aoip-agent")
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        with patch(
+            "remote_agent.updater.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)
+        ) as mock_exec:
+            await updater._restart_service()
+        mock_exec.assert_awaited_once_with(
+            "systemctl", "restart", "aoip-agent",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
 
 
 class TestDownloadSendsAuthHeader:

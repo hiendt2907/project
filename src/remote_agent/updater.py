@@ -28,7 +28,17 @@ _DOWNLOAD_TIMEOUT_S = 120
 _RESTART_TIMEOUT_S = 30
 _ALLOWED_HOSTS_ENV = "OMNI_AGENT_UPDATE_ALLOWED_HOSTS"
 _INSTALL_DIR_ENV = "OMNI_AGENT_INSTALL_DIR"
-_SYSTEMD_SERVICE = "omni-agent"
+_SYSTEMD_SERVICE_ENV = "OMNI_AGENT_SYSTEMD_SERVICE"
+# Historical default — the unit has been renamed at least twice since
+# (omni-remote-agent.service, then aoip-agent.service per ADR-001's IT-3/IT-7
+# migration). A hardcoded name silently no-ops the restart step on any fleet
+# using a different unit name (caught live 2026-07-21: the real fleet runs
+# aoip-agent.service, restart_fail on every real update attempt until env-configured).
+_SYSTEMD_SERVICE_DEFAULT = "omni-agent"
+
+
+def _get_systemd_service() -> str:
+    return os.environ.get(_SYSTEMD_SERVICE_ENV, "").strip() or _SYSTEMD_SERVICE_DEFAULT
 
 
 def _get_allowed_hosts() -> frozenset[str]:
@@ -115,7 +125,7 @@ def _extract_if_archive(src: Path, install_dir: Path) -> tuple[bool, str]:
 async def _restart_service() -> tuple[bool, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
-            "systemctl", "restart", _SYSTEMD_SERVICE,
+            "systemctl", "restart", _get_systemd_service(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -219,7 +229,7 @@ async def handle_update_command(
         return _result("install_fail", err)
 
     # Step 7 — restart service
-    logger.info("[updater] restarting %s ...", _SYSTEMD_SERVICE)
+    logger.info("[updater] restarting %s ...", _get_systemd_service())
     ok, err = await _restart_service()
     if not ok:
         logger.error("[updater] RESTART_FAIL cmd_id=%s err=%s", cmd_id, err)
