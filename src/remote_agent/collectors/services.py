@@ -192,7 +192,7 @@ async def collect_systemd_units(
         if not parts:
             continue
         unit_full = parts[0]
-        unit = unit_full.rstrip(".service")
+        unit = unit_full.removesuffix(".service")
         # Migration residue guard: a unit that is BOTH disabled AND failed was
         # stopped intentionally (e.g. agent migration) — systemd keeps the
         # failed state until reset-failed. Not an incident; report separately.

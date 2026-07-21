@@ -14,6 +14,7 @@ import pytest
 from services.analyst.diagnosis_loop import (
     _apply_grounding_gate,
     _extract_groundable_claims,
+    _parse_suggested_recovery,
 )
 
 
@@ -76,6 +77,63 @@ class TestGroundingGate:
         assert final["root_cause"] == "x /a/b 99%"
         assert final["confidence"] == 0.8
         assert out is not final
+
+    def test_grounded_suggested_recovery_passes_untouched(self):
+        final = {
+            "root_cause": "payment-api.service is inactive",
+            "remediation_steps": [],
+            "confidence": 0.9,
+            "suggested_recovery": {"capability": "systemd.restart_unit", "unit": "payment-api.service"},
+        }
+        corpus = "systemctl status payment-api.service: Active: inactive (dead)"
+        out = _apply_grounding_gate(final, corpus)
+        assert out["suggested_recovery"] == {
+            "capability": "systemd.restart_unit", "unit": "payment-api.service",
+        }
+        assert out["confidence"] == 0.9
+
+    def test_ungrounded_suggested_recovery_unit_dropped(self):
+        """A unit name the LLM invented (never appeared in this session's
+        command output) must never reach the automated-dispatch bridge —
+        stripped to None even when the rest of the conclusion is grounded."""
+        final = {
+            "root_cause": "disk /var/log is 97% full",
+            "remediation_steps": ["sudo du -sh /var/log"],
+            "confidence": 0.9,
+            "suggested_recovery": {"capability": "systemd.restart_unit", "unit": "phantom-service.service"},
+        }
+        corpus = "df output: /dev/vdb1 97% /var/log"
+        out = _apply_grounding_gate(final, corpus)
+        assert out["suggested_recovery"] is None
+        # the rest of the conclusion, which WAS grounded, is untouched
+        assert out["root_cause"] == final["root_cause"]
+        assert out["confidence"] == 0.9
+
+    def test_none_suggested_recovery_is_a_noop(self):
+        final = {"root_cause": "x", "remediation_steps": [], "confidence": 0.9,
+                 "suggested_recovery": None}
+        out = _apply_grounding_gate(final, "")
+        assert out["suggested_recovery"] is None
+
+
+class TestParseSuggestedRecovery:
+    def test_none_when_not_a_dict(self):
+        assert _parse_suggested_recovery(None) is None
+        assert _parse_suggested_recovery("payment-api.service") is None
+
+    def test_none_when_capability_not_restart_unit(self):
+        raw = {"capability": "systemd.stop_unit", "unit": "payment-api.service"}
+        assert _parse_suggested_recovery(raw) is None
+
+    def test_none_when_unit_missing_or_blank(self):
+        assert _parse_suggested_recovery({"capability": "systemd.restart_unit"}) is None
+        assert _parse_suggested_recovery(
+            {"capability": "systemd.restart_unit", "unit": "  "}
+        ) is None
+
+    def test_valid_shape_parsed(self):
+        raw = {"capability": "systemd.restart_unit", "unit": "payment-api.service"}
+        assert _parse_suggested_recovery(raw) == raw
 
 
 # ── 2. Host-share mount scoping ───────────────────────────────────────────────

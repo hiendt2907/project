@@ -813,6 +813,24 @@ class TestCollectSystemdUnits:
 
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_unit_name_ending_in_service_chars_not_mangled(self):
+        """rstrip(".service") strips a CHARACTER SET, not the literal suffix —
+        'payment-api.service' loses its trailing 'i' too (all of 'i','c','e',
+        's','r','v' are in the strip set), becoming 'payment-ap'. Confirmed
+        live 2026-07-21: this exact corruption fed a wrong unit name into the
+        diagnosis LLM, which then correctly-but-uselessly concluded the
+        service was "missing" after running `systemctl status payment-ap`."""
+        from remote_agent.collectors import services as svc
+
+        systemctl_out = "payment-api.service loaded failed failed payment-api (simulated)\n"
+        with patch.object(svc, "_run", AsyncMock(return_value=(systemctl_out, "", 0))):
+            result = await svc.collect_systemd_units("host1")
+
+        assert result is not None
+        assert "payment-api" in result["extracted_fact"]["failed_units"]
+        assert "payment-ap" not in result["extracted_fact"]["failed_units"]
+
 
 class TestCollectHaproxyStats:
     @pytest.mark.asyncio
@@ -1426,3 +1444,31 @@ class TestRemoteHostBaseline:
             r, tenant_id="t1", host="h1", fact={"cpu_percent": "n/a"}
         )
         assert out == {}
+
+
+class TestDiscoveryCollectRunningServices:
+    """remote_agent/discovery.py::_collect_running_services shares the same
+    rstrip(".service") character-set bug found live 2026-07-21 in
+    collectors/services.py — 'payment-api.service' -> 'payment-ap' since
+    rstrip strips a char SET, not the literal suffix."""
+
+    @pytest.mark.asyncio
+    async def test_unit_name_ending_in_service_chars_not_mangled(self):
+        from remote_agent import discovery as disc
+
+        systemctl_out = "payment-api.service loaded active running payment-api (simulated)\n"
+        with patch.object(disc, "_run", AsyncMock(return_value=(systemctl_out, 0))):
+            services = await disc._collect_running_services()
+
+        assert len(services) == 1
+        assert services[0]["name"] == "payment-api"
+
+    @pytest.mark.asyncio
+    async def test_unmangled_name_still_works(self):
+        from remote_agent import discovery as disc
+
+        systemctl_out = "nginx.service loaded active running A web server\n"
+        with patch.object(disc, "_run", AsyncMock(return_value=(systemctl_out, 0))):
+            services = await disc._collect_running_services()
+
+        assert services[0]["name"] == "nginx"

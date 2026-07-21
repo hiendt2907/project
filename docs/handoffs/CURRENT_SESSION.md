@@ -1,6 +1,88 @@
 # Current Session Handoff
 
-Updated: 2026-07-20
+Updated: 2026-07-21
+
+## Session 2026-07-21 — Phase 4 (0-6 roadmap): closed-loop diagnosis→dispatch, IN PROGRESS
+
+Plan: `/Users/hiendang/.claude/plans/temporal-sparking-ember.md`. Ledger:
+`docs/handoffs/PHASE_0_6_PROGRESS.md`. Phase 0-3 DONE (committed through `dc49b77`).
+Phase 4 code is implemented, tested (full suite 6269 passed), and deployed — but the
+live E2E drill (real VM crash → natural auto-dispatch → real recovery, zero manually
+authored JSON) has NOT yet completed successfully this session. Two real bugs were
+found and fixed along the way (see below); the redeployed fix has not yet been
+re-verified against a fresh live drill.
+
+**Working tree (uncommitted):**
+- `src/services/analyst/diagnosis_loop.py` — added `suggested_recovery` field to the
+  diagnosis output schema/prompt (`{"capability":"systemd.restart_unit","unit":"..."}`
+  or null), `_parse_suggested_recovery()`, and grounding-gate validation for it
+  (`_apply_grounding_gate` strips an ungrounded unit name). Prompt initially required
+  command-output grounding only; loosened to also accept the pre-collected
+  `failed_units` facts (matches the loop's own "conclude from facts in turn 1" rule).
+- `src/workers/auto_recovery_bridge.py` (new) — `extract_suggested_recovery()`,
+  `build_dispatch_advisory()`, `dispatch_if_eligible()`. Fail-closed at every step
+  (no suggestion / low confidence / no `OMNI_GATEWAY_API_KEY` → skip, never raises).
+  Normalizes a bare unit name (e.g. `"payment-api"`, as it appears in facts) to the
+  full `.service` suffix the executor's `AOIP_ALLOWED_SYSTEMD_UNITS` allowlist needs —
+  done downstream of grounding so neither the prompt nor the grounding check has to
+  agree on a suffix convention.
+- `src/workers/remote_agent_pipeline.py` — `_dispatch_auto_recovery_if_eligible()`
+  wired into `_run_diagnosis_and_notify()`, called AFTER CRAT+Telegram succeed
+  (best-effort last hop; swallows all exceptions, never breaks diagnosis reporting).
+- `src/pkg/observability/pipeline_stages.py` — added `AUTO_RECOVERY` to
+  `PIPELINE_STAGES` (was missing; `mark_stage` silently no-ops on unknown stages).
+- `ui/apps/provider-portal/lib/pipeline.ts` — added the matching VI label.
+- `src/workers/settings.py` — `omni_gateway_internal_url` +
+  `omni_gateway_api_key` (worker's credential to call the gateway's own enqueue
+  endpoint internally; empty = auto-dispatch disabled, fail-closed).
+- `k8s/deployments/omni-fullstack.yaml` — mounts `OMNI_GATEWAY_API_KEY` from the
+  existing `omni-gateway-secret` (`optional: true`).
+- `src/remote_agent/collectors/services.py`, `src/remote_agent/discovery.py` — **real
+  bug fix**: both used `unit_full.rstrip(".service")`, which strips a CHARACTER SET
+  not a literal suffix — `"payment-api.service".rstrip(".service")` → `"payment-ap"`
+  (the trailing `i` is in the strip set too). This corrupted the unit name fed to the
+  diagnosis LLM, which then correctly-but-uselessly concluded the service was
+  "missing" after running `systemctl status payment-ap`. Fixed to `.removesuffix()`,
+  matching the already-correct pattern in `collectors/discovery_evidence.py`.
+- `src/remote_agent/VERSION` → `1.3.8`, published and deployed to `cust-app` VM via
+  the established stop/tar/start bootstrap (self-update HTTP flow has a known
+  mid-flight race, avoided all session).
+- Tests: `tests/test_auto_recovery_bridge.py` (new, 13 tests), `tests/
+  test_remote_agent_auto_recovery_dispatch.py` (new, 5 tests — pipeline wiring),
+  `tests/test_diag_grounding_and_scope.py` (+4 suggested_recovery grounding tests),
+  `tests/test_remote_agent.py` (+3 regression tests for the rstrip bug, in both the
+  systemd-units collector and discovery module).
+
+**Second real gap found live:** `OMNI_AGENT_SERVICES_ENABLED` (default `false`) was
+never set in cust-app's `run.env`, so the systemd-failure collector never ran on that
+host at all — not a code bug, a deployment config gap. Enabled it directly in
+`/opt/omni-remote-agent/run.env` on the VM and restarted `aoip-agent.service`.
+
+**Drill status at session end:** worker+gateway both redeployed with all fixes
+(image built successfully after an accidental interruption — a retry that finished
+clean; verified via `kubectl exec ... python3 -c "from workers.auto_recovery_bridge
+import extract_suggested_recovery; ..."` on the live pod, unit-suffix normalization
+confirmed working). `payment-api.service` was deliberately crash-looped on cust-app to
+trigger the natural pipeline, multiple real diagnosis sessions ran (confidence up to
+1.0, correctly identified "payment-api service is in a failed state" post-fix) but
+`suggested_recovery` stayed null until the prompt-grounding fix (just redeployed, not
+yet re-verified live). **Before ending the session**: kill-switch reverted to `false`
+(confirmed), `payment-api.service` restored to healthy/`active` on cust-app (confirmed)
+— the VM and cluster are back in a safe, clean state.
+
+**Next step:** re-run the live drill fresh against the redeployed fix — crash-loop
+`payment-api.service` again (`sudo systemctl kill -s SIGKILL payment-api.service` ×6
+within 10s to hit systemd's rate limit and reach `failed` state; a clean `systemctl
+stop` leaves it `inactive`, which the collector does NOT treat as a failure — only
+`failed`/`activating` states are collected), open the kill-switch on `omni-gateway`
+only, watch for a diagnosis session with `suggested_recovery` populated, confirm
+`auto_recovery_bridge` dispatches through the gateway (tier_gate should ALLOW: `
+staging-sim` is capped at `assist` tier per the plan-ceiling rule, LOW risk → ALLOW),
+and confirm the VM actually recovers (`systemctl is-active payment-api.service` →
+`active`). Capture the real trace_id/command_id/audit block. If it works, mark Phase 4
+DONE in `PHASE_0_6_PROGRESS.md` with the real captured output, commit+push (nothing
+from this session has been committed yet), then continue Phase 5-6. If genuinely
+blocked again, mark BLOCKED with the exact gap — do not fabricate success.
 
 ## Outcome
 

@@ -75,7 +75,7 @@ async def _collect_running_services() -> list[dict[str, Any]]:
         parts = line.split(None, 4)
         if not parts:
             continue
-        unit = parts[0].rstrip(".service")
+        unit = parts[0].removesuffix(".service")
         description = parts[4].strip() if len(parts) > 4 else ""
         base = unit.split("@")[0].lower()
         services.append({

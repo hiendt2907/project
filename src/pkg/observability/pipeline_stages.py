@@ -31,6 +31,7 @@ PIPELINE_STAGES: list[str] = [
     "HITL",
     "EXECUTOR",
     "FEEDBACK",
+    "AUTO_RECOVERY",
 ]
 
 _VALID_STATUSES = frozenset({"ok", "fail", "skip", "pending"})

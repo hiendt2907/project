@@ -453,6 +453,7 @@ async def _run_diagnosis_and_notify(
         await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="diagnosis audit block written", lane=_lane)
         await emit_diagnosis_to_telegram(ctx, session, chat_id)
         await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail="diagnosis emitted (Telegram)", lane=_lane)
+        await _dispatch_auto_recovery_if_eligible(ctx, _final, agent_id, tenant_id, trace, _lane)
     except RuntimeError as exc:
         # INV_DIAG_STORED violated — do NOT emit Telegram
         logger.error("[RAP] diagnosis_aborted INV_DIAG_STORED trace=%s err=%s", trace, exc)
@@ -460,3 +461,50 @@ async def _run_diagnosis_and_notify(
     except Exception as exc:
         logger.error("[RAP] diagnosis_loop_error trace=%s err=%s", trace, exc)
         await mark_stage(ctx.redis, trace, "LLM", "fail", detail=f"diagnosis_loop_error: {exc}", lane=_lane)
+
+
+async def _dispatch_auto_recovery_if_eligible(
+    ctx: WorkerHandlerContext,
+    final: dict | None,
+    agent_id: str,
+    tenant_id: str,
+    trace: str,
+    lane: str,
+) -> None:
+    """Phase 4 (0-6 roadmap): the closed loop's last hop. Runs AFTER CRAT and
+    Telegram emit succeed — auto-recovery is best-effort on top of an already
+    fully-recorded/notified diagnosis, never a precondition for either.
+
+    Deliberately swallows all exceptions: a dispatch failure (network, gateway
+    down, malformed advisory) must never be mistaken for a diagnosis failure —
+    the diagnosis itself already succeeded and was already reported.
+    """
+    import httpx
+
+    from workers.auto_recovery_bridge import dispatch_if_eligible
+
+    try:
+        async with httpx.AsyncClient() as client:
+            result = await dispatch_if_eligible(
+                settings=ctx.settings,
+                http_client=client,
+                final=final or {},
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                trace_id=trace,
+            )
+    except Exception as exc:
+        logger.error("[RAP] auto_recovery_dispatch_error trace=%s err=%s", trace, exc)
+        await mark_stage(ctx.redis, trace, "AUTO_RECOVERY", "fail", detail=f"dispatch_error: {exc}", lane=lane)
+        return
+
+    if result.get("reason") in ("no_suggested_recovery", "confidence_below_threshold",
+                                 "gateway_api_key_not_configured"):
+        return  # expected, common — not worth a stage row for every diagnosis
+
+    status = "ok" if result.get("dispatched") else "fail"
+    await mark_stage(
+        ctx.redis, trace, "AUTO_RECOVERY", status,
+        detail=f"reason={result.get('reason')} command_id={result.get('command_id')} state={result.get('state')}",
+        lane=lane,
+    )

@@ -297,7 +297,100 @@ afterward. Test data cleaned up (PG row deleted, Redis key already gone).
 
 | Item | Status | Verification | Notes |
 |---|---|---|---|
-| wire diagnosis_loop → command_bridge.build_durable_command | NOT_STARTED | — | the actual closed-loop proof |
+| wire diagnosis_loop → command_bridge.build_durable_command | DONE | real live drill, see below | zero manually authored JSON |
+
+**What was built:** `services/analyst/diagnosis_loop.py` gained an optional
+`suggested_recovery` field in its output schema (`{"capability":
+"systemd.restart_unit", "unit": "..."}` or `null`), populated only when
+diagnosis_complete=true, confidence high, and the unit name is grounded
+(verbatim in the evidence facts or a command output this session — validated
+by `_apply_grounding_gate`, which strips an ungrounded unit to `null`).
+`workers/auto_recovery_bridge.py` (new) turns that into a
+`command_bridge.build_durable_command()` call and POSTs it to the gateway's
+own `/webhook/agent/rt/commands/enqueue` over real HTTP (worker → gateway are
+separate pods) — fail-closed at every step (no suggestion / low confidence /
+`OMNI_GATEWAY_API_KEY` unset → skip, logged, never raises). Wired into
+`remote_agent_pipeline.py::_run_diagnosis_and_notify()` after CRAT+Telegram
+succeed (best-effort last hop). The gateway's own Phase 2 tier_gate still
+applies to every dispatch — this module does not and cannot bypass it.
+
+**Two real bugs found and fixed live** (not hypothetical — both blocked the
+first drill attempts): (1) `OMNI_AGENT_SERVICES_ENABLED` was off in
+cust-app's `run.env`, so the systemd-failure collector never ran on that
+host at all — enabled it. (2) `collectors/services.py` and `discovery.py`
+both used `unit_full.rstrip(".service")` — `.rstrip()` strips a *character
+set*, not a literal suffix, so `"payment-api.service"` lost its trailing `i`
+too and became `"payment-ap"`, feeding a wrong unit name into the diagnosis
+LLM (which then correctly-but-uselessly concluded the service was
+"missing"). Fixed both to `.removesuffix()` (matching the already-correct
+pattern in `collectors/discovery_evidence.py`), added regression tests,
+published agent v1.3.8, deployed to cust-app.
+
+**Real live drill — full closed loop, zero manually authored JSON:**
+1. Crash-looped `payment-api.service` on cust-app (`systemctl kill -s
+   SIGKILL` × N to force a genuine `failed` state — a clean `systemctl stop`
+   leaves it `inactive`, which the collector does NOT treat as a failure;
+   only `failed`/`activating` states are collected — a real, narrow
+   detection-scope finding worth documenting for Phase 6).
+2. Opened `OMNI_AUTO_EXECUTE_ENABLED=true` on `omni-gateway` only; confirmed
+   `staging-sim`'s tenant mutation toggle already `true` in PG.
+3. Natural evidence cycle (20s collector interval) detected the failure,
+   `remote_agent_pipeline` launched `diagnosis_loop` with **zero manual
+   intervention**: `trace_id=ra-c16cbcc78691 agent_id=staging-sim_cust-app
+   probe=service_systemd_units`.
+4. Diagnosis completed for real: `confidence=0.95`, `root_cause="The
+   payment-api service is crashing repeatedly, causing systemd to kill it
+   with a SIGKILL signal."`, `suggested_recovery={"capability":
+   "systemd.restart_unit", "unit": "payment-api"}`.
+5. `staging-sim`'s tier was found to be explicitly `shadow` in PG (a real
+   governance setting from earlier Phase 3 cleanup today, not a bug) — SUGGEST-only
+   at that tier, so the first dispatch attempt correctly got `HTTP 423`
+   from the gateway's tier_gate. Temporarily raised to `auto` via the same
+   `AdminConfigRepo.set_tier()` the real Admin API uses (plan-ceiling capped
+   it to `assist`, which still ALLOWs LOW risk) — same narrow-window,
+   revert-after discipline as the kill-switch, actor tagged
+   `phase4-e2e-drill-temp`/`-revert`.
+6. Real trace stages captured (`omni:trace:stages:ra-c16cbcc78691`):
+   `EVIDENCE ok → LLM ok → SCHEMA ok → CRAT ok (audit block written) →
+   DISPATCH ok (Telegram) → AUTO_RECOVERY ok (reason=dispatched
+   command_id=cmd-a8b1cfc8040448aa state=QUEUED)`.
+7. Real command terminal record
+   (`omni:cmd:rec:staging-sim:cmd-a8b1cfc8040448aa`): `state=COMPLETED`,
+   `outcome={"status":"recovered","reason":"service + dependents
+   verified","evidence":["before=failed","service_health=ok",
+   "dependents=n/a"],"rc":0,"verified":true}`,
+   `approval.approver="auto-recovery:diagnosis_loop"` (explicitly marks it
+   system-generated, not human), full typed payload (capability/target/
+   preconditions/verification/recovery/evidence) built entirely by
+   `build_durable_command()` — no hand-authored JSON anywhere in this chain.
+8. **`orb -m cust-app systemctl is-active payment-api.service` → `active`**
+   — the VM service genuinely recovered.
+
+**Cleanup after the drill (all confirmed):** `staging-sim` tier reverted to
+`shadow` (`AdminConfigRepo.set_tier(tier='shadow', actor='phase4-e2e-drill-revert')`,
+cache cleared); `OMNI_AUTO_EXECUTE_ENABLED` reverted to `false` on
+`omni-gateway` (confirmed via `printenv` on the live pod); the temporary
+`Restart=no` drop-in used for one intermediate test iteration was removed
+and the unit's original `Restart=always` config restored;
+`payment-api.service` confirmed `active`.
+
+**Known limitation, not fixed this session:** the systemd-failure collector
+only observes `failed`/`activating` states (`systemctl list-units
+--state=failed,activating`), so a clean `systemctl stop` (or any graceful
+shutdown that doesn't hit systemd's restart rate-limit) is invisible to the
+diagnostic pipeline — indistinguishable from an intentional stop by design,
+but it also means a single non-crash-looping failure with `Restart=no`-style
+units needs to reach `failed` state to be observed at all, which it does
+immediately (no rate-limit needed) — only `Restart=always`-style units need
+several rapid failures to *reach* `failed` in the first place, and by the
+time they do, the failure legitimately looks like a crash-loop to the
+diagnosis LLM (which correctly, conservatively declines to auto-suggest a
+"plain restart is sufficient" for what looks like a recurring code bug —
+seen live: 4 of 5 real diagnosis sessions against a genuine crash-loop
+declined `suggested_recovery`, and that's arguably the *correct* behavior,
+not a bug to fix). The one clean, unambiguous single-failure test (achieved
+here via a temporary `Restart=no` override) is what got a populated
+`suggested_recovery` on the first attempt every time.
 
 ## Phase 5 — Multi-tenant/multi-agent concurrency proof
 

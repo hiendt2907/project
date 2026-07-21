@@ -114,8 +114,25 @@ OUTPUT FORMAT (strict JSON, no markdown):
   "affected_components": [],
   "blast_radius": "",
   "impact_summary": "",
-  "remediation_steps": []
+  "remediation_steps": [],
+  "suggested_recovery": null
 }
+
+SUGGESTED_RECOVERY — for automated dispatch, extremely narrow scope:
+- ONLY populate when diagnosis_complete=true AND the root cause is a systemd unit that is
+  inactive/failed/crash-looping — confirmed either by the pre-collected "failed_units"/
+  "critical_failed_units" facts in [INITIAL EVIDENCE], OR by "systemctl status <unit>" /
+  "journalctl -u <unit>" output seen this session — AND a plain restart is the correct, sufficient
+  fix — not a symptom of disk/memory/inode exhaustion, not a dependency outage, not something
+  requiring config changes.
+- Format: {"capability": "systemd.restart_unit", "unit": "<exact unit name copied verbatim from
+  the facts' failed_units list, e.g. "payment-api" if that is exactly how it appears there — do
+  NOT add or remove a ".service" suffix yourself, copy the string as-is>"}
+- The unit name MUST be copied verbatim from the evidence facts or a command output — never
+  invent one, never use a unit name only mentioned in free-text alert prose.
+- In every other case (disk full, OOM, inode exhaustion, network issue, unclear root cause,
+  confidence < 0.75, or ANY doubt) — set suggested_recovery to null. Leaving it null is always
+  safe; a wrong non-null value could trigger an unwanted automated restart.
 
 GROUNDING — NON-NEGOTIABLE (INV_DIAG_GROUNDED):
 - Every number, percentage, file path, mount point, and service name in root_cause,
@@ -231,9 +248,26 @@ def _apply_grounding_gate(
     if dropped_steps:
         kept_steps.append(_GATE_DROP_NOTE.format(n=len(dropped_steps)))
 
+    suggested = final.get("suggested_recovery")
+    suggested_unit_ungrounded = (
+        isinstance(suggested, dict)
+        and str(suggested.get("unit", "")) not in evidence_corpus
+    )
+
     ungrounded = sorted(set(ungrounded_rc) | set(ungrounded_step_claims))
-    if not ungrounded:
+    if not ungrounded and not suggested_unit_ungrounded:
         return dict(final)
+
+    result = dict(final)
+    if suggested_unit_ungrounded:
+        logger.warning(
+            "[diag-loop] grounding gate: suggested_recovery.unit %r absent from evidence — dropped",
+            suggested.get("unit", ""),
+        )
+        result["suggested_recovery"] = None
+
+    if not ungrounded:
+        return result
 
     logger.warning(
         "[diag-loop] grounding gate: ungrounded claims %s — confidence capped", ungrounded
@@ -243,13 +277,26 @@ def _apply_grounding_gate(
         if ungrounded_rc else root_cause
     )
     return {
-        **final,
+        **result,
         "root_cause": new_root_cause,
         "remediation_steps": kept_steps,
         "confidence": min(float(final.get("confidence", 0.0) or 0.0), _UNGROUNDED_CONFIDENCE_CAP),
         "ungrounded_claims": ungrounded,
         "dropped_remediation_steps": dropped_steps,
     }
+
+
+def _parse_suggested_recovery(raw: Any) -> dict[str, str] | None:
+    """Defensively shape the LLM's raw suggested_recovery field. Any
+    malformed/partial shape becomes None — this function never raises, since
+    a bad automated-dispatch hint must fail closed, not break diagnosis."""
+    if not isinstance(raw, dict):
+        return None
+    capability = str(raw.get("capability", "")).strip()
+    unit = str(raw.get("unit", "")).strip()
+    if capability != "systemd.restart_unit" or not unit:
+        return None
+    return {"capability": capability, "unit": unit}
 
 
 _FALLBACK_LABEL = "[generic fallback — not host-specific; verify before running]"
@@ -732,6 +779,9 @@ async def run_diagnosis_loop(
                     "impact_summary": llm_resp.get("impact_summary", ""),
                     "remediation_steps": llm_resp.get("remediation_steps") or [],
                     "confidence": llm_resp.get("confidence", 0.0),
+                    "suggested_recovery": _parse_suggested_recovery(
+                        llm_resp.get("suggested_recovery")
+                    ),
                 },
                 "\n".join(evidence_corpus_parts),
             )

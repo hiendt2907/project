@@ -156,6 +156,21 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_AUDIT_CHAIN"),
         description="CRAT tamper-evident audit chain (SOX §404, PCI-DSS v4.0). cleanup.policy=compact, infinite retention.",
     )
+    omni_gateway_internal_url: str = Field(
+        default="http://omni-gateway.multi-agent.svc.cluster.local:80",
+        validation_alias=AliasChoices("OMNI_GATEWAY_INTERNAL_URL"),
+        description="Phase 4 (0-6 roadmap): in-cluster gateway URL for the worker's "
+                    "auto-recovery dispatch bridge (diagnosis_loop -> durable enqueue). "
+                    "In-cluster service DNS, not the ai-agent.local ingress hostname.",
+    )
+    omni_gateway_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("OMNI_GATEWAY_API_KEY"),
+        description="Phase 4: worker's own admin credential for calling the gateway's "
+                    "durable-enqueue endpoint internally. Same master key the gateway "
+                    "itself accepts (backward-compat admin auth) — empty disables "
+                    "auto-dispatch (fail-closed, not a silent no-op).",
+    )
     omni_auto_execute_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("OMNI_AUTO_EXECUTE_ENABLED"),

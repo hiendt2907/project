@@ -38,7 +38,7 @@ export async function fetchTracePipeline(traceId: string): Promise<GatewaySectio
 }
 
 // ── Bản dịch đời thường (nhất quán toàn portal) ─────────────────────────────
-// 12 bước phải khớp PIPELINE_STAGES (src/pkg/observability/pipeline_stages.py).
+// 13 bước phải khớp PIPELINE_STAGES (src/pkg/observability/pipeline_stages.py).
 export const STAGE_VI: Record<string, { name: string; explain: string }> = {
   INGEST: { name: "Tiếp nhận", explain: "Hệ thống nhận tín hiệu bất thường từ nơi giám sát." },
   EVIDENCE: { name: "Thu thập bằng chứng", explain: "Gom số liệu, log và trạng thái liên quan để có bức tranh đầy đủ." },
@@ -52,6 +52,7 @@ export const STAGE_VI: Record<string, { name: string; explain: string }> = {
   HITL: { name: "Chờ người duyệt", explain: "Việc nhạy cảm phải có con người bấm duyệt mới được làm tiếp." },
   EXECUTOR: { name: "Thực thi", explain: "Thực hiện thao tác khắc phục đã được phép." },
   FEEDBACK: { name: "Đánh giá lại", explain: "Kiểm tra sau khi sửa: sự cố đã hết chưa, có cần làm thêm không." },
+  AUTO_RECOVERY: { name: "Tự động khắc phục", explain: "AI tự đề xuất khắc phục và gửi lệnh qua kênh đã được phê duyệt (cấp bậc tự động + ngưỡng tin cậy)." },
 };
 
 export const LANE_VI: Record<string, string> = {
