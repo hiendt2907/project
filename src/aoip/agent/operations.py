@@ -37,6 +37,7 @@ from aoip.agent.idempotency import (
 )
 from aoip.agent.lease import ExecutionLease
 from aoip.agent.renewal import run_with_renewal
+from aoip.agent.trace import canonical_scope
 from aoip.objects import ActionState, Finding
 from aoip.recovery import (
     Approval,
@@ -92,16 +93,20 @@ async def run_guarded_recovery(
     lease = ExecutionLease(redis)
     key = _key_for(req)
     target = req.failed_node          # lease khóa theo TARGET scope (mutating target)
+    # Lease key PHẢI nhúng tenant (#5): "svc:{unit}" trần khiến 2 tenant khác nhau
+    # thao tác cùng unit name đụng chung lease key của nhau. canonical_scope() là
+    # cùng convention intake.py (Track A) đã dùng — Track B (đây) trước đây lệch.
+    lease_scope = canonical_scope(req.tenant, target)
     scope = req.action.scope          # idempotency/audit theo action scope
     trace = scope
     renewal_interval = lease_renewal_interval_s or max(lease_ttl_s / 4, 1.0)
 
-    # ── A. LEASE: chỉ single-writer hợp lệ trên TARGET mới đi tiếp ────────────
-    token = await lease.acquire(target, holder=holder, ttl_s=lease_ttl_s)
+    # ── A. LEASE: chỉ single-writer hợp lệ trên TARGET (tenant-scoped) mới đi tiếp ─
+    token = await lease.acquire(lease_scope, holder=holder, ttl_s=lease_ttl_s)
     if token is None:
         audit_log.append(audit.EV_RECOVERY_LEASE_DENIED,
-                         {"target": target, "holder": holder,
-                          "current": await lease.holder_token(target)}, trace_id=trace)
+                         {"target": target, "tenant": req.tenant, "holder": holder,
+                          "current": await lease.holder_token(lease_scope)}, trace_id=trace)
         return RecoveryOutcome(action=req.action.at(ActionState.ABORTED, reason="lease_denied"),
                                status="aborted",
                                reason="scope đang bị agent khác giữ lease — zero mutation")
@@ -146,7 +151,7 @@ async def run_guarded_recovery(
                             ex=900)
 
         async def _renew() -> bool:
-            return await lease.renew(target, token=token, ttl_s=lease_ttl_s)
+            return await lease.renew(lease_scope, token=token, ttl_s=lease_ttl_s)
 
         async def _phase_hook(phase: str, meta: dict) -> None:
             phase_map = {
@@ -181,7 +186,7 @@ async def run_guarded_recovery(
             await ledger.release_claim(key)
         return outcome
     finally:
-        await lease.release(target, token=token)
+        await lease.release(lease_scope, token=token)
 
 
 async def operations_loop(

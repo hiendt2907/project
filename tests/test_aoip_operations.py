@@ -25,6 +25,7 @@ from aoip.agent.operations import (
     operations_loop,
     run_guarded_recovery,
 )
+from aoip.agent.trace import canonical_scope
 from aoip.objects import ActionState, Finding
 from aoip.recovery import Approval, RecoveryGate, RecoveryRequest, plan_recovery
 
@@ -224,14 +225,80 @@ async def test_wrong_decision_binding_zero_mutation(tmp_path):
 async def test_two_agents_only_lease_holder_executes(tmp_path):
     r = _redis()
     lease = ExecutionLease(r)
-    held = await lease.acquire("svc:db", holder="agent-1")  # agent-1 đang giữ lease
+    req = _req()
+    # lease key thật (khớp run_guarded_recovery) là tenant-scoped — svc:db trần
+    # sẽ KHÔNG chặn được req này nếu test acquire sai key.
+    held = await lease.acquire(canonical_scope(req.tenant, req.failed_node),
+                               holder="agent-1")  # agent-1 đang giữ lease
     assert held is not None
     t = FakeSystemd(state="inactive")
-    req = _req()
     # agent-2 thử recover cùng scope nhưng KHÔNG có lease → zero mutation.
     out = await _guard(r, t, req=req, approval=_approval(req), audit_log=_log(tmp_path), holder="agent-2")
     assert out.status == "aborted" and t.restarts == 0
     assert "lease" in out.reason.lower()
+
+
+# ── Multi-tenant lease isolation — same unit name, different tenant ──────────
+async def test_cross_tenant_same_unit_lease_does_not_collide(tmp_path):
+    """Hai tenant khác nhau cùng thao tác MỘT unit name ĐỒNG THỜI: lease KHÔNG được
+    đụng nhau (khác tenant → khác lease key) — nhưng lease vẫn chặn đúng trong phạm
+    vi một tenant khi agent khác của CHÍNH tenant đó thử acquire trong lúc đang giữ."""
+    r = _redis()
+    lease = ExecutionLease(r)
+
+    req_acme = _req(tenant="acme")
+    req_beta = _req(tenant="beta")
+    assert req_acme.failed_node == req_beta.failed_node == "svc:db"  # cùng unit name
+
+    scope_acme = canonical_scope("acme", req_acme.failed_node)
+    scope_beta = canonical_scope("beta", req_beta.failed_node)
+    assert scope_acme != scope_beta
+
+    # (a) Hai tenant khác nhau cùng acquire lease cho CÙNG unit name cùng lúc →
+    #     cả hai PHẢI acquire thành công (không đụng lease key của nhau).
+    tok_acme = await lease.acquire(scope_acme, holder="agent-acme-1")
+    tok_beta = await lease.acquire(scope_beta, holder="agent-beta-1")
+    assert tok_acme is not None
+    assert tok_beta is not None
+    assert tok_acme != tok_beta
+
+    # (b) Tenant acme acquire lại lease của CHÍNH mình lần 2 trong lúc đang giữ →
+    #     PHẢI bị từ chối (lease vẫn hoạt động đúng trong phạm vi 1 tenant).
+    assert await lease.acquire(scope_acme, holder="agent-acme-2") is None
+
+    await lease.release(scope_acme, token=tok_acme)
+    await lease.release(scope_beta, token=tok_beta)
+
+
+async def test_cross_tenant_same_unit_end_to_end_no_collision(tmp_path):
+    """Cùng thuộc tính như trên nhưng qua path THẬT (run_guarded_recovery), không
+    phải primitive ExecutionLease trực tiếp — chứng minh bug đã fix ở tầng gọi thật."""
+    r = _redis()
+    lease = ExecutionLease(r)
+
+    req_acme = _req(tenant="acme")
+    scope_acme = canonical_scope("acme", req_acme.failed_node)
+    held_acme = await lease.acquire(scope_acme, holder="agent-acme-1")  # acme đang giữ lease
+    assert held_acme is not None
+
+    # Tenant beta thao tác CÙNG unit name trong lúc lease acme đang giữ → KHÔNG bị
+    # chặn (khác tenant, khác lease key) → mutate thành công.
+    t = FakeSystemd(state="inactive", heal_on_restart=True)
+    req_beta = _req(tenant="beta")
+    out_beta = await _guard(r, t, req=req_beta, approval=_approval(req_beta, tenant="beta"),
+                            audit_log=_log(tmp_path, "beta.jsonl"), holder="agent-beta-1")
+    assert out_beta.status == "recovered"
+    assert t.restarts == 1
+
+    # Agent khác của CHÍNH tenant acme thử acquire trong lúc lease acme còn giữ →
+    # PHẢI bị từ chối — lease vẫn đúng trong phạm vi 1 tenant.
+    req_acme2 = _req(tenant="acme")
+    out_acme2 = await _guard(r, t, req=req_acme2, approval=_approval(req_acme2, tenant="acme"),
+                             audit_log=_log(tmp_path, "acme2.jsonl"), holder="agent-acme-2")
+    assert out_acme2.status == "aborted" and "lease" in out_acme2.reason.lower()
+    assert t.restarts == 1  # KHÔNG mutate thêm
+
+    await lease.release(scope_acme, token=held_acme)
 
 
 # ── Lease renewal: long-running mutation safety ──────────────────────────────
@@ -264,16 +331,18 @@ async def test_ownership_lost_during_mutation_becomes_escalated_not_completed(tm
     r = _redis()
     lease = ExecutionLease(r)
 
+    req = _req()
+    lease_scope = canonical_scope(req.tenant, req.failed_node)
+
     class HijackingSystemd(FakeSystemd):
         async def run(self, argv, *, timeout=15.0):
             if "restart" in " ".join(argv):
                 # mô phỏng lease hết hạn + agent khác giành được NGAY khi renew sắp chạy
-                await r.set("lease:svc:db", "other-agent-token", ex=120)
+                await r.set(f"lease:{lease_scope}", "other-agent-token", ex=120)
                 await asyncio.sleep(0.05)
             return await super().run(argv, timeout=timeout)
 
     t = HijackingSystemd(state="inactive")
-    req = _req()
     out = await run_guarded_recovery(
         FakeCtx(), req=req, transport=t, audit_log=_log(tmp_path), gate=_gate(),
         approval=_approval(req), env_auto_execute=False, now=NOW, redis=r, holder="agent-1",
@@ -281,7 +350,7 @@ async def test_ownership_lost_during_mutation_becomes_escalated_not_completed(tm
     assert out.status == "escalated"
     assert "ownership_lost_during_mutation_ambiguous" in out.reason
     # KHÔNG ghi đè lease của agent khác khi release (release chỉ xoá nếu token khớp)
-    assert await lease.holder_token("svc:db") == "other-agent-token"
+    assert await lease.holder_token(lease_scope) == "other-agent-token"
 
 
 async def test_ownership_lost_but_already_healthy_stays_completed_no_action(tmp_path):
@@ -289,17 +358,18 @@ async def test_ownership_lost_but_already_healthy_stays_completed_no_action(tmp_
     import asyncio
 
     r = _redis()
+    req = _req()
+    lease_scope = canonical_scope(req.tenant, req.failed_node)
 
     class HijackAfterHealthyCheck(FakeSystemd):
         async def run(self, argv, *, timeout=15.0):
             cmd = " ".join(argv)
             if "is-active" in cmd:
-                await r.set("lease:svc:db", "other-agent-token", ex=120)
+                await r.set(f"lease:{lease_scope}", "other-agent-token", ex=120)
                 await asyncio.sleep(0.05)
             return await super().run(argv, timeout=timeout)
 
     t = HijackAfterHealthyCheck(state="active")  # đã healthy → execute_recovery abort, KHÔNG mutate
-    req = _req()
     out = await run_guarded_recovery(
         FakeCtx(), req=req, transport=t, audit_log=_log(tmp_path), gate=_gate(),
         approval=_approval(req), env_auto_execute=False, now=NOW, redis=r, holder="agent-1",
