@@ -1,0 +1,25 @@
+.aoip-kb-toolbar {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  flex-wrap: wrap; margin-bottom: var(--space-3);
+}
+.aoip-kb-toolbar-actions { display: flex; gap: var(--space-2); }
+.aoip-kb-form {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  border: 1px solid var(--content-line); border-radius: var(--radius-lg);
+  padding: var(--space-4); margin-bottom: var(--space-3); background: var(--content-surface-2);
+}
+.aoip-kb-textarea { min-height: 3rem; resize: vertical; width: 100%; }
+.aoip-kb-textarea-lg { min-height: 6rem; }
+.aoip-kb-form-footer { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.aoip-kb-form-footer .aoip-btn { margin-left: auto; }
+.aoip-kb-score-input { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--content-muted); }
+.aoip-kb-stale { margin-left: var(--space-2); }
+.aoip-kb-delete {
+  border: 1px solid var(--content-line); background: transparent; color: var(--color-critical);
+  border-radius: var(--radius-sm); padding: 2px 8px; font-size: var(--text-xs); cursor: pointer;
+}
+.aoip-kb-delete:hover { background: var(--color-critical-dim); }
+
+@media (max-width: 700px) {
+  .aoip-kb-form-footer .aoip-btn { margin-left: 0; }
+}

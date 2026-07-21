@@ -23,6 +23,14 @@ import type { NavItem } from "@aoip/shared-types";
 // Pipeline(gateway /trace/recent + /trace/{id}/pipeline — omni:trace:stages) ·
 // Số liệu(gateway /kpi/summary + /kpi/trend) · Khách hàng(console /tenants) ·
 // Vận hành(console /operations).
+//
+// NGOẠI LỆ (2026-07-21, port admin/kb): Kho tri thức LÀ write action (thêm/xoá mục RAG) nhưng
+// KHÁC bản chất với /config/autonomy đã loại ở trên — nó không phải policy toàn cục điều khiển
+// hành vi hệ thống (autonomy tier, mutation) mà là NỘI DUNG biên tập (vendor knowledge feed cho
+// LLM chẩn đoán), và store này (src/gateway/routes/kb.py, Redis HNSW) vốn KHÔNG có khái niệm
+// tenant_id — không phải khe hở tenant-isolation như admin/flags, mà là thiết kế cluster-global
+// có chủ đích. Session-gated giống /autonomy/mutation (bất kỳ phiên provider nào đã đăng nhập);
+// gateway chưa có RBAC permission riêng cho route này — nếu cần siết thêm, gate ở gateway trước.
 export const PROVIDER_NAV: NavItem[] = [
   { label: "Tổng quan", href: "/", implemented: true },
   { label: "Khách hàng", href: "/tenants", implemented: true },
@@ -35,6 +43,7 @@ export const PROVIDER_NAV: NavItem[] = [
   { label: "Sự cố bảo mật", href: "/incidents", implemented: true },
   { label: "Việc cần xử lý", href: "/operations", implemented: true },
   { label: "Hộp thư chờ người duyệt", href: "/human-inbox", implemented: true },
+  { label: "Kho tri thức (RAG)", href: "/kb", implemented: true },
   { label: "Cài đặt kết nối", href: "/settings", implemented: true },
   { label: "Sổ kiểm toán", href: "/audit", implemented: true },
 ];
