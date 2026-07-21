@@ -1,6 +1,72 @@
 # Current Session Handoff
 
-Updated: 2026-07-21
+Updated: 2026-07-21 (Phase 7 merge checkpoint)
+
+## Phase 7 — VM capability #3 (systemd.journal_vacuum) + gate-config hygiene — MERGED, CODE-SIDE DONE, DEPLOY/DRILL PENDING
+
+Second fanout round this session (roadmap toward 95%, Phase 7 of 7-10).
+Workflow `wf_4a2349dd-ec8`: 2 parallel worktree coding agents + 1 aggregator.
+
+**Merged into main (commits `b5c0abd`, `56b1abe`, fixup `1f78e85`):**
+- `src/aoip/capabilities/systemd_journal_vacuum.py` — capability #3, mirrors
+  `systemd_reset_failed.py`. `failure_mode="disk_pressure_journal"`,
+  target unit fixed as `systemd-journald.service` (host-scoped disk action
+  modeled as acting on the real journald unit, avoiding a
+  canonical_scope/RecoveryGate generalization). risk=0.12. Threshold/target
+  env-driven: `AOIP_JOURNAL_VACUUM_THRESHOLD_BYTES` (default 2GiB),
+  `AOIP_JOURNAL_VACUUM_TARGET_SIZE` (default "200M"). apply() only ever runs
+  `journalctl --vacuum-size=<target>`.
+- `config/aoip_agent_gate.env` (NEW canonical source) +
+  `scripts/deploy_aoip_gate_config.sh` (idempotent, `--self-test` passing) —
+  replaces the manual per-VM SSH-sed pattern that caused a live-drill
+  failure last round. `AOIP_GATE_ALLOWED_FAILURE_MODES` now includes
+  `disk_pressure_journal`.
+- **Coordinator fixup (mine, not a subagent):** the gate-config agent
+  deliberately left `systemd-journald.service` out of
+  `AOIP_ALLOWED_SYSTEMD_UNITS` (no visibility into the other agent's target
+  unit — correctly flagged as an open item). After merge I confirmed
+  `recovery.py`'s operator key (`disk_pressure_journal`/`systemd`) matches
+  the gate config exactly, then added the unit to the allowlist + updated
+  the matching test. `test_catalog_consistency_every_allowed_failure_mode_has_an_operator`
+  now green.
+
+**Verification done:** full suite `pytest tests/ -q --ignore=tests/integration`
+→ **6376 passed, 0 failed, 5 deselected** (was 6367 right after merge, 6323
+baseline before Phase 7 — zero regressions). `scripts/deploy_aoip_gate_config.sh --self-test` → ALL PASS.
+
+**NOT done yet (next step, same discipline as the reset_failed round —
+kept under direct supervision, not delegated):**
+1. Deploy BOTH `src/aoip/` AND `src/remote_agent/` to all 3 VMs (lesson from
+   last round: they are separately-deployed packages under
+   `/opt/omni-remote-agent/{aoip,remote_agent}/` — deploying only one leaves
+   the other stale).
+2. Run `scripts/deploy_aoip_gate_config.sh` for real against
+   cust-app/cust-edge/cust-db (only `--self-test` has run so far).
+3. Confirm live: `python3 -c "from aoip.capabilities import
+   systemd_journal_vacuum"` on each VM, and `AOIP_ALLOWED_SYSTEMD_UNITS`
+   contains `systemd-journald.service` in each VM's `run.env` post-restart.
+4. `make e2e-proactive` + `make e2e-incident-matrix`.
+5. Live supervised drill for `systemd.journal_vacuum` on a real VM — reuse
+   the three-layer-gate pattern (kill-switch → tenant mutation toggle →
+   tier promotion) proven in
+   `/Users/hiendang/.claude/jobs/71b56e60/tmp/e2e_reset_failed_drill.py`,
+   adapted for `capability="systemd.journal_vacuum"`,
+   `failure_mode="disk_pressure_journal"`, unit `systemd-journald.service`
+   — force real journal growth (e.g. flood-log a test unit or lower the
+   threshold env var temporarily) rather than faking state.
+6. `git push` once drill passes (not yet asked for this round — confirm
+   with user before pushing, per standing "only push when asked" rule; user
+   asked for push last round explicitly, has not re-asked this round yet).
+
+**Working tree at this checkpoint:** clean except
+`reports/incident-matrix/latest.json` (stale generated report from an
+earlier `make e2e-incident-matrix` run this session, harmless, not
+committed).
+
+**Git state:** 5 local commits ahead of `origin/main` (`d2e0666..1f78e85`
+range from this session) — NOT pushed.
+
+---
 
 ## Improvement-plan fanout (post-report) — 3 fixes merged+deployed, E2E IN PROGRESS
 
