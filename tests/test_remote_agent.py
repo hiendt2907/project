@@ -1266,6 +1266,38 @@ class TestCollectServiceTopology:
 
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_no_state_filter_passed_to_systemctl(self):
+        """Same anti-pattern already fixed in discovery.py::_collect_running_services
+        (2026-07-21): a --state=running filter makes a crashed/failed unit
+        invisible to the onboarding topology snapshot exactly when it crashes —
+        the one moment the System Twin/entity graph most needs to know the
+        service exists. A failed unit stays loaded/"in memory" until
+        reset-failed, so it must still show up here, just with its real status."""
+        from remote_agent.collectors import discovery_evidence as disc
+
+        run_mock = AsyncMock(return_value=("", 0))
+        with patch.object(disc, "_run", run_mock):
+            await disc.collect_service_topology("host1")
+
+        args = run_mock.await_args.args[0]
+        assert "--state=running" not in args
+
+    @pytest.mark.asyncio
+    async def test_failed_unit_still_discovered_with_real_status(self):
+        """A crashed unit must survive into the topology snapshot with its
+        actual state, not be silently dropped nor mislabeled 'running'."""
+        from remote_agent.collectors import discovery_evidence as disc
+
+        systemctl_out = "payment-api.service loaded failed failed payment-api (simulated)\n"
+        with patch.object(disc, "_run", AsyncMock(return_value=(systemctl_out, 0))):
+            result = await disc.collect_service_topology("host1")
+
+        assert result is not None
+        services = result["extracted_fact"]["discovery_data"]["services"]
+        assert services[0]["name"] == "payment-api"
+        assert services[0]["status"] == "failed"
+
 
 class TestCollectConnectionScan:
     @pytest.mark.asyncio
