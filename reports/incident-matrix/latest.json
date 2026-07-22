@@ -1,10 +1,10 @@
 {
   "schema_version": "2",
   "wave": "A1+PhaseB",
-  "started_at": 1782174042,
-  "ended_at": 1782174379,
-  "duration_sec": 337,
-  "git_sha": "b3db031a79a1268785e959355cc514cad3646551",
+  "started_at": 1784689131,
+  "ended_at": 1784689563,
+  "duration_sec": 432,
+  "git_sha": "5b587b8795927da25b51809e11e97eb4373be17e",
   "summary": {
     "total": 5,
     "passed": 5,
@@ -15,7 +15,7 @@
     {
       "scenario": "wave_a1_rbac_manifest",
       "status": "passed",
-      "duration_sec": 0,
+      "duration_sec": 1,
       "note": ""
     },
     {
@@ -27,19 +27,19 @@
     {
       "scenario": "phase_b_pytest",
       "status": "passed",
-      "duration_sec": 156,
+      "duration_sec": 184,
       "note": ""
     },
     {
       "scenario": "phase_b_unit_full",
       "status": "passed",
-      "duration_sec": 155,
+      "duration_sec": 191,
       "note": ""
     },
     {
       "scenario": "nginx_waiting_fault",
       "status": "passed",
-      "duration_sec": 25,
+      "duration_sec": 55,
       "note": ""
     }
   ]
