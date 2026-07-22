@@ -70,6 +70,14 @@ spec:
           env:
             - name: OMNI_WORKER_ROLE
               value: "full"
+            # SIEM graph-correlation engine (Python port của brain-go, chạy
+            # in-process — loop kafka_siem_correlation_loop). CHỈ được bật khi
+            # Deployment omni-brain-go KHÔNG còn chạy: 2 engine cùng bật sẽ
+            # đua trên cùng Redis key `corr:*` và double-emit chains (xem
+            # review 2026-07-22). brain-go đã xoá cùng commit này sau khi
+            # parity test PASS 2/2.
+            - name: OMNI_SIEM_CORRELATION_ENABLED
+              value: "true"
             - name: OMNI_OTEL_TRACING_ENABLED
               value: "true"
             - name: OMNI_OTEL_EXPORTER_OTLP_ENDPOINT

@@ -69,6 +69,7 @@ def _make_settings(**kw: Any) -> SimpleNamespace:
         "chat_model": "qwen2.5:7b",
         "cb_max_delayed_queue": 5000,
         "siem_chain_consumer_enabled": False,
+        "siem_correlation_enabled": False,
     }
     defaults.update(kw)
     return SimpleNamespace(**defaults)

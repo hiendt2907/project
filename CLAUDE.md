@@ -47,7 +47,7 @@ Alert sources → `omni-diagnostic-evidence` → analyst (RAG → LLM → Analys
 
 | Role | Active loops | Deployed thật? |
 |---|---|---|
-| `full` | tất cả: evidence, actions, feedback, kpi, knowledge, siem-chains, tier | ✅ pod `omni-fullstack` |
+| `full` | tất cả: evidence, actions, feedback, kpi, knowledge, siem-chains, siem-correlation (port Python của brain-go, gate `OMNI_SIEM_CORRELATION_ENABLED`), tier | ✅ pod `omni-fullstack` |
 | `onboarding` | discovery-evidence worker | ✅ pod `omni-onboarding` (riêng `omni-fullstack`) |
 | `analyst` | kafka_evidence_loop, action_feedback, kpi, knowledge, siem-chains, tier | ❌ RETIRED 2026-07-02 (manifest xóa từ `915e509`, object cluster đã dọn) |
 | `prober` | kafka_alerts_loop, delayed_queue, circuit_breaker, telegram_polling | ❌ RETIRED 2026-07-02 |
@@ -123,8 +123,9 @@ NS=multi-agent make omni-death-loop                                # chaos loop
 
 ### Declared target topology
 `omni-fullstack` (role=full) là workload lõi duy nhất được `make deploy-worker` deploy mặc định.
-`omni-gateway`, `omni-onboarding`, `omni-brain-go` là các Deployment RIÊNG BIỆT, có
+`omni-gateway`, `omni-onboarding` là các Deployment RIÊNG BIỆT, có
 manifest/target Makefile riêng — không phải "instance phụ của omni-fullstack".
+(`omni-brain-go` từng nằm trong danh sách này — RETIRED 2026-07-22, đã port vào omni-fullstack.)
 
 **2026-07-06: `omni-ui` (Deployment/Service/Ingress, domain `omni.ai-agent.local` +
 `portal.ai-agent.local`) đã RETIRED theo yêu cầu trực tiếp của user** — portal thật duy nhất
@@ -143,7 +144,7 @@ sang provider/tenant; xoá source tree là quyết định riêng cần xác nh�
 | `omni-fullstack` | `OMNI_WORKER_ROLE=full`, tier hiệu lực = Redis cache `omni:cfg:tier:default`=`shadow` | 1/1 Running |
 | `omni-gateway` | FastAPI HTTP ingress (không import `workers/`) | 1/1 Running (restart do race Kafka-chưa-ready lúc pod khởi động — dependency outage, tự phục hồi, không phải bug) |
 | `omni-onboarding` | `OMNI_WORKER_ROLE=onboarding` — discovery-evidence worker | 1/1 Running |
-| `omni-brain-go` | SIEM correlation engine THẬT (image `finguard/brain-go:siem-v2-corr`, consume `omni-siem-raw`→produce `omni-siem-incidents`/`omni-siem-chains`, consumer group `brain-go-kafka` không trùng lặp) — **không liên quan onboarding** | 1/1 Running |
+| ~~`omni-brain-go`~~ | **RETIRED 2026-07-22** — đã port sang Python (`src/services/siem_correlation/` + loop `kafka_siem_correlation_loop` trong `omni-fullstack`, group `omni-siem-correlation`, cùng Redis key layout `corr:*`). Parity test PASS 2/2 (output Python == Go từng field trên cùng input) trước khi xoá Deployment + manifest. KHÔNG bật lại brain-go song song với `OMNI_SIEM_CORRELATION_ENABLED=true` — 2 engine sẽ đua trên cùng key `corr:*` và double-emit chains. Lưu ý parity: khi các event đến trong CÙNG 1 giây, sequence-score phụ thuộc thứ tự tie (Go sort không ổn định = ngẫu nhiên; Python ổn định newest-first = bảo thủ hơn) — hành vi vốn có của cả 2 engine, không phải bug port. | Deployment đã xoá |
 | `redis-0`, `kafka`, `omni-postgres-0`, `redis-exporter`, `aoip-dex`, `aoip-provider-*`, `aoip-tenant-*` | portal/hạ tầng phụ trợ (provider/tenant portal là portal thật duy nhất, `omni-ui` đã retired) | Running |
 
 ### Kill-switch — effective value đã xác minh trên pod thật
@@ -160,8 +161,9 @@ git từ commit `915e509` (split-role consolidation) nhưng object Deployment (`
 trong cluster đến 2026-07-02 → đã `kubectl delete` dứt điểm (kèm Service `omni-analyst` orphan, đã
 `git rm k8s/services/omni-analyst-service.yaml`). `omni-siem-bridge`, `omni-hitl-dispatcher`,
 `omni-evidence-adapter` — manifest VẪN còn trong git (`replicas: 1`, target `make deploy-siem-stack`,
-có PDB riêng) nhưng đang scale 0 trong lab hiện tại vì `omni-brain-go` đã đảm nhiệm SIEM correlation
-cho kịch bản lab này; đã annotate `omni.io/status=scaled-down-intentional` + owner + sunset condition
+có PDB riêng) nhưng đang scale 0 trong lab hiện tại vì SIEM correlation đã chạy trong
+`omni-fullstack` (trước 2026-07-22 là `omni-brain-go`, nay là loop `kafka_siem_correlation_loop`);
+đã annotate `omni.io/status=scaled-down-intentional` + owner + sunset condition
 trên cả 3 — KHÔNG coi là zombie, KHÔNG xóa.
 
 RAG `omni:rag:sop` HLEN=1019 (khớp MEMORY.md). Redis AOF enabled. Knowledge pipeline active

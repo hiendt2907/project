@@ -72,11 +72,12 @@ echo "Enforcing omni-proactive-incidents config: retention.ms=86400000 (1d), cle
   --add-config "cleanup.policy=delete,retention.ms=86400000"
 echo "  [OK] omni-proactive-incidents retention=1d"
 
-# SIEM integration topics (Phase 2): brain-go Kafka transport.
+# SIEM integration topics — correlation engine chạy trong omni-fullstack
+# (src/services/siem_correlation, port Python của brain-go; brain-go RETIRED 2026-07-22).
 # omni-siem-raw: raw FinGuard incidents from siem_bridge (SIEM_BRIDGE_DUAL_EMIT=true).
-# omni-siem-incidents: correlated incidents from brain-go (BRAIN_TRANSPORT=kafka).
+# omni-siem-incidents: correlated incidents passthrough (OMNI_SIEM_CORRELATION_ENABLED=true).
 # Retention: broker default (set OMNI_SIEM_RAW_RETENTION_MS to override at create).
-# omni-siem-chains: graph-correlated attack chains from brain-go (CORR_GRAPH_ENABLED=true).
+# omni-siem-chains: graph-correlated attack chains (union-find, corr:* Redis state).
 for SIEM_TOPIC in "omni-siem-raw" "omni-siem-incidents" "omni-siem-chains"; do
   echo "Ensuring topic: $SIEM_TOPIC (partitions=6)"
   "${KUBECTL[@]}" exec -n "$NS" "deploy/$DEPLOY" -- \

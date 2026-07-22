@@ -654,6 +654,16 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_SIEM_CHAIN_CONSUMER_ENABLED"),
         description="Enable the omni-siem-chains correlation-chain consumer loop (analyst role).",
     )
+    siem_correlation_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_SIEM_CORRELATION_ENABLED"),
+        description=(
+            "Enable the in-process SIEM graph-correlation engine "
+            "(services.siem_correlation — Python port of brain-go): consumes "
+            "omni-siem-raw, produces omni-siem-incidents + omni-siem-chains. "
+            "Default off; the deployment manifest turns it on explicitly."
+        ),
+    )
     consumer_group_executor: str = Field(
         default="omni-executor-actions",
         description="Kafka group for svc-executor — consumes omni-actions only.",

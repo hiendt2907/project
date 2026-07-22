@@ -1221,6 +1221,12 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
             tasks.append(asyncio.create_task(
                 kafka_siem_chains_loop(ctx, stop), name="kafka_siem_chains_loop",
             ))
+        if ctx.settings.siem_correlation_enabled:
+            from workers.siem_correlation_loop import kafka_siem_correlation_loop
+
+            tasks.append(asyncio.create_task(
+                kafka_siem_correlation_loop(ctx, stop), name="kafka_siem_correlation_loop",
+            ))
         tasks.append(asyncio.create_task(kafka_knowledge_evidence_loop(ctx, stop), name="kafka_knowledge_evidence_loop"))
     if role in ("full", "core"):
         tasks.extend(

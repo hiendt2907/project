@@ -17,6 +17,7 @@ def _settings(**overrides):
         proactive_enabled=False,
         telegram_polling_enabled=False,
         siem_chain_consumer_enabled=False,
+        siem_correlation_enabled=False,
     )
     base.update(overrides)
     return SimpleNamespace(**base)

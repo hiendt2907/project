@@ -73,6 +73,7 @@ def _make_settings(**overrides: Any) -> SimpleNamespace:
         cb_max_delayed_queue=5000,
         kafka_topic_autonomous_actions="omni-autonomous-actions",
         siem_chain_consumer_enabled=False,
+        siem_correlation_enabled=False,
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
