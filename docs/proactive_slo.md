@@ -1,8 +1,8 @@
 # Proactive SLO (lab)
 
-Short reference for Prometheus queries tied to the proactive daemon. Histogram and counters are emitted from the worker codebase on the deployment that runs the proactive observer — in **split topology**, use **`omni-core`** (`src/workers/metrics_exporter.py`, `src/workers/proactive_observer.py`). Legacy monolith: `omni-worker` if `OMNI_WORKER_ROLE` includes proactive.
+Short reference for Prometheus queries tied to the proactive daemon. Histogram and counters are emitted from the worker codebase on the deployment that runs the proactive observer — currently the consolidated pod **`omni-fullstack`** (`OMNI_WORKER_ROLE=full`; `src/workers/metrics_exporter.py`, `src/workers/proactive_observer.py`). The split-role `omni-core` deployment was RETIRED 2026-07-02 (see `CLAUDE.md` DEPLOYMENT STATE) — its loops now run inside `omni-fullstack`.
 
-See also: [OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md) §6 (metrics by deployment).
+See also: [../CLAUDE.md](../CLAUDE.md) (DEPLOYMENT STATE / COMPONENT ROLES) and [CODEBASE.md](CODEBASE.md).
 
 ## Incident duration (end-to-end handler)
 

@@ -1,3 +1,49 @@
+> **Xem thêm (2026-07-22, cùng ngày)**: ma trận năng lực đầy đủ 18 domain (không chỉ SIEM/remote
+> agent) đối chiếu vision "Omni = bộ não SRE trung tâm + đội SRE ảo 24/7/365" ở đầu
+> [ASSESSMENT_autonomous_sre_v2.md](ASSESSMENT_autonomous_sre_v2.md) — domain #13 (omni-siem) và
+> #5 (omni-remote-agent) trong ma trận đó kế thừa trực tiếp kết luận của audit này.
+
+## CẬP NHẬT TRẠNG THÁI (2026-07-22, follow-up round)
+
+Tất cả finding CRITICAL/mở của audit này đã được xử lý trong cùng ngày (sau round port
+SIEM correlation engine), qua security-reviewer sub-agent (thấy thêm gap ngoài scope ban đầu):
+
+- **`command_executor.py` 2 CRITICAL gốc** (`ps auxe`/`mysqladmin shutdown` + env leak) — **FIXED**.
+  Security-reviewer thứ 2 (ultrareview follow-up) phát hiện các fix ban đầu CHƯA đủ chặt — đã vá
+  thêm: (1) whitelist chỉ check basename nhưng exec theo path caller cung cấp → giờ resolve về
+  binary thật qua `shutil.which()` trên sandbox PATH, cache per-process; (2) `mysqladmin` scanner
+  "first non-flag token" bị bypass bằng command-chaining (`status shutdown` chạy cả 2) và flag-value
+  smuggling (`-h status` đọc nhầm value của `-h` là subcommand) → giờ CHẶT: không cho phép BẤT KỲ
+  flag nào, đúng 1 positional arg, phải nằm trong readonly set; (3) `dpkg`/`rpm`/`ip` — whitelisted
+  theo tên binary nhưng KHÔNG có subcommand/flag gate (như `ps`/`mysqladmin` gốc từng thiếu) → đã
+  thêm allowlist riêng cho từng lệnh; (4) `ps` dash-prefixed cluster (`-auxe`) từng được exempt khỏi
+  check hoàn toàn (chỉ check cluster không dấu `-`) — procps-ng có thể tái diễn dịch cluster có dấu
+  `-` như BSD-mode → giờ strip 1 dấu `-` trước khi check, chỉ giữ ngoại lệ cho `-e` đơn ký tự (ý
+  nghĩa POSIX rõ ràng, không liên quan env-dump); (5) thêm `cwd=/tmp` cho subprocess (tránh lộ tên
+  file qua listing tương đối). Tests: 162 test trong `test_remote_agent_command_executor.py` (43
+  test mới), full suite 6550 passed.
+- **Finding #1 `siem_bridge.py` double-fire** — **FIXED**. Idempotency per-topic qua Redis dedup key
+  (`omni:siembridge:dedup:{topic}:{incident_id}`, set CHỈ sau khi `send_and_wait` thành công) — retry
+  sau lỗi 1 phần chỉ replay phần chưa xong, không double-publish phần đã thành công. Test mới trong
+  `test_siem_unified_pipeline.py`.
+- **Finding #3 `ChainConsumer._cohesion` fail-open** — **FIXED**. Lỗi embedding (exception/vector
+  rỗng/signature rỗng) giờ fail-closed: `score=0.0`, mọi member đánh dấu `weak`, log WARNING (không
+  còn DEBUG), metric mới `omni_chain_cohesion_degraded_total`. Case `llm=None` (không cấu hình cohesion
+  check) VẪN giữ `score=1.0` — đây là no-op có chủ đích, không phải bug. Test mới trong
+  `test_chain_consumer.py`.
+- **2 agent process song song 3 VM lab** — **FIXED**. Xác nhận `aoip-agent.service` đã gọi
+  `remote_agent.agent.run_agent()` làm library (`aoip/agent/employee.py:86-88`) → `omni-remote-agent.service`
+  hoàn toàn dư thừa. Đã `systemctl disable --now` + `reset-failed` trên cả 3 VM (`cust-edge`,
+  `cust-app`, `cust-db`); `aoip-agent.service` vẫn `enabled/active` duy nhất. Verify: registry Redis
+  `omni:remote_agent:registry:*` chỉ còn 1 key/host, không còn double-fire cùng host.
+
+Còn mở (ngoài scope follow-up round này, cần quyết định riêng): pipeline SIEM trung tâm 0 message
+thật (chưa có traffic sản xuất), thiếu escalation tier gate cho nhánh SIEM, `classify_origin()`
+RFC5737 misclassification, `siem_crat_bridge.py::write_siem_remediation_to_crat()` dead code,
+skill `omni-remote-agent` cần update loại bỏ tham chiếu bản Go đã xoá.
+
+---
+
 # Audit: Omni "Autonomous SRE Team" — NÃO (Smart SIEM trung tâm) vs CHÂN/TAY/MẮT (remote agent + Smart SIEM biên)
 
 Ngày: 2026-07-22

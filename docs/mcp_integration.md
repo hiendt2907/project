@@ -1,6 +1,6 @@
 # MCP integration (ADR — pilot)
 
-**Canonical:** [vendor/OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md).
+**Canonical:** [../CLAUDE.md](../CLAUDE.md) + [CODEBASE.md](CODEBASE.md).
 
 ## Context
 

@@ -1,21 +1,18 @@
 # Omni playbook / memory index (pointers only)
 
-**Canonical (kiến trúc + vận hành — đọc trước):** [vendor/OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md) · **Chỉ mục doc:** [DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md)
+**Canonical (kiến trúc + vận hành — đọc trước):** [../CLAUDE.md](../CLAUDE.md) + [CODEBASE.md](CODEBASE.md) · **Chỉ mục doc:** [DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md)
 
 This document is an **index**: it points to where knowledge lives. It does **not** duplicate SOP text or long runbooks.
-
-**Bookmark cũ:** [vendor/golden_path_split.md](vendor/golden_path_split.md) → redirect tới canonical.
 
 ## Corpus contract (where to write what)
 
 | Kind of update | Document |
 |----------------|----------|
-| **Single source — kiến trúc + Kafka + RAG + verify (bám code)** | [OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md) |
-| Invariants, guardrails, failure patterns after a **behavior change** | [project-memory.md](../reports/project-memory.md) |
-| Diagnostic policy (INV_*), `reasoning_chain`, ReAct/blind lane | [diagnostic-policy-spec.md](../reports/diagnostic-policy-spec.md) + [project-memory.md](../reports/project-memory.md) |
-| **Symptom → fix** from a real incident or debug session | [knownbase.md](knownbase.md) |
-| MPV3 / architecture review | [master_plan_v3_review_report.md](master_plan_v3_review_report.md) |
-| New long-lived technical notes | Prefer `docs/vendor/`; phase reports in `docs/reports/` |
+| **Single source — kiến trúc + Kafka + RAG + verify (bám code)** | [../CLAUDE.md](../CLAUDE.md) + [CODEBASE.md](CODEBASE.md) |
+| Invariants, guardrails, failure patterns after a **behavior change** | [project-memory.md](reports/project-memory.md) |
+| Diagnostic policy (INV_*), `reasoning_chain`, ReAct/blind lane | [diagnostic-policy-spec.md](reports/diagnostic-policy-spec.md) + [project-memory.md](reports/project-memory.md) |
+| Capability audit / 18-domain matrix | [architecture/ASSESSMENT_autonomous_sre_v2.md](architecture/ASSESSMENT_autonomous_sre_v2.md) |
+| New long-lived technical notes | `docs/architecture/` (design), `docs/runbooks/` (ops), `docs/reports/` (point-in-time evidence) |
 
 ## Retrieval surfaces (code)
 
@@ -29,7 +26,9 @@ This document is an **index**: it points to where knowledge lives. It does **not
 | ReAct scratchpad  | Redis `omni:proactive:react_mem:{trace_id}`                                                                                                                | Short per-iteration observations for the current incident only |
 | Negative patterns | Redis `omni:learning:negative:proactive:*`                                                                                                                       | Avoid repeating failed playbooks                               |
 
-**Self-learning (shadow):** Redis `omni:selflearn:shadow:*` — **not** auto-ingested into pgvector; export via chaos-rag runbooks. See [OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md) (shadow / learning policy).
+**Self-learning (shadow):** Redis `omni:selflearn:shadow:*` — **not** auto-ingested into the RAG store.
+
+> Note: RAG backend is Redis Stack HNSW (`src/rag/redis_vector_store.py`), not Postgres/pgvector — `src/rag/pgvector_store.py` is a compat shim re-exporting `redis_vector_store`. Collection names below are still accurate.
 
 
 ## Context priority (for LLM calls)
@@ -55,7 +54,6 @@ Extend this table as new `rule_name` values or taxonomies appear — keep rows *
 
 ## Related docs
 
-- `[vendor/OMNI_PROJECT_CANONICAL.md](vendor/OMNI_PROJECT_CANONICAL.md)` — **canonical** kiến trúc + Kafka + RAG + verify
-- `[docs/proactive_state_machine.md](proactive_state_machine.md)` — phases, audit, metrics
-- `[docs/reports/chaos-rag-selflearn-runbook.md](reports/chaos-rag-selflearn-runbook.md)` — chaos/matrix + shadow self-learning lab, Registry, Learning Delta, Redis export (no auto-ingest)
+- [`../CLAUDE.md`](../CLAUDE.md) + [`CODEBASE.md`](CODEBASE.md) — **canonical** kiến trúc + Kafka + RAG + verify
+- [`docs/proactive_state_machine.md`](proactive_state_machine.md) — phases, audit, metrics
 

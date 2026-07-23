@@ -1,5 +1,11 @@
 # Project Memory Registry
 
+> Entries below carry their own date. Anything predating 2026-07-02 may reference the retired
+> split-role deployments (`omni-prober`/`omni-analyst`/`omni-core`/`omni-executor`, now consolidated
+> into `omni-fullstack`) or superseded reports that have since been removed during doc cleanup —
+> read as historical record, not current ops guidance. For current state see `../../CLAUDE.md` and
+> `../CODEBASE.md`. Sections from **2026-07-14 onward** are current.
+
 ## Customer System Understanding (2026-07-14)
 
 - The System Twin primary view is a customer-only topology graph. Omni/Remote Agent
@@ -13,9 +19,7 @@
   and `network_only`; incomplete evidence must remain visible as an unknown/action.
 - Canonical details: [`customer-system-understanding.md`](../architecture/customer-system-understanding.md).
 
-**North Star + audit verify log (định kỳ):** [audit-snapshot-2026-05.md](audit-snapshot-2026-05.md)
-
-**Canonical kiến trúc (bám code):** [../vendor/OMNI_PROJECT_CANONICAL.md](../vendor/OMNI_PROJECT_CANONICAL.md)
+**Canonical kiến trúc (bám code):** [`../../CLAUDE.md`](../../CLAUDE.md) + [`../CODEBASE.md`](../CODEBASE.md)
 
 ## Invariants
 
@@ -39,8 +43,8 @@
 - **SDK verify matrix (2026):** `OMNI_SDK_VERIFY_OPTIONAL_PROBES` allows INCONCLUSIVE on listed Prom probes without failing verify. `OMNI_EXPERIENCE_REQUIRES_SDK_VERIFY` (default true) blocks RAG upsert on legacy finalize without SDK-verified path.
 - Advanced self-learning tiers must be zero-impact by default: `OMNI_MULTI_HYPOTHESIS_ENABLED=false`, `OMNI_DEEP_PROBE_ORCHESTRATION_ENABLED=false`, `OMNI_KNOWLEDGE_DRAFT_ENABLED=false`, `OMNI_AUTODOC_GIT_PUSH_ENABLED=false`.
 - Incident training execution must be registry-driven (`config/incident_training_matrix.yaml`) and not hardcoded in scattered shell branches.
-- Chaos / RAG self-learning lab (banking-safe path B): do not auto-ingest Redis shadow artifacts (`omni:selflearn:shadow:*`) into PGVector; gold dataset for vector ingest only after human **VERIFIED_SUCCESS** and a separate ingest step (`docs/reports/chaos-rag-selflearn-export-ingest.md`).
-- Sprint A lab: keep `OMNI_AUTODOC_GIT_PUSH_ENABLED=false`; no automated `git push` for `docs/vendor/knownbase.md` from workers — updates via human PR only.
+- Chaos / RAG self-learning lab (banking-safe path B): do not auto-ingest Redis shadow artifacts (`omni:selflearn:shadow:*`) into the RAG store; gold dataset for vector ingest only after human **VERIFIED_SUCCESS** and a separate, explicit ingest step.
+- Sprint A lab: keep `OMNI_AUTODOC_GIT_PUSH_ENABLED=false`; no automated `git push` for project docs from workers — updates via human PR only.
 
 ## AlertPipelineMemory (2026 — alert flow autonomy)
 

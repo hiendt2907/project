@@ -1,112 +1,122 @@
 # Current Session Handoff
 
-Updated: 2026-07-22 — Port SIEM correlation engine brain-go (Go) → Python DONE (chưa commit).
-Audit "Autonomous SRE Team" cùng ngày vẫn còn hiệu lực: `docs/architecture/AUDIT_autonomous_sre_team_2026_07_22.md`.
-
 ## Deliverable hiện tại
-**Port `omni-brain-go` (Go SIEM correlation engine) sang Python, chạy như async loop trong
-`omni-fullstack` — DONE, deployed, cutover hoàn tất, CHƯA commit/push (chờ user).**
-Deployment `omni-brain-go` đã xoá khỏi cluster + git (`git rm k8s/deployments/omni-brain-go.yaml`).
-Python engine consume `omni-siem-raw` → produce `omni-siem-incidents`/`omni-siem-chains`,
-consumer group `omni-siem-correlation`, Redis prefix riêng khi chạy parity (`pycorr-*`).
+
+Tổng hợp/refactor toàn bộ tài liệu-báo cáo-audit của dự án Omni thành 1 bộ duy nhất, chính xác
+trạng thái hiện tại, không rác dự án.
+
+## Definition of Done
+
+- `docs/` chỉ còn file phản ánh đúng kiến trúc/trạng thái hiện tại (đối chiếu `CLAUDE.md`) —
+  KHÔNG còn báo cáo/audit/plan mô tả kiến trúc split-role (`omni-prober`/`analyst`/`core`/
+  `executor`, RETIRED 2026-07-02), `omni-ui` (RETIRED 2026-07-06), hay `brain-go` (RETIRED
+  2026-07-22) mà không có ghi chú rõ đó là lịch sử.
+- Không còn pointer chết (dangling link) tới file đã xoá trong `docs/`, `CLAUDE.md`, `AGENTS.md`,
+  `MEMORY.md`.
+- 3 file index (`docs/README.md`, `docs/DOCUMENTATION_INDEX.md`, `docs/reports/README.md`) phản
+  ánh đúng cấu trúc còn lại.
+- Không phá vỡ test suite (không file code nào phụ thuộc doc đã xoá).
+
+**Trạng thái: DONE**, verified, CHƯA commit/push (chờ user).
+
+## Trạng thái hiện tại
+
+Hoàn tất. Không còn việc dở dang cho deliverable này.
 
 ## Đã hoàn thành
-- Engine mới: `src/services/siem_correlation/` (models, entities, decode, confidence, chain,
-  graph, config) + `src/workers/siem_correlation_loop.py`, đăng ký trong `omni_worker.py`
-  cho role `full`/`analyst`, gate bằng `OMNI_SIEM_CORRELATION_ENABLED` (default False,
-  manifest omni-fullstack bật true + comment cảnh báo không chạy song song 2 engine).
-- TDD: 68 test mới viết trước (RED→GREEN), 6 file `tests/test_siem_correlation_*.py`.
-  Full suite: **6471 passed, 0 failed**.
-- Parity Go↔Python: `scripts/siem_correlation_parity.py` chạy trong pod — PASS 2/2
-  (27/27 incident envelope khớp từng field; 2/2 chain khớp mọi field trừ chain_id/timestamp;
-  tenant `parity-*`, không đụng state Go).
-- Cutover: xoá brain-go SAU parity pass → deploy image mới flag=true → group joined →
-  e2e post-cutover: 53 event (50 noise + 3 attack) → đúng 1 chain (conf 0.525) → CRAT
-  `CHAIN_CORRELATED` signed=True → ChainConsumer `chain_advisory_emitted`.
-  `make e2e-incident-matrix` 5/5 PASS.
-- Review (sub agent): APPROVE-WITH-FIXES, 0 CRITICAL/HIGH; 1 MEDIUM (2 engine song song cùng
-  prefix `corr:*`) đã xử lý bằng thứ tự cutover + comment manifest. Monitor (sub agent):
-  verdict CLEAN — 0 chain_rejected/poison/Telegram spam, Redis Go vs Python khớp 144 key 1:1,
-  lag 0.
-- Cập nhật `CLAUDE.md` (COMPONENT ROLES + DEPLOYMENT STATE) và `~/.claude/skills/omni-siem/SKILL.md`.
+
+- `docs/`: 248 file / 32MB → 73 file / <1MB. Xoá `docs/vendor/*.html` (31MB cache bên thứ 3),
+  `docs/reports/` phase-1..7 + chaos-rag snapshot cũ (giữ 6/~50 file), `docs/post-mortems/` 19/20
+  file scratch (giữ `drift-correction-2026-07-02.md`), toàn bộ `docs/audit/`, `docs/analysis/`,
+  `docs/acceptance/`, `docs/benchmarks/`, `docs/CODEMAPS/`, 11/17 `docs/runbooks/`,
+  `docs/vendor/OMNI_PROJECT_CANONICAL.md` + `knownbase.md` (nội dung ~90%+ mô tả kiến trúc/RAG
+  backend đã bị thay hoàn toàn — active-misleading, không chỉ cũ).
+- Root repo: xoá `PLAN.md`, `RESTRUCTURE_PLAN.md`, `CONCEPT_MAP.md` (kế hoạch cũ, không ai tham
+  chiếu).
+- `AGENTS.md` (bản fork lỗi thời của `CLAUDE.md`, lệch ~1 tháng, còn liệt kê role đã RETIRED) →
+  viết lại thành pointer mỏng trỏ về `CLAUDE.md`.
+- Sửa nội dung (không chỉ xoá) 4 file còn giữ nhưng có pointer chết:
+  `docs/omni_playbook_index.md`, `docs/proactive_slo.md`, `docs/mcp_integration.md`,
+  `docs/reports/project-memory.md` (thêm banner staleness cho entry cũ).
+- Cập nhật skill ngoài repo `~/.claude/skills/omni-lane-operator-loop/SKILL.md` — bỏ tham chiếu 2
+  file vendor đã xoá.
+- Viết lại hoàn toàn `docs/README.md`, `docs/DOCUMENTATION_INDEX.md`, `docs/reports/README.md`.
+- **KHÔNG xoá** cụm 18 file "AOIP Constitution" (`docs/architecture/FRAMEWORK_LAWS.md`,
+  `META_MODEL.md`, v.v.) + root `MASTER_PLAN.md` — trông giống sprawl nhưng xác minh
+  `src/aoip/__init__.py` (code chạy thật) tham chiếu làm ontology nền; đã ghi chú rõ trong
+  `DOCUMENTATION_INDEX.md` Tầng 2 (frozen, không mở rộng).
 
 ## Branch và commit
-`main`, HEAD `5b587b8` (chưa push từ trước). Toàn bộ port CHƯA commit.
+
+`main`. HEAD `6863601` (docs: audit Autonomous SRE Team 2026-07-22 + handoff port SIEM engine) —
+chưa có commit mới trong phiên này.
 
 ## Working tree
-Modified: `CLAUDE.md`, `k8s/deployments/omni-fullstack.yaml`, `src/workers/omni_worker.py`,
-`src/workers/settings.py`, 3 test cũ (thêm field fake settings:
-`test_cov_omni_worker_gaps.py`, `test_track1b_worker_kafka.py`,
-`test_worker_role_discovery_consumer.py`), `docs/handoffs/CURRENT_SESSION.md`,
-`reports/incident-matrix/latest.json` (auto-gen).
-Deleted (staged): `k8s/deployments/omni-brain-go.yaml`.
-Untracked: `src/services/siem_correlation/`, `src/workers/siem_correlation_loop.py`,
-`scripts/siem_correlation_parity.py`, 6 file `tests/test_siem_correlation_*.py`,
-`docs/architecture/AUDIT_autonomous_sre_team_2026_07_22.md` (audit session trước, cũng chưa commit).
+
+178 file bị xoá (`D`), 21 file bị sửa (`M`) — toàn bộ trong `docs/` + `AGENTS.md`. Không đụng
+`src/`, `tests/`, `k8s/`. **Cộng dồn** với working tree từ phiên trước (SIEM correlation port +
+command_executor security follow-up round, 9 file `src/`/`tests/`) — cả hai đều CHƯA commit.
+
+## Files chính đã thay đổi
+
+`docs/README.md`, `docs/DOCUMENTATION_INDEX.md`, `docs/reports/README.md` (rewrite),
+`AGENTS.md` (rewrite thành pointer), `docs/omni_playbook_index.md`, `docs/proactive_slo.md`,
+`docs/mcp_integration.md`, `docs/reports/project-memory.md` (edit pointer),
+`~/.claude/skills/omni-lane-operator-loop/SKILL.md` (edit pointer, ngoài repo).
+178 file xoá — xem `git status --short` cho danh sách đầy đủ.
 
 ## Quyết định đã chốt
-- Không port Redis-stream transport / legacy single-key correlator (chưa từng deploy).
-- Không sửa ChainConsumer trong scope này (finding #3 `_cohesion` fail-open giữ nguyên).
-- 2 LOW deferred: tenant_id không escape trong Redis key (parity-faithful với Go, trust
-  boundary ở Kafka ACL/gateway); `max_severity` dead-code Go không port.
-- Tie-order nuance (không phải bug): event cùng 1 giây → sequence-score phụ thuộc sort tie
-  (Go unstable = ngẫu nhiên, Python stable = newest-first bảo thủ); parity script giãn 1.5s
-  để deterministic.
-- Flag default False trong code; chỉ manifest lab bật true — fail-safe khi rollback image.
 
-## Verification đã chạy (re-verified bởi sub agent báo cáo 2026-07-22)
+- Xoá hẳn (không archive) — đã hỏi và được user duyệt qua AskUserQuestion. Không thiết kế lại
+  quyết định này ở session sau; nếu cần khôi phục 1 file cụ thể, dùng `git log --diff-filter=D`
+  + `git show <commit>:<path>` (git vẫn giữ lịch sử, working tree chỉ mới xoá, chưa commit nên
+  thậm chí `git checkout -- <path>` khôi phục được ngay nếu cần trước khi commit).
+- Cụm "AOIP Constitution" (`FRAMEWORK_LAWS.md` và 17 file liên quan) giữ nguyên vĩnh viễn trừ khi
+  có quyết định kiến trúc mới rõ ràng — đây là ontology nền cho `src/aoip/`, không phải sprawl.
+- `docs/vendor/*.html` cache: nếu cần lại, chạy `scripts/sync_vendor_docs.py`, KHÔNG khôi phục từ
+  git history (bản cache cũ có thể đã lỗi thời so với vendor thật).
+
+## Verification đã chạy
+
 ```
-pytest tests/ -q --ignore=tests/integration        # 6471 passed, 0 failed
-pytest tests/test_siem_correlation_extract.py tests/test_siem_correlation_graph.py -q  # 24 passed
-scripts/siem_correlation_parity.py (trong pod)     # PASS 2/2
-make e2e-incident-matrix                            # 5/5 PASS
-kubectl get deploy | grep brain                     # không còn omni-brain-go
-kafka-consumer-groups --describe --group omni-siem-correlation  # omni-siem-raw lag=0, member active
-logs omni-fullstack: siem_corr_chain_emitted conf=0.525 members=3 (e2e post-cutover)
+grep dangling-reference sweep (docs/ + CLAUDE.md + AGENTS.md + MEMORY.md) → clean
+  (2 hit còn lại có chủ đích: ADR-001 dòng 85 mô tả hành động lịch sử đã xảy ra, chính xác dù
+  target đã xoá — không sửa)
+.venv/bin/python -m pytest tests/ -q --collect-only → 6550/6555 collected, 0 lỗi import
 ```
 
 ## Deployment hiện tại
-`omni-fullstack` 1/1 Running image mới (loop siem_correlation active, lag 0).
-`omni-brain-go` ĐÃ XOÁ khỏi cluster. `omni-gateway`, `omni-onboarding` không đổi.
+
+N/A — thay đổi chỉ ở tài liệu, không đụng runtime/deploy.
 
 ## Blockers
-None kỹ thuật. Chờ user quyết định commit/push.
+
+None.
 
 ## Next step chính xác
-1. **User quyết định commit/push.** Gói commit gồm: `src/services/siem_correlation/`,
-   `src/workers/siem_correlation_loop.py`, `src/workers/{settings,omni_worker}.py`,
-   `k8s/deployments/omni-fullstack.yaml`, xoá `k8s/deployments/omni-brain-go.yaml`,
-   6 test mới + 3 test sửa, `scripts/siem_correlation_parity.py`, `CLAUDE.md`, handoff này.
-   (Audit doc `AUDIT_autonomous_sre_team_2026_07_22.md` có thể commit riêng.)
-2. Follow-ups mở (quyết định riêng, ngoài scope port):
-   - Finding #1 `siem_bridge.py` double-fire (ưu tiên cao nhất trong SIEM findings).
-   - Finding #3 `ChainConsumer._cohesion` fail-open score=1.0.
-   - 2 CRITICAL audit `command_executor.py` (subcommand allowlist + env leak) — chưa được
-     user duyệt fix.
-   - Dọn 2 agent process song song trên 3 VM lab (`omni-remote-agent.service`).
-   - Cosmetic: comment nhắc brain-go còn trong `scripts/kafka_ensure_omni_topics.sh` +
-     `coverage_project_real.sh`; group `brain-go-kafka` metadata rỗng trong Kafka (vô hại,
-     tự hết theo offset retention).
+
+User chạy `git status` + `git diff --stat` review 178 xoá / 21 sửa, rồi quyết định commit (gộp
+chung 1 commit "docs: consolidate and prune stale documentation", hoặc tách riêng khỏi phần code
+SIEM/security đang có sẵn trong working tree từ phiên trước).
 
 ## Lệnh cần chạy lại
+
 ```
-.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
-make e2e-incident-matrix
-kubectl -n multi-agent logs deploy/omni-fullstack --since=1h | grep siem_corr
+git status --short                        # xem đầy đủ danh sách 199 file thay đổi
+git diff --stat -- docs/                   # review chi tiết phần docs
+.venv/bin/python -m pytest tests/ -q --ignore=tests/integration   # xác nhận không regression
 ```
 
 ## Không được làm lại
-- **Đừng bật lại/tạo lại Deployment `omni-brain-go`** — cutover xong, Python engine là canonical.
-- **Đừng port lại engine** — `src/services/siem_correlation/` đã DONE, parity PASS.
-- **Parity 2/2 đã pass — không cần chạy lại `scripts/siem_correlation_parity.py`** trừ khi
-  sửa logic engine.
-- Đừng đổi `OMNI_SIEM_CORRELATION_ENABLED` default trong code thành True.
-- Các mục "Không được làm lại" cũ vẫn hiệu lực: đừng port lại `admin/kb`/`trace/[id]`,
-  đừng sửa lại Phase 8 env-driven config, đừng live-drill phá Redis/Kafka cho SIEM finding.
+
+- Đừng audit lại toàn bộ `docs/` từ đầu — danh sách giữ/xoá đã có lý do ghi trong
+  `docs/DOCUMENTATION_INDEX.md` và log phiên này.
+- Đừng xoá cụm AOIP Constitution — đã xác minh load-bearing.
+- Đừng viết lại nội dung đầy đủ vào `AGENTS.md` — giữ là pointer mỏng.
+- Đừng khôi phục `docs/vendor/*.html` từ git history.
 
 ## Tài liệu liên quan
-- `docs/architecture/AUDIT_autonomous_sre_team_2026_07_22.md` — audit cùng ngày, đọc trước
-  khi động vào SIEM/remote_agent.
-- `~/.claude/skills/omni-siem/SKILL.md` — đã cập nhật theo engine Python mới.
-- `/Users/hiendang/.claude/plans/temporal-sparking-ember.md` — roadmap Phase 0-10 (đứng yên,
-  Phase 9+10 vòng 2 chưa bắt đầu; 4 route chờ quyết định product/security).
+
+- `docs/DOCUMENTATION_INDEX.md` — chỉ mục mới, điểm vào duy nhất cho `docs/`.
+- `docs/README.md` — tóm tắt cleanup.
+- `CLAUDE.md` — nguồn sự thật, không đổi trong phiên này.

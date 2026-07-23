@@ -1,5 +1,11 @@
 # ADR-001: Canonical Agent Runtime (AOIP vs remote_agent)
 
+> **Xem thêm (2026-07-22)**: tiến độ migrate ADR-001 này được re-verify trong domain #5
+> (omni-remote-agent) của ma trận năng lực đầy đủ 18 domain ở đầu
+> [ASSESSMENT_autonomous_sre_v2.md](ASSESSMENT_autonomous_sre_v2.md) — kết luận không đổi:
+> `aoip.agent.employee` chạy thật 3/3 VM, `aoip.agent.daemon` (canonical target) vẫn chỉ
+> demo/proof script.
+
 **Ngày:** 2026-07-03
 **Trạng thái:** Accepted — **MIGRATION HOÀN TẤT trên fleet lab (2026-07-13, Sprint NV-SRE IT-4→IT-7)**
 

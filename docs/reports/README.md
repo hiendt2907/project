@@ -1,44 +1,15 @@
-# `docs/reports/` — báo cáo phase & artifact
+# `docs/reports/` — point-in-time reports còn current
 
-**Kiến trúc sống:** [../vendor/OMNI_PROJECT_CANONICAL.md](../vendor/OMNI_PROJECT_CANONICAL.md) — các file dưới đây là **lịch sử / planning / artifact theo thời điểm**.
+Dọn dẹp 2026-07-22: xoá phase-1..7 report/review, chaos-rag-selflearn snapshot, audit-snapshot cũ,
+trace-audit/e2e-log-analysis cũ, và các plan/report đã DONE hoặc bị `CLAUDE.md`/`ASSESSMENT_autonomous_sre_v2.md`
+thay thế. Xem [`../DOCUMENTATION_INDEX.md`](../DOCUMENTATION_INDEX.md) Tầng 1 cho audit/capability hiện hành.
 
-## Cross-cutting
-
-| File | Ghi chú |
+| File | Vai trò |
 |------|---------|
-| [project-memory.md](project-memory.md) | Invariants, failure patterns. |
-| [unified-document-report.md](unified-document-report.md) | Báo cáo tổng hợp doc. |
-| [dashboard-source-of-truth.md](dashboard-source-of-truth.md) | Dashboard SoT. |
-
-## Phase 1–7 (report + review)
-
-| Phase | Report | Review |
-|-------|--------|--------|
-| 1 | [phase-1-report.md](phase-1-report.md), [phase-1-state-machine-report.md](phase-1-state-machine-report.md) | [phase-1-review.md](phase-1-review.md) |
-| 2 | [phase-2-report.md](phase-2-report.md), [phase-2-test-pyramid-report.md](phase-2-test-pyramid-report.md) | [phase-2-review.md](phase-2-review.md) |
-| 3 | [phase-3-report.md](phase-3-report.md), [phase-3-e2e-verification-report.md](phase-3-e2e-verification-report.md) | [phase-3-review.md](phase-3-review.md) |
-| 4 | [phase-4-report.md](phase-4-report.md), [phase-4-adapterization-report.md](phase-4-adapterization-report.md) | [phase-4-review.md](phase-4-review.md) |
-| 5 | [phase-5-report.md](phase-5-report.md), [phase-5-slo-gates-report.md](phase-5-slo-gates-report.md) | [phase-5-review.md](phase-5-review.md) |
-| 6 | [phase-6-report.md](phase-6-report.md) | [phase-6-review.md](phase-6-review.md) |
-| 7 | [phase-7-report.md](phase-7-report.md) | [phase-7-review.md](phase-7-review.md) |
-
-## Chaos / RAG self-learn
-
-| File |
-|------|
-| [chaos-rag-selflearn-runbook.md](chaos-rag-selflearn-runbook.md) |
-| [chaos-rag-selflearn-export-ingest.md](chaos-rag-selflearn-export-ingest.md) |
-| [chaos-rag-selflearn-schema-jsonl.md](chaos-rag-selflearn-schema-jsonl.md) |
-| [chaos-rag-selflearn-learning-delta.md](chaos-rag-selflearn-learning-delta.md) |
-| [chaos-rag-selflearn-uat-checklist.md](chaos-rag-selflearn-uat-checklist.md) |
-| [templates/chaos-rag-phase-report.template.md](templates/chaos-rag-phase-report.template.md) |
-| [templates/chaos-rag-session-report.template.md](templates/chaos-rag-session-report.template.md) |
-
-## Templates (repo root `docs/`)
-
-- [../phase_report_template.md](../phase_report_template.md)
-- [../phase_review_template.md](../phase_review_template.md)
-
-## Status board (tóm tắt)
-
-- Phase 1–7: xem bảng trên; một số phase vẫn `planned` trong backlog autonomy — đối chiếu code + canonical.
+| [`frontend-backend-logic-verification-2026-07-14.md`](frontend-backend-logic-verification-2026-07-14.md) | Release gate verification mới nhất (backend/portal/E2E) — dẫn từ `../CODEBASE.md`. |
+| [`project-memory.md`](project-memory.md) | Invariants, failure patterns, guardrails. Entries ≥2026-07-14 current; entries cũ hơn là lịch sử (xem banner đầu file). |
+| [`diagnostic-policy-spec.md`](diagnostic-policy-spec.md) | Spec INV_* invariants cho diagnostic policy — vẫn khớp `pkg/reasoning/diagnostic_policy.py`. |
+| [`sigma-log-bypass-spec.md`](sigma-log-bypass-spec.md) | Spec Loki sustained-5xx sigma bypass (điều kiện, env, fail-closed). |
+| [`incident-evidence-three-lanes.md`](incident-evidence-three-lanes.md) | Proof-of-Fault ba lane (`resource`/`state`/`app_log`) + matrix. |
+| [`dashboard-source-of-truth.md`](dashboard-source-of-truth.md) | Grafana dashboard SoT, đối chiếu `k8s/monitor/grafana-dashboards.yaml`. |
+| [`e2e-artifacts/`](e2e-artifacts/) | Staging layout cho artifact E2E local (không commit secret) — dùng bởi `scripts/gateway_alert_loki_verify.sh` và tương đương. |

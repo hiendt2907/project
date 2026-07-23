@@ -3,6 +3,12 @@
 Tài liệu này KHÔNG phải bằng chứng tự thân — mỗi dòng phải trỏ tới lệnh/API/log/datastore query
 thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productization Loop.
 
+> **Xem thêm (2026-07-22)**: capability matrix ở đây được đối chiếu trong domain #17 (Portal/UI)
+> của ma trận năng lực đầy đủ 18 domain ở đầu
+> [ASSESSMENT_autonomous_sre_v2.md](../architecture/ASSESSMENT_autonomous_sre_v2.md) — kết luận:
+> advisory chi tiết (WHAT/WHY/HOW-TO/Forecast) chỉ hiển thị ở provider-portal nội bộ, tenant-portal
+> khách hàng vẫn nông (Twin tóm tắt + incident list trơ).
+
 ## Environment
 
 - Commit: `67423b9` (tại thời điểm build) → image rebuild sau đó không đổi source, chỉ đổi digest
