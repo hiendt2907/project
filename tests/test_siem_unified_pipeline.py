@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fakeredis.aioredis import FakeRedis
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +183,8 @@ async def test_dual_emit_publishes_to_both_topics():
 
     mock_redis = MagicMock()
     mock_redis.xack = AsyncMock(return_value=1)
+    mock_redis.exists = AsyncMock(return_value=0)
+    mock_redis.set = AsyncMock(return_value=True)
 
     fields = _make_siem_fields()
     original_dual = bridge.DUAL_EMIT
@@ -215,6 +218,8 @@ async def test_single_emit_when_dual_emit_disabled():
 
     mock_redis = MagicMock()
     mock_redis.xack = AsyncMock(return_value=1)
+    mock_redis.exists = AsyncMock(return_value=0)
+    mock_redis.set = AsyncMock(return_value=True)
 
     fields = _make_siem_fields()
     original_dual = bridge.DUAL_EMIT
@@ -247,6 +252,8 @@ async def test_dual_emit_raw_envelope_contains_expected_keys():
     mock_producer.send_and_wait = AsyncMock(side_effect=_capture)
     mock_redis = MagicMock()
     mock_redis.xack = AsyncMock(return_value=1)
+    mock_redis.exists = AsyncMock(return_value=0)
+    mock_redis.set = AsyncMock(return_value=True)
 
     fields = _make_siem_fields(incident_id="inc-xyz789")
     original_dual = bridge.DUAL_EMIT
@@ -283,3 +290,71 @@ async def test_synthetic_events_are_dropped():
 
     assert not calls, "Synthetic events must not be forwarded to Kafka"
     assert acked, "Synthetic events must be ACK'd"
+
+
+# ---------------------------------------------------------------------------
+# 5. Publish idempotency (audit finding #1, 2026-07-22): a retry after a
+#    partial failure must not double-publish a topic that already succeeded.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_retry_after_partial_failure_does_not_republish_succeeded_topic():
+    """omni-alerts send succeeds, omni-siem-raw send then raises. On retry (same
+    incident, message redelivered because XACK never ran), omni-alerts must NOT
+    be published again — only the unfinished omni-siem-raw send should fire."""
+    import workers.siem_bridge as bridge
+
+    redis = FakeRedis(decode_responses=True)
+    calls: list[str] = []
+
+    async def _flaky_send(topic, value):
+        calls.append(topic)
+        if topic == bridge.KAFKA_TOPIC_SIEM_RAW and calls.count(bridge.KAFKA_TOPIC_SIEM_RAW) == 1:
+            raise RuntimeError("broker unavailable")
+
+    mock_producer = MagicMock()
+    mock_producer.send_and_wait = AsyncMock(side_effect=_flaky_send)
+
+    fields = _make_siem_fields(incident_id="inc-retry-001")
+    original_dual = bridge.DUAL_EMIT
+    bridge.DUAL_EMIT = True
+    try:
+        # _process logs and swallows the exception (message stays unacked in
+        # Redis for XREADGROUP/XAUTOCLAIM redelivery — see module docstring).
+        await bridge._process(redis, mock_producer, "msg-retry-1", fields)
+        assert calls == [bridge.KAFKA_TOPIC, bridge.KAFKA_TOPIC_SIEM_RAW]
+
+        # Retry: message redelivered (XACK never happened above).
+        await bridge._process(redis, mock_producer, "msg-retry-1", fields)
+    finally:
+        bridge.DUAL_EMIT = original_dual
+
+    assert calls == [bridge.KAFKA_TOPIC, bridge.KAFKA_TOPIC_SIEM_RAW, bridge.KAFKA_TOPIC_SIEM_RAW], (
+        f"omni-alerts must publish exactly once across both attempts; got {calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fully_published_incident_is_not_republished_on_retry():
+    """If both topics already succeeded (dedup keys set) and only XACK failed,
+    a retry must publish to neither topic — only XACK is retried."""
+    import workers.siem_bridge as bridge
+
+    redis = FakeRedis(decode_responses=True)
+    incident_id = "inc-retry-002"
+    await bridge._mark_published(redis, incident_id, bridge.KAFKA_TOPIC)
+    await bridge._mark_published(redis, incident_id, bridge.KAFKA_TOPIC_SIEM_RAW)
+
+    calls: list[str] = []
+    mock_producer = MagicMock()
+    mock_producer.send_and_wait = AsyncMock(side_effect=lambda topic, value: calls.append(topic))
+
+    fields = _make_siem_fields(incident_id=incident_id)
+    original_dual = bridge.DUAL_EMIT
+    bridge.DUAL_EMIT = True
+    try:
+        await bridge._process(redis, mock_producer, "msg-retry-2", fields)
+    finally:
+        bridge.DUAL_EMIT = original_dual
+
+    assert calls == [], f"Both topics already published — expected no re-send; got {calls}"

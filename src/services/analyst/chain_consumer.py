@@ -236,23 +236,43 @@ class ChainConsumer:
         llm = getattr(self._ctx, "llm", None)
         ws = getattr(self._ctx, "settings", None)
         if llm is None or ws is None:
+            # Cohesion checking isn't configured for this deployment at all —
+            # a deliberate no-op, not a failure (audit finding #3 concerns
+            # the runtime-failure paths below, not this one).
             return CohesionResult(score=1.0, weak_indices=())
         embed_model = str(getattr(ws, "embed_model", "nomic-embed-text") or "nomic-embed-text")
         vectors: list[list[float]] = []
         for m in members:
             sig = member_signature(m)
             if not sig:
-                return CohesionResult(score=1.0, weak_indices=())
+                return self._degraded_cohesion(len(members), reason="empty_signature")
             try:
                 resp = await llm.embed(model=embed_model, input=sig)
                 vec = (resp.get("embeddings") or [[]])[0]
                 if not vec:
-                    return CohesionResult(score=1.0, weak_indices=())
+                    return self._degraded_cohesion(len(members), reason="empty_embedding")
                 vectors.append([float(x) for x in vec])
             except Exception as e:  # noqa: BLE001
-                logger.debug("event=chain_cohesion_embed_skip err=%s", e)
-                return CohesionResult(score=1.0, weak_indices=())
+                return self._degraded_cohesion(len(members), reason=f"embed_error:{e}")
         return compute_cohesion(vectors)
+
+    @staticmethod
+    def _degraded_cohesion(n_members: int, *, reason: str) -> CohesionResult:
+        """FAIL-CLOSED (audit finding #3, 2026-07-22): cohesion could not be
+        verified. Treat the chain as maximally suspicious — score=0.0, every
+        member flagged weak — instead of the prior fail-open bug that silently
+        returned score=1.0 ("perfectly cohesive") on any embedding error. A
+        downstream confidence/HITL gate must never mistake an unverified
+        chain for a verified one.
+        """
+        logger.warning("event=chain_cohesion_degraded reason=%s members=%d", reason, n_members)
+        try:
+            from workers.metrics_exporter import observe_chain_cohesion_degraded
+
+            observe_chain_cohesion_degraded()
+        except Exception:  # noqa: BLE001
+            pass
+        return CohesionResult(score=0.0, weak_indices=tuple(range(n_members)))
 
     async def _classify(
         self, chain: dict[str, Any], cohesion: CohesionResult

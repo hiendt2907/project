@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from services.analyst.chain_consumer import (
+    ChainConsumer,
     CohesionResult,
     build_recall_query,
     compute_cohesion,
@@ -87,3 +90,82 @@ def test_parse_chain_message_variants():
     assert parse_chain_message(d) == d
     assert parse_chain_message(b'{"chain_id": "y"}') == {"chain_id": "y"}
     assert parse_chain_message("not json") is None
+
+
+# ---------------------------------------------------------------------------
+# ChainConsumer._cohesion — fail-closed on embedding failure (audit finding
+# #3, 2026-07-22). Was previously fail-open: any embed error returned
+# score=1.0 ("perfectly cohesive"), indistinguishable from a real success.
+# ---------------------------------------------------------------------------
+
+class _FailingLLM:
+    async def embed(self, *, model, input):  # noqa: A002
+        raise RuntimeError("ollama unreachable")
+
+
+class _EmptyVecLLM:
+    async def embed(self, *, model, input):  # noqa: A002
+        return {"embeddings": [[]]}
+
+
+class _WorkingLLM:
+    async def embed(self, *, model, input):  # noqa: A002
+        return {"embeddings": [[1.0, 0.0]]}
+
+
+def _members() -> list[dict]:
+    return [
+        {"category": "auth_failure", "kill_chain_stage": "initial_access"},
+        {"category": "new_process", "kill_chain_stage": "execution"},
+    ]
+
+
+def _ctx(llm) -> SimpleNamespace:
+    return SimpleNamespace(llm=llm, settings=SimpleNamespace(embed_model="nomic-embed-text"))
+
+
+@pytest.mark.asyncio
+async def test_cohesion_fails_closed_on_embed_error():
+    result = await ChainConsumer(_ctx(_FailingLLM()))._cohesion(_members())
+    assert result.score == 0.0
+    assert result.weak_indices == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_cohesion_fails_closed_on_empty_embedding_vector():
+    result = await ChainConsumer(_ctx(_EmptyVecLLM()))._cohesion(_members())
+    assert result.score == 0.0
+    assert result.weak_indices == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_cohesion_fails_closed_on_empty_signature():
+    result = await ChainConsumer(_ctx(_WorkingLLM()))._cohesion([{}, {}])
+    assert result.score == 0.0
+    assert result.weak_indices == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_cohesion_not_configured_is_not_a_failure():
+    """llm=None means cohesion checking isn't deployed here at all — an
+    intentional no-op, distinct from the fail-open bug this fix closes."""
+    result = await ChainConsumer(_ctx(None))._cohesion(_members())
+    assert result.score == 1.0
+    assert result.weak_indices == ()
+
+
+@pytest.mark.asyncio
+async def test_cohesion_succeeds_with_working_embeddings():
+    result = await ChainConsumer(_ctx(_WorkingLLM()))._cohesion(_members())
+    assert result.score == 1.0
+    assert result.weak_indices == ()
+
+
+@pytest.mark.asyncio
+async def test_cohesion_degraded_increments_metric(monkeypatch):
+    from workers import metrics_exporter
+
+    calls = []
+    monkeypatch.setattr(metrics_exporter, "observe_chain_cohesion_degraded", lambda: calls.append(1))
+    await ChainConsumer(_ctx(_FailingLLM()))._cohesion(_members())
+    assert calls == [1]

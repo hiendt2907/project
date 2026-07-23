@@ -98,6 +98,256 @@ class TestIsCommandAllowed:
     def test_whitelist_and_blocklist_are_disjoint(self):
         assert COMMAND_WHITELIST.isdisjoint(_CONTENT_READ_BLOCKED)
 
+    # --- CRITICAL #1: subcommand/flag allowlist (audit 2026-07-22) ---------
+
+    @pytest.mark.parametrize("bad_args", [
+        ["auxe"],       # BSD bundled: a,u,x,e — `e` = show environment of other procs
+        ["axe"],
+        ["e"],          # lone BSD environment flag
+        ["auxww", "e"],
+        ["--environ"],
+    ])
+    def test_ps_environment_flag_blocked(self, bad_args):
+        """`ps auxe`/`ps e` prints OTHER processes' environments (secret leak)."""
+        allowed, reason = _is_command_allowed("ps", bad_args)
+        assert allowed is False
+        assert "ps_environment_flag_blocked" in reason
+
+    @pytest.mark.parametrize("ok_args", [
+        ["-ef"],
+        ["-eo", "comm"],     # the real discovery_evidence.py invocation
+        ["aux"],
+        ["-e"],              # Unix select-all — NOT the BSD env flag
+        ["-p", "1234"],
+        ["-u", "eve"],       # username containing 'e' must not false-positive
+    ])
+    def test_ps_safe_invocations_allowed(self, ok_args):
+        allowed, reason = _is_command_allowed("ps", ok_args)
+        assert allowed is True, reason
+
+    @pytest.mark.parametrize("subcmd", [
+        "shutdown", "drop", "create", "password", "kill",
+        "flush-hosts", "flush-logs", "start-slave", "stop-slave",
+        "old-password", "debug", "refresh",
+    ])
+    def test_mysqladmin_mutating_subcommands_blocked(self, subcmd):
+        allowed, reason = _is_command_allowed("mysqladmin", [subcmd])
+        assert allowed is False
+        assert "mysqladmin_subcommand_not_allowed" in reason
+
+    @pytest.mark.parametrize("subcmd", [
+        "status", "ping", "processlist", "extended-status", "version", "variables",
+    ])
+    def test_mysqladmin_readonly_subcommands_allowed(self, subcmd):
+        # Real usage (services.analyst.diagnosis_loop prompt) is the bare
+        # subcommand, no connection flags.
+        allowed, reason = _is_command_allowed("mysqladmin", [subcmd])
+        assert allowed is True, reason
+
+    def test_mysqladmin_shutdown_after_flags_blocked(self):
+        allowed, reason = _is_command_allowed("mysqladmin", ["-uroot", "-ppw", "shutdown"])
+        assert allowed is False
+        assert "mysqladmin_flags_not_allowed" in reason
+
+    def test_mysqladmin_no_subcommand_blocked(self):
+        allowed, reason = _is_command_allowed("mysqladmin", ["--help"])
+        assert allowed is False
+        assert "mysqladmin_flags_not_allowed" in reason
+
+    def test_mysqladmin_no_args_blocked(self):
+        allowed, reason = _is_command_allowed("mysqladmin", [])
+        assert allowed is False
+        assert "mysqladmin_subcommand_not_allowed" in reason
+
+    def test_mysqladmin_any_flag_blocked_even_with_valid_subcommand(self):
+        """Closes the flag-value-smuggling bypass: a flag that could consume
+        the next token as a value must never be allowed alongside a subcommand."""
+        allowed, reason = _is_command_allowed("mysqladmin", ["-h", "status"])
+        assert allowed is False
+        assert "mysqladmin_flags_not_allowed" in reason
+
+    def test_mysqladmin_command_chaining_bypass_blocked(self):
+        """mysqladmin runs every non-flag token as a separate command in
+        sequence — `status shutdown` would otherwise run both. Two positional
+        tokens must never pass, even if the first is read-only."""
+        allowed, reason = _is_command_allowed("mysqladmin", ["status", "shutdown"])
+        assert allowed is False
+        assert "mysqladmin_subcommand_not_allowed" in reason
+
+    # --- dpkg/rpm/ip subcommand/flag allowlist (ultrareview follow-up) ------
+
+    @pytest.mark.parametrize("bad_flag", ["-i", "-r", "-P", "--install", "--remove", "--purge", "--configure", "--unpack"])
+    def test_dpkg_mutating_flags_blocked(self, bad_flag):
+        allowed, reason = _is_command_allowed("dpkg", [bad_flag, "somepkg"])
+        assert allowed is False
+        assert "dpkg_flag_not_allowed" in reason
+
+    @pytest.mark.parametrize("ok_args", [["-l"], ["-s", "nginx"], ["-L", "nginx"], ["--status", "nginx"]])
+    def test_dpkg_readonly_flags_allowed(self, ok_args):
+        allowed, reason = _is_command_allowed("dpkg", ok_args)
+        assert allowed is True, reason
+
+    @pytest.mark.parametrize("bad_args", [["-i", "pkg.rpm"], ["-e", "pkg"], ["-U", "pkg.rpm"], ["--install", "pkg.rpm"], ["--erase", "pkg"]])
+    def test_rpm_mutating_flags_blocked(self, bad_args):
+        allowed, reason = _is_command_allowed("rpm", bad_args)
+        assert allowed is False
+        assert "rpm_destructive_flag_blocked" in reason
+
+    def test_rpm_without_query_mode_blocked(self):
+        allowed, reason = _is_command_allowed("rpm", ["-a"])
+        assert allowed is False
+        assert "rpm_query_mode_required" in reason
+
+    @pytest.mark.parametrize("ok_args", [["-qa"], ["-qi", "nginx"], ["--query", "-a"]])
+    def test_rpm_query_mode_allowed(self, ok_args):
+        allowed, reason = _is_command_allowed("rpm", ok_args)
+        assert allowed is True, reason
+
+    @pytest.mark.parametrize("bad_args", [
+        ["route", "add", "10.0.0.0/8", "via", "1.2.3.4"],
+        ["link", "set", "eth0", "down"],
+        ["addr", "flush", "dev", "eth0"],
+        ["netns", "add", "foo"],
+    ])
+    def test_ip_mutating_subcommands_blocked(self, bad_args):
+        allowed, reason = _is_command_allowed("ip", bad_args)
+        assert allowed is False
+        assert "ip_mutating_subcommand_blocked" in reason
+
+    @pytest.mark.parametrize("ok_args", [["addr", "show"], ["route", "show"], ["-s", "link", "show"], ["neigh", "show"]])
+    def test_ip_readonly_subcommands_allowed(self, ok_args):
+        allowed, reason = _is_command_allowed("ip", ok_args)
+        assert allowed is True, reason
+
+    # --- ps: dash-prefixed multi-letter clusters must not bypass the check -
+
+    @pytest.mark.parametrize("bad_args", [["-auxe"], ["-axe"]])
+    def test_ps_dashed_bsd_cluster_still_blocked(self, bad_args):
+        """procps-ng legacy-compat can reinterpret a dashed cluster as BSD-style
+        (`ps -aux` behaves like `ps aux`) — a leading dash must not exempt a
+        multi-letter env-dump cluster from the check."""
+        allowed, reason = _is_command_allowed("ps", bad_args)
+        assert allowed is False
+        assert "ps_environment_flag_blocked" in reason
+
+    def test_ps_bare_dash_e_stays_allowed(self):
+        """Single-letter `-e` is unambiguous POSIX ("select all") in every ps
+        implementation — must not be caught by the dashed-cluster fix above."""
+        allowed, reason = _is_command_allowed("ps", ["-e"])
+        assert allowed is True, reason
+
+
+class TestSubprocessEnvSandbox:
+    """CRITICAL #2: spawned commands must NOT inherit the agent's environment
+    (would leak OMNI_AGENT_API_KEY via `ps auxe`, `/proc/self/environ`, etc.)."""
+
+    @pytest.mark.asyncio
+    async def test_subprocess_spawned_with_sanitized_env(self):
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        proc.returncode = 0
+        captured = {}
+
+        async def _fake_exec(*args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return proc
+
+        with patch("remote_agent.command_executor.asyncio.create_subprocess_exec", _fake_exec):
+            await execute_command("c-env", "ps", ["-ef"])
+
+        env = captured["env"]
+        assert env is not None, "env must be explicitly set, never inherited (None)"
+        # No secret-bearing keys leak into the child.
+        assert "OMNI_AGENT_API_KEY" not in env
+        assert all("API_KEY" not in k and "SECRET" not in k and "TOKEN" not in k for k in env)
+        # A minimal, safe PATH is still provided so binaries resolve.
+        assert env.get("PATH")
+
+    @pytest.mark.asyncio
+    async def test_secret_env_not_inherited_even_if_present(self, monkeypatch):
+        monkeypatch.setenv("OMNI_AGENT_API_KEY", "super-secret-123")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        proc.returncode = 0
+        captured = {}
+
+        async def _fake_exec(*args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return proc
+
+        with patch("remote_agent.command_executor.asyncio.create_subprocess_exec", _fake_exec):
+            await execute_command("c-env2", "df", ["-h"])
+
+        assert "super-secret-123" not in str(captured["env"])
+
+
+class TestTrustedBinaryResolution:
+    """CRITICAL #1 (ultrareview follow-up): the whitelist checked only the
+    basename, but the caller-supplied path was what actually executed —
+    `/tmp/x/ps` passed the "ps" check and then ran an attacker binary."""
+
+    @pytest.mark.asyncio
+    async def test_caller_supplied_path_is_ignored_resolved_binary_used(self, tmp_path, monkeypatch):
+        from remote_agent import command_executor
+
+        decoy_ps = tmp_path / "ps"
+        decoy_ps.write_text("#!/bin/sh\necho PWNED\n")
+        decoy_ps.chmod(0o755)
+
+        command_executor._RESOLVED_BINARY_CACHE.clear()
+        monkeypatch.setenv("OMNI_AGENT_CMD_PATH", "/usr/bin:/bin")  # excludes tmp_path
+
+        captured = {}
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        proc.returncode = 0
+
+        async def _fake_exec(*args, **kwargs):
+            captured["argv0"] = args[0]
+            return proc
+
+        with patch("remote_agent.command_executor.asyncio.create_subprocess_exec", _fake_exec):
+            await execute_command("c-path", str(decoy_ps), ["-ef"])
+
+        command_executor._RESOLVED_BINARY_CACHE.clear()
+        assert captured["argv0"] != str(decoy_ps)
+        assert captured["argv0"].endswith("/ps")
+
+    @pytest.mark.asyncio
+    async def test_binary_not_on_sandbox_path_is_blocked(self, monkeypatch):
+        from remote_agent import command_executor
+
+        command_executor._RESOLVED_BINARY_CACHE.clear()
+        monkeypatch.setenv("OMNI_AGENT_CMD_PATH", "/nonexistent-dir-xyz")
+
+        with patch("remote_agent.command_executor.asyncio.create_subprocess_exec") as mock_exec:
+            result = await execute_command("c-missing", "ps", ["-ef"])
+
+        command_executor._RESOLVED_BINARY_CACHE.clear()
+        mock_exec.assert_not_called()
+        assert result["blocked"] is True
+        assert "binary_not_found_on_sandbox_path" in result["block_reason"]
+
+    @pytest.mark.asyncio
+    async def test_subprocess_uses_sandbox_cwd(self, monkeypatch):
+        """Finding #5: the child must not inherit the agent's cwd (could leak
+        sensitive filenames via relative-path listings)."""
+        monkeypatch.delenv("OMNI_AGENT_CMD_CWD", raising=False)
+        captured = {}
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        proc.returncode = 0
+
+        async def _fake_exec(*args, **kwargs):
+            captured["cwd"] = kwargs.get("cwd")
+            return proc
+
+        with patch("remote_agent.command_executor.asyncio.create_subprocess_exec", _fake_exec):
+            await execute_command("c-cwd", "df", ["-h"])
+
+        assert captured["cwd"] == "/tmp"
+
 
 class TestExecuteCommand:
     @pytest.mark.asyncio

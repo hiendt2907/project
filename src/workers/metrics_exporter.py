@@ -83,6 +83,7 @@ _executor_execute_skipped: Any = None
 _siem_chains_total: Any = None
 _chain_confidence: Any = None
 _chain_llm_skipped: Any = None
+_chain_cohesion_degraded: Any = None
 # Feature: Autonomy tier (MASTER_PLAN §3/§5/§7)
 _autonomy_tier: Any = None
 _tier_gate_blocked: Any = None
@@ -109,7 +110,7 @@ def _ensure_metrics() -> None:
     global _worker_last_message_age, _health_check_status
     global _kpi_mttd, _kpi_mttr, _kpi_advisory_acceptance_rate, _kpi_false_positive_rate, _kpi_incidents
     global _advisory_benchmark_score, _advisory_benchmark_pass_rate
-    global _siem_chains_total, _chain_confidence, _chain_llm_skipped
+    global _siem_chains_total, _chain_confidence, _chain_llm_skipped, _chain_cohesion_degraded
     global _autonomy_tier, _tier_gate_blocked, _tier_promotion_ready, _crat_outbox_pending
     if _build_info is not None:
         return
@@ -368,6 +369,12 @@ def _ensure_metrics() -> None:
     _chain_llm_skipped = Counter(
         "omni_chain_llm_skipped_total",
         "Chains whose classification was served from recall (LLM skipped).",
+    )
+    _chain_cohesion_degraded = Counter(
+        "omni_chain_cohesion_degraded_total",
+        "Chains where semantic cohesion could not be verified (embed error/empty "
+        "vector/empty signature) and fell back fail-closed to score=0.0 "
+        "(audit finding #3, 2026-07-22 — was previously a fail-open score=1.0 bug).",
     )
     # Self-monitoring
     _worker_last_message_age = Gauge(
@@ -974,6 +981,14 @@ def observe_chain_correlated(*, attack_category: str, confidence: float, llm_ski
     _chain_confidence.observe(max(0.0, min(1.0, float(confidence))))
     if llm_skipped:
         _chain_llm_skipped.inc()
+
+
+def observe_chain_cohesion_degraded() -> None:
+    """A chain's cohesion could not be verified (embed error/empty vector/empty
+    signature) — fell back fail-closed rather than silently treating it as
+    perfectly cohesive."""
+    _ensure_metrics()
+    _chain_cohesion_degraded.inc()
 
 
 # ── KPI setters ────────────────────────────────────────────────────────────────

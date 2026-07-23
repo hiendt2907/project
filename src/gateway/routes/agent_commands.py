@@ -93,6 +93,85 @@ _COMMAND_WHITELIST = frozenset({
     "file",
 })
 
+# Mirrors remote_agent.command_executor's subcommand/flag allowlists (audit
+# 2026-07-22 + ultrareview follow-up fixes, same duplication rationale as
+# _COMMAND_WHITELIST above — Dockerfile.gateway does not COPY
+# src/remote_agent/). Fail-fast here so a disallowed subcommand/flag never
+# reaches the queue; the agent re-checks identically (and authoritatively —
+# see command_executor.py module docstring) on execution regardless.
+_MYSQLADMIN_READONLY = frozenset({
+    "status", "extended-status", "ping", "processlist",
+    "version", "variables",
+})
+_PS_ENV_LONGFLAGS = frozenset({"--environ", "--environment"})
+_PS_BSD_FLAG_LETTERS = frozenset({"a", "u", "x", "w", "e"})
+_DPKG_SAFE_FLAGS = frozenset({
+    "-l", "-s", "-L", "-p", "-S",
+    "--status", "--listfiles", "--print-avail", "--search", "--list",
+    "--get-selections",
+})
+_RPM_DESTRUCTIVE_LONGFLAGS = frozenset({
+    "--install", "--erase", "--upgrade", "--freshen", "--reinstall",
+    "--force", "--nodeps", "--replacepkgs", "--justdb",
+})
+_RPM_DESTRUCTIVE_SHORTLETTERS = frozenset({"i", "e", "U", "F"})
+_IP_MUTATING_SUBCOMMANDS = frozenset({
+    "add", "del", "delete", "change", "replace", "set", "flush",
+    "append", "prepend",
+})
+
+
+def _command_args_allowed(base: str, args: list[str]) -> tuple[bool, str]:
+    if base == "ps":
+        for arg in args:
+            if arg.lower() in _PS_ENV_LONGFLAGS:
+                return False, f"ps_environment_flag_blocked: {arg}"
+            if "=" in arg:
+                continue
+            letters = arg[1:] if arg.startswith("-") else arg
+            if arg.startswith("-") and len(letters) == 1:
+                continue
+            if letters and letters.isalpha() and "e" in letters and all(
+                ch in _PS_BSD_FLAG_LETTERS for ch in letters
+            ):
+                return False, f"ps_environment_flag_blocked: {arg}"
+
+    if base == "mysqladmin":
+        if any(a.startswith("-") for a in args):
+            return False, f"mysqladmin_flags_not_allowed: {' '.join(args)}"
+        if len(args) != 1 or args[0].lower() not in _MYSQLADMIN_READONLY:
+            return False, f"mysqladmin_subcommand_not_allowed: {args[0] if args else ''}"
+
+    if base == "dpkg":
+        for a in args:
+            if a.startswith("-") and a not in _DPKG_SAFE_FLAGS:
+                return False, f"dpkg_flag_not_allowed: {a}"
+
+    if base == "rpm":
+        has_query = False
+        for a in args:
+            if a in ("-q", "--query"):
+                has_query = True
+                continue
+            if a.lower() in _RPM_DESTRUCTIVE_LONGFLAGS:
+                return False, f"rpm_destructive_flag_blocked: {a}"
+            if a.startswith("-") and not a.startswith("--"):
+                letters = a[1:]
+                if "q" in letters:
+                    has_query = True
+                    continue
+                if any(ch in _RPM_DESTRUCTIVE_SHORTLETTERS for ch in letters):
+                    return False, f"rpm_destructive_flag_blocked: {a}"
+        if not has_query:
+            return False, "rpm_query_mode_required"
+
+    if base == "ip":
+        for a in args:
+            if not a.startswith("-") and a.lower() in _IP_MUTATING_SUBCOMMANDS:
+                return False, f"ip_mutating_subcommand_blocked: {a}"
+
+    return True, ""
+
 
 def _get_redis(request: Request) -> Any:
     r = getattr(request.app.state, "redis", None)
@@ -247,6 +326,14 @@ async def enqueue_commands(body: EnqueueCommandsRequest, request: Request) -> JS
             logger.warning(
                 "[cmd-enqueue] BLOCKED agent=%s cmd=%s reason=not_in_whitelist",
                 body.agent_id, cmd.command,
+            )
+            continue
+        args_ok, args_reason = _command_args_allowed(base, cmd.args)
+        if not args_ok:
+            blocked.append(cmd.command)
+            logger.warning(
+                "[cmd-enqueue] BLOCKED agent=%s cmd=%s reason=%s",
+                body.agent_id, cmd.command, args_reason,
             )
             continue
         cmd_id = f"cmd-{uuid.uuid4().hex[:12]}"

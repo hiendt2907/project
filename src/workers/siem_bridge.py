@@ -49,6 +49,23 @@ KAFKA_TOPIC = os.getenv("OMNI_KAFKA_TOPIC_ALERTS", "omni-alerts")
 DUAL_EMIT = os.getenv("SIEM_BRIDGE_DUAL_EMIT", "true").lower() not in ("false", "0", "no")
 KAFKA_TOPIC_SIEM_RAW = os.getenv("OMNI_KAFKA_TOPIC_SIEM_RAW", "omni-siem-raw")
 
+# Per-topic publish-idempotency (audit 2026-07-22 finding #1): _process publishes to
+# up to 2 topics then XACKs. If the second send_and_wait raises, the exception skips
+# XACK and the message is redelivered — without this guard the first (already
+# succeeded) publish fires AGAIN on retry. Each topic gets its own dedup key, set
+# only after that topic's send_and_wait succeeds, so a retry replays only the
+# unfinished half of the work instead of re-publishing everything.
+DEDUP_TTL_S = int(os.getenv("SIEM_BRIDGE_DEDUP_TTL_S", "86400"))
+_DEDUP_KEY_PREFIX = "omni:siembridge:dedup:"
+
+
+async def _already_published(redis: Redis, incident_id: str, topic: str) -> bool:
+    return bool(await redis.exists(f"{_DEDUP_KEY_PREFIX}{topic}:{incident_id}"))
+
+
+async def _mark_published(redis: Redis, incident_id: str, topic: str) -> None:
+    await redis.set(f"{_DEDUP_KEY_PREFIX}{topic}:{incident_id}", "1", ex=DEDUP_TTL_S)
+
 
 # --- Schema translation ---
 SEVERITY_MAP = {
@@ -245,24 +262,33 @@ async def _process(redis: Redis, producer: AIOKafkaProducer, msg_id: str, fields
     try:
         alert = translate_incident(msg_id, fields)
         trace_id = alert["alerts"][0]["labels"].get("trace_id", f"fg-{msg_id[:8]}")
-        inner = {"source": "siem", "trace_id": trace_id, "data": alert}
-        envelope = json.dumps({"data": json.dumps(inner, ensure_ascii=False)}, ensure_ascii=False).encode()
-        await producer.send_and_wait(KAFKA_TOPIC, value=envelope)
+
+        if await _already_published(redis, incident_id, KAFKA_TOPIC):
+            log.info('"dedup_skip_publish" incident_id="%s" topic="%s"', incident_id, KAFKA_TOPIC)
+        else:
+            inner = {"source": "siem", "trace_id": trace_id, "data": alert}
+            envelope = json.dumps({"data": json.dumps(inner, ensure_ascii=False)}, ensure_ascii=False).encode()
+            await producer.send_and_wait(KAFKA_TOPIC, value=envelope)
+            await _mark_published(redis, incident_id, KAFKA_TOPIC)
 
         if DUAL_EMIT:
-            raw_envelope = json.dumps({
-                "id": incident_id,
-                "tenant_id": fields.get("tenant_id", ""),
-                "severity": fields.get("severity", ""),
-                "category": fields.get("category", ""),
-                "source": fields.get("source", "siem-bridge"),
-                "source_ip": fields.get("source_ip", ""),
-                "timestamp_unix": int(fields.get("timestamp_unix", 0)),
-                "schema_version": "1.0.0",
-                "trace_id": trace_id,
-            }, ensure_ascii=False).encode()
-            await producer.send_and_wait(KAFKA_TOPIC_SIEM_RAW, value=raw_envelope)
-            log.info('"dual_emit_raw" incident_id="%s" topic="%s"', incident_id, KAFKA_TOPIC_SIEM_RAW)
+            if await _already_published(redis, incident_id, KAFKA_TOPIC_SIEM_RAW):
+                log.info('"dedup_skip_publish" incident_id="%s" topic="%s"', incident_id, KAFKA_TOPIC_SIEM_RAW)
+            else:
+                raw_envelope = json.dumps({
+                    "id": incident_id,
+                    "tenant_id": fields.get("tenant_id", ""),
+                    "severity": fields.get("severity", ""),
+                    "category": fields.get("category", ""),
+                    "source": fields.get("source", "siem-bridge"),
+                    "source_ip": fields.get("source_ip", ""),
+                    "timestamp_unix": int(fields.get("timestamp_unix", 0)),
+                    "schema_version": "1.0.0",
+                    "trace_id": trace_id,
+                }, ensure_ascii=False).encode()
+                await producer.send_and_wait(KAFKA_TOPIC_SIEM_RAW, value=raw_envelope)
+                await _mark_published(redis, incident_id, KAFKA_TOPIC_SIEM_RAW)
+                log.info('"dual_emit_raw" incident_id="%s" topic="%s"', incident_id, KAFKA_TOPIC_SIEM_RAW)
 
         await redis.xack(STREAM, GROUP, msg_id)
         log.info(
