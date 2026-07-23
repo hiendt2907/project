@@ -177,7 +177,22 @@ async def accumulate_handover_document(
 async def _detect_gaps_and_ask(
     ctx: WorkerHandlerContext, tenant_id: str, probe: str, discovery_data: dict[str, Any],
 ) -> None:
-    """A5: detect an obvious gap in this probe's data, ask the tenant via Telegram."""
+    """A5: detect an obvious gap in this probe's data, ask the tenant via Telegram.
+
+    Bước 7 compatibility — deliberately kept running unchanged alongside the
+    newer entity/facet-aware ``aoip.question_lifecycle`` (Unknown -> Question ->
+    Answer -> Claim). This path is per-probe, free-text, dedups only crudely
+    (``api_access`` case scans existing question text), and never turns an
+    answer into a verifiable Claim — it just records that a question was asked
+    (``resolve_question`` below). It writes to
+    ``pkg.onboarding.discovery_doc.QUESTIONS_KEY``
+    (``omni:onboarding:questions:{tenant_id}``), a DIFFERENT Redis namespace
+    from ``question_lifecycle.QUESTIONS_KEY``
+    (``omni:aoip:questions:{tenant_id}``) — the two paths never read or write
+    each other's records. Full boundary/rationale (field-by-field, why this is
+    not an ``INV_SINGLE_SOURCE_OF_TRUTH`` violation, decision guide for future
+    code):`docs/architecture/QUESTION_PATH_BOUNDARY.md`.
+    """
     question: str | None = None
     if probe == "service_topology":
         services = discovery_data.get("services") or []

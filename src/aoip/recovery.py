@@ -234,11 +234,290 @@ _SYSTEMD_JOURNAL_VACUUM = RecoveryOperator(
     apply=_jv_apply, health=_jv_health,
 )
 
+# ── systemd / resource_runaway operator (capability #4: kill_unit) ───────────
+# Phase 4 (docs/plans/omni-close-autonomous-sre-gaps-2026-07-23.md) — remote-host/
+# VM action library expansion. Fixes the gap where a unit's process is pinned by
+# evidence (Lane 1, 3-sigma memory/CPU) as a runaway consumer but is NOT itself
+# `failed`/`inactive` (reset_failed/restart's current-state gates would both
+# no-op: `is-active` says active, `is-failed` says not-failed). apply() sends
+# ONLY `systemctl kill --signal=SIGTERM <unit>` (systemd's own supervised signal
+# delivery, NEVER `kill -9 <pid>` against a raw PID) — the smallest reversible
+# action for a stuck/runaway process: it relies on the unit's OWN configured
+# Restart= policy to bring it back (same self-healing contract systemd already
+# gives every managed service), so this capability never itself calls
+# start/restart. Threshold is env-configurable (mirrors journal_vacuum's
+# pattern) since "how much memory is runaway" depends on the host's RAM size,
+# which this module cannot see.
+_ENV_KILL_UNIT_MEMORY_THRESHOLD_BYTES = "AOIP_KILL_UNIT_MEMORY_THRESHOLD_BYTES"
+# Default: 1 GiB resident for a single unit is already high pressure on a
+# typical lab VM (small RAM, 1-2GB) — gives headroom to act before an OOM-kill
+# (uncontrolled, not chosen by Omni) would happen instead.
+_DEFAULT_KILL_UNIT_MEMORY_THRESHOLD_BYTES = 1 * 1024**3  # 1 GiB
+
+
+def _kill_unit_memory_threshold_bytes(env: dict | None = None) -> int:
+    """Memory threshold (bytes) đọc từ env, KHÔNG hardcode. Thiếu/không parse
+    được/không dương → default an toàn (xem hằng số phía trên)."""
+    env = os.environ if env is None else env
+    raw = (env.get(_ENV_KILL_UNIT_MEMORY_THRESHOLD_BYTES) or "").strip()
+    if not raw:
+        return _DEFAULT_KILL_UNIT_MEMORY_THRESHOLD_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_KILL_UNIT_MEMORY_THRESHOLD_BYTES
+    return value if value > 0 else _DEFAULT_KILL_UNIT_MEMORY_THRESHOLD_BYTES
+
+
+def _parse_memory_current_bytes(text: str) -> int | None:
+    """Parse `systemctl show -p MemoryCurrent --value` output → bytes.
+
+    `[not set]`/empty/non-numeric → None (fail-closed: caller PHẢI coi đây là
+    "không đủ bằng chứng resource pressure", KHÔNG tự suy diễn/mutate)."""
+    raw = text.strip()
+    if not raw or not raw.isdigit():
+        return None
+    return int(raw)
+
+
+async def _ku_is_broken(t, unit, port) -> bool:
+    out, _ = await t.run(["systemctl", "show", "-p", "MemoryCurrent", "--value", unit])
+    used = _parse_memory_current_bytes(out)
+    if used is None:
+        return False  # fail-closed: không đo được → KHÔNG coi là runaway, KHÔNG mutate
+    return used >= _kill_unit_memory_threshold_bytes()
+
+
+async def _ku_capture_before(t, unit, port) -> dict:
+    mem_out, _ = await t.run(["systemctl", "show", "-p", "MemoryCurrent", "--value", unit])
+    active_state, _ = await t.run(["systemctl", "is-active", unit])
+    return {"unit": unit, "memory_current_raw": mem_out.strip(),
+            "memory_current_bytes": _parse_memory_current_bytes(mem_out),
+            "active_state": active_state.strip(),
+            "threshold_bytes": _kill_unit_memory_threshold_bytes()}
+
+
+async def _ku_apply(t, unit, port) -> tuple[str, int]:
+    # Action nhỏ nhất: gửi SIGTERM qua đúng systemd (KHÔNG kill -9 PID trực
+    # tiếp) — hồi phục phụ thuộc HOÀN TOÀN vào Restart= policy sẵn có của
+    # unit, capability này KHÔNG tự start/restart.
+    return await t.run(["sudo", "systemctl", "kill", "--signal=SIGTERM", unit], timeout=15.0)
+
+
+async def _ku_health(t, unit, port) -> bool:
+    out, _ = await t.run(["systemctl", "show", "-p", "MemoryCurrent", "--value", unit])
+    used = _parse_memory_current_bytes(out)
+    if used is None:
+        return False  # verification uncertainty must be explicit — never assume healthy
+    return used < _kill_unit_memory_threshold_bytes()
+
+
+_SYSTEMD_KILL_UNIT = RecoveryOperator(
+    failure_mode="resource_runaway", substrate=SUBSTRATE_SYSTEMD, action_verb="kill",
+    is_broken=_ku_is_broken, capture_before=_ku_capture_before,
+    apply=_ku_apply, health=_ku_health,
+)
+
+
+# ── systemd / disk_pressure_tmp operator (capability #5: disk_cleanup) ───────
+# Second SYS_RESOURCE capability (after journal_vacuum), different target: root/
+# tmp filesystem usage rather than journald's own retained data. TARGET UNIT
+# CỐ ĐỊNH: chính unit thật `systemd-tmpfiles-clean.service` (oneshot có sẵn
+# trên mọi host systemd hiện đại) — apply() CHỈ `systemctl start` unit đó, tức
+# là chạy `systemd-tmpfiles --clean` CHÍNH THỨC theo rule đã cấu hình trong
+# /etc/tmpfiles.d (age-based, disposable data only) — KHÔNG BAO GIỜ raw
+# rm/find -delete tự viết. Cùng lý do với journal_vacuum: khớp tự nhiên với mô
+# hình unit-scoped hiện có (canonical_scope, lease, allowlist), KHÔNG cần tổng
+# quát hoá lại cho khái niệm "target không phải unit".
+_ENV_DISK_CLEANUP_THRESHOLD_PCT = "AOIP_DISK_CLEANUP_THRESHOLD_PCT"
+# Default: 85% root filesystem usage is already high pressure on a typical lab
+# VM (small root partitions, 10-20GB) — headroom to act BEFORE a Lane 1
+# (SYS_RESOURCE, 3-sigma disk) alert would fire from overall filesystem usage.
+_DEFAULT_DISK_CLEANUP_THRESHOLD_PCT = 85.0
+
+_ENV_DISK_CLEANUP_PATH = "AOIP_DISK_CLEANUP_PATH"
+_DEFAULT_DISK_CLEANUP_PATH = "/"
+
+_DISK_USAGE_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%?")
+
+
+def _disk_cleanup_threshold_pct(env: dict | None = None) -> float:
+    """Ngưỡng %-usage kích hoạt cleanup — đọc từ env, KHÔNG hardcode. Thiếu/
+    không parse được/ngoài (0,100] → default an toàn (hằng số phía trên)."""
+    env = os.environ if env is None else env
+    raw = (env.get(_ENV_DISK_CLEANUP_THRESHOLD_PCT) or "").strip()
+    if not raw:
+        return _DEFAULT_DISK_CLEANUP_THRESHOLD_PCT
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_DISK_CLEANUP_THRESHOLD_PCT
+    return value if 0.0 < value <= 100.0 else _DEFAULT_DISK_CLEANUP_THRESHOLD_PCT
+
+
+def _disk_cleanup_path(env: dict | None = None) -> str:
+    """Filesystem path bị đo %-usage — đọc từ env, KHÔNG hardcode. Rỗng →
+    default an toàn (root filesystem)."""
+    env = os.environ if env is None else env
+    raw = (env.get(_ENV_DISK_CLEANUP_PATH) or "").strip()
+    return raw or _DEFAULT_DISK_CLEANUP_PATH
+
+
+def _parse_disk_usage_pct(text: str) -> float | None:
+    """Parse `df --output=pcent <path>` output (header line + data line, vd
+    "Use%\\n 87%") → float percent. Trả None nếu không parse được — caller
+    PHẢI coi đây là "không đủ bằng chứng disk pressure" (fail-closed)."""
+    lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
+    data_line = lines[-1] if lines else ""
+    m = _DISK_USAGE_PCT_RE.search(data_line)
+    if not m:
+        return None
+    return float(m.group(1))
+
+
+async def _dc_is_broken(t, unit, port) -> bool:
+    out, _ = await t.run(["df", "--output=pcent", _disk_cleanup_path()])
+    pct = _parse_disk_usage_pct(out)
+    if pct is None:
+        return False  # fail-closed: không đo được → KHÔNG coi là hỏng, KHÔNG mutate
+    return pct >= _disk_cleanup_threshold_pct()
+
+
+async def _dc_capture_before(t, unit, port) -> dict:
+    out, _ = await t.run(["df", "--output=pcent", _disk_cleanup_path()])
+    return {"unit": unit, "path": _disk_cleanup_path(), "disk_usage_raw": out.strip(),
+            "disk_usage_pct": _parse_disk_usage_pct(out),
+            "threshold_pct": _disk_cleanup_threshold_pct()}
+
+
+async def _dc_apply(t, unit, port) -> tuple[str, int]:
+    # Action nhỏ nhất: khởi động unit oneshot CHÍNH THỨC — KHÔNG tự rm/find.
+    return await t.run(["sudo", "systemctl", "start", unit], timeout=60.0)
+
+
+async def _dc_health(t, unit, port) -> bool:
+    out, _ = await t.run(["df", "--output=pcent", _disk_cleanup_path()])
+    pct = _parse_disk_usage_pct(out)
+    if pct is None:
+        return False  # verification uncertainty must be explicit — never assume healthy
+    return pct < _disk_cleanup_threshold_pct()
+
+
+_SYSTEMD_DISK_CLEANUP_TMP = RecoveryOperator(
+    failure_mode="disk_pressure_tmp", substrate=SUBSTRATE_SYSTEMD, action_verb="tmpfiles-clean",
+    is_broken=_dc_is_broken, capture_before=_dc_capture_before,
+    apply=_dc_apply, health=_dc_health,
+)
+
+
+# ── systemd / config_drifted operator (capability #6: config_rollback) ──────
+# Restores a unit's config file from its last-known-good sibling backup
+# (`<path>.aoip-backup`, fixed naming convention only — NEVER attacker/
+# payload-controlled) and restarts the owning unit. The config path itself is
+# resolved from `unit` via an env-configured mapping
+# (`AOIP_CONFIG_ROLLBACK_PATHS="unit1:/etc/x.conf,unit2:/etc/y.conf"`, SAME
+# env-driven-mapping pattern as the allowlist thresholds above) — NOT passed
+# through the operator's generic `port: int | None` slot, which would silently
+# repurpose a typed field for an unrelated string and is exactly the kind of
+# signature-widening `INV_MINIMAL_PRIMITIVES` guards against. A unit missing
+# from the mapping has NO known config path → fail-closed (`is_broken=False`,
+# same as "no backup found").
+#
+# Reversibility proof (required by Phase 4 exit criteria before a capability
+# may be added): BEFORE overwriting the live config, capture_before snapshots
+# the CURRENT (about-to-be-replaced) file to `<path>.pre_rollback_snapshot` —
+# if the rollback target itself turns out to be wrong, an operator can
+# manually restore that snapshot. This is the one capability in this batch
+# with real downtime risk (restarts a unit), so its risk is registered
+# alongside `systemd.restart_unit`, not below it.
+_ENV_CONFIG_ROLLBACK_PATHS = "AOIP_CONFIG_ROLLBACK_PATHS"
+
+
+def config_rollback_path_for_unit(unit: str, env: dict | None = None) -> str | None:
+    """Resolve `unit` → its allowlisted config path via
+    ``AOIP_CONFIG_ROLLBACK_PATHS``. Returns None if the unit is not mapped
+    (fail-closed — no path means no known-good backup to roll back to)."""
+    env = os.environ if env is None else env
+    raw = (env.get(_ENV_CONFIG_ROLLBACK_PATHS) or "").strip()
+    mapping: dict[str, str] = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry or ":" not in entry:
+            continue
+        mapped_unit, _, path = entry.partition(":")
+        mapped_unit, path = mapped_unit.strip(), path.strip()
+        if mapped_unit and path:
+            mapping[mapped_unit] = path
+    return mapping.get(unit)
+
+
+async def _cr_checksum(t, path) -> str | None:
+    out, rc = await t.run(["sha256sum", path])
+    if rc != 0 or not out.strip():
+        return None
+    return out.strip().split()[0]
+
+
+async def _cr_is_broken(t, unit, port) -> bool:
+    path = config_rollback_path_for_unit(unit)
+    if path is None:
+        return False  # fail-closed: unit không có config path đã map → không mutate
+    current = await _cr_checksum(t, path)
+    backup = await _cr_checksum(t, f"{path}.aoip-backup")
+    if backup is None:
+        return False  # fail-closed: no backup to roll back to → not "broken" here
+    return current != backup
+
+
+async def _cr_capture_before(t, unit, port) -> dict:
+    path = config_rollback_path_for_unit(unit)
+    if path is None:
+        return {"unit": unit, "path": None, "current_sha256": None, "backup_sha256": None}
+    current = await _cr_checksum(t, path)
+    backup = await _cr_checksum(t, f"{path}.aoip-backup")
+    # Reversibility snapshot — see operator docstring above.
+    await t.run(["sudo", "cp", "-p", path, f"{path}.pre_rollback_snapshot"], timeout=15.0)
+    return {"unit": unit, "path": path, "current_sha256": current, "backup_sha256": backup}
+
+
+async def _cr_apply(t, unit, port) -> tuple[str, int]:
+    path = config_rollback_path_for_unit(unit)
+    if path is None:
+        return "no config path mapped for unit", 1
+    out, rc = await t.run(["sudo", "cp", "-p", f"{path}.aoip-backup", path], timeout=15.0)
+    if rc != 0:
+        return out, rc
+    return await t.run(["sudo", "systemctl", "restart", unit], timeout=30.0)
+
+
+async def _cr_health(t, unit, port) -> bool:
+    path = config_rollback_path_for_unit(unit)
+    if path is None:
+        return False  # verification uncertainty must be explicit — never assume healthy
+    current = await _cr_checksum(t, path)
+    backup = await _cr_checksum(t, f"{path}.aoip-backup")
+    if current is None or backup is None:
+        return False
+    if current != backup:
+        return False
+    active_state, _ = await t.run(["systemctl", "is-active", unit])
+    return active_state.strip().lower() == "active"
+
+
+_SYSTEMD_CONFIG_ROLLBACK = RecoveryOperator(
+    failure_mode="config_drifted", substrate=SUBSTRATE_SYSTEMD, action_verb="config-rollback",
+    is_broken=_cr_is_broken, capture_before=_cr_capture_before,
+    apply=_cr_apply, health=_cr_health,
+)
+
 # Registry: (failure_mode, substrate) → operator. Thêm cặp mới = 1 entry, KHÔNG sửa loop.
 OPERATORS: dict[tuple[str, str], RecoveryOperator] = {
     ("process_down", SUBSTRATE_SYSTEMD): _SYSTEMD_PROCESS_DOWN,
     ("failed_state_stale", SUBSTRATE_SYSTEMD): _SYSTEMD_FAILED_STATE_STALE,
     ("disk_pressure_journal", SUBSTRATE_SYSTEMD): _SYSTEMD_JOURNAL_VACUUM,
+    ("resource_runaway", SUBSTRATE_SYSTEMD): _SYSTEMD_KILL_UNIT,
+    ("disk_pressure_tmp", SUBSTRATE_SYSTEMD): _SYSTEMD_DISK_CLEANUP_TMP,
+    ("config_drifted", SUBSTRATE_SYSTEMD): _SYSTEMD_CONFIG_ROLLBACK,
 }
 
 

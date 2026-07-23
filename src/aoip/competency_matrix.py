@@ -14,6 +14,20 @@ logging, runbook, sla for Host — most of these for Service too) are honestly
 reported UNKNOWN rather than guessed. No LLM is involved anywhere in this
 module — CLAIMED never gets silently promoted to VERIFIED; state is decided
 by deterministic evidence-confidence rules only.
+
+Confidence-axis boundary (Phase 3, ``docs/architecture/
+CONFIDENCE_AXES_BOUNDARY.md``): ``FacetState``/``FacetValue`` answer "how much
+do we know about facet Y of entity X, accumulated over time" — long-lived
+epistemic state, recomputed fresh from persisted ``SystemModel``/Claims on
+every call, never persisted itself. This is a DIFFERENT axis from
+``aoip.verification.VerificationResult``, which answers "did THIS mutation
+attempt reach its expected_state, right now" — a one-shot, transient,
+per-``RecoveryOutcome`` contract that is only ever audit-logged, never
+recomputed as "current state". Do not conflate the two just because both
+carry ``evidence_refs``/``confidence`` fields — a ``FacetState.VERIFIED`` (≥2
+corroborating Facts over time, see ``_identity_facet``) is not the same claim
+as a ``VerificationResult.status == PASS`` (one probe check just now). See the
+boundary doc for the full field-by-field comparison and decision table.
 """
 from __future__ import annotations
 

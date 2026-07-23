@@ -2785,6 +2785,23 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                         "event=system_twin_injected trace=%s chars=%s", trace, len(_twin_block)
                     )
 
+                # Customer-provided business docs (gap 4): ingest_customer_knowledge()
+                # đã lưu metadata+summary nhưng chưa ai đọc lại trước LLM advisory.
+                # Metadata/summary ONLY (INV_DATA_RESIDENCY) — chưa verify, đánh dấu rõ
+                # nguồn để advisory không coi ngang hàng với bằng chứng probe thật.
+                from workers.customer_knowledge_context import build_customer_knowledge_block
+
+                _cust_kb_block = await build_customer_knowledge_block(
+                    ctx.redis, _tenant_id_from_batch(batch)
+                )
+                if _cust_kb_block:
+                    sanitized_text = f"{sanitized_text}\n\n{_cust_kb_block}"
+                    logger.info(
+                        "event=customer_knowledge_injected trace=%s chars=%s",
+                        trace,
+                        len(_cust_kb_block),
+                    )
+
                 # Pipeline stage: RAG — Redis Stack runs as Omni's SECOND BRAIN here.
                 # Instead of a single one-shot recall, run a multi-turn RAG loop over the
                 # vector store within ONE session for this alert (run_redis_brain). It

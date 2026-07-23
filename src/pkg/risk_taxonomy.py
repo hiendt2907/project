@@ -72,6 +72,20 @@ _STATIC_MUTATE: Final = {
     # app/process state — still LOW like the other two VM recovery
     # capabilities, still gated by the same tier_gate/HITL path.
     "systemd.journal_vacuum": LOW,
+    # Phase 4 (docs/plans/omni-close-autonomous-sre-gaps-2026-07-23.md) — action
+    # library expansion, remote-host/VM domain. Capability #4: SIGTERM via
+    # `systemctl kill` for a resource-runaway unit; recovery relies on the
+    # unit's own Restart= policy, same LOW/tier_gate/HITL path as the other 3.
+    "systemd.kill_unit": LOW,
+    # Capability #5: `systemd-tmpfiles-clean.service` — official disposable
+    # tmp/cache cleanup, never a raw rm. Same LOW class as journal_vacuum.
+    "systemd.disk_cleanup": LOW,
+    # Capability #6: config restore-from-backup + unit restart. Real downtime
+    # risk (overwrites live config + restarts), so it is deliberately NOT
+    # given a lower class than restart_unit even though the table only
+    # tracks discrete classes, not the finer numeric risk score used inside
+    # the capability module itself (_RISK=0.30, same as restart_unit).
+    "systemd.config_rollback": LOW,
     "k8s_create_or_patch_configmap": LOW,   # cố định (bỏ phân loại động — QĐ #3)
     "sandbox_cleanup": LOW,                 # dọn sandbox, không đụng cluster
     "k8s_scale_resource": MEDIUM,

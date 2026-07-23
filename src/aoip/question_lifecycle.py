@@ -12,6 +12,10 @@ once machine evidence corroborates or disputes it).
 An answer is NEVER treated as verified knowledge on its own — only
 ``competency_matrix`` decides VERIFIED, by cross-checking a matching machine
 Fact. This module only ever writes CLAIMED-level state.
+
+Full boundary/rationale versus the legacy path (field-by-field, why the two
+do NOT violate ``INV_SINGLE_SOURCE_OF_TRUTH``, decision guide for future code):
+``docs/architecture/QUESTION_PATH_BOUNDARY.md``.
 """
 from __future__ import annotations
 

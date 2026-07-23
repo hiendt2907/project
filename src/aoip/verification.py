@@ -3,6 +3,20 @@
 Verification is deliberately separate from transport/executor details.  A
 domain adapter may verify a systemd service, a Kubernetes rollout, a database
 replica or a network route, but Omni receives the same PASS/FAIL/UNKNOWN shape.
+
+Confidence-axis boundary (Phase 3, ``docs/architecture/
+CONFIDENCE_AXES_BOUNDARY.md``): ``VerificationResult`` answers "did THIS
+mutation attempt reach its expected_state, right now?" — one-shot, transient,
+created per ``RecoveryOutcome`` and only ever *audit-logged* (``to_dict()``
+consumed by ``systemd_restart.py``/``systemd_reset_failed.py``/
+``systemd_journal_vacuum.py`` for the CRAT event payload), never re-derived
+later as "current state". This is a DIFFERENT axis from ``aoip.
+competency_matrix.FacetState``, which answers "how much do we know about
+facet Y of entity X, accumulated over time" as a pure derived projection
+(``INV_DERIVED_NEVER_PERSIST``) recomputed from persisted Facts/Claims on
+every read. Do not conflate the two just because both carry
+``evidence_refs``/``confidence`` fields — see the boundary doc for the
+field-by-field comparison and the "which one applies" decision table.
 """
 from __future__ import annotations
 
