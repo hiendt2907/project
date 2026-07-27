@@ -518,6 +518,28 @@ class AdminConfigRepo:
                 channel,
             )
 
+    async def record_advisory_acknowledgment(
+        self,
+        *,
+        trace_id: str,
+        actor: str,
+        channel: str = "telegram",
+        tenant_id: str = "default",
+    ) -> None:
+        """Ghi nhận operator đã ack 1 advisory suggestion (Advisory Mode ledger phụ trợ;
+        CRAT ADVISORY_DECISION vẫn là nguồn sự thật bất biến)."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO omni_admin.advisory_acknowledgment "
+                "(trace_id, tenant_id, actor, channel) VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (trace_id) DO UPDATE SET "
+                "actor=EXCLUDED.actor, channel=EXCLUDED.channel, acknowledged_at=now()",
+                trace_id,
+                tenant_id,
+                actor,
+                channel,
+            )
+
     # ---- list reads (Admin UI matrices/tables) ----------------------------
 
     async def list_runtime_flags(self, tenant_id: str = "default") -> list[dict[str, Any]]:

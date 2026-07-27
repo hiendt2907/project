@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -184,11 +185,35 @@ def _prometheus_base_url(ctx: Any) -> str:
     return default_prometheus_http_base()
 
 
+_RELATIVE_TIME_RE = re.compile(r"^now(-(\d+)([smhdw]))?$")
+_RELATIVE_TIME_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def _resolve_prometheus_time(value: Any, now: float) -> Any:
+    """Convert VictoriaMetrics-style relative literals (``now``, ``now-1h``) sang Unix
+    epoch giây. Vanilla Prometheus (đã thay VictoriaMetrics, xem CLAUDE.md) KHÔNG hiểu
+    ``now-1h`` cho ``/api/v1/query_range`` — trả 400 bad_data (xác nhận thật trên lab
+    2026-07-23). Giá trị không khớp pattern relative được trả nguyên (đã là epoch/RFC3339)."""
+    if not isinstance(value, str):
+        return value
+    m = _RELATIVE_TIME_RE.match(value.strip())
+    if not m:
+        return value
+    amount, unit = m.group(2), m.group(3)
+    offset_sec = int(amount) * _RELATIVE_TIME_UNIT_SECONDS[unit] if amount else 0
+    return str(int(now - offset_sec))
+
+
 async def _prometheus_get_json(ctx: Any, path: str, params: dict[str, Any]) -> dict[str, Any]:
     base = _prometheus_base_url(ctx)
     url = f"{base}{path}"
+    now = time.time()
+    resolved_params = {
+        k: (_resolve_prometheus_time(v, now) if k in ("start", "end") else v)
+        for k, v in params.items()
+    }
     async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.get(url, params=params)
+        r = await client.get(url, params=resolved_params)
         if r.status_code == 403:
             raise VMHTTPForbidden()
         r.raise_for_status()

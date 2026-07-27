@@ -8,7 +8,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Any
+from typing import Any, NamedTuple
 
 from execution.memory_normalize import (
     canonical_symptom_text,
@@ -407,43 +407,72 @@ async def _instant_scalar(ctx: WorkerHandlerContext, promql: str) -> float | Non
     return None
 
 
-async def evaluate_proactive_triggers(ctx: WorkerHandlerContext) -> int:
-    """Một tick: PromQL instant → nếu vượt ngưỡng + hết cooldown → produce ``kafka_topic_proactive_incidents``."""
-    ws = ctx.settings
-    if await proactive_kill_switch_engaged(ctx.redis, ws.proactive_kill_switch_key):
-        logger.info(
-            "[PROACTIVE] Bypassed proactively due to kill_switch=1. Skipping Prometheus evaluate; no new incidents enqueued."
+class ProactiveRule(NamedTuple):
+    name: str
+    promql: str
+    threshold: float
+
+
+def _load_proactive_rules(ws: Any) -> list[ProactiveRule]:
+    """Parse ``ws.proactive_promql_rules`` (JSON array) — cho phép theo dõi NHIỀU rule
+    thay vì 1 rule hardcode duy nhất (bug omni-core: proactive gần như không bao giờ
+    trigger trong lab vì chỉ theo dõi CrashLoopBackOff). Rỗng/không parse được -> fallback
+    fail-closed về đúng 1 rule cũ (``proactive_promql``/``proactive_trigger_threshold``),
+    không breaking config hiện có."""
+    raw = getattr(ws, "proactive_promql_rules", "") or ""
+    rules: list[ProactiveRule] = []
+    if raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if not isinstance(item, dict):
+                        continue
+                    promql = str(item.get("promql") or "").strip()
+                    if not promql:
+                        continue
+                    name = str(item.get("name") or promql[:40])
+                    threshold = float(item.get("threshold", 0.0))
+                    rules.append(ProactiveRule(name=name, promql=promql, threshold=threshold))
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            logger.warning("[PROACTIVE] proactive_promql_rules parse fail, fallback single rule: %s", e)
+    if not rules:
+        rules.append(
+            ProactiveRule(name=DEFAULT_RULE, promql=ws.proactive_promql, threshold=ws.proactive_trigger_threshold)
         )
-        return 0
-    val = await _instant_scalar(ctx, ws.proactive_promql)
+    return rules
+
+
+async def _evaluate_one_proactive_rule(ctx: WorkerHandlerContext, rule: ProactiveRule) -> int:
+    ws = ctx.settings
+    val = await _instant_scalar(ctx, rule.promql)
     if val is None:
         return 0
-    if val <= ws.proactive_trigger_threshold:
+    if val <= rule.threshold:
         return 0
-    rule = DEFAULT_RULE
-    dedupe = f"{rule}:{ws.proactive_promql[:120]}"
+    dedupe = f"{rule.name}:{rule.promql[:120]}"
     ck = f"omni:proactive:cooldown:{hash(dedupe) & 0xFFFFFFFF:X}"
     if await ctx.redis.get(ck):
         return 0
     trace_id = f"proact-{uuid.uuid4().hex[:12]}"
-    hint = infer_error_hint_from_promql(ws.proactive_promql)
+    hint = infer_error_hint_from_promql(rule.promql)
     cq = canonical_query_from_rule_name(
-        rule,
+        rule.name,
         target="cluster",
         error_hint=hint,
-        promql_context=ws.proactive_promql[:2000],
+        promql_context=rule.promql[:2000],
     )
     cq = redact(cq)
     ev = AnomalyEvent(
         trace_id=trace_id,
-        rule_name=rule,
+        rule_name=rule.name,
         target="cluster",
         namespace="",
         metric_value=val,
-        threshold=ws.proactive_trigger_threshold,
+        threshold=rule.threshold,
         canonical_query=cq,
         timestamp=str(int(time.time())),
-        trigger_promql=ws.proactive_promql[:2000],
+        trigger_promql=rule.promql[:2000],
         error_hint=hint,
     )
     assert ctx.kafka is not None
@@ -451,8 +480,24 @@ async def evaluate_proactive_triggers(ctx: WorkerHandlerContext) -> int:
     inc_proactive_events()
     inc_anomaly_events()
     await ctx.redis.setex(ck, ws.proactive_cooldown_sec, "1")
-    logger.info("[%s] proactive_event_pushed metric=%s thr=%s", trace_id, val, ws.proactive_trigger_threshold)
+    logger.info("[%s] proactive_event_pushed rule=%s metric=%s thr=%s", trace_id, rule.name, val, rule.threshold)
     return 1
+
+
+async def evaluate_proactive_triggers(ctx: WorkerHandlerContext) -> int:
+    """Một tick: với MỖI rule đã cấu hình (mặc định 1 rule hợp lệ, có thể nhiều qua
+    ``proactive_promql_rules``) — PromQL instant → nếu vượt ngưỡng + hết cooldown →
+    produce ``kafka_topic_proactive_incidents``. Trả tổng số incident enqueue trong tick."""
+    ws = ctx.settings
+    if await proactive_kill_switch_engaged(ctx.redis, ws.proactive_kill_switch_key):
+        logger.info(
+            "[PROACTIVE] Bypassed proactively due to kill_switch=1. Skipping Prometheus evaluate; no new incidents enqueued."
+        )
+        return 0
+    fired = 0
+    for rule in _load_proactive_rules(ws):
+        fired += await _evaluate_one_proactive_rule(ctx, rule)
+    return fired
 
 
 async def _append_dlq_proactive(

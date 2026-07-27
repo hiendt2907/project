@@ -35,6 +35,7 @@ TOPICS=(
   "omni-hitl-decisions"
   "omni-discovery-evidence"
   "omni-knowledge-evidence"
+  "omni-advisory-suggestions"
 )
 
 for t in "${TOPICS[@]}"; do

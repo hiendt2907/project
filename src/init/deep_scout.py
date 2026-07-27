@@ -24,6 +24,25 @@ logger = logging.getLogger(__name__)
 REDIS_KEY_HOST = "sys:host:specs"
 REDIS_KEY_BASELINE = "metrics:baseline:24h"
 REDIS_TTL_SEC = 3600
+_REDIS_WRITE_MAX_ATTEMPTS = 3
+_REDIS_WRITE_BACKOFF_SEC = 0.5
+
+
+async def _retry_redis_write(coro_factory, *, max_attempts: int = _REDIS_WRITE_MAX_ATTEMPTS) -> None:
+    """Retry có giới hạn cho ghi Redis (timeout/connection thoáng qua tự phục hồi).
+    Raise lỗi cuối cùng nếu hết attempt — caller escalate qua ErrorLedger, KHÔNG nuốt
+    im lặng sau khi retry hết (khác hành vi cũ: log warning rồi bỏ qua)."""
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await coro_factory()
+            return
+        except Exception as e:  # noqa: BLE001 — retry mọi lỗi Redis thoáng qua, escalate ở caller
+            last_exc = e
+            if attempt < max_attempts:
+                await asyncio.sleep(_REDIS_WRITE_BACKOFF_SEC * attempt)
+    if last_exc is not None:
+        raise last_exc
 
 # Khóa ConfigMap — substring (lower); tránh "key" đơn độc (quá rộng)
 _SENSITIVE_KEY_MARKERS = (
@@ -353,12 +372,24 @@ async def run_deep_scout(ctx: Any, *, periodic: bool = False) -> DeepScoutSummar
     summary.n_services = len(topo_d.get("services") or [])
 
     try:
-        await r.set(REDIS_KEY_HOST, json.dumps(host_d, ensure_ascii=False), ex=REDIS_TTL_SEC)
+        await _retry_redis_write(
+            lambda: r.set(REDIS_KEY_HOST, json.dumps(host_d, ensure_ascii=False), ex=REDIS_TTL_SEC)
+        )
         # Topology không còn lưu Redis — RAG infra_topology + SRE_KNOWLEDGE (pgvector).
-        await r.set(REDIS_KEY_BASELINE, json.dumps(met_d, ensure_ascii=False), ex=REDIS_TTL_SEC)
+        await _retry_redis_write(
+            lambda: r.set(REDIS_KEY_BASELINE, json.dumps(met_d, ensure_ascii=False), ex=REDIS_TTL_SEC)
+        )
     except Exception as e:
         summary.errors.append(f"redis:{e!s}")
-        logger.warning("deep_scout redis: %s", e)
+        logger.warning("deep_scout redis: retry exhausted, escalating: %s", e)
+        ledger = getattr(ctx, "ledger", None)
+        if ledger is not None:
+            try:
+                await ledger.record_exception(
+                    e, phase="init", component="deep_scout_redis_write", swallow_errors=True,
+                )
+            except Exception:  # noqa: BLE001 — ledger tự nó không được phép làm crash deep_scout
+                logger.exception("deep_scout: escalate to error ledger cũng fail")
 
     chunks: list[tuple[str, str, dict[str, Any]]] = [
         (

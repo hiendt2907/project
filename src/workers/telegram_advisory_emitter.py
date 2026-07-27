@@ -15,6 +15,7 @@ from pkg.reasoning.analyst_advisory_schema import (
     ProposedRemediationStep,
     VerificationStep,
 )
+from workers.advisory_ack import build_advisory_ack_keyboard, emit_advisory_suggestion
 from workers.handler_context import WorkerHandlerContext
 from workers.metrics_exporter import inc_telegram_timeout
 from workers.unified_incident_card import (
@@ -429,6 +430,14 @@ async def render_advisory_to_telegram(
         logger.warning("event=render_advisory_telegram_disabled")
         return
 
+    await emit_advisory_suggestion(
+        ctx,
+        trace_id=advisory.trace_id,
+        tenant_id=str(getattr(ctx, "current_tenant_id", None) or "default"),
+        advisory_payload=advisory.model_dump(),
+    )
+    ack_keyboard = build_advisory_ack_keyboard(advisory.trace_id)
+
     parts = [
         _render_header(advisory, lane_label=lane_label),
         _render_what_happened(advisory),
@@ -446,7 +455,7 @@ async def render_advisory_to_telegram(
 
     if len(message) <= 4000:
         try:
-            res = await _tg_send(ctx, chat_id, message, parse_mode="Markdown")
+            res = await _tg_send(ctx, chat_id, message, parse_mode="Markdown", reply_markup=ack_keyboard)
             mid = (res.get("result") or {}).get("message_id")
             logger.info(
                 "event=telegram_outbound_ok chat_id=%s message_id=%s trace=%s source=advisory_render",
@@ -468,11 +477,13 @@ async def render_advisory_to_telegram(
         for idx, chunk in enumerate(chunks):
             try:
                 header = f"[{idx + 1}/{len(chunks)}] " if len(chunks) > 1 else ""
+                is_last = idx == len(chunks) - 1
                 res = await _tg_send(
                     ctx,
                     chat_id,
                     f"{header}{chunk}",
                     parse_mode="Markdown",
+                    **({"reply_markup": ack_keyboard} if is_last else {}),
                 )
                 mid = (res.get("result") or {}).get("message_id")
                 logger.info(

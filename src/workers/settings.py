@@ -156,6 +156,13 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_AUDIT_CHAIN"),
         description="CRAT tamper-evident audit chain (SOX §404, PCI-DSS v4.0). cleanup.policy=compact, infinite retention.",
     )
+    kafka_topic_advisory_suggestions: str = Field(
+        default="omni-advisory-suggestions",
+        validation_alias=AliasChoices("OMNI_KAFKA_TOPIC_ADVISORY_SUGGESTIONS"),
+        description="Advisory Mode: durable log of suggestions sent to Telegram + operator "
+                    "acknowledgment decisions (pending_ack -> acknowledged). Not a mutation-"
+                    "approval gate (that is kafka_topic_hitl_pending, disabled in Advisory Mode).",
+    )
     omni_gateway_internal_url: str = Field(
         default="http://omni-gateway.multi-agent.svc.cluster.local:80",
         validation_alias=AliasChoices("OMNI_GATEWAY_INTERNAL_URL"),
@@ -1265,6 +1272,13 @@ class WorkerSettings(BaseSettings):
         description="Instant PromQL — scalar > threshold → enqueue AnomalyEvent (empty cluster → 0).",
     )
     proactive_trigger_threshold: float = Field(default=0.0, ge=0.0, description="Fire when instant query value > threshold.")
+    proactive_promql_rules: str = Field(
+        default="",
+        description="JSON array [{\"name\":..,\"promql\":..,\"threshold\":..}, ...] — cho phép "
+                    "theo dõi NHIỀU PromQL rule thay vì 1 rule hardcode duy nhất "
+                    "(proactive_promql/proactive_trigger_threshold ở trên). Rỗng/không parse "
+                    "được -> fallback nguyên rule đơn cũ (backward compat, KHÔNG breaking).",
+    )
     proactive_cooldown_sec: int = Field(default=3600, ge=60, le=86400 * 7)
     consumer_group_proactive: str = Field(default="omni-worker-proactive")
     consumer_name_proactive: str = Field(default="omni-proactive-1")

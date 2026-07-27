@@ -86,6 +86,12 @@ async def _handle_hitl_callback(ctx: WorkerHandlerContext, u: dict[str, Any]) ->
     return await handle_hitl_callback(ctx, u)
 
 
+async def _handle_advisory_ack_callback(ctx: WorkerHandlerContext, u: dict[str, Any]) -> bool:
+    """Inline keyboard advack:{trace_id} — operator ghi nhận advisory (Advisory Mode)."""
+    from workers.advisory_ack import handle_advisory_ack_callback
+    return await handle_advisory_ack_callback(ctx, u)
+
+
 async def _handle_telegram_fallback_callback(ctx: WorkerHandlerContext, u: dict[str, Any]) -> bool:
     """Inline keyboard ofs:hash:idx — gửi lệnh vào stream như tin nhắn mới."""
     cb = u.get("callback_query")
@@ -1066,6 +1072,8 @@ async def telegram_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> None:
         for u in data.get("result") or []:
             offset = int(u["update_id"]) + 1
             if await _handle_hitl_callback(ctx, u):
+                continue
+            if await _handle_advisory_ack_callback(ctx, u):
                 continue
             if await _handle_telegram_fallback_callback(ctx, u):
                 continue
