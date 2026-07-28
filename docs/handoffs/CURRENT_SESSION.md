@@ -22,7 +22,8 @@ KHÔNG chạy trong lab theo chỉ thị user.
 
 Phase 1 + Phase 2 code xong, đã deploy thật lên `omni-fullstack` (rebuild image + rollout
 restart), đã chạy round-trip verify thật trên lab (Telegram/Kafka/Postgres/CRAT thật).
-**CHƯA commit** — working tree đang có toàn bộ thay đổi Phase 1+2, chờ user duyệt.
+**ĐÃ commit** `07f483b` (2026-07-27), working tree clean. Cluster OrbStack hiện đang
+**Stopped** (kubectl connection refused) — cần bật lại trước khi làm Phase 3.
 
 ## Đã hoàn thành
 
@@ -54,30 +55,12 @@ restart), đã chạy round-trip verify thật trên lab (Telegram/Kafka/Postgre
 
 ## Branch và commit
 
-`main`. HEAD `63b20c5` (vòng 1). Chưa có commit mới cho vòng 2.
+`main`. HEAD `07f483b` (vòng 2 Phase 1+2). Vòng 1 là `63b20c5`.
 
 ## Working tree
 
-CÓ THAY ĐỔI DỞ DANG (Phase 1+2 vòng 2, chưa commit):
-
-```
- M docs/handoffs/CURRENT_SESSION.md
- M scripts/kafka_ensure_omni_topics.sh
- M src/init/deep_scout.py
- M src/services/admin_config/repo.py
- M src/workers/omni_worker.py
- M src/workers/proactive_observer.py
- M src/workers/sdk_service_tools.py
- M src/workers/settings.py
- M src/workers/telegram_advisory_emitter.py
-?? migrations/omni_admin/0011_advisory_acknowledgment.sql
-?? plans/omni-close-production-gaps-2026-07-23.md
-?? src/workers/advisory_ack.py
-?? tests/test_advisory_ack.py
-?? tests/test_deep_scout_redis_retry_escalate.py
-?? tests/test_proactive_multi_rule.py
-?? tests/test_prometheus_relative_time.py
-```
+Clean (`git status --short` rỗng). Toàn bộ Phase 1+2 nằm trong commit `07f483b`
+(16 file, +1281/-216).
 
 ## Files chính đã thay đổi
 
@@ -103,7 +86,7 @@ CÓ THAY ĐỔI DỞ DANG (Phase 1+2 vòng 2, chưa commit):
 - Phase 5 (siết RBAC/mutate) TUYỆT ĐỐI không tự chạy — chỉ viết plan, chờ user xác nhận
   cutover production thật.
 - Không mở lại `FRAMEWORK_LAWS.md` (constitutional-frozen).
-- Không tự ý commit/push — hỏi trước mỗi lần (áp dụng, CHƯA commit vòng này).
+- Không tự ý commit/push — hỏi trước mỗi lần (vòng 2 Phase 1+2 đã được duyệt và commit `07f483b`).
 
 ## Verification đã chạy
 
@@ -118,21 +101,20 @@ Prometheus, kubectl exec script one-off trong pod `omni-fullstack`, kafka-consol
 
 ## Deployment hiện tại
 
-`omni-fullstack` ĐÃ redeploy thật (rebuild image `multi-agent-system:latest` +
-`kubectl rollout restart`) với code Phase 1+2 — pod đang chạy code MỚI, KHÔNG khớp code đã
-commit ở git (`63b20c5`) vì Phase 1+2 chưa commit. Session sau nếu deploy lại từ git HEAD
-cũ sẽ MẤT code Phase 1+2 trên cluster cho tới khi commit. Migration `0011` đã apply thật
-trên `omni-postgres-0`. Topic `omni-advisory-suggestions` đã tạo thật trên Kafka lab.
+`omni-fullstack` đã redeploy thật với code Phase 1+2 (rebuild `multi-agent-system:latest` +
+`kubectl rollout restart`); code trên pod nay khớp git HEAD `07f483b` — không còn rủi ro
+mất đồng bộ git↔cluster. Migration `0011` đã apply thật trên `omni-postgres-0`. Topic
+`omni-advisory-suggestions` đã tạo thật trên Kafka lab. **Cluster OrbStack hiện đang
+Stopped** — trạng thái pod chưa xác minh lại được cho tới khi bật lại.
 
 ## Blockers
 
-Không có blocker kỹ thuật. Cần user duyệt commit Phase 1+2 trước khi tiếp Phase 3 (để
-tránh mất đồng bộ git↔cluster nêu trên).
+Không có blocker kỹ thuật. Cluster OrbStack đang Stopped — phải khởi động lại
+(`kubectl get pods -n multi-agent` phải trả về) trước khi verify runtime Phase 3.
 
 ## Next step chính xác
 
-Hỏi user duyệt commit Phase 1+2 (gộp hay tách theo phase — theo tiền lệ vòng 1 user chọn
-gộp 1 commit). Sau khi commit, đọc `plans/omni-close-production-gaps-2026-07-23.md` phần
+Bật lại cluster OrbStack, rồi đọc `plans/omni-close-production-gaps-2026-07-23.md` phần
 Phase 3 và bắt đầu: route SIEM L3_HITL qua `advisory_ack.py` (Telegram), đọc lại
 `src/services/analyst/chain_consumer.py:318-335` + `src/workers/tier_gate.py` trước khi code.
 
