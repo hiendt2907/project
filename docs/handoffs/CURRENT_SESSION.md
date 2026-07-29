@@ -127,8 +127,39 @@ LaunchAgent `~/Library/LaunchAgents/com.omnisre.cloudflared.plist`.
 - Secret scan: 0 secret thật. `.gitignore` xác minh bằng `git add --dry-run`
 
 ## Blockers
-**Landing page chưa lên Pages** — Cloudflare Pages build từ GitHub, nhưng `cloudflare/`
-chưa commit/push (user chưa cho phép). Không phải lỗi kỹ thuật, chỉ chờ quyết định.
+**Landing page chưa connect Cloudflare Pages** — code đã push xong, chỉ còn thao tác
+Dashboard của user (connect repo, output dir `cloudflare/pages`, custom domain `www`).
+
+## ĐÃ COMMIT + PUSH (4 commit, 2026-07-29)
+`7ea24e7 → a496833`
+| Commit | Nội dung |
+|---|---|
+| `2038de1` | ci: gỡ toàn bộ 4 GitHub Actions — hết quota |
+| `1ad0f50` | feat(public): mặt public app.omnisre.xyz (19 file) |
+| `db395d6` | docs: ADR 0001 + deployment guide + runbook |
+| `a496833` | feat(pages): landing page song ngữ VI/EN, CSP siết tối đa |
+
+**⚠️ Hệ quả gỡ CI: không còn quét secret và chạy test TỰ ĐỘNG trước push.**
+Phải chạy tay từ nay:
+```bash
+docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.18.2 detect \
+  --no-git --source=/repo --config=/repo/.gitleaks.toml
+.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
+```
+Cả hai đã chạy sạch trước lần push này (no leaks / 6737 passed).
+Cloudflare Pages build trên hạ tầng Cloudflare, KHÔNG tốn phút Actions.
+
+## Landing page — song ngữ, không JS
+`cloudflare/pages/`: `index.html` (EN, `/`) · `vi/index.html` (VI, `/vi/`) ·
+`style.css` dùng chung · `_headers` · `_redirects`.
+Hai trang riêng chứ không toggle: CSP chặn JS, và mỗi trang giữ `lang` đúng +
+`hreflang` en/vi/x-default + link chia sẻ được. CSS tách file để hai bản không trôi
+lệch giao diện. **Sửa nội dung phải sửa CẢ HAI file** — không có cơ chế nào ép.
+
+CSP siết được xuống `default-src 'none'; style-src 'self'` (bỏ `'unsafe-inline'` nhờ
+CSS ra file cùng origin). Điều kiện đã verify bằng grep: 0 `<script>`, 0 `style=`
+nội tuyến, 0 tài nguyên host ngoài. **Thêm script/font/CDN sẽ bị chặn IM LẶNG** —
+lệnh kiểm tra ở `cloudflare/pages/README.md`.
 
 ## Bug thật phát hiện thêm ở Phase 5
 5. **`client_secret` base64 phá HTTP Basic của Dex** — nghiêm trọng nhất, mất một
@@ -160,9 +191,11 @@ OIDC → `app.omnisre.xyz/dex/auth` → callback → phiên portal. Gate cuối 
 Toàn bộ hệ thống public hoạt động đúng thiết kế.
 
 ## Next step chính xác
-1. **Quyết định commit/push.** Đây là việc duy nhất còn chặn. Toàn bộ 14 file mới +
-   6 file sửa vẫn trong working tree. Landing page không lên Pages được cho tới khi
-   push (Pages build từ GitHub).
+1. **User connect Cloudflare Pages** (thao tác Dashboard, không tự động hoá được):
+   Workers & Pages → Create → Pages → Connect to Git → repo `hiendt2907/project`.
+   Framework preset **None**, build command **để trống**, output directory
+   `cloudflare/pages`, production branch `main`. Rồi Custom domains → `www.omnisre.xyz`.
+   Verify sau đó: `curl -sI https://www.omnisre.xyz/` và `.../vi/`.
 2. **User cất mật khẩu** ở scratchpad `ADMIN_PASSWORD.txt` rồi xoá file.
 3. Cân nhắc `brew upgrade cloudflared` (2026.5.0 → 2026.7.3).
 4. Việc cũ còn treo (mục dưới) — không thuộc deliverable này.
