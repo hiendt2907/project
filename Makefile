@@ -131,7 +131,10 @@ deploy-ollama:
 	./scripts/with_working_kube.sh apply -f k8s/deployments/ollama-service.yaml
 
 # Gateway FastAPI — image riêng `omni-gateway:latest` (chạy `make docker-gateway` trước khi rollout).
-deploy-gateway:
+## Build image + deploy omni-gateway. PHẢI phụ thuộc docker-gateway: trước đây target
+## này chỉ apply+restart nên luôn chạy lại image cũ — "rollout successful" mà code mới
+## không có trong pod (đã gây misdeploy thật, xem commit fix /reports/playbooks).
+deploy-gateway: docker-gateway ## Build image + deploy omni-gateway
 	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-gateway.yaml
 	./scripts/with_working_kube.sh rollout restart deployment/omni-gateway -n multi-agent
 	./scripts/with_working_kube.sh rollout status deployment/omni-gateway -n multi-agent --timeout=180s
