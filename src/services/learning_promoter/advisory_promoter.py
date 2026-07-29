@@ -76,13 +76,18 @@ async def record_advisory_verdict(
     trace_id: str,
     accepted: bool,
     advisory: dict[str, Any],
+    pattern_key: str | None = None,
 ) -> str | None:
     """Ghi nhận 1 phán quyết người dùng, trả trạng thái tốt nghiệp mới (None nếu bỏ qua).
+
+    ``pattern_key`` truyền vào là pattern ĐÃ ĐÓNG BĂNG trong sổ ca lúc advisory phát ra.
+    Ưu tiên nó thay vì tính lại từ ``advisory``: tính lại lúc đã biết đúng/sai cho phép
+    một điểm xấu rơi sang nhóm khác, tức là mẫu số đổi sau khi biết kết quả.
 
     Best-effort: không bao giờ ném lỗi ra ngoài vì đây nằm trên đường ack của operator —
     hỏng việc học KHÔNG được phép làm hỏng việc ghi nhận advisory.
     """
-    pattern_key = advisory_pattern_key(advisory)
+    pattern_key = (pattern_key or "").strip() or advisory_pattern_key(advisory)
     if not pattern_key:
         logger.debug("advisory_promoter: no pattern_key trace=%s", trace_id)
         return None

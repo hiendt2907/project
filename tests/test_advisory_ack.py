@@ -23,8 +23,9 @@ from workers.advisory_ack import (
 class TestBuildAndParseCallback:
     def test_build_keyboard_has_advack_prefix(self):
         kb = build_advisory_ack_keyboard("trace-123")
-        cb_data = kb["inline_keyboard"][0][0]["callback_data"]
-        assert cb_data == "advack:trace-123"
+        cbs = [b["callback_data"] for b in kb["inline_keyboard"][0]]
+        assert all(c.startswith("advack:") for c in cbs)
+        assert cbs[0] == "advack:ok:trace-123"
 
     def test_parse_valid_callback(self):
         assert parse_advisory_ack_callback("advack:trace-123") == "trace-123"

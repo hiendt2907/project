@@ -23,23 +23,66 @@ logger = logging.getLogger(__name__)
 _CALLBACK_PREFIX = "advack:"
 ACKNOWLEDGED = "ACKNOWLEDGED"
 
+# Phán quyết của NGƯỜI về chẩn đoán. Trước đây chỉ có một nút "đã ghi nhận" và hệ thống
+# học từ đó như thể là đồng tình — tức là học từ SỰ CHÚ Ý chứ không phải SỰ ĐỒNG TÌNH.
+# Ba nút này tách hai thứ đó ra; nhánh INCORRECT là nhánh duy nhất có thể đóng băng một
+# pattern sai, trước đây không đường nào chạm tới được.
+VERDICT_CORRECT = "CORRECT"
+VERDICT_INCORRECT = "INCORRECT"
+VERDICT_PARTIAL = "PARTIAL"
+
+# Token ngắn vì callback_data của Telegram giới hạn 64 byte và trace_id đã chiếm ~36.
+_VERDICT_BY_TOKEN: dict[str, str] = {
+    "ok": VERDICT_CORRECT,
+    "bad": VERDICT_INCORRECT,
+    "part": VERDICT_PARTIAL,
+}
+_ANSWER_TEXT: dict[str, str] = {
+    VERDICT_CORRECT: "✅ Đã ghi: chẩn đoán ĐÚNG",
+    VERDICT_INCORRECT: "❌ Đã ghi: chẩn đoán SAI",
+    VERDICT_PARTIAL: "🟡 Đã ghi: đúng nhưng thiếu",
+}
+
 
 def build_advisory_ack_keyboard(trace_id: str) -> dict[str, Any]:
-    """reply_markup cho nút ghi nhận trên tin nhắn advisory. Không phải approve/reject —
-    Advisory Mode không có mutation nào để duyệt ở đây, chỉ ghi nhận operator đã xem."""
+    """reply_markup phán quyết chẩn đoán cho tin nhắn advisory.
+
+    Vẫn KHÔNG phải approve/reject mutation (Advisory Mode không có mutation nào treo ở
+    đây) — đây là phán quyết về chất lượng chẩn đoán, nguồn nhãn học duy nhất có thật
+    trong shadow mode. Không bấm gì thì KHÔNG có nhãn nào được ghi: im lặng không phải
+    đồng ý, và cố ý không có timeout nào tự coi là đúng.
+    """
     return {
         "inline_keyboard": [[
-            {"text": "✅ Đã ghi nhận", "callback_data": f"{_CALLBACK_PREFIX}{trace_id}"},
+            {"text": "✅ Đúng", "callback_data": f"{_CALLBACK_PREFIX}ok:{trace_id}"},
+            {"text": "❌ Sai", "callback_data": f"{_CALLBACK_PREFIX}bad:{trace_id}"},
+            {"text": "🟡 Đúng nhưng thiếu", "callback_data": f"{_CALLBACK_PREFIX}part:{trace_id}"},
         ]]
     }
 
 
-def parse_advisory_ack_callback(data: str) -> str | None:
-    """``advack:{trace_id}`` -> trace_id. None nếu không phải advisory-ack callback."""
+def parse_advisory_verdict_callback(data: str) -> tuple[str, str | None] | None:
+    """``advack:{token}:{trace_id}`` -> (trace_id, verdict).
+
+    Vẫn nhận dạng ``advack:{trace_id}`` (dạng cũ, một nút) và trả verdict=None cho nó —
+    các tin nhắn phát trước khi đổi bàn phím vẫn còn sống trong lịch sử chat, bấm vào
+    không được ném lỗi; nhưng cũng không được suy ra một phán quyết không ai đưa.
+    """
     if not data.startswith(_CALLBACK_PREFIX):
         return None
-    trace_id = data[len(_CALLBACK_PREFIX):].strip()
-    return trace_id or None
+    rest = data[len(_CALLBACK_PREFIX):].strip()
+    if not rest:
+        return None
+    token, sep, tail = rest.partition(":")
+    if sep and token in _VERDICT_BY_TOKEN and tail.strip():
+        return tail.strip(), _VERDICT_BY_TOKEN[token]
+    return rest, None
+
+
+def parse_advisory_ack_callback(data: str) -> str | None:
+    """``advack:...`` -> trace_id. None nếu không phải advisory-ack callback."""
+    parsed = parse_advisory_verdict_callback(data)
+    return parsed[0] if parsed else None
 
 
 async def emit_advisory_suggestion(
@@ -69,6 +112,95 @@ async def emit_advisory_suggestion(
 
 
 _TRACE_ADVISORY_KEY = "omni:trace:advisory:"
+
+
+def _case_store(ctx: Any) -> Any | None:
+    """CaseLedgerStore nếu có pool PG. Lab/test thường không có → sổ ca im lặng bỏ qua."""
+    pool = getattr(ctx, "admin_pool", None)
+    if pool is None:
+        return None
+    try:
+        from services.case_ledger.store import CaseLedgerStore
+
+        return CaseLedgerStore(pool)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("advisory_ack: case ledger unavailable err=%s", exc)
+        return None
+
+
+async def open_advisory_case(
+    ctx: Any,
+    *,
+    trace_id: str,
+    tenant_id: str,
+    lane: str = "",
+    alertname: str = "",
+) -> dict[str, Any]:
+    """Mở ca LÚC advisory phát ra và trả về thông tin trí nhớ của pattern.
+
+    Mở lúc phát biểu chứ không phải lúc có người bấm nút: nếu chỉ mở khi có phán quyết
+    thì mẫu số chỉ gồm những ca có người quan tâm, và tỉ lệ im lặng — con số quan trọng
+    nhất để chặn việc xin quyền — biến mất khỏi sổ.
+
+    Best-effort tuyệt đối: mọi lỗi trả ``{}``, advisory vẫn phải được gửi đi.
+    """
+    store = _case_store(ctx)
+    if store is None or not trace_id:
+        return {}
+    from services.learning_promoter.advisory_promoter import advisory_pattern_key
+
+    pattern_key = advisory_pattern_key({"lane": lane, "alertname": alertname})
+    if not pattern_key:
+        return {}
+    try:
+        prior = await store.last_case_for_pattern(tenant_id=tenant_id, pattern_key=pattern_key)
+        row = await store.open_case(
+            case_id=trace_id,
+            tenant_id=tenant_id,
+            pattern_key=pattern_key,
+            posture="DIAGNOSED",
+            lane=lane,
+            alertname=alertname,
+        )
+    except Exception as exc:  # noqa: BLE001 — sổ ca hỏng không được chặn đường phát advisory
+        logger.warning("advisory_ack: open_case fail trace=%s err=%s", trace_id, exc)
+        return {}
+
+    memory: dict[str, Any] = {
+        "pattern_key": pattern_key,
+        "occurrence_no": int(row.get("occurrence_no") or 1) if row else 1,
+    }
+    if prior and str(prior.get("case_id") or "") != trace_id:
+        memory.update({
+            "prior_case_id": str(prior.get("case_id") or ""),
+            "prior_opened_at": prior.get("opened_at"),
+            "prior_diagnosis_verdict": prior.get("diagnosis_verdict"),
+            "prior_remedy_verdict": prior.get("remedy_verdict"),
+            "prior_recurred": bool(prior.get("recurred")),
+        })
+    return memory
+
+
+async def _record_case_verdict(
+    ctx: Any, *, trace_id: str, tenant_id: str, verdict: str, actor: str
+) -> str | None:
+    """Ghi phán quyết vào sổ ca, trả ``pattern_key`` ĐÃ ĐÓNG BĂNG lúc mở ca.
+
+    Trả pattern của chính ca đó (không tính lại) để vòng học cộng điểm đúng nhóm mà sổ
+    ca đã chốt — tính lại ở đây là một đường vòng để đổi nhóm sau khi biết kết quả.
+    """
+    store = _case_store(ctx)
+    if store is None:
+        return None
+    try:
+        row = await store.record_verdict(
+            case_id=trace_id, source="telegram", actor=actor, diagnosis=verdict,
+        )
+    except Exception as exc:  # noqa: BLE001 — sổ ca hỏng không được chặn đường ack
+        logger.warning("advisory_ack: case verdict fail trace=%s err=%s", trace_id, exc)
+        return None
+    _ = tenant_id  # ca đã mang tenant từ lúc mở; giữ tham số cho log/đối soát tương lai
+    return str(row.get("pattern_key") or "") or None if row else None
 
 
 async def _load_advisory_shape(redis: Any, trace_id: str) -> dict[str, Any]:
@@ -112,9 +244,10 @@ async def handle_advisory_ack_callback(ctx: Any, update: dict[str, Any]) -> bool
     if not isinstance(cb, dict):
         return False
     data = (cb.get("data") or "").strip()
-    trace_id = parse_advisory_ack_callback(data)
-    if trace_id is None:
+    parsed = parse_advisory_verdict_callback(data)
+    if parsed is None:
         return False
+    trace_id, verdict = parsed
 
     cq_id = str(cb.get("id") or "")
     tg = getattr(ctx, "telegram", None)
@@ -130,7 +263,8 @@ async def handle_advisory_ack_callback(ctx: Any, update: dict[str, Any]) -> bool
             event_type=CRAT_EVENT_ADVISORY_DECISION,
             trace_id=trace_id,
             payload={
-                "decision": ACKNOWLEDGED,
+                "decision": verdict or ACKNOWLEDGED,
+                "verdict": verdict,
                 "actor": actor,
                 "channel": "telegram",
                 "tenant_id": tenant_id,
@@ -153,6 +287,7 @@ async def handle_advisory_ack_callback(ctx: Any, update: dict[str, Any]) -> bool
                 "trace_id": trace_id,
                 "tenant_id": tenant_id,
                 "status": "acknowledged",
+                "verdict": verdict,
                 "actor": actor,
             }, ensure_ascii=False)})
         except Exception as exc:  # noqa: BLE001
@@ -169,7 +304,9 @@ async def handle_advisory_ack_callback(ctx: Any, update: dict[str, Any]) -> bool
 
     # G2 — ack là mẫu KPI acceptance. Không có nguồn nào khác điền `omni:kpi:z:*:accepted`
     # trong shadow mode, và đó chính là bằng chứng dùng để xét nâng tier sau này.
-    if redis is not None:
+    # "Sai" KHÔNG phải một mẫu acceptance — cộng nó vào acceptance-rate là tự thổi điểm
+    # bằng chính lời chê của operator.
+    if redis is not None and verdict != VERDICT_INCORRECT:
         try:
             from workers.kpi_metrics import KPIStore
 
@@ -177,23 +314,38 @@ async def handle_advisory_ack_callback(ctx: Any, update: dict[str, Any]) -> bool
         except Exception as exc:  # noqa: BLE001
             logger.warning("advisory_ack: kpi record fail trace=%s err=%s", trace_id, exc)
 
-    # G1 — vòng học: ack của operator là tín hiệu học DUY NHẤT có thật trong shadow mode
-    # (không mutation → không VERIFIED_SUCCESS → promoter.evaluate_for_promotion không
-    # bao giờ chạy). Best-effort: học hỏng KHÔNG được làm hỏng việc ghi nhận advisory.
-    try:
-        from services.learning_promoter.advisory_promoter import record_advisory_verdict
-
-        await record_advisory_verdict(
-            ctx,
-            tenant_id=tenant_id,
-            trace_id=trace_id,
-            accepted=True,
-            advisory=await _load_advisory_shape(redis, trace_id),
+    # Sổ ca là nguồn sự thật để đánh giá năng lực; phán quyết phải vào đó trước, và
+    # pattern_key lấy ra từ đó là pattern đã đóng băng lúc mở ca.
+    pattern_key: str | None = None
+    if verdict is not None:
+        pattern_key = await _record_case_verdict(
+            ctx, trace_id=trace_id, tenant_id=tenant_id, verdict=verdict, actor=actor,
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("advisory_ack: graduation skip trace=%s err=%s", trace_id, exc)
+
+    # G1 — vòng học: phán quyết của operator là tín hiệu học DUY NHẤT có thật trong shadow
+    # mode (không mutation → không VERIFIED_SUCCESS → promoter.evaluate_for_promotion không
+    # bao giờ chạy). Chỉ ĐÚNG/SAI mới là nhãn học: PARTIAL không thưởng cũng không phạt vì
+    # "đúng nhưng thiếu" nói về độ đầy đủ của khuyến nghị, không nói chẩn đoán sai; còn
+    # callback dạng cũ (verdict=None) không mang phán quyết nào để học.
+    # Best-effort: học hỏng KHÔNG được làm hỏng việc ghi nhận advisory.
+    if verdict in (VERDICT_CORRECT, VERDICT_INCORRECT):
+        try:
+            from services.learning_promoter.advisory_promoter import record_advisory_verdict
+
+            await record_advisory_verdict(
+                ctx,
+                tenant_id=tenant_id,
+                trace_id=trace_id,
+                accepted=verdict == VERDICT_CORRECT,
+                advisory=await _load_advisory_shape(redis, trace_id),
+                pattern_key=pattern_key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("advisory_ack: graduation skip trace=%s err=%s", trace_id, exc)
 
     if tg and cq_id:
-        await tg.answer_callback_query(cq_id, text="✅ Đã ghi nhận")
-    logger.info("advisory_ack: acknowledged trace=%s actor=%s", trace_id, actor)
+        await tg.answer_callback_query(cq_id, text=_ANSWER_TEXT.get(verdict or "", "✅ Đã ghi nhận"))
+    logger.info(
+        "advisory_ack: judged trace=%s actor=%s verdict=%s", trace_id, actor, verdict or "-",
+    )
     return True

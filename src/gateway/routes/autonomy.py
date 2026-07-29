@@ -681,4 +681,21 @@ async def decide_hitl(request: Request, pending_id: str, body: HitlDecideRequest
                                       key=pending_id.encode())
         except Exception as exc:  # noqa: BLE001
             logger.warning("autonomy.decide_hitl kafka publish failed: %s", exc)
+
+    # ── Sổ ca: ghi phán quyết của người duyệt ───────────────────────────────
+    # Cùng một hàm với đường Telegram, đặt ở services/ vì gateway KHÔNG được import
+    # workers/. `tenant` là giá trị đã qua resolve_scope — TUYỆT ĐỐI không dùng
+    # body.tenant_id ở đây, nếu không sổ ca lại thành đường ghi chéo tenant mà bản
+    # vá cách ly vừa bịt. Best-effort: PG lỗi không được làm hỏng quyết định HITL
+    # (ledger + CRAT-outbox đã commit atomic ở repo.decide_hitl phía trên).
+    from services.case_ledger.hitl_link import record_hitl_verdict
+
+    await record_hitl_verdict(
+        pool=getattr(request.app.state, "admin_pool", None),
+        tenant_id=tenant,
+        pending_id=pending_id,
+        decision=body.decision,
+        actor=body.actor,
+        tool_name=str(result.get("tool_name") or ""),
+    )
     return JSONResponse(content={"status": "ok", **result})

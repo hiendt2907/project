@@ -23,6 +23,7 @@ LBL_WHY = "Kiểm chứng"
 LBL_HOWTO = "Khắc phục"
 LBL_FORECAST = "Dự báo"
 LBL_AUDIT = "Audit"
+LBL_MEMORY = "Trí nhớ"
 
 # Lane badge — single source of truth (advisory emitter re-exports for back-compat).
 LANE_BADGE: dict[str, str] = {
@@ -116,6 +117,67 @@ def render_audit_footer(
             ev = f" · {e(audit.crat_event)}" if audit.crat_event else ""
             lines.append(f"• CRAT: #{audit.crat_seq} · {sig}{ev}")
     lines.append(f"{b('TRACE:')} {code(short_trace(trace_id))}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Trí nhớ — lần thứ N của cùng một pattern.
+# Section THÊM MỚI, đặt ngay dưới header. Không đụng vào các marker máy
+# WHAT/WHO/WHY/HOW-TO ở bất kỳ đâu (chúng bị parse ở đầu kia).
+# ---------------------------------------------------------------------------
+
+_PRIOR_VERDICT_LABEL: dict[str, str] = {
+    "CORRECT": "đã xác nhận chẩn đoán ĐÚNG",
+    "INCORRECT": "đã bị đánh giá SAI",
+    "PARTIAL": "được đánh giá đúng nhưng thiếu",
+}
+
+
+def _recurrence_urgency(occurrence_no: int) -> str:
+    """Lần 5 không thể trình bày cùng giọng lần 1 — nếu vẫn tái diễn thì khắc phục tạm
+    đang thay chỗ cho xử lý gốc, và giọng của thẻ phải nói ra điều đó."""
+    if occurrence_no >= 5:
+        return "🚨 Lặp lại kéo dài — khắc phục tạm không còn tác dụng, cần xử lý nguyên nhân gốc"
+    if occurrence_no >= 3:
+        return "⚠️ Lặp lại nhiều lần — cần rà lại cách xử lý trước đó"
+    return "🔁 Đã từng xảy ra — không phải phát hiện mới"
+
+
+def render_recurrence_notice(memory: dict | None, *, markdown: bool = True) -> str:
+    """Dòng trí nhớ cho advisory. Rỗng khi đây là lần đầu hoặc không có sổ ca.
+
+    Lần ≥2 phải nói rõ "đây là lần thứ N, đã báo ngày X, ca trước xử lý tới đâu" thay vì
+    trình bày lại như một phát hiện mới — điều tra lại từ đầu là vứt bỏ kinh nghiệm lần 1.
+    """
+    if not memory:
+        return ""
+    try:
+        occurrence_no = int(memory.get("occurrence_no") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if occurrence_no < 2:
+        return ""
+
+    e = esc if markdown else (lambda x: str(x))
+    b = (lambda s: f"*{s}*") if markdown else (lambda s: s)
+    lines = [f"{b(LBL_MEMORY)} — lần thứ {occurrence_no}", f"• {e(_recurrence_urgency(occurrence_no))}"]
+
+    opened_at = memory.get("prior_opened_at")
+    if opened_at:
+        lines.append(f"• Lần trước đã báo: {e(opened_at)}")
+
+    verdict = str(memory.get("prior_diagnosis_verdict") or "").upper()
+    if verdict in _PRIOR_VERDICT_LABEL:
+        lines.append(f"• Ca trước: {e(_PRIOR_VERDICT_LABEL[verdict])}")
+    else:
+        # Không ai bấm gì ở ca trước. Nói thẳng ra, vì im lặng không phải là đồng ý và
+        # cũng không phải là đã xử lý.
+        lines.append("• Ca trước: CHƯA có ai phán quyết")
+    if memory.get("prior_recurred"):
+        lines.append("• Sự cố đã được ghi nhận tái diễn")
+    prior_case = str(memory.get("prior_case_id") or "")
+    if prior_case:
+        lines.append(f"• Ca trước: {short_trace(prior_case)}")
     return "\n".join(lines)
 
 

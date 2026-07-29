@@ -15,7 +15,11 @@ from pkg.reasoning.analyst_advisory_schema import (
     ProposedRemediationStep,
     VerificationStep,
 )
-from workers.advisory_ack import build_advisory_ack_keyboard, emit_advisory_suggestion
+from workers.advisory_ack import (
+    build_advisory_ack_keyboard,
+    emit_advisory_suggestion,
+    open_advisory_case,
+)
 from workers.handler_context import WorkerHandlerContext
 from workers.metrics_exporter import inc_telegram_timeout
 from workers.unified_incident_card import (
@@ -27,6 +31,7 @@ from workers.unified_incident_card import (
     LBL_WHY,
     AuditMeta,
     render_audit_footer,
+    render_recurrence_notice,
 )
 
 logger = logging.getLogger(__name__)
@@ -430,16 +435,27 @@ async def render_advisory_to_telegram(
         logger.warning("event=render_advisory_telegram_disabled")
         return
 
+    tenant_id = str(getattr(ctx, "current_tenant_id", None) or "default")
     await emit_advisory_suggestion(
         ctx,
         trace_id=advisory.trace_id,
-        tenant_id=str(getattr(ctx, "current_tenant_id", None) or "default"),
+        tenant_id=tenant_id,
         advisory_payload=advisory.model_dump(),
+    )
+    # Ca mở ở ĐÂY — lúc Omni phát biểu, chưa biết đúng sai. Trả về luôn trí nhớ của
+    # pattern để thẻ nói được "đây là lần thứ N" thay vì kể lại như lần đầu.
+    memory = await open_advisory_case(
+        ctx,
+        trace_id=advisory.trace_id,
+        tenant_id=tenant_id,
+        lane=lane_label or "",
+        alertname=advisory.affected_workload,
     )
     ack_keyboard = build_advisory_ack_keyboard(advisory.trace_id)
 
     parts = [
         _render_header(advisory, lane_label=lane_label),
+        render_recurrence_notice(memory),
         _render_what_happened(advisory),
         _render_who(advisory),
         _render_when(advisory),

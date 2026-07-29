@@ -18,6 +18,7 @@ from typing import Any
 from services.audit_ledger.chain_writer import write_audit_block
 from services.audit_ledger.crat_event_types import CRAT_EVENT_HITL_DECISION
 from services.audit_ledger.signer import AuditLedgerError
+from services.case_ledger.hitl_link import record_hitl_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,26 @@ async def handle_hitl_callback(ctx: Any, update: dict[str, Any]) -> bool:
             )
         except Exception as exc:  # noqa: BLE001 — ledger phụ trợ, CRAT mới là chain
             logger.warning("hitl: ledger persist fail id=%s err=%s", pending_id, exc)
+
+    # ── Sổ ca: phán quyết của NGƯỜI là tín hiệu học mạnh nhất ───────────────
+    # Trước đây approve/reject chỉ vào CRAT rồi bị vứt — không gì đọc lại để biết
+    # Omni chẩn đoán trúng hay trật. Ghi SAU dispatch và best-effort: PG chết không
+    # được phép làm hỏng một quyết định con người đã bấm (CRAT mới là fail-closed).
+    pool = getattr(ctx, "admin_pool", None) or getattr(
+        getattr(ctx, "admin_repo", None), "_pool", None
+    )
+    if pool is not None:
+        await record_hitl_verdict(
+            pool=pool,
+            tenant_id=tenant_id,
+            pending_id=pending_id,
+            decision=decision,
+            actor=actor,
+            trace_id=trace,
+            tool_name=str(pending.get("tool_name") or ""),
+            alertname=str(pending.get("alertname") or ""),
+            lane=str(pending.get("lane") or ""),
+        )
 
     # ── Dọn pending + ack operator ─────────────────────────────────────────
     if redis is not None:
