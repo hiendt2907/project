@@ -88,7 +88,32 @@ Ba số đo thật đáng nhớ:
 Subagent theo dõi quota token Claude rồi tự chạy lại sau reset — subagent không đọc được
 hạn mức tài khoản và không có gì đánh thức phiên sau reset. Thay thế: commit theo mốc.
 
-## Working tree — CHƯA COMMIT
+## ✅ ĐÃ COMMIT (chưa push) — `cb63b0b` + `497612b`
+Full suite **6858 passed** (baseline 6750) · `make verify-case-ledger` **16/16 trên PG thật**.
+
+### Hành vi thật đã chứng minh trên cluster (không phải mock)
+Nạp 4 pattern vào Postgres, hỏi **gateway đã deploy**:
+| pattern | dữ liệu | kết quả |
+|---|---|---|
+| pat-B | 3/3 đúng | cận dưới 0.44 → **TRƯỢT** (vài ca may mắn ≠ bằng chứng) |
+| pat-C | 4 đúng / 20 từ chối | chính xác thô **100%** nhưng phủ 0.17 → **TRƯỢT 2 lý do** |
+| pat-A | 11/12 đúng | cận dưới 0.65 → TRƯỢT (sát ngưỡng 0.70) |
+| pat-D | 29/30 + 6 từ chối | cận dưới 0.83, phủ 0.83 → **ĐỦ ĐIỀU KIỆN** |
+
+Chuỗi tự xin quyền chạy thật trong pod: Omni xin đúng 1 pattern, đúng **1 bậc**
+(SUGGEST_ONLY→HITL_REQUIRED) → admin từ chối qua HTTP → **cooldown chặn xin lại** →
+hết khoá xin lại được → duyệt → ghi `scope_grant`. Dữ liệu thử đã dọn sạch.
+
+Worker pod: 3 nút phán quyết (`✅ Đúng` / `❌ Sai` / `🟡 Đúng nhưng thiếu`) sống thật,
+callback cũ 1-nút vẫn parse được (trả verdict=None, không học).
+
+### Bẫy mới trả giá
+`make deploy-gateway` báo **"rollout successful" nhưng pod KHÔNG có `services.case_ledger`**
+— `Dockerfile.gateway` copy TỪNG thư mục con của `services/`, không copy cả cây. Chỉ lộ ra
+khi `import` module trong pod đang chạy. Cùng lớp bẫy với `COPY src/aoip/` thiếu trước đây.
+**Thêm module mới dưới `src/services/` ⇒ phải sửa `Dockerfile.gateway`.**
+
+## Working tree — phần CHƯA COMMIT
 Mới (untracked): `plans/case-ledger-design-2026-07-30.md` ·
 `migrations/omni_admin/0012_case_ledger.sql` · `src/services/case_ledger/` ·
 `scripts/verify_case_ledger.sh` · các file test/agent đang sinh.

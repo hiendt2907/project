@@ -7,4 +7,6 @@ export const TENANT_NAV: NavItem[] = [
   { label: "Sự cố", href: "/incidents", implemented: true },
   { label: "Phê duyệt", href: "/approvals", implemented: true },
   { label: "Nhiệm vụ vận hành", href: "/missions", implemented: true },
+  { label: "Năng lực", href: "/competency", implemented: true },
+  { label: "Đơn xin quyền", href: "/scope-requests", implemented: true },
 ];

@@ -121,6 +121,84 @@ async def _tier_entered_at(pool: Any, tenant_id: str) -> float | None:
         return None
 
 
+async def scope_advocacy_loop(ctx: Any, stop: asyncio.Event) -> None:
+    """Định kỳ cho Omni tự đánh giá năng lực và tự nộp đơn xin thêm quyền.
+
+    Đặt cạnh ``tier_readiness_loop`` có chủ đích: cả hai cùng trả lời một câu hỏi
+    ("Omni đã đủ tin cậy để được làm nhiều hơn chưa?") nhưng ở hai độ phân giải.
+    ``tier_readiness_loop`` là **hiển thị** ở mức tenant — nó chỉ publish readiness
+    cho gateway, không bao giờ đổi tier. Vòng này là **hành động** ở mức
+    ``pattern_key`` — nó nộp đơn, và người duyệt. Đây không phải cơ chế thứ hai làm
+    cùng việc: không vòng nào tự nâng quyền cho chính mình.
+
+    Ba tính chất bắt buộc, mỗi cái có test riêng:
+
+    - Không có pool PG ⇒ log info MỘT lần rồi thoát. Sổ ca sống trong Postgres;
+      không có PG thì không có bằng chứng để nộp, mà crash loop sẽ kéo theo cả
+      worker restart vì một tính năng phụ trợ.
+    - Lỗi của một tenant KHÔNG được làm chết các tenant còn lại — mỗi tenant bọc
+      try/except riêng. Một tenant có dữ liệu sổ ca hỏng không được phép khoá
+      đường xin quyền của mọi tenant khác.
+    - Tôn trọng feature flag: tắt ⇒ thoát ngay, không mở kết nối nào.
+    """
+    settings = ctx.settings
+    if not bool(getattr(settings, "scope_advocacy_enabled", False)):
+        logger.info("scope_advocacy loop disabled by flag")
+        return
+
+    pool = _get_admin_pool(ctx)
+    if pool is None:
+        # Log info MỘT lần (không lặp trong vòng): thiếu PG là trạng thái tĩnh của
+        # deployment, log mỗi chu kỳ chỉ làm nhiễu.
+        logger.info("scope_advocacy: admin pool offline — skip")
+        return
+
+    from services.admin_config import AdminConfigRepo
+    from services.case_ledger.advocacy import ScopeAdvocate
+    from services.case_ledger.store import CaseLedgerStore
+    from services.case_ledger.store_scope import ScopeStore
+
+    repo = AdminConfigRepo(pool, redis=ctx.redis)
+    advocate = ScopeAdvocate(CaseLedgerStore(pool), ScopeStore(pool))
+    interval = float(getattr(settings, "scope_advocacy_interval_hours", 24.0)) * 3600.0
+
+    while not stop.is_set():
+        try:
+            tenants = await repo.list_tenants()
+        except Exception as exc:  # noqa: BLE001 — không đọc được danh sách thì bỏ
+            # chu kỳ này, chu kỳ sau thử lại. Không được thoát vòng.
+            logger.error("scope_advocacy: list_tenants failed: %s", exc)
+            tenants = []
+
+        for tenant in tenants:
+            if stop.is_set():
+                break
+            tenant_id = str(tenant.get("tenant_id") or "")
+            # Chỉ tenant đang hoạt động: tenant suspended/disabled không nên nhận
+            # thêm đơn xin quyền vào hộp thư của admin họ.
+            if not tenant_id or str(tenant.get("status") or "active") != "active":
+                continue
+            try:
+                outcomes = await advocate.run(tenant_id=tenant_id)
+            except Exception as exc:  # noqa: BLE001 — cách ly theo tenant.
+                logger.error("scope_advocacy: tenant %s failed: %s", tenant_id, exc)
+                continue
+            requested = [o for o in outcomes if o.requested]
+            if requested:
+                logger.info(
+                    "scope_advocacy: tenant=%s patterns=%d requests=%d (%s)",
+                    tenant_id,
+                    len(outcomes),
+                    len(requested),
+                    ", ".join(f"{o.pattern_key}->{o.requested_scope}" for o in requested),
+                )
+
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
+
+
 _HITL_DECISIONS_TOPIC = "omni-hitl-decisions"
 
 

@@ -96,6 +96,19 @@ class TenantPlanBody(BaseModel):
     enabled: bool = True
 
 
+class ScopeDecisionBody(BaseModel):
+    """Phán quyết của admin tenant trên một đơn xin quyền.
+
+    KHÔNG có trường ``tenant_id``: tenant suy ra từ session principal và đi vào
+    mệnh đề WHERE của câu UPDATE. Một ``request_id`` đoán được vẫn không chạm
+    sang tenant khác.
+    """
+
+    decision: str = Field(..., description="APPROVED|REJECTED")
+    note: str = Field(default="", max_length=1000)
+    cooldown_days: int = Field(default=14, ge=0, le=365)
+
+
 async def _default_http_json(method: str, url: str, *, data=None, auth=None) -> dict:
     """Real token/JWKS fetch. Injectable ở test để chạy offline."""
     import httpx
@@ -725,6 +738,102 @@ def create_tenant_app(redis, *, oidc_http=None) -> FastAPI:
                 for r in rows
             ],
         }
+
+    # ── Sổ ca: hồ sơ năng lực + đơn xin quyền ────────────────────────────────
+    # Gateway đã có `/competency/*`, nhưng tenant portal KHÔNG đi qua gateway
+    # (xem ghi chú ở /reports/* phía trên). Ba route dưới đây là CÙNG một logic
+    # (`services.case_ledger`), chỉ khác chỗ lấy tenant: gateway nhận `tenant_id`
+    # trên query string nên phải `resolve_scope`, còn ở đây tenant lấy từ
+    # principal và client không có tham số nào để can thiệp.
+    def _case_ledger_stores():
+        pool = getattr(app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin store chưa sẵn sàng")
+        from services.case_ledger.store import CaseLedgerStore
+        from services.case_ledger.store_scope import ScopeStore
+
+        return CaseLedgerStore(pool), ScopeStore(pool)
+
+    def _jsonable_rows(value):
+        """asyncpg trả TIMESTAMPTZ là ``datetime`` — JSONResponse không encode được."""
+        from datetime import date, datetime
+        from decimal import Decimal
+
+        if isinstance(value, dict):
+            return {k: _jsonable_rows(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_jsonable_rows(v) for v in value]
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, Decimal):
+            return float(value)
+        return value
+
+    @app.get("/api/tenant/v1/competency/patterns")
+    async def tenant_competency_patterns(p: Principal = Depends(tenant_principal)) -> dict:
+        """Hồ sơ năng lực từng loại việc. Trả CẢ pattern chưa đủ điều kiện —
+        ``blockers`` là phần đáng giá nhất với admin khách."""
+        ledger, scope = _case_ledger_stores()
+        from services.case_ledger.advocacy import ScopeAdvocate
+
+        advocate = ScopeAdvocate(ledger, scope)
+        reports = await advocate.build_reports(tenant_id=p.tenant)
+        grants = {
+            str(g["pattern_key"]): g for g in await scope.list_grants(tenant_id=p.tenant)
+        }
+        patterns = []
+        for rep in reports:
+            grant = grants.get(rep.pattern_key) or {}
+            patterns.append(
+                {
+                    **rep.as_dict(),
+                    "granted_scope": grant.get("granted_scope", "SUGGEST_ONLY"),
+                    "frozen": bool(grant.get("frozen", False)),
+                    "frozen_reason": grant.get("frozen_reason"),
+                }
+            )
+        return {"tenant_id": p.tenant, "patterns": patterns}
+
+    @app.get("/api/tenant/v1/competency/scope-requests")
+    async def tenant_scope_requests(p: Principal = Depends(tenant_principal)) -> dict:
+        """Đơn Omni đã nộp, kèm ``evidence`` đóng băng lúc nộp."""
+        _, scope = _case_ledger_stores()
+        rows = await scope.list_requests(tenant_id=p.tenant, limit=200)
+        return {"tenant_id": p.tenant, "requests": _jsonable_rows(rows)}
+
+    @app.post("/api/tenant/v1/competency/scope-requests/{request_id}/decide")
+    async def tenant_decide_scope_request(
+        request_id: int, body: ScopeDecisionBody,
+        p: Principal = Depends(tenant_principal),
+    ) -> dict:
+        """Duyệt/từ chối. Trao quyền thực thi cho một pattern nên phải là
+        ``P_CHANGE_POLICY``, không phải quyền xem."""
+        if not p.can(P_CHANGE_POLICY):
+            await identity.audit(redis, event="DENIED", subject=p.subject, tenant=p.tenant,
+                                 detail=f"scope decide {request_id}", ts=time.time())
+            raise HTTPException(403, "không có quyền thay đổi chính sách")
+        decision = body.decision.upper()
+        if decision not in ("APPROVED", "REJECTED"):
+            raise HTTPException(400, f"decision không hợp lệ: {body.decision}")
+        _, scope = _case_ledger_stores()
+        from services.case_ledger.advocacy import approve_request, reject_request
+
+        try:
+            if decision == "APPROVED":
+                row = await approve_request(
+                    scope, request_id=request_id, tenant_id=p.tenant,
+                    actor=p.subject, note=body.note,
+                )
+            else:
+                row = await reject_request(
+                    scope, request_id=request_id, tenant_id=p.tenant,
+                    actor=p.subject, note=body.note, cooldown_days=body.cooldown_days,
+                )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if row is None:
+            raise HTTPException(404, "đơn không tồn tại hoặc đã được phán quyết")
+        return {"status": "ok", **_jsonable_rows(row)}
 
     @app.get("/api/tenant/v1/agents")
     async def agents(p: Principal = Depends(tenant_principal)) -> dict:

@@ -1,0 +1,115 @@
+/*
+ * Style dùng chung cho "Năng lực" và "Đơn xin quyền".
+ *
+ * Điểm cốt lõi: `.duo` cho hai ô CON BẰNG NHAU — cùng nền, cùng viền, cùng cỡ
+ * chữ, cùng độ đậm. Nếu độ chính xác được làm nổi hơn độ phủ, người đọc sẽ trao
+ * quyền cho một Omni né hết ca khó (chính xác 100% trên 2 ca dễ) — đúng thứ cả
+ * cơ chế sinh ra để chặn. Đừng thêm màu/scale riêng cho một trong hai ô.
+ */
+
+.duo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  border: 1px solid var(--content-line);
+  border-radius: 10px;
+  overflow: hidden;
+  min-width: 236px;
+}
+
+.duoCell {
+  padding: 0.5rem 0.7rem;
+  background: var(--content-surface);
+}
+
+.duoCell + .duoCell {
+  border-left: 1px solid var(--content-line);
+}
+
+.duoLabel {
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--content-muted);
+}
+
+.duoValue {
+  font: 650 var(--text-lg) / 1.15 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.duoNote {
+  font-size: var(--text-2xs);
+  color: var(--content-muted);
+  margin-top: 2px;
+}
+
+.duoLink {
+  grid-column: 1 / -1;
+  border-top: 1px dashed var(--content-line);
+  padding: 0.3rem 0.7rem;
+  font-size: var(--text-2xs);
+  color: var(--content-muted);
+  text-align: center;
+}
+
+.note {
+  border-left: 3px solid var(--content-line-strong);
+  padding: 0.15rem 0 0.15rem 0.85rem;
+  margin: 0 0 1rem;
+  font-size: var(--text-sm);
+  color: var(--content-muted);
+}
+
+.note strong {
+  color: var(--content-text);
+}
+
+.blockers {
+  margin: 0.35rem 0 0;
+  padding-left: 1.05rem;
+  font-size: var(--text-xs);
+}
+
+.blockers li {
+  margin-bottom: 0.2rem;
+}
+
+.reqHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  justify-content: space-between;
+}
+
+.reqTitle {
+  font: 650 var(--text-base) / 1.3 var(--font-mono);
+}
+
+.evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: stretch;
+  margin-top: 0.7rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.8rem;
+}
+
+@media (max-width: 560px) {
+  .duo {
+    grid-template-columns: 1fr;
+  }
+  .duoCell + .duoCell {
+    border-left: none;
+    border-top: 1px solid var(--content-line);
+  }
+}

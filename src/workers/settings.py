@@ -1192,6 +1192,32 @@ class WorkerSettings(BaseSettings):
     crat_outbox_batch_size: int = Field(default=32, ge=1, le=256)
     crat_outbox_max_attempts: int = Field(default=10, ge=1, le=100)
 
+    # Scope advocacy — Omni tự đánh giá năng lực rồi tự nộp đơn xin thêm quyền
+    # (plans/case-ledger-design-2026-07-30.md, mục "Xin quyền"). Chỉ role `full`.
+    #
+    # Default TẮT, theo đúng nguyên tắc fail-closed của dự án (giống
+    # OMNI_AUTO_EXECUTE_ENABLED): đây là hành vi Omni CHỦ ĐỘNG ghi vào bảng quyền
+    # của tenant khách và đẩy đơn tới bàn của admin khách. Đơn không tự cấp quyền
+    # — người vẫn phải duyệt — nhưng việc một hệ thống tự động bắt đầu gõ cửa
+    # admin phải là một quyết định có ý thức của người vận hành, không phải hệ quả
+    # phụ của một lần deploy.
+    scope_advocacy_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("OMNI_SCOPE_ADVOCACY_ENABLED"),
+        description="Bật loop Omni tự nộp đơn xin mở rộng quyền theo pattern_key.",
+    )
+    # Chu kỳ tính bằng GIỜ, default 24h. Bằng chứng năng lực tích luỹ theo tuần/
+    # tháng (cần ca mới + verdict từ người/thế giới), nên chạy dày hơn một ngày
+    # không sinh thêm thông tin — chỉ đốt kết nối PG và spam đơn vào cùng một
+    # pattern. Cận dưới Wilson gần như không đổi trong vài giờ.
+    scope_advocacy_interval_hours: float = Field(
+        default=24.0,
+        ge=1.0,
+        le=720.0,
+        validation_alias=AliasChoices("OMNI_SCOPE_ADVOCACY_INTERVAL_HOURS"),
+        description="Chu kỳ chạy vòng tự xin quyền, đơn vị giờ (default 24h).",
+    )
+
     # Deep Scout autonomous (1.5B synthesis + Redis/Postgres)
     autonomous_scout_max_pods: int = Field(default=40, ge=5, le=500)
     autonomous_scout_max_services: int = Field(default=80, ge=10, le=500)

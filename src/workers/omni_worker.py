@@ -1228,6 +1228,14 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
 
         tasks.append(asyncio.create_task(capacity_report_loop(ctx, stop), name="capacity_report"))
         tasks.append(asyncio.create_task(hitl_ui_decisions_loop(ctx, stop), name="hitl_ui_decisions"))
+        if role == "full":
+            # Chỉ role `full` (xem bảng COMPONENT ROLES): vòng này ghi vào bảng
+            # quyền của tenant, chạy ở nhiều role song song sẽ nộp đơn trùng.
+            from workers.tier_loops import scope_advocacy_loop
+
+            tasks.append(asyncio.create_task(
+                scope_advocacy_loop(ctx, stop), name="scope_advocacy",
+            ))
         if ctx.settings.siem_chain_consumer_enabled:
             tasks.append(asyncio.create_task(
                 kafka_siem_chains_loop(ctx, stop), name="kafka_siem_chains_loop",
