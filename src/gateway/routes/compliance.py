@@ -12,6 +12,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+
+from gateway.tenant_context import get_tenant_ctx, resolve_scope
 from fastapi.responses import JSONResponse, StreamingResponse
 
 router = APIRouter(prefix="/crat", tags=["compliance"])
@@ -101,6 +103,24 @@ async def _fetch_blocks(redis: Any, tenant_id: str, days: int) -> list[dict[str,
     return blocks
 
 
+def _effective_tenant(request: Request, requested: str) -> str:
+    """Tenant thực sự được phép đọc chain CRAT.
+
+    Trước 2026-07-29 hàm này không tồn tại và `tenant_id` từ query được dùng thẳng để
+    dựng key `audit_chain:{tenant_id}:blocks` — bất kỳ tenant nào cũng export được chain
+    audit của tenant khác. Đây là dữ liệu SOX §404 / PCI-DSS v4.0 nên đó là vi phạm
+    compliance, không chỉ là bug. `siem.py` cùng đọc key này và đã làm đúng từ đầu.
+    """
+    ctx = get_tenant_ctx(request)
+    scope = resolve_scope(ctx, requested)
+    if scope is not None:
+        return scope
+    # scope=None có 2 nghĩa khác nhau, không được gộp:
+    #  - ctx is None  → lab/no-auth: giữ backward-compat, tôn trọng tenant_id được hỏi.
+    #  - ctx.is_admin → admin không chỉ định tenant nào → chain global "default".
+    return requested if ctx is None else "default"
+
+
 @router.get("/export", response_model=None)
 async def crat_export(
     request: Request,
@@ -116,6 +136,7 @@ async def crat_export(
     - days: last N days to include (1–90, default 30)
     """
     redis = _get_redis(request)
+    tenant_id = _effective_tenant(request, tenant_id)
     blocks = await _fetch_blocks(redis, tenant_id, days)
 
     if format == "json":
@@ -148,6 +169,7 @@ async def crat_stats(
     Includes: total_blocks, date_range, event_type_counts, has_signature, chain_valid.
     """
     redis = _get_redis(request)
+    tenant_id = _effective_tenant(request, tenant_id)
     key = _blocks_key(tenant_id)
 
     try:

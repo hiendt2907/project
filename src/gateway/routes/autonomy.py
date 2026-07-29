@@ -55,6 +55,7 @@ async def get_policy(request: Request) -> JSONResponse:
 @router.post("/policy/rule")
 async def add_policy_rule(request: Request, rule: PolicyRule) -> JSONResponse:
     """Prepend a new rule to the policy list. The new rule takes highest priority."""
+    _require_admin_ctx(request)
     redis = _get_redis(request)
     try:
         await _store.set_rule(redis, rule)
@@ -82,6 +83,7 @@ async def get_policy_history(
 @router.post("/policy/reset")
 async def reset_policy(request: Request) -> JSONResponse:
     """Reset policy to built-in defaults. Requires API key (enforced at router level)."""
+    _require_admin_ctx(request)
     redis = _get_redis(request)
     try:
         await _store.reset_to_defaults(redis)
@@ -148,6 +150,7 @@ async def set_tier(request: Request, body: TierChangeRequest) -> JSONResponse:
     NÂNG tier (≥ hiện tại) yêu cầu ``confirm=true`` (2-step). CRAT ``AUTONOMY_TIER_CHANGED``
     do outbox drainer ghi. KHÔNG tự nhảy tier — chỉ operator gọi endpoint này.
     """
+    _require_admin_ctx(request)
     if body.tier not in _VALID_TIERS:
         raise HTTPException(status_code=400, detail=f"tier không hợp lệ: {body.tier}")
     repo = _get_admin_repo(request)
@@ -235,6 +238,7 @@ async def get_risk_class(request: Request, tenant_id: str = Query(default="defau
 @router.post("/risk-class")
 async def set_risk_class(request: Request, body: RiskClassRequest) -> JSONResponse:
     """Override risk-class 1 tool. Hạ rủi ro (override < static) cần confirm=true."""
+    _require_admin_ctx(request)
     from pkg.risk_taxonomy import STATIC_RISK_CLASS
 
     if body.risk_class not in _RISK_RANK:
@@ -324,6 +328,7 @@ async def set_mutation_toggle(request: Request, body: MutationToggleRequest) -> 
     Enabling requires a second confirmation. The tenant switch can never
     override the process-wide master kill switch.
     """
+    _require_admin_ctx(request)
     repo = _get_admin_repo(request)
     current = _flag_bool(await repo.get_runtime_flag(MUTATION_FLAG_KEY, tenant_id=body.tenant_id))
     if body.enabled and not current and not body.confirm:
@@ -355,6 +360,7 @@ async def get_flags(request: Request, tenant_id: str = Query(default="default"))
 
 @router.post("/flags")
 async def set_flag(request: Request, body: RuntimeFlagRequest) -> JSONResponse:
+    _require_admin_ctx(request)
     if body.value_type not in ("int", "bool", "str", "float", "json"):
         raise HTTPException(status_code=400, detail=f"value_type không hợp lệ: {body.value_type}")
     repo = _get_admin_repo(request)
@@ -400,12 +406,14 @@ class EnvironmentStatusRequest(BaseModel):
 
 @router.get("/tenants")
 async def get_tenants(request: Request) -> JSONResponse:
+    _require_admin_ctx(request)
     repo = _get_admin_repo(request)
     return JSONResponse(content={"tenants": await repo.list_tenants()})
 
 
 @router.post("/tenants")
 async def create_tenant(request: Request, body: TenantRequest) -> JSONResponse:
+    _require_admin_ctx(request)
     repo = _get_admin_repo(request)
     try:
         result = await repo.create_tenant(
@@ -473,6 +481,7 @@ async def set_environment_status(
 
 @router.get("/tenants/{tenant_id}/api-keys")
 async def get_api_keys(request: Request, tenant_id: str) -> JSONResponse:
+    _require_admin_ctx(request)
     repo = _get_admin_repo(request)
     return JSONResponse(content={"api_keys": await repo.list_api_keys(tenant_id)})
 
@@ -480,6 +489,7 @@ async def get_api_keys(request: Request, tenant_id: str) -> JSONResponse:
 @router.post("/tenants/{tenant_id}/api-keys")
 async def create_api_key(request: Request, tenant_id: str, body: ApiKeyRequest) -> JSONResponse:
     """Sinh key ngẫu nhiên, lưu HASH (sha256), trả plaintext MỘT LẦN duy nhất."""
+    _require_admin_ctx(request)
     import hashlib
     import secrets
 

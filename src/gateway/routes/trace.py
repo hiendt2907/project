@@ -421,7 +421,16 @@ async def trace_purge(request: Request) -> JSONResponse:
     omni:trace:stages:*, omni:trace:logs:*, omni:trace:advisory:* key. Evidence
     cluster dedup state (omni:evcluster:*) is left untouched on purpose — wiping
     the dashboard view must not erase incident memory used for repeat suppression.
+
+    ADMIN ONLY: the wipe is cluster-wide across every tenant's keys, so a tenant key
+    must not reach it. Until 2026-07-29 any authenticated caller could erase every
+    tenant's diagnostic trace state.
     """
+    from gateway.tenant_context import get_tenant_ctx, is_admin_ctx
+
+    if not is_admin_ctx(get_tenant_ctx(request)):
+        raise HTTPException(status_code=403, detail="Admin API key required")
+
     redis = _get_redis(request)
     deleted = 0
     try:
