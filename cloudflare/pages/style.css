@@ -355,3 +355,8 @@ footer a:hover{color:var(--ink);border-bottom-color:var(--signal)}
   *,*::before,*::after{animation:none !important;transition:none !important}
   .link::after{display:none}
 }
+
+/* Logo dạng link (trang 404). Không dùng style="" nội tuyến — CSP `style-src 'self'`
+   không có 'unsafe-inline' nên thuộc tính style sẽ bị chặn im lặng. */
+.brand-link{text-decoration:none;color:inherit}
+.brand-link:hover .mark{box-shadow:0 0 0 4px oklch(80% .135 178 / .18)}

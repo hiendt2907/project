@@ -47,6 +47,13 @@ $ext"
 if grep -rqE '<script|\son[a-z]+=' "$PAGES_DIR" --include='*.html' 2>/dev/null; then
     die "phát hiện <script> hoặc inline event handler — CSP sẽ chặn im lặng."
 fi
+
+# Gate: không style="" nội tuyến. `style-src 'self'` KHÔNG có 'unsafe-inline'.
+# Thiếu gate này lần đầu và đã tự vấp ngay khi viết 404.html — thuộc tính style bị
+# chặn im lặng nên trang vẫn hiện, chỉ là sai giao diện, rất khó phát hiện bằng mắt.
+if grep -rq 'style="' "$PAGES_DIR" --include='*.html' 2>/dev/null; then
+    die "phát hiện style=\"\" nội tuyến — CSP sẽ chặn im lặng. Đưa vào style.css."
+fi
 ok "gate nội dung: $(find "$PAGES_DIR" -type f | wc -l | tr -d ' ') file, không có gì bất thường"
 
 # ── Xác thực ─────────────────────────────────────────────────────────────────
@@ -69,6 +76,26 @@ else
     printf '    printf %%s "<TOKEN>" > %s\n' "$TOKEN_FILE"
     printf '    chmod 600 %s\n\n' "$TOKEN_FILE"
 fi
+
+# ── Account ID ───────────────────────────────────────────────────────────────
+# Token phạm vi hẹp (chỉ Pages·Edit) KHÔNG có quyền liệt kê account, nên wrangler
+# không tự suy ra được và báo "Failed to automatically retrieve account IDs".
+# Đó không phải lỗi token — chỉ là thiếu account ID. Cấp thẳng cho nó.
+# Account ID không phải bí mật (nó nằm ngay trên URL của Dashboard).
+if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ] && [ -f "$HOME/.cloudflared/cert.pem" ]; then
+    # cloudflared đã đăng nhập sẵn cho tunnel; cert.pem chứa accountID ở block
+    # "ARGO TUNNEL TOKEN" (base64 JSON). Chỉ đọc accountID, không chạm phần khoá.
+    CLOUDFLARE_ACCOUNT_ID="$(python3 - <<'PY' 2>/dev/null || true
+import base64, json, re, pathlib
+t = (pathlib.Path.home()/".cloudflared/cert.pem").read_text()
+m = re.search(r"-----BEGIN ARGO TUNNEL TOKEN-----(.*?)-----END", t, re.S)
+if m:
+    print(json.loads(base64.b64decode("".join(m.group(1).split()))).get("accountID", ""))
+PY
+)"
+    [ -n "$CLOUDFLARE_ACCOUNT_ID" ] && ok "account ID lấy từ ~/.cloudflared/cert.pem"
+fi
+export CLOUDFLARE_ACCOUNT_ID
 
 # ── Deploy ───────────────────────────────────────────────────────────────────
 npx --yes wrangler@latest pages deploy "$PAGES_DIR" \
