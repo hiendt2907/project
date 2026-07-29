@@ -32,6 +32,7 @@ class TierReadiness:
     wilson_lb: float
     false_positive_rate: float
     reasons: tuple[str, ...]  # điều kiện chưa đạt (rỗng = ready)
+    graduated_playbooks: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -53,8 +54,15 @@ async def compute_tier_readiness(
     current_tier: str,
     tenant_id: str = "default",
     tier_entered_at: float | None = None,
+    graduated_playbooks: int = 0,
 ) -> TierReadiness:
-    """Tính readiness cho lần nâng tier kế tiếp. ``tier_entered_at`` epoch giây."""
+    """Tính readiness cho lần nâng tier kế tiếp. ``tier_entered_at`` epoch giây.
+
+    ``graduated_playbooks`` = số playbook đã tốt nghiệp (`omni_admin.playbook_graduation`,
+    state GRADUATED). Acceptance cao chứng minh Omni chẩn đoán ĐÚNG; nó không chứng minh
+    Omni đã rút ra được QUY TRÌNH lặp lại được. Mặc định 0 nên caller cũ bị chặn
+    (fail-closed) thay vì vô tình được nâng tier.
+    """
     accepted = await _zcard(redis, f"omni:kpi:z:{tenant_id}:accepted")
     rejected = await _zcard(redis, f"omni:kpi:z:{tenant_id}:rejected")
     false_positive = await _zcard(redis, f"omni:kpi:z:{tenant_id}:false_positive")
@@ -72,6 +80,7 @@ async def compute_tier_readiness(
             elapsed_days=elapsed_days, accepted=accepted, rejected=rejected,
             false_positive=false_positive, total=total, wilson_lb=wilson,
             false_positive_rate=fp_rate, reasons=("đã ở tier cao nhất",),
+            graduated_playbooks=graduated_playbooks,
         )
 
     min_adv = int(getattr(settings, "omni_tier_min_advisories", 50))
@@ -85,12 +94,19 @@ async def compute_tier_readiness(
         reasons.append(f"wilson_lb {wilson:.3f} < {min_wilson}")
     if fp_rate >= max_fp:
         reasons.append(f"false_positive_rate {fp_rate:.3f} >= {max_fp}")
+    min_grad = int(getattr(settings, "omni_tier_min_graduated_playbooks", 1))
+    if graduated_playbooks < min_grad:
+        reasons.append(
+            f"graduated_playbooks {graduated_playbooks} < {min_grad} "
+            "(chưa có quy trình nào lặp lại được)"
+        )
 
     return TierReadiness(
         current_tier=current_tier, next_tier=next_tier, ready=not reasons,
         elapsed_days=elapsed_days, accepted=accepted, rejected=rejected,
         false_positive=false_positive, total=total, wilson_lb=wilson,
         false_positive_rate=fp_rate, reasons=tuple(reasons),
+        graduated_playbooks=graduated_playbooks,
     )
 
 

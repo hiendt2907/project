@@ -331,12 +331,19 @@ class TestAutonomyGate:
 
 class TestGetFpRate:
     @pytest.mark.asyncio
-    async def test_returns_zero_when_no_kpi_data(self):
-        """Empty Redis KPI keys → fp_rate = 0.0."""
+    async def test_returns_worst_case_when_no_kpi_data(self):
+        """Empty Redis KPI keys → fp_rate = 1.0 (FAIL_CLOSED).
+
+        This assertion was inverted until 2026-07-29: it demanded 0.0, which made
+        "never measured" indistinguishable from "measured, zero false positives", so
+        the gate opened on any lane that had no evidence at all. The KPI z-sets were in
+        fact permanently empty in production because the reader and `KPIStore` used
+        different key shapes — the fail-open path was the ONLY path ever taken.
+        """
         gate = AutonomyGate()
         redis = _make_redis()
         rate = await gate.get_fp_rate_for_lane("SYS_RESOURCE", redis)
-        assert rate == 0.0
+        assert rate == 1.0
 
     @pytest.mark.asyncio
     async def test_computes_rate_from_kpi_keys(self):
@@ -347,10 +354,11 @@ class TestGetFpRate:
         redis = _make_redis()
         now = time.time()
 
-        # Add 4 accepted, 1 false_positive → rate = 1/5 = 0.2
+        # Add 4 accepted, 1 false_positive → rate = 1/5 = 0.2.
+        # Keys are per-tenant (kpi_outcome_key) — the shape KPIStore actually writes.
         for i in range(4):
-            await redis.zadd("omni:kpi:z:accepted", {f"a{i}": now})
-        await redis.zadd("omni:kpi:z:false_positive", {"fp0": now})
+            await redis.zadd("omni:kpi:z:default:accepted", {f"a{i}": now})
+        await redis.zadd("omni:kpi:z:default:false_positive", {"fp0": now})
 
         rate = await gate.get_fp_rate_for_lane("SYS_RESOURCE", redis)
         assert abs(rate - 0.2) < 1e-9
@@ -365,14 +373,18 @@ class TestGetFpRate:
         now = time.time()
 
         for i in range(10):
-            await redis.zadd("omni:kpi:z:accepted", {f"a{i}": now})
+            await redis.zadd("omni:kpi:z:default:accepted", {f"a{i}": now})
 
         rate = await gate.get_fp_rate_for_lane("APP_HTTP", redis)
         assert rate == 0.0
 
     @pytest.mark.asyncio
-    async def test_returns_zero_when_redis_is_none(self):
-        """None redis → safe fallback 0.0."""
+    async def test_returns_worst_case_when_redis_is_none(self):
+        """None redis → FAIL_CLOSED 1.0, not an optimistic 0.0.
+
+        No Redis means no evidence. Reporting a perfect score for an unreachable
+        metrics store is exactly the fail-open shape this gate must not have.
+        """
         gate = AutonomyGate()
         rate = await gate.get_fp_rate_for_lane("SIEM_SECURITY", None)
-        assert rate == 0.0
+        assert rate == 1.0

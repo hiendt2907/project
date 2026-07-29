@@ -131,22 +131,40 @@ class AutonomyGate:
         )
         return resolved_level
 
-    async def get_fp_rate_for_lane(self, lane: str, redis: Any) -> float:
-        """Compute false positive rate for any lane over the last 24h from KPI Redis keys.
+    async def get_fp_rate_for_lane(
+        self, lane: str, redis: Any, *, tenant_id: str = "default"
+    ) -> float:
+        """False positive rate for *lane* over the last 24h, from the KPI z-sets.
 
-        Rate = false_positive / (accepted + false_positive). Returns 0.0 if no data.
+        Reads via ``read_outcome_rates`` so the key shape matches what ``KPIStore``
+        writes; the previous hand-built ``omni:kpi:z:false_positive`` keys omitted the
+        tenant segment the writer uses and therefore always counted 0 samples.
+
+        Returns 1.0 (worst case) when there is no data — "we have never measured this"
+        must not be indistinguishable from "measured, zero false positives", or the
+        gate silently opens on an unproven lane.
         """
         if redis is None:
-            return 0.0
+            return 1.0
         try:
-            now = time.time()
-            since = now - 86400  # 24h window
-            fp_count = int(await redis.zcount("omni:kpi:z:false_positive", since, "+inf") or 0)
-            accepted = int(await redis.zcount("omni:kpi:z:accepted", since, "+inf") or 0)
-            total = accepted + fp_count
-            if total == 0:
-                return 0.0
-            return fp_count / total
+            from workers.kpi_metrics import read_outcome_rates
+
+            rates = await read_outcome_rates(redis, tenant_id=tenant_id)
+            # Denominator is accepted + false_positive only — `rejected` means the
+            # operator declined the action, not that the detection was wrong, so it
+            # does not belong in a false-POSITIVE rate. (Kept from the original
+            # formula; only the key shape was wrong before.)
+            fp_count = int(rates.get("false_positive") or 0)
+            accepted = int(rates.get("accepted") or 0)
+            denom = accepted + fp_count
+            if denom == 0:
+                logger.info(
+                    "autonomy_gate: no KPI samples for lane=%s tenant=%s — "
+                    "treating fp_rate as 1.0 (FAIL_CLOSED)",
+                    lane, tenant_id,
+                )
+                return 1.0
+            return fp_count / denom
         except Exception as exc:
             logger.warning("autonomy_gate: fp_rate read error lane=%s: %s", lane, exc)
-            return 0.0
+            return 1.0

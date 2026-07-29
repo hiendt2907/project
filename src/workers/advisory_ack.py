@@ -68,6 +68,39 @@ async def emit_advisory_suggestion(
         logger.warning("advisory_ack: emit suggestion fail trace=%s err=%s", trace_id, exc)
 
 
+_TRACE_ADVISORY_KEY = "omni:trace:advisory:"
+
+
+async def _load_advisory_shape(redis: Any, trace_id: str) -> dict[str, Any]:
+    """Đọc ``lane``/``alertname`` của trace để gom nhóm pattern khi tốt nghiệp.
+
+    Nguồn là `omni:trace:advisory:{trace}` do `remote_agent_pipeline._persist_trace_advisory`
+    ghi (TTL 1h). Trả dict rỗng nếu không có — `advisory_pattern_key` sẽ coi là bỏ qua,
+    không đoán bừa một pattern sai.
+    """
+    if redis is None or not trace_id:
+        return {}
+    try:
+        raw = await redis.get(f"{_TRACE_ADVISORY_KEY}{trace_id}")
+    except Exception:  # noqa: BLE001
+        return {}
+    if not raw:
+        return {}
+    try:
+        doc = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    advisory = doc.get("advisory") if isinstance(doc.get("advisory"), dict) else {}
+    workload = advisory.get("affected_workload")
+    alertname = ""
+    if isinstance(workload, dict):
+        alertname = str(workload.get("alertname") or workload.get("name") or "")
+    return {
+        "lane": str(doc.get("lane") or ""),
+        "alertname": alertname or str(advisory.get("verdict") or ""),
+    }
+
+
 async def handle_advisory_ack_callback(ctx: Any, update: dict[str, Any]) -> bool:
     """Xử lý callback ``advack:{trace_id}``. Trả True nếu đã tiêu thụ update.
 
@@ -133,6 +166,32 @@ async def handle_advisory_ack_callback(ctx: Any, update: dict[str, Any]) -> bool
             )
         except Exception as exc:  # noqa: BLE001 — ledger phụ trợ, CRAT mới là chain
             logger.warning("advisory_ack: ledger persist fail trace=%s err=%s", trace_id, exc)
+
+    # G2 — ack là mẫu KPI acceptance. Không có nguồn nào khác điền `omni:kpi:z:*:accepted`
+    # trong shadow mode, và đó chính là bằng chứng dùng để xét nâng tier sau này.
+    if redis is not None:
+        try:
+            from workers.kpi_metrics import KPIStore
+
+            await KPIStore(redis).record_accepted(trace_id, tenant_id=tenant_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("advisory_ack: kpi record fail trace=%s err=%s", trace_id, exc)
+
+    # G1 — vòng học: ack của operator là tín hiệu học DUY NHẤT có thật trong shadow mode
+    # (không mutation → không VERIFIED_SUCCESS → promoter.evaluate_for_promotion không
+    # bao giờ chạy). Best-effort: học hỏng KHÔNG được làm hỏng việc ghi nhận advisory.
+    try:
+        from services.learning_promoter.advisory_promoter import record_advisory_verdict
+
+        await record_advisory_verdict(
+            ctx,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            accepted=True,
+            advisory=await _load_advisory_shape(redis, trace_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("advisory_ack: graduation skip trace=%s err=%s", trace_id, exc)
 
     if tg and cq_id:
         await tg.answer_callback_query(cq_id, text="✅ Đã ghi nhận")

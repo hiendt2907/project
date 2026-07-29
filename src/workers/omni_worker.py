@@ -1224,6 +1224,9 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
         )
         tasks.append(asyncio.create_task(crat_outbox_drainer_loop(ctx, stop), name="crat_outbox_drainer"))
         tasks.append(asyncio.create_task(tier_readiness_loop(ctx, stop), name="tier_readiness"))
+        from workers.capacity_loops import capacity_report_loop
+
+        tasks.append(asyncio.create_task(capacity_report_loop(ctx, stop), name="capacity_report"))
         tasks.append(asyncio.create_task(hitl_ui_decisions_loop(ctx, stop), name="hitl_ui_decisions"))
         if ctx.settings.siem_chain_consumer_enabled:
             tasks.append(asyncio.create_task(

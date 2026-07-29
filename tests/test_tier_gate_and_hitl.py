@@ -230,10 +230,15 @@ async def test_readiness_ready_when_criteria_met(redis):
     s = SimpleNamespace(
         omni_tier_min_days_shadow=90, omni_tier_min_advisories=50,
         omni_tier_shadow_assist_wilson=0.80, omni_tier_max_false_positive_rate=0.10,
+        omni_tier_min_graduated_playbooks=1,
     )
     entered = time.time() - 100 * 86400  # 100 ngày trước
+    # `graduated_playbooks` là tiêu chí bổ sung 2026-07-29: acceptance cao chứng minh
+    # chẩn đoán đúng, KHÔNG chứng minh đã rút ra quy trình lặp lại được. Mặc định 0 nên
+    # phải truyền tường minh ở đây; bỏ trống = fail-closed (có test riêng phủ).
     r = await compute_tier_readiness(
         redis=redis, settings=s, current_tier="shadow", tier_entered_at=entered,
+        graduated_playbooks=1,
     )
     assert r.ready is True
     assert r.reasons == ()

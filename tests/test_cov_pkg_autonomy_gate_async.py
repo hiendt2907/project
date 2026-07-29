@@ -9,8 +9,9 @@ from pkg.autonomy.gate import AutonomyGate
 
 @pytest.mark.asyncio
 async def test_get_fp_rate_for_lane_none_redis() -> None:
+    """No Redis = no evidence → FAIL_CLOSED 1.0 (was an optimistic 0.0)."""
     gate = AutonomyGate()
-    assert await gate.get_fp_rate_for_lane("SYS_RESOURCE", None) == 0.0
+    assert await gate.get_fp_rate_for_lane("SYS_RESOURCE", None) == 1.0
 
 
 @pytest.mark.asyncio
@@ -28,11 +29,12 @@ async def test_get_fp_rate_for_lane_ratio() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_fp_rate_for_lane_zcount_error_returns_zero() -> None:
+async def test_get_fp_rate_for_lane_zcount_error_returns_worst_case() -> None:
+    """Unreadable metrics store must not be reported as a perfect score."""
     gate = AutonomyGate()
 
     class BadRedis:
         async def zcount(self, *_a: object, **_k: object) -> int:
             raise OSError("simulated")
 
-    assert await gate.get_fp_rate_for_lane("lane", BadRedis()) == 0.0
+    assert await gate.get_fp_rate_for_lane("lane", BadRedis()) == 1.0

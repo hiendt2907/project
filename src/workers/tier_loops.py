@@ -77,9 +77,20 @@ async def tier_readiness_loop(ctx: Any, stop: asyncio.Event) -> None:
                 tier = await repo.get_tier(tenant_id) or "shadow"
                 entered_at = await _tier_entered_at(pool, tenant_id)
             set_autonomy_tier(tier)
+            # G1↔G2: số quy trình đã tốt nghiệp là điều kiện nâng tier, không chỉ acceptance.
+            graduated = 0
+            if repo is not None:
+                try:
+                    graduated = len(
+                        await repo.list_playbook_graduations(tenant_id, state="GRADUATED")
+                    )
+                except Exception as exc:  # noqa: BLE001 — thiếu số liệu = 0 = fail-closed
+                    logger.warning("tier_readiness: graduation read failed: %s", exc)
+
             readiness = await compute_tier_readiness(
                 redis=ctx.redis, settings=ctx.settings, current_tier=tier,
                 tenant_id=tenant_id, tier_entered_at=entered_at,
+                graduated_playbooks=graduated,
             )
             await ctx.redis.set(
                 _READINESS_KEY.format(tenant=tenant_id),

@@ -540,6 +540,80 @@ class AdminConfigRepo:
                 channel,
             )
 
+    # ---- playbook graduation (G1 — vòng học) -------------------------------
+
+    async def bump_playbook_graduation(
+        self,
+        *,
+        tenant_id: str,
+        domain: str,
+        playbook_id: str,
+        success: bool,
+        crat_ref: str | None = None,
+    ) -> dict[str, Any]:
+        """Tăng success/fail counter, trả về hàng SAU khi cập nhật.
+
+        Counter sống ở Postgres (không phải Redis) vì đây là bằng chứng dùng để nâng
+        bậc tự trị — phải bền qua restart/flush cache, khác với counter hot-path.
+        """
+        col = "success_count" if success else "fail_count"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"INSERT INTO omni_admin.playbook_graduation "  # noqa: S608 — col là literal nội bộ
+                f"(tenant_id, domain, playbook_id, state, {col}, crat_ref) "
+                f"VALUES ($1, $2, $3, 'DRAFT', 1, $4) "
+                f"ON CONFLICT (tenant_id, domain, playbook_id) DO UPDATE SET "
+                f"{col} = omni_admin.playbook_graduation.{col} + 1, "
+                f"crat_ref = COALESCE(EXCLUDED.crat_ref, omni_admin.playbook_graduation.crat_ref), "
+                f"updated_at = now() "
+                f"RETURNING tenant_id, domain, playbook_id, state, success_count, fail_count",
+                tenant_id,
+                domain,
+                playbook_id,
+                crat_ref,
+            )
+            return dict(row) if row else {}
+
+    async def set_playbook_graduation_state(
+        self,
+        *,
+        tenant_id: str,
+        domain: str,
+        playbook_id: str,
+        state: str,
+        crat_ref: str | None = None,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE omni_admin.playbook_graduation SET state=$4, "
+                "crat_ref=COALESCE($5, crat_ref), updated_at=now() "
+                "WHERE tenant_id=$1 AND domain=$2 AND playbook_id=$3",
+                tenant_id,
+                domain,
+                playbook_id,
+                state,
+                crat_ref,
+            )
+
+    async def list_playbook_graduations(
+        self, tenant_id: str = "default", *, state: str | None = None
+    ) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            if state:
+                rows = await conn.fetch(
+                    "SELECT * FROM omni_admin.playbook_graduation "
+                    "WHERE tenant_id=$1 AND state=$2 ORDER BY updated_at DESC",
+                    tenant_id,
+                    state,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT * FROM omni_admin.playbook_graduation "
+                    "WHERE tenant_id=$1 ORDER BY updated_at DESC",
+                    tenant_id,
+                )
+            return [dict(r) for r in rows]
+
     # ---- list reads (Admin UI matrices/tables) ----------------------------
 
     async def list_runtime_flags(self, tenant_id: str = "default") -> list[dict[str, Any]]:

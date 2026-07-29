@@ -22,6 +22,50 @@ _FEEDBACK_TOPIC = "omni-action-feedback"
 _WINDOW_SECONDS = 86400  # 24h rolling window
 
 
+OUTCOME_ACCEPTED = "accepted"
+OUTCOME_REJECTED = "rejected"
+OUTCOME_FALSE_POSITIVE = "false_positive"
+
+
+def kpi_outcome_key(tenant_id: str, outcome: str) -> str:
+    """Nguồn DUY NHẤT dựng key outcome — writer và reader bắt buộc dùng chung.
+
+    Trước đây `KPIStore` ghi `omni:kpi:z:{tenant}:accepted` còn
+    `promoter._get_fp_rate`/`pkg.autonomy.gate` đọc `omni:kpi:z:accepted`; Redis lab
+    tồn tại song song cả 2 dạng. Mọi phép đọc FP-rate vì thế luôn thấy 0 mẫu và gate
+    chất lượng im lặng cho qua. Đừng nối chuỗi key thủ công ở bất kỳ đâu khác.
+    """
+    return f"omni:kpi:z:{tenant_id}:{outcome}"
+
+
+async def read_outcome_rates(
+    redis: Any, *, tenant_id: str = "default", window_seconds: int = _WINDOW_SECONDS
+) -> dict[str, Any]:
+    """Đọc outcome trong cửa sổ trượt.
+
+    ``fp_rate``/``acceptance_rate`` là ``None`` khi CHƯA CÓ dữ liệu — cố ý không trả
+    0.0, vì "0% false positive" và "chưa biết gì" phải được caller xử lý khác nhau
+    (fail-closed), không được lẫn lộn.
+    """
+    since = time.time() - window_seconds
+    counts: dict[str, int] = {}
+    for outcome in (OUTCOME_ACCEPTED, OUTCOME_REJECTED, OUTCOME_FALSE_POSITIVE):
+        try:
+            counts[outcome] = int(
+                await redis.zcount(kpi_outcome_key(tenant_id, outcome), since, "+inf") or 0
+            )
+        except Exception:  # noqa: BLE001 — thiếu key/redis lỗi = coi như 0 mẫu
+            counts[outcome] = 0
+
+    total = sum(counts.values())
+    return {
+        **counts,
+        "total": total,
+        "acceptance_rate": (counts[OUTCOME_ACCEPTED] / total) if total else None,
+        "fp_rate": (counts[OUTCOME_FALSE_POSITIVE] / total) if total else None,
+    }
+
+
 class KPIStore:
     """Rolling window KPI store — ZADD with unix timestamp scores, per-tenant keys."""
 
@@ -36,13 +80,15 @@ class KPIStore:
         await self._redis.expire(key, int(_WINDOW_SECONDS * 2))
 
     async def record_accepted(self, trace_id: str, tenant_id: str = "default") -> None:
-        await self._zadd_and_expire(f"omni:kpi:z:{tenant_id}:accepted", trace_id)
+        await self._zadd_and_expire(kpi_outcome_key(tenant_id, OUTCOME_ACCEPTED), trace_id)
 
     async def record_rejected(self, trace_id: str, tenant_id: str = "default") -> None:
-        await self._zadd_and_expire(f"omni:kpi:z:{tenant_id}:rejected", trace_id)
+        await self._zadd_and_expire(kpi_outcome_key(tenant_id, OUTCOME_REJECTED), trace_id)
 
     async def record_false_positive(self, trace_id: str, tenant_id: str = "default") -> None:
-        await self._zadd_and_expire(f"omni:kpi:z:{tenant_id}:false_positive", trace_id)
+        await self._zadd_and_expire(
+            kpi_outcome_key(tenant_id, OUTCOME_FALSE_POSITIVE), trace_id
+        )
 
     async def record_detected(self, trace_id: str, lane: str, ts: float, tenant_id: str = "default") -> None:
         key = f"omni:kpi:detected:{tenant_id}:{lane}"

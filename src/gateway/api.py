@@ -414,6 +414,7 @@ from gateway.routes.siem import router as _siem_router  # noqa: E402
 from gateway.routes.agents import router as _agents_router  # noqa: E402
 from gateway.routes.autonomy import router as _autonomy_router  # noqa: E402
 from gateway.routes.compliance import router as _compliance_router  # noqa: E402
+from gateway.routes.reports import router as _reports_router  # noqa: E402
 from gateway.routes.agent_webhook import router as _agent_webhook_router  # noqa: E402
 from gateway.routes.agent_push import router as _agent_push_router  # noqa: E402
 from gateway.routes.agent_commands import router as _agent_commands_router  # noqa: E402
@@ -430,6 +431,7 @@ app.include_router(_siem_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_agents_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_autonomy_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_compliance_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_reports_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_agent_webhook_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_agent_commands_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_agent_runtime_router, dependencies=[_Depends(_require_api_key)])

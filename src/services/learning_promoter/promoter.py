@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 _PROMO_HASH_KEY = "omni:learn:promo:{pattern_key}"
 _MATRIX_AUTO_KEY = "omni:matrix:auto:{pattern_key}"
 _MATRIX_AUTO_TTL = 86400 * 30  # 30 days
+_MIN_FP_SAMPLES = 10  # below this the FP rate is noise, treat as "unknown"
 
 
 async def evaluate_for_promotion(
@@ -78,9 +79,20 @@ async def evaluate_for_promotion(
         )
         return False
 
-    # Check FP rate from KPI Redis counters (best-effort — skip if unavailable).
+    # Quality gate. This promotion sets auto_execute=True, so a missing FP rate must
+    # FAIL CLOSED: `_get_fp_rate` returns None when the KPI z-sets hold too few samples,
+    # and those z-sets were empty in production (audit #9) — meaning the gate silently
+    # passed every candidate through with zero quality evidence.
     fp_rate = await _get_fp_rate(redis, pattern_key)
-    if fp_rate is not None and fp_rate > max_fp_rate:
+    if fp_rate is None:
+        if bool(getattr(ws, "omni_sop_promotion_require_fp_data", True)):
+            logger.info(
+                "event=promo_blocked_no_fp_data pattern=%s — refusing auto_execute "
+                "promotion without quality evidence (FAIL_CLOSED)",
+                pattern_key,
+            )
+            return False
+    elif fp_rate > max_fp_rate:
         logger.info(
             "event=promo_fp_rate_too_high pattern=%s fp_rate=%.3f max=%.3f",
             pattern_key, fp_rate, max_fp_rate,
@@ -99,8 +111,9 @@ async def evaluate_for_promotion(
     if sop_id is None:
         return False
 
-    # Export SOP as a learned Cursor Skill
-    await _export_to_cursor_skill(
+    # Optional markdown export (disabled unless an export dir is configured).
+    await _export_skill_markdown(
+        export_dir=str(getattr(ws, "omni_sop_skill_export_dir", "") or ""),
         pattern_key=pattern_key,
         tool_name=tool_name,
         match_text=match_text,
@@ -136,18 +149,22 @@ async def evaluate_for_promotion(
     return True
 
 
-async def _get_fp_rate(redis: Any, pattern_key: str) -> float | None:
-    """Approximate FP rate from global KPI counters (not per-pattern — best effort)."""
+async def _get_fp_rate(
+    redis: Any, pattern_key: str, *, tenant_id: str = "default"
+) -> float | None:
+    """Approximate FP rate from tenant KPI counters (not per-pattern — best effort).
+
+    Reads through ``read_outcome_rates`` so the key shape can never drift from what
+    ``KPIStore`` writes; the previous hand-built ``omni:kpi:z:accepted`` keys did not
+    match the writer's per-tenant keys and always returned 0 samples.
+    """
     try:
-        now = time.time()
-        window = 86400  # 24h
-        accepted = await redis.zcount("omni:kpi:z:accepted", now - window, now)
-        rejected = await redis.zcount("omni:kpi:z:rejected", now - window, now)
-        fp = await redis.zcount("omni:kpi:z:false_positive", now - window, now)
-        total = int(accepted or 0) + int(rejected or 0) + int(fp or 0)
-        if total < 10:
+        from workers.kpi_metrics import read_outcome_rates
+
+        rates = await read_outcome_rates(redis, tenant_id=tenant_id)
+        if int(rates.get("total") or 0) < _MIN_FP_SAMPLES:
             return None  # Not enough data yet.
-        return int(fp or 0) / total
+        return rates.get("fp_rate")
     except Exception:
         return None
 
@@ -235,7 +252,9 @@ async def _write_promo_crat(
         logger.warning("event=promo_crat_write_fail trace=%s err=%s", trace_id, e)
 
 
-async def _export_to_cursor_skill(
+async def _export_skill_markdown(
+    *,
+    export_dir: str,
     pattern_key: str,
     tool_name: str,
     match_text: str,
@@ -243,7 +262,15 @@ async def _export_to_cursor_skill(
     success_count: int,
     trace_id: str,
 ) -> None:
-    """Saves the promoted SOP as a learned Cursor Skill under .cursor/skills/learned/"""
+    """Write the promoted SOP as markdown into *export_dir*; no-op when unset.
+
+    Previously this hardcoded a developer's absolute workspace path
+    (``/Users/<user>/project/.cursor/skills/learned``), which does not exist inside the
+    worker pod and made a running service write into a source tree. The destination is
+    now configuration, and the feature is off unless explicitly pointed somewhere.
+    """
+    if not export_dir.strip():
+        return
     try:
         import os
         import re
@@ -251,14 +278,12 @@ async def _export_to_cursor_skill(
 
         # Sanitize pattern key to make a safe filename
         clean_key = re.sub(r'[^a-zA-Z0-9_\-]', '_', pattern_key)
-        
-        # We write to the workspace .cursor/skills/learned/
-        skills_dir = "/Users/hiendang/project/.cursor/skills/learned"
-        
+        skills_dir = export_dir.strip()
+
         def write_sync():
             os.makedirs(skills_dir, exist_ok=True)
             filepath = os.path.join(skills_dir, f"auto-sop-{clean_key}.md")
-            
+
             content = f"""---
 name: auto-sop-{clean_key}
 description: Automatically promoted SOP skill for {clean_key}. Diagnoses and remediates using tool {tool_name}.

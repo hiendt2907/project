@@ -213,6 +213,15 @@ class WorkerSettings(BaseSettings):
         default=50,
         validation_alias=AliasChoices("OMNI_TIER_MIN_ADVISORIES"),
     )
+    omni_tier_min_graduated_playbooks: int = Field(
+        default=1,
+        ge=0,
+        validation_alias=AliasChoices("OMNI_TIER_MIN_GRADUATED_PLAYBOOKS"),
+        description=(
+            "Số playbook GRADUATED tối thiểu trước khi đề xuất nâng tier. Acceptance cao "
+            "chứng minh chẩn đoán đúng, không chứng minh đã có quy trình lặp lại được."
+        ),
+    )
     omni_tier_shadow_assist_wilson: float = Field(
         default=0.80,
         validation_alias=AliasChoices("OMNI_TIER_SHADOW_ASSIST_WILSON"),
@@ -1663,7 +1672,6 @@ class WorkerSettings(BaseSettings):
         default="/app/config/knowledge_sources.yaml",
         validation_alias=AliasChoices("OMNI_KNOWLEDGE_SOURCES"),
     )
-    knowledge_enrich_enabled: bool = Field(default=False)
     knowledge_ingest_embed_batch: int = Field(default=16, ge=1, le=128)
     knowledge_ingest_concurrency: int = Field(default=2, ge=1, le=8)
 
@@ -1816,6 +1824,48 @@ class WorkerSettings(BaseSettings):
         le=1.0,
         validation_alias=AliasChoices("OMNI_SOP_PROMOTION_MAX_FP_RATE"),
         description="Maximum global false-positive rate allowed for SOP promotion.",
+    )
+    omni_sop_promotion_require_fp_data: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_SOP_PROMOTION_REQUIRE_FP_DATA"),
+        description=(
+            "Fail-closed: refuse auto_execute SOP promotion when there is not enough "
+            "KPI data to compute a false-positive rate. Set false only in a lab where "
+            "promoting without quality evidence is acceptable."
+        ),
+    )
+    omni_sop_skill_export_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices("OMNI_SOP_SKILL_EXPORT_DIR"),
+        description=(
+            "Directory for exporting promoted SOPs as markdown skills. Empty (default) "
+            "disables the export entirely."
+        ),
+    )
+
+    omni_capacity_advisor_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_CAPACITY_ADVISOR_ENABLED"),
+        description=(
+            "Bật loop capacity advisory + báo cáo SRE định kỳ (chỉ đọc & publish, "
+            "không mutate gì)."
+        ),
+    )
+
+    # Advisory graduation (G1) — vòng học chạy được trong shadow/advisory mode
+    omni_advisory_graduation_min_success: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        validation_alias=AliasChoices("OMNI_ADVISORY_GRADUATION_MIN_SUCCESS"),
+        description="Số lần operator ack liên tiếp trước khi advisory pattern tốt nghiệp.",
+    )
+    omni_advisory_graduation_max_fail_rate: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("OMNI_ADVISORY_GRADUATION_MAX_FAIL_RATE"),
+        description="Tỉ lệ reject tối đa; vượt ngưỡng thì playbook bị FROZEN (mất bậc).",
     )
 
     # HITL Fallback Channel + Dead-Letter Queue (S1.3)
