@@ -18,6 +18,9 @@ COPY src/services/__init__.py /app/src/services/__init__.py
 COPY src/services/admin_config/ /app/src/services/admin_config/
 # IT-6: PG durability ledger cho durable command channel (agent_runtime.py)
 COPY src/services/agent_command_ledger/ /app/src/services/agent_command_ledger/
+# Sổ ca: gateway phục vụ /competency/* và ghi verdict HITL. Đặt ở services/ chính vì
+# CẢ gateway lẫn workers đều cần, mà gateway KHÔNG được import workers/.
+COPY src/services/case_ledger/ /app/src/services/case_ledger/
 COPY migrations/ /app/migrations/
 COPY src/pkg/__init__.py /app/src/pkg/__init__.py
 COPY src/pkg/risk_taxonomy.py /app/src/pkg/risk_taxonomy.py

@@ -177,7 +177,9 @@ def render_recurrence_notice(memory: dict | None, *, markdown: bool = True) -> s
         lines.append("• Sự cố đã được ghi nhận tái diễn")
     prior_case = str(memory.get("prior_case_id") or "")
     if prior_case:
-        lines.append(f"• Ca trước: {short_trace(prior_case)}")
+        # Nhãn phải khác dòng phán quyết ở trên — hai dòng cùng mở đầu "Ca trước:"
+        # khiến người đọc tưởng dòng sau đính chính dòng trước.
+        lines.append(f"• Mã ca trước: {short_trace(prior_case)}")
     return "\n".join(lines)
 
 
