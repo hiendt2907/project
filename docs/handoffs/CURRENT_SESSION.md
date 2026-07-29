@@ -1,145 +1,115 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-
-Vòng 2: đóng gap **vận hành/governance** giữa vision Autonomous SRE và production thật
-(tiếp nối vòng 1 kiến trúc AOIP, đã commit `63b20c5`). Plan 5 phase tại
-`plans/omni-close-production-gaps-2026-07-23.md`. Phase 1 (đường escalate-cho-người) và
-Phase 2 (3 bug omni-core) đã DONE, verify runtime thật trên lab. Phase 3 (SIEM→tier gate),
-Phase 4 (tenant-portal parity) CHƯA bắt đầu. Phase 5 (siết RBAC/mutate) CHỈ viết plan,
-KHÔNG chạy trong lab theo chỉ thị user.
+Tiến hoá Omni thành Autonomous SRE đa tenant: 4 gap G1–G4 (RAG vector, learning loop, KPI
+key, capacity/report) + audit API/UI/portal + dọn dẹp repo. **Toàn bộ code đã xong, CHƯA COMMIT.**
 
 ## Definition of Done
-
-- Phase 1: đường escalate-cho-người (Telegram + Kafka durable + DB persist) chạy thật trên
-  lab, có bằng chứng runtime — ĐẠT.
-- Phase 2: 3/3 bug omni-core (Prometheus format, deep_scout fail-silent, proactive dormant)
-  fix + verify thật trên lab — ĐẠT.
-- Phase 3/4: chưa bắt đầu — còn lại cho session sau.
-- Phase 5: chỉ cần nội dung plan đủ chi tiết, không thực thi — plan đã viết sẵn, đạt.
+- G1–G4 có module + loop + endpoint, test xanh.
+- Lỗ hổng phân quyền tìm được phải vá và verify trên cluster thật (403/200).
+- Repo sạch dead code/dead docs, test suite không giảm.
+- → **Đạt hết**, chỉ còn bước commit.
 
 ## Trạng thái hiện tại
-
-Phase 1 + Phase 2 code xong, đã deploy thật lên `omni-fullstack` (rebuild image + rollout
-restart), đã chạy round-trip verify thật trên lab (Telegram/Kafka/Postgres/CRAT thật).
-**ĐÃ commit** `07f483b` (2026-07-27), working tree clean. Cluster OrbStack hiện đang
-**Stopped** (kubectl connection refused) — cần bật lại trước khi làm Phase 3.
+Working tree đầy đủ thay đổi, test 6736 passed / 0 fail. Gateway đã rebuild+redeploy và verify
+bằng curl. Chờ chỉ thị commit.
 
 ## Đã hoàn thành
 
-- **Phase 1** (`src/workers/advisory_ack.py` mới): user chọn hybrid — giữ Telegram làm kênh
-  chính (không hồi sinh Kafka-HITL `omni-hitl-pending`, tránh đảo ngược quyết định kiến
-  trúc `advisory_hitl_compat.py`), NHƯNG suggestion durable trên Kafka
-  (`omni-advisory-suggestions`, topic đã tạo thật trên lab) + operator ack ghi CRAT
-  (`ADVISORY_DECISION`, ký Ed25519) → Kafka → Postgres
-  (`omni_admin.advisory_acknowledgment`, migration `0011` đã apply thật).
-  Wire vào `telegram_advisory_emitter.py` (nút "✅ Đã ghi nhận") + `omni_worker.py`
-  telegram_loop (`advack:` namespace callback riêng).
-  **Verify thật**: deploy lại `omni-fullstack`, chạy script one-off trong pod — Telegram
-  group thật "trading_system" nhận tin nhắn + nút, Kafka có 2 message thật
-  (pending_ack→acknowledged), CRAT có block ký thật, Postgres có row thật. Giới hạn trung
-  thực: bước "bấm nút" là mô phỏng (callback_query_id synthetic, Telegram từ chối 400 —
-  đúng vì không phải người bấm thật), nhưng CRAT/Kafka/DB đã ghi THÀNH CÔNG trước bước đó.
-- **Phase 2** (3/3 bug omni-core, tất cả đã verify runtime thật, không chỉ giả định):
-  1. Prometheus `now-1h` format — xác nhận bug thật qua port-forward + curl lab
-     (`400 bad_data`). Fix tập trung DUY NHẤT tại `_prometheus_get_json`
-     (`sdk_service_tools.py`) — đóng ~10 call-site cùng lúc (forecast, sigma_calibrator,
-     query_prometheus_metrics...). Verify lại đúng code path → `status=success`.
-  2. `deep_scout.py`: `_retry_redis_write()` (3 lần, backoff) + escalate qua
-     `ErrorLedger.record_exception` khi hết retry — không còn nuốt lỗi Redis timeout im lặng.
-  3. `proactive_observer.py`: `proactive_promql_rules` (JSON optional trong settings) cho
-     phép nhiều rule; rỗng/lỗi fallback fail-closed về đúng 1 rule cũ (không breaking).
-- Full test suite sau cả 2 phase: **6673 passed, 0 fail** (baseline vòng 1 là 6640,
-  +33 test mới: `test_advisory_ack.py` 12, `test_prometheus_relative_time.py` 9,
-  `test_deep_scout_redis_retry_escalate.py` 5, `test_proactive_multi_rule.py` 7).
+### G1–G4 (module mới, đều untracked)
+| Gap | Root cause thật (không phải suy đoán) | Fix |
+|---|---|---|
+| G1 RAG | `advisory_ingest.py` docstring nói dối — chưa từng ghi vector store. HLEN 1019 là **tín hiệu giả** | `src/training/advisory_sop_vector.py` backfill hash → HNSW, payload ép `auto_execute=False` |
+| G2 Learning | `omni:learn:promo:*` rỗng vì kill-switch false → 0 mutation → 0 VERIFIED_SUCCESS → promoter không bao giờ chạy. **"Omni không học được vì nó không hành động."** | `advisory_promoter.py` học từ operator ack (tín hiệu duy nhất có trong shadow) + `bump_playbook_graduation()` cho bảng vốn mồ côi |
+| G3 KPI | reader/writer lệch key → mọi lần đọc FP-rate thấy 0 mẫu → luôn đi nhánh fail-open | `kpi_outcome_key()` một nguồn sự thật; `gate.py` no-data → trả **1.0** (fail-closed) |
+| G4 Capacity/Report | không có mặt tiền | `pkg/reasoning/{capacity_advisor,sre_report}.py` (pure, no I/O) + `workers/capacity_loops.py` hourly + `gateway/routes/reports.py` |
+
+`tier_readiness.py` thêm gate `graduated_playbooks` (default 0 = fail-closed).
+
+### 3 lỗ hổng bảo mật — đã vá + verify trên cluster
+1. **`/autonomy` không phân quyền** — 21/27 endpoint thiếu. Đã **khai thác thật**: key
+   `staging-sim` (non-admin) tạo được API key cho tenant `default`. Trung thực về mức độ:
+   key sinh ra KHÔNG auth được (`_require_api_key` chỉ tra env keys + `agent_credential`),
+   nên chưa phải auth-bypass toàn phần — nhưng vẫn ghi bậy registry + đọc chéo control-plane.
+   Artifact pentest đã xoá khỏi PG. Vá: `_require_admin_ctx` cho 10 endpoint → 403/200 verify OK.
+2. **`POST /trace/purge`** xoá global, không đòi admin → gate `is_admin_ctx`, verify 403.
+3. **CRAT export/stats đọc chéo tenant** (dữ liệu SOX/PCI) → `_effective_tenant()`.
+   **Gotcha**: `resolve_scope` trả None cho CẢ `ctx is None` (lab) lẫn admin-không-override;
+   gộp 2 nghĩa làm hỏng 2 test lab. Phải tách: lab → tôn trọng tenant hỏi; admin → `"default"`.
+
+### Dọn dẹp repo — 20 file tracked + ~73MB rác
+`src/workers/adapters/` (4), `src/knowledge/enrich.py`, `src/prober/clinical.py`,
+`src/sre/watchdog.py`, `deployments/` root (6), 7 stub provider-portal, `SectionStub`;
+`htmlcov-gate/` 15M + `wiki/site/` 58M + `dist/` + `evidence/` (đã bổ sung `.gitignore`).
+Sửa thay vì xoá: `docs/CODEBASE.md` (overview còn mô tả split-role + brain-go như đang chạy),
+runbook `omni-analyst` → `omni-fullstack`, 5 comment `schema.sql` (pgvector đã gỡ).
 
 ## Branch và commit
-
-`main`. HEAD `07f483b` (vòng 2 Phase 1+2). Vòng 1 là `63b20c5`.
+`main` @ `da83c81` — **chưa có commit mới nào của phiên này**.
 
 ## Working tree
-
-Clean (`git status --short` rỗng). Toàn bộ Phase 1+2 nằm trong commit `07f483b`
-(16 file, +1281/-216).
+30 modified · 20 deleted · 22 untracked. Không clean, cố ý.
 
 ## Files chính đã thay đổi
+Mới: `src/training/advisory_sop_vector.py`, `src/services/learning_promoter/advisory_promoter.py`,
+`src/pkg/reasoning/{capacity_advisor,sre_report}.py`, `src/workers/capacity_loops.py`,
+`src/gateway/routes/reports.py`, `ui/apps/provider-portal/EXCLUDED_ROUTES.md`, 10 file test.
+Sửa: `gateway/routes/{autonomy,trace,compliance}.py`, `pkg/autonomy/gate.py`,
+`workers/{kpi_metrics,tier_readiness,tier_loops,omni_worker,settings}.py`,
+`services/{admin_config/repo,learning_promoter/promoter}.py`.
 
-- `src/workers/advisory_ack.py` (mới) — module chính Phase 1.
-- `src/workers/telegram_advisory_emitter.py`, `src/workers/omni_worker.py` — wire-in Phase 1.
-- `migrations/omni_admin/0011_advisory_acknowledgment.sql`,
-  `src/services/admin_config/repo.py` — persist ledger Phase 1.
-- `scripts/kafka_ensure_omni_topics.sh` — thêm topic `omni-advisory-suggestions`.
-- `src/workers/sdk_service_tools.py` (`_resolve_prometheus_time`, `_prometheus_get_json`),
-  `src/init/deep_scout.py` (`_retry_redis_write`),
-  `src/workers/proactive_observer.py` (`_load_proactive_rules`) — Phase 2, 3 bug fix.
-- `plans/omni-close-production-gaps-2026-07-23.md` — plan đầy đủ 5 phase, đã qua
-  adversarial review (Opus, sửa 1 CRITICAL + 3 HIGH).
-
-## Quyết định đã chốt
-
-- Phase 1: KHÔNG hồi sinh Kafka-HITL (`omni-hitl-pending`/`hitl_dispatcher`) — Telegram vẫn
-  là kênh chính. Hybrid: durable Kafka (`omni-advisory-suggestions`) + DB persist khi ack.
-- Phase 3 (kế tiếp) PHẢI route SIEM L3_HITL qua `advisory_ack` vừa xây (Telegram), KHÔNG
-  phải `omni-hitl-pending` — theo đúng quyết định Phase 1.
-- RBAC/mutate gate: nới lỏng cho Phase 1-4 trong lab (đã dùng để deploy/test thật lần này),
-  KHÔNG hỏi lại xin phép mỗi lần trong vòng lab này.
-- Phase 5 (siết RBAC/mutate) TUYỆT ĐỐI không tự chạy — chỉ viết plan, chờ user xác nhận
-  cutover production thật.
-- Không mở lại `FRAMEWORK_LAWS.md` (constitutional-frozen).
-- Không tự ý commit/push — hỏi trước mỗi lần (vòng 2 Phase 1+2 đã được duyệt và commit `07f483b`).
+## Quyết định đã chốt (KHÔNG thiết kế lại)
+- `advisory_sop_payload()` **luôn** `auto_execute=False` — vì `resolve_remediation_from_memory()`
+  (`handlers.py:663`) THỰC THI tool khi cờ này true.
+- Đã xoá `src/pkg/autonomy/tier_readiness.py` do tôi tạo — trùng và kém hơn
+  `src/workers/tier_readiness.py` có sẵn. Đừng tạo lại.
+- **KHÔNG xoá** (subagent đề xuất nhưng xác minh ngược lại):
+  `docs/handoffs/PHASE_0_6_PROGRESS.md` + `docs/reports/frontend-backend-logic-verification-2026-07-14.md`
+  (9 tham chiếu, gồm `src/pkg/contracts/identity.py:13` và ADR-006);
+  `src/aoip/capabilities/systemd_*.py` (feature `63b20c5` chưa đấu dây, không phải rác);
+  `smart-siem/` (git submodule); 18 file ontology `docs/architecture/`.
+- 7 stub provider bị xoá route nhưng **lý do loại trừ giữ nguyên văn** ở
+  `ui/apps/provider-portal/EXCLUDED_ROUTES.md` — đặc biệt `/policies` là rào AN TOÀN thật.
 
 ## Verification đã chạy
-
-```
-.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
-→ 6673 passed, 11 deselected, 0 fail (chạy lần cuối sau Phase 2, trước checkpoint này)
-```
-
-Runtime thật trên lab (không phải chỉ pytest): xem "Đã hoàn thành" — port-forward curl
-Prometheus, kubectl exec script one-off trong pod `omni-fullstack`, kafka-console-consumer
-đọc trực tiếp broker, `psql` trực tiếp `omni-postgres-0`, `curl` Bot API thật.
+- `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` → **6736 passed, 0 fail**
+  (chạy lại lúc chốt handoff, 161s).
+- AST parse toàn `src/` sạch; UI typecheck sạch.
+- curl trên cluster: 4 đường tấn công `/autonomy` → 403, admin → 200; `/trace/purge` → 403;
+  CRAT `?tenant_id=default` từ staging-sim → body trả `tenant_id: staging-sim`.
 
 ## Deployment hiện tại
-
-`omni-fullstack` đã redeploy thật với code Phase 1+2 (rebuild `multi-agent-system:latest` +
-`kubectl rollout restart`); code trên pod nay khớp git HEAD `07f483b` — không còn rủi ro
-mất đồng bộ git↔cluster. Migration `0011` đã apply thật trên `omni-postgres-0`. Topic
-`omni-advisory-suggestions` đã tạo thật trên Kafka lab. **Cluster OrbStack hiện đang
-Stopped** — trạng thái pod chưa xác minh lại được cho tới khi bật lại.
+`omni-gateway` đã rebuild+redeploy (`sha256:ad768b96e57c...`) kèm 3 bản vá bảo mật.
+`omni-fullstack` **chưa** redeploy với `capacity_loops` — loop mới chưa chạy trên cluster.
 
 ## Blockers
-
-Không có blocker kỹ thuật. Cluster OrbStack đang Stopped — phải khởi động lại
-(`kubectl get pods -n multi-agent` phải trả về) trước khi verify runtime Phase 3.
+None.
 
 ## Next step chính xác
+Commit theo 3 nhóm (chờ user cho phép — chưa được chỉ thị):
+1. `fix(gateway): vá 3 lỗ hổng phân quyền — /autonomy, /trace/purge, CRAT cross-tenant`
+2. `feat(sre): G1-G4 — RAG backfill, advisory promoter, KPI key contract, capacity/report`
+3. `chore: dọn dead code/dead docs/route rỗng (20 file)`
 
-Bật lại cluster OrbStack, rồi đọc `plans/omni-close-production-gaps-2026-07-23.md` phần
-Phase 3 và bắt đầu: route SIEM L3_HITL qua `advisory_ack.py` (Telegram), đọc lại
-`src/services/analyst/chain_consumer.py:318-335` + `src/workers/tier_gate.py` trước khi code.
+Sau commit: `make deploy-worker` để `capacity_report_loop` thật sự chạy.
 
 ## Lệnh cần chạy lại
-
-```
-git status --short                                                 # xem thay đổi thật
-cat plans/omni-close-production-gaps-2026-07-23.md                 # đọc lại plan Phase 3-5
-.venv/bin/python -m pytest tests/ -q --ignore=tests/integration     # xác nhận vẫn 6673 pass
-kubectl get pod -n multi-agent -l app=omni-fullstack                # xác nhận pod vẫn chạy code mới
+```bash
+.venv/bin/python -m pytest tests/ -q --ignore=tests/integration
+make deploy-worker deploy-gateway
 ```
 
 ## Không được làm lại
+Audit portal/gateway (3 subagent đã chạy), khảo sát dead code (2 subagent), pentest `/autonomy`
+(đã khai thác + vá + dọn artifact), backfill RAG vector (đã chạy thật).
 
-- Đừng audit lại 18-domain hay `docs/` từ đầu.
-- Đừng mở lại `FRAMEWORK_LAWS.md`/Constitution.
-- Đừng hồi sinh `omni-hitl-pending`/Kafka-HITL cho Phase 3 — dùng `advisory_ack.py` đã xây.
-- Đừng chạy Phase 5 trong lab này dưới bất kỳ lý do gì.
-- Đừng deploy lại `omni-fullstack` từ git HEAD cũ (`63b20c5`) mà không commit Phase 1+2
-  trước — sẽ xoá mất code đang chạy thật trên pod.
-- Đừng tự ý commit/push — hỏi trước mỗi lần.
+## Việc còn mở (không thuộc deliverable này)
+- `/autonomy/hitl/pending` + `/decide` **chưa scope tenant** — phải vá TRƯỚC khi nối tenant
+  portal, nếu không tạo leak cross-tenant mới.
+- Tenant portal đi qua `src/aoip/console/app.py`, KHÔNG qua gateway → endpoint reports/HITL
+  phải thêm ở đó, chưa làm.
+- `/approvals` khai báo `string[]` nhưng backend trả `list[dict]` → React crash runtime.
 
 ## Tài liệu liên quan
-
-- `plans/omni-close-production-gaps-2026-07-23.md` — plan đầy đủ vòng 2, nguồn sự thật.
-- `docs/architecture/ASSESSMENT_autonomous_sre_v2.md` — nguồn gap gốc (18-domain audit).
-- `docs/architecture/FRAMEWORK_LAWS.md` — Constitution, không đổi trong phiên này.
-- Memory: `project_production_gaps_plan_2026_07_23.md` (checkpoint 2026-07-23 đã cập nhật).
+`plans/omni-evolve-to-senior-sre-2026-07-29.md` · `ui/apps/provider-portal/EXCLUDED_ROUTES.md` ·
+`docs/CODEBASE.md` · `docs/architecture/ASSESSMENT_autonomous_sre_v2.md`

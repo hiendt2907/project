@@ -95,7 +95,7 @@ async def run_ingest(
     log_every = settings.sop_ingest_log_every
 
     try:
-        # Index creation is handled by schema.sql
+        # Index do RedisVectorStore.ensure_ready() tạo (pgvector đã gỡ 2026).
         buf: list[PointStruct] = []
         done = 0
 

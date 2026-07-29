@@ -37,7 +37,6 @@ from execution import promotion as promotion_mod
 from execution.pod_env_clone import _safe_env_from_container
 from init import deep_scout as ds
 from init import deep_scout_autonomous as dsa
-from prober import clinical as clinical_mod
 from prober.temporal_evidence import TemporalEvidenceBlock, TemporalMetric
 from rag.redis_vector_store import EMBED_DIM
 from workers.routing_policy import ROUTING_SOURCE_SLOW_PATH
@@ -256,13 +255,6 @@ async def test_fetch_from_prometheus_connection_refused():
         f"http://127.0.0.1:{port}", "up", "m", hours_back=1, timeout=1.0
     )
     assert block is None
-
-
-def test_prober_clinical_reexports():
-    names = {"probe_k8s_clinical_pod_log_tail", "probe_k8s_clinical_pod_metrics", "probe_k8s_clinical_pod_status"}
-    assert set(clinical_mod.__all__) == names
-    for n in names:
-        assert callable(getattr(clinical_mod, n))
 
 
 def test_deep_scout_redact_and_sensitive_keys():

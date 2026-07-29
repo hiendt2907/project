@@ -47,7 +47,7 @@ or supplied, then access-log metadata verifies runtime routes. TCP connection ev
 alone is labelled `network_only`; see
 [Customer System Understanding](architecture/customer-system-understanding.md).
 
-Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbound signals arrive via three paths: HTTP alerts through the FastAPI Gateway (→ Kafka `omni-alerts`), SIEM incidents from FinGuard Redis streams (siem-bridge → `omni-alerts`), and direct SIEM evidence injection (evidence-adapter → `omni-diagnostic-evidence`). The **prober** role consumes `omni-alerts`, runs K8s SDK + Prometheus probes, and publishes per-probe evidence to `omni-diagnostic-evidence`. The **analyst** role batches evidence by `trace_id`, runs RAG gate + Ollama LLM (qwen2.5-coder:7b, num_ctx=8192), and emits `SUGGEST_REMEDIATION` → `omni-actions` with mandatory CRAT audit writes before any Telegram or action emission. Approved mutations flow through `omni-hitl-pending` → HITL dispatcher → `omni-actions` → **executor**; feedback returns to analyst via `omni-action-feedback` for re-evaluation or learning. Smart-SIEM (Go) runs as a parallel pipeline: brain-go correlates events → agent applies LLM analysis → BFF serves the React UI.
+Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbound signals arrive via three paths: HTTP alerts through the FastAPI Gateway (→ Kafka `omni-alerts`), SIEM incidents from FinGuard Redis streams (siem-bridge → `omni-alerts`), and direct SIEM evidence injection (evidence-adapter → `omni-diagnostic-evidence`). All of these run **inside the single `omni-fullstack` deployment** (`OMNI_WORKER_ROLE=full`) — the `prober`/`analyst`/`executor`/`core` split roles were consolidated in `915e509` and their Deployments RETIRED 2026-07-02. The prober loops consume `omni-alerts`, run K8s SDK + Prometheus probes, and publish per-probe evidence to `omni-diagnostic-evidence`. The analyst loops batch evidence by `trace_id`, run RAG gate + Ollama LLM (qwen2.5-coder:7b, num_ctx=8192), and emit `SUGGEST_REMEDIATION` → `omni-actions` with mandatory CRAT audit writes before any Telegram or action emission; feedback returns via `omni-action-feedback`. HITL escalation runs through Telegram advisory-ack (the Kafka `omni-hitl-pending` dispatcher is scaled to 0 by design). SIEM correlation was **ported from Go to Python 2026-07-22** (`src/services/siem_correlation/`, loop `kafka_siem_correlation_loop`); `brain-go` is RETIRED and its Deployment deleted.
 
 > **Lab deployment (2026-06-05):** single consolidated pod `omni-fullstack` (`OMNI_WORKER_ROLE=full`) — split-role deployments deleted. Active model `qwen2.5-coder:7b` (embed `nomic-embed-text`) on OrbStack host Ollama. Graduated-autonomy tiers (shadow→assist→auto) are live with PostgreSQL `omni_admin` as config source-of-truth — see [Autonomy Tiers & Admin Config](#autonomy-tiers--admin-config-2026-06-05) below.
 
@@ -375,7 +375,11 @@ Kafka action body builders: build_execute_mutate_body, build_action_feedback_bod
 
 ## smart-siem/ — Go Services
 
-### smart-siem/omni/siem/brain-go/ — Event Correlator + Publisher
+### smart-siem/omni/siem/brain-go/ — Event Correlator (⚠️ RETIRED 2026-07-22)
+
+> **Không còn chạy.** Đã port sang Python (`src/services/siem_correlation/`). Deployment đã xoá.
+> Giữ mục này làm tham chiếu lịch sử cho layout key `corr:*` (Python dùng cùng layout).
+> KHÔNG bật lại song song với `OMNI_SIEM_CORRELATION_ENABLED=true` — 2 engine sẽ đua trên cùng key.
 
 | File | Mô tả | Depends on |
 |------|-------|------------|

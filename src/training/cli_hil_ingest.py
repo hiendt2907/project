@@ -129,7 +129,7 @@ async def run_cli_hil_ingest(
     done = 0
 
     try:
-        # Schema is pre-initialized via schema.sql
+        # Index/schema do RedisVectorStore.ensure_ready() tạo (pgvector đã gỡ 2026).
         buf: list[PointStruct] = []
 
         async def flush_batch(last_index: int) -> None:

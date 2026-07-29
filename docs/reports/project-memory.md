@@ -1,5 +1,12 @@
 # Project Memory Registry
 
+> ⚠️ **Ghi chú 2026-07-29** — tài liệu này là sổ ghi nhớ LỊCH SỬ. Mọi lệnh nhắc tới
+> `deploy/omni-prober`, `deploy/omni-analyst`, `omni-core`, `omni-executor` sẽ **FAIL**:
+> các Deployment đó đã RETIRED 2026-07-02 (gộp vào `omni-fullstack`, commit `915e509`).
+> `k8s/services/omni-analyst-service.yaml` cũng đã bị `git rm`. Thay mọi `deploy/omni-*`
+> bằng `deploy/omni-fullstack`. Giữ nguyên phần còn lại làm ngữ cảnh lịch sử.
+
+
 > Entries below carry their own date. Anything predating 2026-07-02 may reference the retired
 > split-role deployments (`omni-prober`/`omni-analyst`/`omni-core`/`omni-executor`, now consolidated
 > into `omni-fullstack`) or superseded reports that have since been removed during doc cleanup —

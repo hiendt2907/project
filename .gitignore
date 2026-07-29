@@ -37,3 +37,6 @@ omni-remote-agent/agent
 # Playwright test artifacts
 test-results/
 playwright-report/
+
+# Coverage HTML output (gate)
+htmlcov-gate/

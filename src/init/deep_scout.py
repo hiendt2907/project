@@ -325,7 +325,7 @@ async def _embed_and_upsert(
     chunks: list[tuple[str, str, dict[str, Any]]],
     sem: asyncio.Semaphore,
 ) -> None:
-    # Schema is pre-initialized via schema.sql
+    # Index/schema do RedisVectorStore.ensure_ready() tạo (pgvector đã gỡ 2026).
     pass
 
     async def one(cid: str, text: str, payload: dict[str, Any]) -> None:

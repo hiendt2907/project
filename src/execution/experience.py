@@ -148,7 +148,7 @@ async def upsert_action_experience(
     point_id: str | None = None,
     tenant_id: str | None = None,
 ) -> str:
-    # Schema initialized via schema.sql
+    # Index/schema do RedisVectorStore.ensure_ready() tạo (pgvector đã gỡ 2026).
     if len(vector) != EMBED_DIM:
         vector = (vector + [0.0] * EMBED_DIM)[:EMBED_DIM]
     if point_id is not None:

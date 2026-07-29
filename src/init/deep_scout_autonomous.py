@@ -372,7 +372,7 @@ async def _run_deep_scout_autonomous_body(
         "vm_errors": (vm_ns.get("raw_errors") or [])[:5],
     }
 
-    # Schema initialized via schema.sql
+    # Index/schema do RedisVectorStore.ensure_ready() tạo (pgvector đã gỡ 2026).
     pass
 
     for p in pods_raw:

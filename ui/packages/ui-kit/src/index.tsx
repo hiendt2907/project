@@ -115,15 +115,7 @@ export function Unavailable({ reason }: { reason: string }) {
   );
 }
 
-/** Trang mục điều hướng chưa triển khai — nêu rõ sub-slice sẽ lấp. */
-export function SectionStub({ title, reason }: { title: string; reason: string }) {
-  return (
-    <Card>
-      <div className="aoip-k">{title}</div>
-      <div className="aoip-state" data-testid="section-unavailable">
-        Chức năng này chưa khả dụng trong slice hiện tại.
-      </div>
-      <div className="aoip-muted">{reason}</div>
-    </Card>
-  );
-}
+// SectionStub đã xoá 2026-07-29: 7 route provider dùng nó đều bị gỡ (xem
+// apps/provider-portal/EXCLUDED_ROUTES.md giữ lại lý do loại trừ). Đừng thêm lại —
+// một trang rỗng nằm trong routing tree chỉ là nợ điều hướng; khi một domain đã sẵn sàng
+// thì thêm thẳng route thật kèm mục trong PROVIDER_NAV.
