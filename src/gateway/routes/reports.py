@@ -17,6 +17,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from gateway.tenant_context import get_tenant_ctx, resolve_scope
@@ -94,6 +95,9 @@ async def get_graduated_playbooks(
     if repo is None or not hasattr(repo, "list_playbook_graduations"):
         raise HTTPException(status_code=503, detail="Admin store not available")
     rows = await repo.list_playbook_graduations(tenant, state=state)
+    # Row Postgres chứa cột timestamp — JSONResponse không tự serialize datetime,
+    # phải đi qua jsonable_encoder (bug 500 phát hiện lúc smoke test trên cluster;
+    # test unit không bắt được vì repo bị mock trả dict thuần).
     return JSONResponse(
-        content={"tenant_id": tenant, "playbooks": [dict(r) for r in rows]}
+        content=jsonable_encoder({"tenant_id": tenant, "playbooks": [dict(r) for r in rows]})
     )

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from datetime import datetime, timezone
 
 import fakeredis.aioredis
 from fastapi import FastAPI
@@ -22,11 +23,17 @@ from gateway.tenant_context import TenantContext
 
 class _Repo:
     def __init__(self):
+        # `graduated_at` là datetime — Postgres trả về đúng kiểu này. Fixture PHẢI
+        # giữ datetime thật, không đổi thành str: bug 500 "datetime is not JSON
+        # serializable" lọt lên cluster chính vì fixture cũ chỉ có kiểu nguyên thuỷ.
+        ts = datetime(2026, 7, 29, 3, 30, tzinfo=timezone.utc)
         self.rows = {
             "acme": [{"playbook_id": "pb-acme", "state": "GRADUATED",
-                      "success_count": 3, "fail_count": 0, "domain": "advisory"}],
+                      "success_count": 3, "fail_count": 0, "domain": "advisory",
+                      "graduated_at": ts}],
             "globex": [{"playbook_id": "pb-globex", "state": "GRADUATED",
-                        "success_count": 9, "fail_count": 1, "domain": "advisory"}],
+                        "success_count": 9, "fail_count": 1, "domain": "advisory",
+                        "graduated_at": ts}],
         }
 
     async def list_playbook_graduations(self, tenant_id, *, state=None):
@@ -132,6 +139,15 @@ def test_graduations_are_tenant_scoped():
 
     ids = [p["playbook_id"] for p in r.json()["playbooks"]]
     assert ids == ["pb-acme"]
+
+
+def test_graduations_serialize_datetime_columns():
+    """Hồi quy: row Postgres có cột timestamp từng làm endpoint trả 500."""
+    with _client(TenantContext(tenant_id="acme", is_admin=False)) as c:
+        r = c.get("/reports/playbooks")
+
+    assert r.status_code == 200
+    assert r.json()["playbooks"][0]["graduated_at"].startswith("2026-07-29T03:30")
 
 
 def test_empty_capacity_returns_empty_list_not_error():
