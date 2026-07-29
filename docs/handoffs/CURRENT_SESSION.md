@@ -56,20 +56,28 @@ Ba số đo thật đáng nhớ:
   **0.20** → **TRƯỢT**. Cơ chế chống bùa số đã có hiệu lực thật.
 - 5 bất biến DB đều chặn đúng trên PG thật (không mock).
 
-## Subagent nền
-1. ⏳ Advisory verdict 3 nút (Đúng/Sai/Đúng-nhưng-thiếu) + mở ca lúc phát + trí nhớ lần-N
-2. ✅ **HITL → sổ ca — XONG.** `src/services/case_ledger/hitl_link.py` (mới, đặt ở
-   `services/` vì gateway KHÔNG được import `workers/`) + nối cả 2 bề mặt
-   (`hitl_telegram.py`, `gateway/routes/autonomy.py`). 10 test, đã tự kiểm chứng lại:
-   pass + `grep "from workers" src/gateway/` rỗng.
-   **Quyết định đúng của agent:** approve → `diagnosis=CORRECT` nhưng `remedy` để
-   **UNJUDGED** — lúc duyệt thì hành động CHƯA chạy, chưa ai biết nó có sửa được gì
-   không. Ghi CORRECT ở đó là Omni tự chấm phần khắc phục của chính nó. Nhãn `remedy`
-   thuộc về nguồn `world`/`mark_recurred`.
-3. ⏳ Competency report + đơn xin quyền + route `/competency/*`
-4. ⏳ Test lõi cho scoring/store
+## 6 subagent — TẤT CẢ ĐÃ XONG, đã tự kiểm chứng lại từng cái
+1. ✅ Advisory 3 nút phán quyết + mở ca lúc phát + trí nhớ lần-N
+2. ✅ HITL → sổ ca (`services/case_ledger/hitl_link.py`, cả Telegram lẫn HTTP).
+   **Quyết định đúng của agent, tôi đã sai:** approve → `diagnosis=CORRECT` nhưng
+   `remedy` để **UNJUDGED** — lúc duyệt thì hành động CHƯA chạy. Ghi CORRECT ở đó là
+   Omni tự chấm phần khắc phục của mình. Nhãn `remedy` thuộc nguồn `world`.
+3. ✅ Competency + đơn xin quyền + `/competency/*`
+4. ✅ Test lõi — **tìm ra 6 lỗi trong file tôi viết**, xem mục dưới
+5. ✅ Portal tenant: 2 trang + 3 route BFF. Agent PHẢI sửa Python và báo cáo rõ —
+   nó đúng: tenant portal gọi thẳng BFF `src/aoip/console/app.py`, không qua gateway.
+   Nhưng nó **không viết test** cho 3 route mới → tôi tự viết 9 test (đây đúng là bề
+   mặt từng chứa lỗ hổng cross-tenant của `/hitl/{id}/decide`).
+6. ✅ Vòng lặp tự xin quyền định kỳ (`scope_advocacy_loop`)
 
-**Chưa giao**: portal UI (chờ API của agent 3), phát hiện tái diễn từ metric thật.
+### 6 lỗi trong code TÔI viết, do agent test tìm ra — đã sửa hết
+| | |
+|---|---|
+| **Race `occurrence_no`** (nặng nhất) | READ COMMITTED: 2 ca cùng pattern mở đồng thời đều đọc cùng "ca gần nhất" rồi cùng +1. Xảy ra đúng lúc alert dồn dập, hỏng **âm thầm**. Sửa: `pg_advisory_xact_lock` + unique index + gate mới trong verify script |
+| Nguồn/actor dùng chung 1 cột | Chấm `remedy` sau **xoá dấu vết** ai chấm `diagnosis`. Sửa: tách `diagnosis_*`/`remedy_*` |
+| posture lạ → tính là DIAGNOSED | Phồng mẫu số độ chính xác. Sửa: đếm riêng + chặn eligible |
+| verdict không validate ở Python | Ném asyncpg thô. Sửa: ValueError tại chỗ |
+| blocker trùng lặp + sai nguyên nhân | Nhiễu cho admin khách. Sửa |
 
 ## Bug thật đã xác minh runtime (lý do phải làm việc này)
 - `omni:learn:promo:*` = **0 key** — đường học qua thực thi chưa từng chạy (shadow ⇒
@@ -88,8 +96,22 @@ Ba số đo thật đáng nhớ:
 Subagent theo dõi quota token Claude rồi tự chạy lại sau reset — subagent không đọc được
 hạn mức tài khoản và không có gì đánh thức phiên sau reset. Thay thế: commit theo mốc.
 
-## ✅ ĐÃ COMMIT (chưa push) — `cb63b0b` + `497612b`
-Full suite **6858 passed** (baseline 6750) · `make verify-case-ledger` **16/16 trên PG thật**.
+## ✅ ĐÃ COMMIT — `cb63b0b` · `497612b` · `f40f1c7`. **CHƯA PUSH** (chờ user xem).
+Full suite **6872 passed** (baseline 6750, +122) · `make verify-case-ledger` **16/16 trên
+PG thật** · tenant-portal build xanh · gitleaks sạch.
+
+### Vòng lặp tự xin quyền — đã chứng minh chạy thật trên cluster
+Bật cờ trên `omni-fullstack`, nạp 35 ca (29/30 đúng + 5 từ chối), khởi động lại →
+Omni **tự đánh giá và tự nộp đơn**, không ai gọi:
+```
+scope_advocacy: tenant=default patterns=1 requests=1 (pat-LOOP->HITL_REQUIRED)
+scope_request: pat-LOOP HITL_REQUIRED PENDING lb=0.8333 cov=0.8571
+```
+**Đã dọn sạch dữ liệu thử VÀ gỡ env override** — `OMNI_SCOPE_ADVOCACY_ENABLED` nay
+không đặt trên Deployment (fail-closed, đúng bài học post-mortem kill-switch bị bỏ quên
+ở trạng thái bật). Muốn nghiệm thu lại phải bật có ý thức.
+⚠️ Loop **im lặng khi chạy thành công mà không có gì để xin** — vắng log KHÔNG chứng
+minh nó không chạy. Kiểm bằng hành vi (bảng `scope_request`), đừng kiểm bằng log.
 
 ### Hành vi thật đã chứng minh trên cluster (không phải mock)
 Nạp 4 pattern vào Postgres, hỏi **gateway đã deploy**:
@@ -122,12 +144,17 @@ Sửa: `Makefile` (target `verify-case-ledger`) · `docs/handoffs/CURRENT_SESSIO
 Memory đã ghi: `project_omni_vision_employee_not_tool`, `project_learning_loop_broken_labels`.
 
 ## Next step
-1. Chờ 4 agent xong → tích hợp, chạy full suite (baseline **6750 passed**) +
-   `make verify-case-ledger` (15/15).
-2. Test hành vi thật trên cluster: bấm nút Telegram → verdict vào PG; HITL reject →
-   `INCORRECT`; pattern lặp lần 2 → thẻ báo "lần 2" + ca trước `recurred=TRUE`.
-3. Portal UI: admin cấu hình khuôn khổ + duyệt đơn xin quyền.
-4. Commit theo mốc.
+1. **User xem rồi quyết có push không** — 3 commit nằm local trên `main`.
+2. Chưa làm (cố ý, cần quyết định sản phẩm):
+   - Thẻ Telegram "lần thứ N" chưa được nghiệm thu bằng một sự cố **thật** đi qua
+     pipeline — mới verify ở mức hàm trong pod. Cần một lần alert lặp thật.
+   - `remedy_verdict` hiện chỉ có thể do `world` chấm (qua `recurred`). Chưa có
+     nguồn nào chấm "làm theo rồi có hết không" ngoài việc sự cố tái diễn.
+   - Ngưỡng `min_accuracy_lb=0.70` / `min_coverage=0.50` / cooldown 14 ngày đang
+     hard-code trong `scoring.py`/`advocacy.py`. Nên cho tenant cấu hình.
+   - Thang quyền `SUGGEST_ONLY→HITL_REQUIRED→AUTO_EXECUTE` do agent tự đặt (migration
+     không CHECK giá trị). Nếu sản phẩm đã có tên bậc khác thì sửa `SCOPE_LADDER`.
+   - Chưa nối sổ ca với `posture=OUT_OF_SCOPE` (chẩn đoán một lượt rồi giao admin).
 
 ## Bắt buộc chạy tay trước mỗi push (CI đã gỡ vì hết quota GitHub Actions)
 ```bash
