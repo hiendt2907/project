@@ -4,9 +4,10 @@
 Đưa Omni ra Internet qua `omnisre.xyz` bằng Cloudflare Free + core giữ nguyên trên
 MacBook. Phạm vi chốt: `www` (landing) + `app` (console có Access). **Không** public
 `api.` / `agent.`.
-**Phase 1–5 XONG. ĐANG CHẠY THẬT TRÊN INTERNET, login đã verify bằng người thật.**
-`verify.sh` → **17 PASS / 0 FAIL / 0 SKIP**. Còn lại duy nhất: quyết định commit/push
-(landing page lên Pages phụ thuộc bước này).
+**HOÀN TẤT. Cả console lẫn landing page đang chạy thật trên Internet.**
+`verify.sh` → **17 PASS / 0 FAIL / 0 SKIP**. Login console đã verify bằng người thật.
+Landing page đã deploy và verify từ Internet. Còn lại duy nhất: gắn custom domain
+`www.omnisre.xyz` cho Pages (thao tác Dashboard).
 
 ## Đang sống trên Internet (2026-07-29)
 - `https://app.omnisre.xyz` — Access `holy-wave-800c.cloudflareaccess.com` chặn ẩn danh
@@ -22,10 +23,11 @@ MacBook. Phạm vi chốt: `www` (landing) + `app` (console có Access). **Khôn
 - Public plane **tách hoàn toàn** khỏi lab, không đổi một biến nào của `.local`. → ✅
 - Manifest/script/tài liệu đầy đủ, không secret trong git. → ✅
 - Verification local pass, gate ngoài đánh dấu Blocked trung thực. → ✅
-- Deploy thật lên cluster + Cloudflare. → ⏸ chờ DNS + thao tác Dashboard của user
+- Deploy thật lên cluster + Cloudflare. → ✅ (còn gắn custom domain cho Pages)
 
 ## Trạng thái hiện tại
-`main` @ `7ea24e7`. **CHƯA commit, CHƯA push, CHƯA apply lên cluster** (đúng chỉ thị).
+`main` @ `ae231c2`, **đã push** (8 commit trong phiên, từ `7ea24e7`).
+Working tree sạch, trừ 4 file untracked cố ý (tên khách hàng thật).
 Test: **6737 passed / 0 fail**. Build provider-portal: OK.
 
 ## Quyết định kiến trúc đã chốt (KHÔNG thiết kế lại)
@@ -126,8 +128,41 @@ LaunchAgent `~/Library/LaunchAgents/com.omnisre.cloudflared.plist`.
 - `verify.sh` → **4 PASS / 0 FAIL / 10 SKIP**, lab invariance 3/3 PASS
 - Secret scan: 0 secret thật. `.gitignore` xác minh bằng `git add --dry-run`
 
+## Landing page — ĐÃ DEPLOY THẬT (2026-07-29)
+`https://omnisre.pages.dev` sống. Project Cloudflare Pages: `omnisre`,
+account `33c5cb5ad71564f8f0a925ead04dbb56`. Direct Upload, không nối GitHub.
+
+Kiểm chứng từ Internet:
+| | | | |
+|---|---|---|---|
+| `/` | 200 | `/README.md` | **404** |
+| `/vi/` | 200 | `/_headers` | **404** |
+| `/style.css` | 200 | `/_redirects` | **404** |
+| path lạ | **404** | `/console` | 302 → app.omnisre.xyz |
+
+Security header về đủ, CSP đúng bản siết (`default-src 'none'; style-src 'self'`,
+không còn `'unsafe-inline'`).
+
+**CÒN LẠI: gắn custom domain** — Dashboard → Workers & Pages → `omnisre` →
+Custom domains → `www.omnisre.xyz`. Chưa làm.
+
+### Bẫy đã gặp và cách vượt (ghi để phiên sau không mất thời gian)
+1. **`wrangler login` thất bại nếu authorize ở thiết bị khác.** OAuth callback về
+   `http://localhost:8976` nên phải authorize trên chính máy chạy lệnh. Đã chuyển
+   sang API token ở `~/.config/cloudflare/omnisre-pages.token` (chmod 600).
+2. **Token phạm vi hẹp không liệt kê được account** → wrangler báo "Failed to
+   automatically retrieve account IDs". KHÔNG phải lỗi token. Script tự trích
+   `accountID` từ `~/.cloudflared/cert.pem` (block ARGO TUNNEL TOKEN).
+3. **Project phải tạo trước**: `wrangler pages project create omnisre --production-branch=main`.
+4. **Không có `404.html` thì Pages trả 200 cho MỌI path lạ** kèm nội dung index.html.
+   Đã thêm `404.html`.
+5. **Cache edge trễ vài phút** sau deploy — lần đo đầu vẫn thấy 200 cho path lạ,
+   lần sau mới đúng 404. Đo lại trước khi kết luận sai.
+
 ## Blockers
-**Landing page chưa deploy — kẹt ở xác thực Cloudflare.**
+~~Landing page~~ — đã xong. Chỉ còn gắn custom domain (thao tác Dashboard).
+
+<details><summary>Lịch sử: kẹt xác thực Cloudflare (đã giải quyết)</summary>
 
 User đã thử `wrangler login`, authorize trên ĐIỆN THOẠI → thất bại. Root cause:
 OAuth của wrangler callback về `http://localhost:8976/oauth/callback`, địa chỉ này
@@ -152,14 +187,18 @@ Hai đường, user chọn:
 Sau khi có xác thực: `make deploy-landing`, rồi gắn custom domain trên Dashboard
 (Workers & Pages → `omnisre` → Custom domains → `www.omnisre.xyz`).
 
-## 3 gate trước khi upload (scripts/deploy_landing.sh)
+</details>
+
+## 4 gate trước khi upload (scripts/deploy_landing.sh)
 Mọi file trong `cloudflare/pages/` đều đọc được từ Internet, nên script chặn trước:
 1. File không nên public: `*.md`, `.DS_Store`, `*.map`, `*.bak`, `.env*`, `*.key`, `*.pem`
 2. Tài nguyên từ host ngoài — CSP `default-src 'none'` chặn IM LẶNG, không báo lỗi
 3. `<script>` hoặc inline event handler — cũng bị chặn im lặng
+4. `style=""` nội tuyến — `style-src 'self'` không có `'unsafe-inline'`
 
-Gate 1 chính là thứ suýt để lọt `cloudflare/pages/README.md` ra công khai.
-Đã chạy thử: `✓ gate nội dung: 5 file, không có gì bất thường`.
+Gate 1 suýt để lọt `cloudflare/pages/README.md` ra công khai. Gate 4 thiếu ở bản
+đầu và tôi tự vấp ngay khi viết `404.html` — style nội tuyến bị chặn im lặng nên
+trang vẫn hiện, chỉ sai giao diện, gần như không phát hiện được bằng mắt.
 
 ## Landing page dùng DIRECT UPLOAD, KHÔNG nối GitHub (user chốt 2026-07-29)
 Ban đầu tôi hiểu nhầm thành "Pages tự build từ repo"; user yêu cầu rõ không dùng
@@ -242,10 +281,10 @@ OIDC → `app.omnisre.xyz/dex/auth` → callback → phiên portal. Gate cuối 
 Toàn bộ hệ thống public hoạt động đúng thiết kế.
 
 ## Next step chính xác
-1. **User xác thực Cloudflare** — cách A hoặc B ở mục Blockers. Rồi
-   `make deploy-landing`, gắn custom domain, verify:
-   `curl -sI https://www.omnisre.xyz/ | head -1` · `.../vi/` ·
-   kiểm header CSP không còn `'unsafe-inline'` và `<html lang>` đúng mỗi trang.
+1. **Gắn custom domain `www.omnisre.xyz`** — Dashboard → Workers & Pages →
+   `omnisre` → Custom domains. Rồi verify:
+   `curl -sI https://www.omnisre.xyz/ | head -1` · `.../vi/`.
+   Deploy lại về sau: `make deploy-landing` (không cần thao tác Dashboard nữa).
 2. **User cất mật khẩu** ở scratchpad `ADMIN_PASSWORD.txt` rồi xoá file.
 3. Cân nhắc `brew upgrade cloudflared` (2026.5.0 → 2026.7.3).
 4. Việc cũ còn treo (mục dưới) — không thuộc deliverable này.
