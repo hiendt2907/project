@@ -605,12 +605,44 @@ class HitlDecideRequest(BaseModel):
 
 
 _HITL_DECISIONS_TOPIC = "omni-hitl-decisions"
+_DEFAULT_TENANT = "default"
+
+
+def _hitl_tenant(request: Request, requested: str | None) -> str:
+    """Tenant thực sự được phép thao tác trên hàng đợi HITL.
+
+    CÁCH LY BẮT BUỘC. Trước bản vá này, cả hai endpoint HITL lấy ``tenant_id`` thẳng
+    từ client (query string ở /pending, **request body** ở /decide) mà không đối
+    chiếu danh tính. Hệ quả: một tenant đã xác thực có thể (a) đọc toàn bộ hàng đợi
+    phê duyệt của tenant khác, và tệ hơn (b) **tự phê duyệt hoặc từ chối một mutation
+    đang chờ của tenant khác** — quyết định đó đi thẳng vào ledger CRAT dưới tên họ
+    rồi được publish sang Kafka để worker thực thi.
+
+    SQL trong repo vốn đã lọc ``WHERE tenant_id = $2``, nên lỗ hổng KHÔNG nằm ở tầng
+    truy vấn — nó nằm ở chỗ chính client quyết định giá trị đó. Đây là lý do lọc ở
+    SQL không thay thế được kiểm tra danh tính.
+
+    ``resolve_scope`` trả None cho lab (ctx=None) và cho admin không chỉ định tenant;
+    khi đó giữ giá trị client yêu cầu để không phá hành vi admin/lab hiện có.
+    """
+    from gateway.tenant_context import get_tenant_ctx, resolve_scope
+
+    ctx = get_tenant_ctx(request)
+    scoped = resolve_scope(ctx, requested)
+    if scoped is not None:
+        return scoped
+    # ctx=None (lab) hoặc admin không truyền tenant_id → dùng giá trị client, mặc định lab.
+    return requested or _DEFAULT_TENANT
 
 
 @router.get("/hitl/pending")
-async def get_hitl_pending(request: Request, tenant_id: str = Query(default="default")) -> JSONResponse:
+async def get_hitl_pending(
+    request: Request,
+    tenant_id: str = Query(default=_DEFAULT_TENANT, pattern=r"^[a-zA-Z0-9_-]+$"),
+) -> JSONResponse:
+    tenant = _hitl_tenant(request, tenant_id)
     repo = _get_admin_repo(request)
-    return JSONResponse(content={"pending": await repo.list_hitl_pending(tenant_id)})
+    return JSONResponse(content={"tenant_id": tenant, "pending": await repo.list_hitl_pending(tenant)})
 
 
 @router.post("/hitl/{pending_id}/decide")
@@ -619,11 +651,14 @@ async def decide_hitl(request: Request, pending_id: str, body: HitlDecideRequest
     để worker định tuyến APPROVED→omni-actions / REJECTED→omni-action-feedback."""
     if body.decision not in ("APPROVED", "REJECTED"):
         raise HTTPException(status_code=400, detail=f"decision không hợp lệ: {body.decision}")
+    # `body.tenant_id` do CLIENT gửi — không được tin. Xem docstring _hitl_tenant:
+    # thiếu bước này, tenant A phê duyệt được mutation đang chờ của tenant B.
+    tenant = _hitl_tenant(request, body.tenant_id)
     repo = _get_admin_repo(request)
     try:
         result = await repo.decide_hitl(
             pending_id=pending_id, decision=body.decision,
-            actor=body.actor, channel="ui", tenant_id=body.tenant_id,
+            actor=body.actor, channel="ui", tenant_id=tenant,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -637,7 +672,10 @@ async def decide_hitl(request: Request, pending_id: str, body: HitlDecideRequest
             envelope = json.dumps({
                 "pending_id": pending_id, "decision": body.decision,
                 "tool_name": result.get("tool_name"), "actor": body.actor,
-                "tenant_id": body.tenant_id, "channel": "ui",
+                # Tenant đã qua scope, KHÔNG phải body.tenant_id — worker định tuyến
+                # action theo trường này nên tin client ở đây là mở đường thực thi
+                # chéo tenant.
+                "tenant_id": tenant, "channel": "ui",
             }).encode()
             await kafka.send_and_wait(_HITL_DECISIONS_TOPIC, value=envelope,
                                       key=pending_id.encode())
