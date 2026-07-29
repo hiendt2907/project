@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import shutil
 
+from remote_agent import exec_guard
+
 ORIGIN_CUSTOM = "custom"
 ORIGIN_UNKNOWN = "unknown"
 
@@ -18,6 +20,10 @@ _RPM = shutil.which("rpm")
 
 
 async def _run(cmd: list[str], timeout: float = 5.0) -> tuple[str, str, int]:
+    # Cùng validator với command channel — collector KHÔNG có đường riêng.
+    reason = exec_guard.check(cmd)
+    if reason:
+        return "", f"blocked: {reason}", 1
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

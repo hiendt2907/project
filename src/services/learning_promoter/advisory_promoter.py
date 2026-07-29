@@ -24,6 +24,8 @@ import hashlib
 import logging
 from typing import Any
 
+from pkg.domain.taxonomy import TRACK_ADVISORY, UNKNOWN
+
 logger = logging.getLogger(__name__)
 
 DRAFT = "DRAFT"
@@ -33,7 +35,14 @@ FROZEN = "FROZEN"
 
 DEFAULT_MIN_SUCCESS = 3
 DEFAULT_MAX_FAIL_RATE = 0.25
-DOMAIN_ADVISORY = "advisory"
+
+# `advisory` là TRACK (nguồn học), KHÔNG phải domain kỹ thuật. Trước migration 0013 nó bị
+# ghi vào cột `domain`, làm `list_playbook_graduations()` trả hỗn hợp hai loại bản ghi.
+TRACK = TRACK_ADVISORY
+# Domain thật của một pattern advisory CHƯA BIẾT: pattern_key chỉ băm lane+alertname,
+# không mang thông tin domain. Ghi `unknown` chứ không đoán — đoán sai domain rồi dùng để
+# cấp quyền còn tệ hơn thừa nhận là chưa biết.
+DOMAIN_UNKNOWN = UNKNOWN
 
 
 def advisory_pattern_key(advisory: dict[str, Any]) -> str:
@@ -110,7 +119,8 @@ async def record_advisory_verdict(
     try:
         row = await repo.bump_playbook_graduation(
             tenant_id=tenant_id,
-            domain=DOMAIN_ADVISORY,
+            domain=DOMAIN_UNKNOWN,
+            track=TRACK,
             playbook_id=pattern_key,
             success=accepted,
         )
@@ -129,7 +139,8 @@ async def record_advisory_verdict(
         try:
             await repo.set_playbook_graduation_state(
                 tenant_id=tenant_id,
-                domain=DOMAIN_ADVISORY,
+                domain=DOMAIN_UNKNOWN,
+                track=TRACK,
                 playbook_id=pattern_key,
                 state=state,
             )

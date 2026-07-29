@@ -88,13 +88,19 @@ async def get_graduated_playbooks(
     request: Request,
     tenant_id: str | None = Query(default=None, pattern=r"^[a-zA-Z0-9_-]+$"),
     state: str | None = Query(default=None, pattern=r"^[A-Z]+$"),
+    track: str | None = Query(default=None, pattern=r"^(advisory|playbook|execution)$"),
 ) -> JSONResponse:
-    """Playbook đã tích luỹ qua vòng học (G1), kèm số lần đúng/sai."""
+    """Playbook đã tích luỹ qua vòng học (G1), kèm số lần đúng/sai.
+
+    ``track`` lọc theo NGUỒN HỌC. Không lọc = trả cả hai loại, nhưng mỗi hàng nay mang
+    cột `track` nên người đọc phân biệt được — trước migration 0013 hai loại trộn vào
+    nhau không có cách nào tách.
+    """
     tenant = _effective_tenant(request, tenant_id)
     repo = getattr(request.app.state, "admin_repo", None)
     if repo is None or not hasattr(repo, "list_playbook_graduations"):
         raise HTTPException(status_code=503, detail="Admin store not available")
-    rows = await repo.list_playbook_graduations(tenant, state=state)
+    rows = await repo.list_playbook_graduations(tenant, state=state, track=track)
     # Row Postgres chứa cột timestamp — JSONResponse không tự serialize datetime,
     # phải đi qua jsonable_encoder (bug 500 phát hiện lúc smoke test trên cluster;
     # test unit không bắt được vì repo bị mock trả dict thuần).

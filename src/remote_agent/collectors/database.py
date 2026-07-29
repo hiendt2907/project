@@ -15,6 +15,7 @@ import logging
 import os
 from typing import Any
 
+from remote_agent import exec_guard
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,10 @@ async def _run(cmd: list[str], timeout: float = 8.0, env: dict[str, str] | None 
 
     Pass env to inject MYSQL_PWD instead of --password= in argv (hides from /proc/cmdline).
     """
+    # Cùng validator với command channel — collector KHÔNG có đường riêng.
+    reason = exec_guard.check(cmd)
+    if reason:
+        return "", f"blocked: {reason}", 1
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,

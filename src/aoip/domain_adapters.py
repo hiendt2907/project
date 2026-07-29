@@ -10,6 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from pkg.domain.taxonomy import (
+    DATABASE,
+    KUBERNETES,
+    NETWORK,
+    OS_HOST,
+    normalize_domain,
+    require_domain,
+)
+
 _OPERATIONS = frozenset({"discover", "observe", "plan", "execute", "verify", "rollback"})
 
 
@@ -77,6 +86,10 @@ class AdapterDescriptor:
     def __post_init__(self) -> None:
         if not self.name.strip() or not self.domain.strip() or not self.version.strip():
             raise ValueError("adapter name, domain and version are required")
+        # Đường GHI vào registry năng lực ⇒ `require_domain`, không phải `normalize_domain`:
+        # một descriptor mang domain rác sẽ im lặng không bao giờ được resolve, và báo cáo
+        # "Omni làm được gì trên domain X" sẽ thiếu mà không có lỗi nào bật ra.
+        object.__setattr__(self, "domain", require_domain(self.domain))
         names = [cap.name for cap in self.capabilities]
         if len(set(names)) != len(names):
             raise ValueError("adapter capability names must be unique")
@@ -97,13 +110,19 @@ class AdapterRegistry:
         self._adapters: dict[str, AdapterDescriptor] = {}
 
     def register(self, descriptor: AdapterDescriptor) -> None:
-        key = descriptor.domain.strip().lower()
+        # descriptor.domain đã canonical (validate trong __post_init__).
+        key = descriptor.domain
         if key in self._adapters:
             raise ValueError(f"adapter domain already registered: {descriptor.domain}")
         self._adapters[key] = descriptor
 
     def get(self, domain: str) -> AdapterDescriptor | None:
-        return self._adapters.get(domain.strip().lower())
+        """Chuẩn hoá khi ĐỌC: caller/API phiên bản cũ vẫn tra được bằng `linux`/`k8s`.
+
+        Không chuẩn hoá ở đây thì mọi caller cũ nhận None và im lặng coi như "không có
+        adapter cho domain đó" — mất năng lực mà không có lỗi nào bật ra.
+        """
+        return self._adapters.get(normalize_domain(domain))
 
     def list_adapters(self) -> tuple[AdapterDescriptor, ...]:
         return tuple(self._adapters[key] for key in sorted(self._adapters))
@@ -114,12 +133,19 @@ class AdapterRegistry:
 
 
 def default_registry() -> AdapterRegistry:
-    """Return the baseline domain set; Kubernetes is intentionally not special."""
+    """Return the baseline domain set; Kubernetes is intentionally not special.
+
+    Tên domain dùng canonical (`pkg.domain.taxonomy`): `linux` cũ → `os_host`. Registry
+    này là METADATA-ONLY — `src/workers/adapters/` đã rỗng từ `7f70319`, người tiêu thụ
+    duy nhất là `GET /onboarding/domain-adapters`. Đổi tên ở đây không dựng lại adapter
+    nào; nó chỉ làm báo cáo năng lực nói cùng một từ vựng với phần còn lại của hệ thống.
+    ``name`` giữ nguyên nhãn đọc-được-cho-người, ``domain`` là khoá tra cứu.
+    """
 
     registry = AdapterRegistry()
     registry.register(AdapterDescriptor(
         name="linux",
-        domain="linux",
+        domain=OS_HOST,
         version="1",
         capabilities=(
             AdapterCapability(name="host.discover", operations=("discover", "observe")),
@@ -129,7 +155,7 @@ def default_registry() -> AdapterRegistry:
     ))
     registry.register(AdapterDescriptor(
         name="kubernetes",
-        domain="kubernetes",
+        domain=KUBERNETES,
         version="1",
         capabilities=(
             AdapterCapability(name="workload.discover", operations=("discover", "observe")),
@@ -139,7 +165,7 @@ def default_registry() -> AdapterRegistry:
     ))
     registry.register(AdapterDescriptor(
         name="database",
-        domain="database",
+        domain=DATABASE,
         version="1",
         capabilities=(
             AdapterCapability(name="database.discover", operations=("discover", "observe")),
@@ -148,7 +174,7 @@ def default_registry() -> AdapterRegistry:
     ))
     registry.register(AdapterDescriptor(
         name="network",
-        domain="network",
+        domain=NETWORK,
         version="1",
         capabilities=(
             AdapterCapability(name="network.discover", operations=("discover", "observe")),

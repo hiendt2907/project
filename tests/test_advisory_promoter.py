@@ -33,9 +33,9 @@ class _FakeRepo:
         self.calls = []
 
     async def bump_playbook_graduation(
-        self, *, tenant_id, domain, playbook_id, success, crat_ref=None
+        self, *, tenant_id, domain, playbook_id, success, crat_ref=None, track="playbook"
     ):
-        key = (tenant_id, domain, playbook_id)
+        key = (tenant_id, track, domain, playbook_id)
         row = self.rows.get(key, {"success_count": 0, "fail_count": 0, "state": "DRAFT"})
         if success:
             row["success_count"] += 1
@@ -46,9 +46,9 @@ class _FakeRepo:
         return dict(row)
 
     async def set_playbook_graduation_state(
-        self, *, tenant_id, domain, playbook_id, state, crat_ref=None
+        self, *, tenant_id, domain, playbook_id, state, crat_ref=None, track="playbook"
     ):
-        self.rows[(tenant_id, domain, playbook_id)]["state"] = state
+        self.rows[(tenant_id, track, domain, playbook_id)]["state"] = state
 
 
 class _Ctx:

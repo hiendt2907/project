@@ -127,14 +127,14 @@ class FakeRepo:
     async def record_advisory_acknowledgment(self, **kw):
         self.acks.append(kw)
 
-    async def bump_playbook_graduation(self, *, tenant_id, domain, playbook_id, success):
+    async def bump_playbook_graduation(self, *, tenant_id, domain, playbook_id, success, track="playbook"):
         row = self.counters.setdefault(
             playbook_id, {"success_count": 0, "fail_count": 0, "state": "DRAFT"}
         )
         row["success_count" if success else "fail_count"] += 1
         return dict(row)
 
-    async def set_playbook_graduation_state(self, *, tenant_id, domain, playbook_id, state):
+    async def set_playbook_graduation_state(self, *, tenant_id, domain, playbook_id, state, track="playbook"):
         self.states[playbook_id] = state
         self.counters[playbook_id]["state"] = state
 

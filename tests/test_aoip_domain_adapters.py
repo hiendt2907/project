@@ -20,7 +20,8 @@ def test_default_registry_treats_kubernetes_as_one_domain_adapter():
     domains = {item.domain for item in registry.list_adapters()}
 
     assert "kubernetes" in domains
-    assert {"linux", "database", "network"}.issubset(domains)
+    # Từ vựng canonical (`pkg.domain.taxonomy`): `linux` cũ → `os_host`.
+    assert {"os_host", "database", "network"}.issubset(domains)
     assert registry.get("kubernetes") is not None
     assert registry.get("linux") is not None
 
@@ -92,10 +93,11 @@ async def test_adapters_endpoint_exposes_domain_neutral_capabilities():
 
     assert response.status_code == 200
     payload = response.json()
+    # Từ vựng canonical (`pkg.domain.taxonomy`): `linux` cũ → `os_host`.
     assert {item["domain"] for item in payload["adapters"]} >= {
-        "linux", "kubernetes", "database", "network"
+        "os_host", "kubernetes", "database", "network"
     }
-    linux = next(item for item in payload["adapters"] if item["domain"] == "linux")
+    linux = next(item for item in payload["adapters"] if item["domain"] == "os_host")
     restart = next(cap for cap in linux["capabilities"] if cap["name"] == "service.restart")
     assert restart["mutating"] is True
     assert restart["requires_approval"] is True

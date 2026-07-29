@@ -29,6 +29,15 @@ COPY src/pkg/reasoning/ /app/src/pkg/reasoning/
 COPY src/pkg/rag/ /app/src/pkg/rag/
 COPY src/pkg/observability/ /app/src/pkg/observability/
 COPY src/pkg/onboarding/ /app/src/pkg/onboarding/
+# Catalogue lệnh chẩn đoán — gateway fail-fast trước khi enqueue command cho agent.
+# ⚠️ Dockerfile này COPY TỪNG THƯ MỤC CON của src/pkg/, không COPY cả cây. Thêm một
+# package mới dưới src/pkg/ mà quên thêm dòng ở đây thì `make deploy-gateway` vẫn báo
+# "rollout successful" và pod vẫn Running — chỉ thiếu module, và catalogue load lỗi
+# nghĩa là MỌI command bị từ chối (fail-closed). Đã trả giá một lần: verify bằng
+# `kubectl exec … python -c "import pkg.diagnostics.validator"`, không bằng rollout.
+COPY src/pkg/diagnostics/ /app/src/pkg/diagnostics/
+COPY src/pkg/domain/ /app/src/pkg/domain/
+COPY config/diagnostic_commands.yaml /app/config/diagnostic_commands.yaml
 # AOIP domain model (Observation/Fact/SystemModel/CompetencyMatrix/Claims/Questions) —
 # pure domain package, không import workers/executor/LLM. Cần cho routes/onboarding.py
 # (/onboarding/competency, /unknowns, /questions*) từ slice O2A/O2B.

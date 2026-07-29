@@ -84,7 +84,7 @@ class TestBuildSymptomText:
     def test_includes_domain_probe_lane(self):
         c = _cluster(domain=DOMAIN_OS, lane="SYS_RESOURCE", probe="remote_log_errors")
         text = _build_symptom_text(c)
-        assert "domain=os_system" in text
+        assert "domain=os_host" in text   # canonical, `os_system` cũ
         assert "probe=remote_log_errors" in text
         assert "lane=SYS_RESOURCE" in text
 

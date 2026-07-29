@@ -4,7 +4,11 @@ Redis là hot-path authoritative trên lab (write-through Postgres omni_admin.pl
 do Admin UI/gateway đảm nhiệm sau). MỌI đường lỗi Redis = DENY (fail-closed, không fail-open).
 
 Keys:
-  omni:playbook:grad:{tenant}:{domain}:{playbook_id}   HASH {state, success_count, fail_count}
+  omni:playbook:grad:{tenant}:{track}:{domain}:{playbook_id}  HASH {state, success_count, fail_count}
+      Hình dạng key có thêm {track} từ 2026-07-30 (xem migration 0013): trước đó `domain`
+      chứa LẪN hai khái niệm — domain kỹ thuật (governor ghi) và nguồn học
+      (advisory_promoter ghi qua PG). Đổi hình dạng key làm MẤT dữ liệu cũ, nên mọi
+      đường đọc/seed đều thử key LEGACY trước và di chuyển một lần (_LEGACY_GRAD_KEY).
   omni:actuator:rollbacks:{tenant}                     ZSET member=trace score=ts (rolling 1h)
   omni:actuator:freeze:{tenant}                        STRING reason (no TTL — admin reset)
   omni:actuator:lock:{tenant}                          STRING trace (SETNX + TTL) — 1 workload/lần
@@ -17,6 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from pkg.domain.taxonomy import TRACK_PLAYBOOK, normalize_domain
 from workers.schemas.playbook import (
     GRAD_CANDIDATE,
     GRAD_FROZEN,
@@ -26,7 +31,9 @@ from workers.schemas.playbook import (
 
 logger = logging.getLogger(__name__)
 
-_GRAD_KEY = "omni:playbook:grad:{tenant}:{domain}:{playbook_id}"
+_GRAD_KEY = "omni:playbook:grad:{tenant}:{track}:{domain}:{playbook_id}"
+# Hình dạng trước 2026-07-30 — chỉ ĐỌC, để migrate một lần rồi không dùng nữa.
+_LEGACY_GRAD_KEY = "omni:playbook:grad:{tenant}:{domain}:{playbook_id}"
 _ROLLBACK_ZSET = "omni:actuator:rollbacks:{tenant}"
 _FREEZE_KEY = "omni:actuator:freeze:{tenant}"
 _LOCK_KEY = "omni:actuator:lock:{tenant}"
@@ -49,8 +56,71 @@ class PlaybookGovernor:
 
     # ---------------- graduation ----------------
 
-    async def get_state(self, tenant: str, domain: str, playbook_id: str) -> str:
-        key = _GRAD_KEY.format(tenant=tenant, domain=domain, playbook_id=playbook_id)
+    async def _grad_key(
+        self, tenant: str, domain: str, playbook_id: str, track: str = TRACK_PLAYBOOK
+    ) -> str:
+        """Key graduation canonical, tự di chuyển dữ liệu từ key hình dạng CŨ một lần.
+
+        Đổi hình dạng key làm MẤT dữ liệu graduation đang sống (lab hiện có
+        `omni:playbook:grad:default:k8s:PB-K8S-CPU-RESTART`). Mất state graduation là mất
+        cả success_count đã tích luỹ — playbook đã GRADUATED tụt về DRAFT và ngừng được
+        auto-execute, tức là một suy giảm năng lực im lặng.
+
+        Vì vậy: key mới chưa tồn tại ⇒ quét key cũ của cùng playbook, chọn key mà domain
+        (dạng cũ, ví dụ `k8s`) chuẩn hoá về CÙNG canonical, rồi copy sang key mới.
+        CỐ Ý KHÔNG XOÁ key cũ: nếu phải rollback image về bản trước, bản cũ vẫn đọc được
+        state của nó. Key cũ thành mồ côi vô hại, dọn tay sau khi cutover ổn định.
+        """
+        key = _GRAD_KEY.format(
+            tenant=tenant, track=track, domain=normalize_domain(domain), playbook_id=playbook_id
+        )
+        try:
+            if await self._r.exists(key):
+                return key
+        except Exception:  # noqa: BLE001 — lỗi Redis xử lý ở caller (fail-closed)
+            return key
+        if track != TRACK_PLAYBOOK:
+            # Chỉ track playbook từng có key Redis; advisory chỉ sống ở Postgres.
+            return key
+        try:
+            await self._migrate_legacy_grad(tenant, domain, playbook_id, key)
+        except Exception as exc:  # noqa: BLE001 — không migrate được thì coi như chưa seed
+            logger.warning("event=grad_legacy_migrate_failed key=%s err=%s", key, exc)
+        return key
+
+    async def _migrate_legacy_grad(
+        self, tenant: str, domain: str, playbook_id: str, new_key: str
+    ) -> None:
+        canonical = normalize_domain(domain)
+        prefix = f"omni:playbook:grad:{tenant}:"
+        pattern = _LEGACY_GRAD_KEY.format(tenant=tenant, domain="*", playbook_id=playbook_id)
+        async for raw in self._r.scan_iter(match=pattern):
+            legacy = raw.decode() if isinstance(raw, bytes) else str(raw)
+            middle = legacy[len(prefix):].rsplit(":", 1)[0]
+            # Glob `*` khớp cả dấu ':' nên pattern cũng bắt key hình dạng MỚI —
+            # loại chúng ra bằng cách đòi đúng một đoạn ở giữa.
+            if ":" in middle or normalize_domain(middle) != canonical:
+                continue
+            fields = await self._r.hgetall(legacy)
+            if not fields:
+                continue
+            decoded = {
+                (k.decode() if isinstance(k, bytes) else k): (
+                    v.decode() if isinstance(v, bytes) else v
+                )
+                for k, v in fields.items()
+            }
+            await self._r.hset(new_key, mapping=decoded)
+            logger.info(
+                "event=grad_legacy_migrated from=%s to=%s state=%s",
+                legacy, new_key, decoded.get("state"),
+            )
+            return
+
+    async def get_state(
+        self, tenant: str, domain: str, playbook_id: str, track: str = TRACK_PLAYBOOK
+    ) -> str:
+        key = await self._grad_key(tenant, domain, playbook_id, track)
         try:
             v = await self._r.hget(key, "state")
         except Exception as exc:
@@ -60,11 +130,14 @@ class PlaybookGovernor:
             v = v.decode()
         return str(v or "")
 
-    async def ensure_seeded(self, tenant: str, domain: str, playbook_id: str, initial: str) -> str:
+    async def ensure_seeded(
+        self, tenant: str, domain: str, playbook_id: str, initial: str,
+        track: str = TRACK_PLAYBOOK,
+    ) -> str:
         """Seed graduation state nếu chưa có; trả về state hiện hành."""
         if initial not in GRADUATION_STATES:
             initial = GRAD_CANDIDATE
-        key = _GRAD_KEY.format(tenant=tenant, domain=domain, playbook_id=playbook_id)
+        key = await self._grad_key(tenant, domain, playbook_id, track)
         try:
             added = await self._r.hsetnx(key, "state", initial)
             if added:
@@ -73,16 +146,16 @@ class PlaybookGovernor:
         except Exception as exc:
             logger.warning("event=grad_seed_failed key=%s err=%s", key, exc)
             return ""
-        return await self.get_state(tenant, domain, playbook_id)
+        return await self.get_state(tenant, domain, playbook_id, track)
 
     async def record_outcome(
         self, tenant: str, domain: str, playbook_id: str, *, success: bool,
-        promote_min_success: int = 3,
+        promote_min_success: int = 3, track: str = TRACK_PLAYBOOK,
     ) -> tuple[str, str]:
         """Ghi outcome; demote 1 bậc khi fail, promote CANDIDATE→GRADUATED khi đủ
         success liên tiếp. Trả về (from_state, to_state)."""
-        key = _GRAD_KEY.format(tenant=tenant, domain=domain, playbook_id=playbook_id)
-        cur = await self.get_state(tenant, domain, playbook_id)
+        key = await self._grad_key(tenant, domain, playbook_id, track)
+        cur = await self.get_state(tenant, domain, playbook_id, track)
         if not cur:
             return ("", "")
         new = cur
@@ -105,8 +178,10 @@ class PlaybookGovernor:
             return (cur, cur)
         return (cur, new)
 
-    async def freeze(self, tenant: str, domain: str, playbook_id: str) -> None:
-        key = _GRAD_KEY.format(tenant=tenant, domain=domain, playbook_id=playbook_id)
+    async def freeze(
+        self, tenant: str, domain: str, playbook_id: str, track: str = TRACK_PLAYBOOK
+    ) -> None:
+        key = await self._grad_key(tenant, domain, playbook_id, track)
         try:
             await self._r.hset(key, "state", GRAD_FROZEN)
         except Exception as exc:
@@ -177,12 +252,15 @@ class PlaybookGovernor:
 
     # ---------------- gate tổng hợp ----------------
 
-    async def gate(self, tenant: str, domain: str, playbook_id: str, *, initial: str) -> GateDecision:
+    async def gate(
+        self, tenant: str, domain: str, playbook_id: str, *, initial: str,
+        track: str = TRACK_PLAYBOOK,
+    ) -> GateDecision:
         """Gate fail-closed: frozen-tenant → deny; graduation phải GRADUATED để auto.
         CANDIDATE → allowed=False reason=candidate_hitl (caller route SUGGEST/HITL)."""
         if await self.is_frozen(tenant):
             return GateDecision(False, "tenant_frozen_circuit_breaker")
-        state = await self.ensure_seeded(tenant, domain, playbook_id, initial)
+        state = await self.ensure_seeded(tenant, domain, playbook_id, initial, track)
         if not state:
             return GateDecision(False, "graduation_state_unreadable")
         if state == GRAD_GRADUATED:

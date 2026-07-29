@@ -1,6 +1,61 @@
 # Current Session Handoff
 
-## Deliverable hiện tại
+## ĐANG LÀM (deliverable 2) — đồng bộ taxonomy domain + catalogue lệnh chẩn đoán
+Thiết kế: `plans/unify-domain-and-diagnostic-catalog-2026-07-30.md`.
+
+**Hiện trạng đã khảo sát (runtime, không suy diễn):** BA từ vựng "domain" không cầu nối
+(`kubernetes`/`k8s`/`container_logs` — ba tên cho K8s); `playbook_graduation.domain` chứa
+cả `k8s` (kỹ thuật, writer Redis) lẫn `advisory` (nguồn học, writer PG) và **thiếu CHECK**
+đúng chỗ cần nhất → `list_playbook_graduations()` (dùng để **đề xuất nâng tier**) đếm gộp
+hai thứ khác bản chất. Whitelist lệnh hardcode **ba chỗ**, một chỗ (`collectors/`) bỏ qua
+validator hoàn toàn và đang chạy `cat` — chính lệnh nằm trong `_CONTENT_READ_BLOCKED`.
+
+**Đã xong (tôi tự làm, là hợp đồng cho agent):**
+- `src/pkg/domain/taxonomy.py` — 9 domain canonical + alias map cả 3 từ vựng cũ;
+  tách `LearningTrack` (advisory|playbook|execution) khỏi domain
+- `src/pkg/diagnostics/command_catalog.py` — loader khai báo, fail-closed ở tầng LOAD
+  (`WRITE_VERBS` → entry khai động từ ghi thì load LỖI), `is_path_readable()` chống
+  path traversal + chặn cứng thư mục dữ liệu DB/home/backup/secret
+
+**Subagent:** ✅ catalogue YAML (**99 lệnh / 9 domain**, 45 test) · ⏳ rewire agent+gateway
+dùng chung loader (xoá bản sao) + Dockerfile + bundle · ⏳ migration 0013 + adopt canonical.
+
+### Lỗ hổng trong loader TÔI viết, agent catalogue tìm ra — đã sửa
+`_SECRETISH` neo `(^|/)` nên `\.key`/`\.pem` chỉ khớp file **tên là** `.key`, không khớp
+`server.key` → `/etc/ssl/private/server.key` và `/etc/pki/tls/cert.pem` **đọc được** qua
+`cat` (vì `read_allow` có `/etc`). Khoá TLS là thứ đắt nhất trên host.
+Sửa: tách **hai họ mẫu, hai cách neo** — `_SECRET_NAME` neo `(^|/)` cho tên, `_SECRET_EXT`
+neo `$` cho đuôi, cộng hậu tố `_key` (OpenSSH đặt `ssh_host_rsa_key` không có đuôi), cộng
+`_SECRET_DIRS` cho cây pki. Cố ý **không** chặn cả `/etc/ssh`: `sshd_config` có giá trị
+chẩn đoán, chặn thừa cũng là hỏng vì đẩy người vận hành đi tìm đường lách.
+`tests/test_diagnostic_catalog.py` **45 passed**.
+
+### 3 rủi ro còn lại — thuộc tầng GỌI, agent rewire phải xử lý
+1. **`psql` buộc có `select`** trong `statement_verbs`: chỉ số chẩn đoán Postgres nằm
+   trong view (`pg_stat_activity`, `pg_locks`), không sau `SHOW`. Hàng rào phải là giới
+   hạn schema `pg_catalog`/`pg_stat_*`/`information_schema`. MySQL KHÔNG có `select`.
+2. **`awk` gọi được `system()` và `|`** — `deny_flags` không đủ, phải từ chối script
+   chứa hai thứ đó.
+3. **`ip`/`route`/`service` đặt động từ ghi ở slot POSITIONAL THỨ HAI** (`ip route add`)
+   — whitelist token đầu không đủ, phải quét `deny_subcommands` ở MỌI vị trí.
+
+### Agent catalogue chủ động loại (lý do đáng lưu)
+`md5sum`/`sha256sum` → **oracle so nội dung** (đoán từng phần file bị chặn bằng cách so
+hash) · `strace`/`gdb`/`bpftrace` → `ptrace` đọc secret plaintext trong RAM tiến trình ·
+`socat EXEC:` chạy lệnh tuỳ ý · `wget` mặc định LÀ ghi file · `mysqldump`/`pg_dump` vi
+phạm `INV_DATA_RESIDENCY` · trình thông dịch (`bash`/`python`/`xargs`) vô hiệu hoá cả
+catalogue trong một dòng.
+
+### ⚠️ ĐÁNH ĐỔI CẦN USER BIẾT
+"Chạy **toàn bộ** lệnh chẩn đoán" **không tương thích** với `INV_NO_DATA_EXFIL` dạng cũ
+(chặn cả `cat`/`tail`/`grep`/`mysql`). Chẩn đoán thật cần đọc nội dung. Đã thay **chặn
+theo tên lệnh** bằng **chặn theo phạm vi đọc** → invariant mới `INV_DIAG_SCOPE_BOUNDED`:
+đọc được nhưng chỉ trong `/proc /sys /etc /var/log /run`; chặn cứng `/var/lib/mysql`,
+`/home`, `/root`, backup, file kiểu secret. Đây là **nới lỏng có thật**, đổi lấy năng lực
+chẩn đoán tầng app. Nếu user muốn giữ chặt như cũ thì Omni sẽ mãi không đọc được log
+ứng dụng.
+
+## Deliverable 1 (XONG)
 **Sổ ca (Case Ledger)** — nền dữ liệu để Omni trở thành *nhân viên SRE* thay vì công cụ
 giám sát. ĐANG LÀM. Thiết kế đầy đủ: `plans/case-ledger-design-2026-07-30.md`.
 

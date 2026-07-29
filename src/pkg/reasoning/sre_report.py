@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pkg.domain.taxonomy import TRACK_ADVISORY, TRACK_EXECUTION, TRACK_PLAYBOOK
 from pkg.reasoning.capacity_advisor import (
     ACTION_HOLD,
     ACTION_INSUFFICIENT_DATA,
@@ -24,6 +25,13 @@ _ACTION_LABEL_VI = {
     "INVESTIGATE_LEAK": "Nghi rò rỉ — cần điều tra",
     ACTION_HOLD: "Giữ nguyên",
     ACTION_INSUFFICIENT_DATA: "Chưa đủ dữ liệu",
+}
+
+
+_TRACK_LABEL_VI = {
+    TRACK_ADVISORY: "Phán quyết của người",
+    TRACK_PLAYBOOK: "Quy trình đã kiểm chứng",
+    TRACK_EXECUTION: "Đã thực thi + hậu kiểm",
 }
 
 
@@ -87,11 +95,17 @@ def build_sre_report(
     if graduations:
         lines.append("Các quy trình xử lý đã được kiểm chứng đủ nhiều lần để tin dùng:")
         lines.append("")
-        lines.append("| Quy trình | Trạng thái | Đúng | Sai |")
-        lines.append("|---|---|---|---|")
+        # Cột "Học từ" là BẮT BUỘC, không phải trang trí: một dòng track=advisory nghĩa là
+        # "người vận hành đồng ý với chẩn đoán này nhiều lần", còn track=playbook nghĩa là
+        # "quy trình đã chạy thật và được hậu kiểm". Gộp hai loại vào một bảng không nhãn
+        # là để người đọc tưởng Omni đã tự xử lý được, trong khi nó chỉ mới chẩn đoán đúng.
+        lines.append("| Quy trình | Học từ | Trạng thái | Đúng | Sai |")
+        lines.append("|---|---|---|---|---|")
         for g in graduations:
             lines.append(
-                f"| `{g.get('playbook_id', '')}` | {g.get('state', '')} | "
+                f"| `{g.get('playbook_id', '')}` | "
+                f"{_TRACK_LABEL_VI.get(g.get('track') or TRACK_PLAYBOOK, g.get('track') or '')} | "
+                f"{g.get('state', '')} | "
                 f"{g.get('success_count', 0)} | {g.get('fail_count', 0)} |"
             )
     else:

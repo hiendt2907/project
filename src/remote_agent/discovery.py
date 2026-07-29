@@ -15,7 +15,7 @@ import socket
 import time
 from typing import Any
 
-from remote_agent import pkg_origin
+from remote_agent import exec_guard, pkg_origin
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,10 @@ _SERVICE_CONFIG_HINTS: dict[str, list[str]] = {
 
 async def _run(cmd: list[str], timeout: float = 10.0) -> tuple[str, int]:
     """Run read-only subprocess. Returns (stdout, returncode). Never raises."""
+    # Cùng validator với command channel — collector KHÔNG có đường riêng.
+    reason = exec_guard.check(cmd)
+    if reason:
+        return "", 1
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,

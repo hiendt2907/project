@@ -1,10 +1,14 @@
-"""Tests for remote_agent.command_executor — INV_READONLY_CMDS / INV_NO_DATA_EXFIL guard.
+"""Tests for remote_agent.command_executor — INV_READONLY_CMDS / INV_DIAG_SCOPE_BOUNDED.
 
-This is the single most security-critical module in remote_agent: it is the
-last line of defense between a command pushed by Omni (or a compromised
-gateway) and an arbitrary shell on a customer VM. Every branch of
-_is_command_allowed must be covered, plus execute_command/execute_batch
-plumbing (timeout, exception, UPDATE_AGENT routing).
+This is the single most security-critical path in remote_agent: it is the last
+line of defense between a command pushed by Omni (or a compromised gateway) and
+an arbitrary shell on a customer VM.
+
+Chính sách nay đến từ `config/diagnostic_commands.yaml` qua
+`pkg.diagnostics.validator` (dùng chung với gateway và collectors) — nên các test ở
+đây kiểm TÍNH CHẤT AN TOÀN qua đường mới, không kiểm một frozenset hardcode. Tính chất
+"gateway và agent trả cùng câu trả lời" được pin ở
+tests/test_diagnostic_catalog_unification.py.
 """
 from __future__ import annotations
 
@@ -14,8 +18,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from remote_agent.command_executor import (
-    COMMAND_WHITELIST,
-    _CONTENT_READ_BLOCKED,
     _is_command_allowed,
     execute_batch,
     execute_command,
@@ -33,11 +35,33 @@ class TestIsCommandAllowed:
         assert allowed is False
         assert "command_not_whitelisted" in reason
 
-    @pytest.mark.parametrize("blocked_cmd", sorted(_CONTENT_READ_BLOCKED))
-    def test_content_read_commands_blocked(self, blocked_cmd):
+    @pytest.mark.parametrize("blocked_cmd", [
+        "strings", "od", "xxd", "hexdump", "base64", "nc", "ncat", "wget", "scp",
+        "sed", "cut", "sort", "uniq", "more", "less", "tac", "rev", "md5sum",
+    ])
+    def test_content_dump_commands_absent_from_catalog(self, blocked_cmd):
+        """Các lệnh dump/exfil thuần không có entry nào ⇒ vẫn bị chặn, nhưng nay vì
+        KHÔNG NẰM TRONG CATALOGUE, không vì một blocklist tên lệnh song song."""
         allowed, reason = _is_command_allowed(blocked_cmd, [])
         assert allowed is False
-        assert "data_exfil_blocked" in reason
+        assert "command_not_whitelisted" in reason
+
+    @pytest.mark.parametrize("path", [
+        "/var/lib/mysql/orders.ibd", "/var/lib/postgresql/base/1/2",
+        "/home/app/.env", "/root/.ssh/id_rsa", "/etc/shadow", "/var/backups/db.sql",
+        "/var/log/../../home/khach/.ssh/id_ed25519",
+    ])
+    def test_content_read_outside_scope_blocked(self, path):
+        """INV_DIAG_SCOPE_BOUNDED: `cat` được phép, nhưng chỉ trong phạm vi khai báo.
+        Đường dẫn chuẩn hoá TRƯỚC khi so, nên `..` không vòng ra ngoài được."""
+        allowed, reason = _is_command_allowed("cat", [path])
+        assert allowed is False, path
+        assert reason
+
+    @pytest.mark.parametrize("path", ["/proc/meminfo", "/etc/hosts", "/var/log/syslog"])
+    def test_content_read_inside_scope_allowed(self, path):
+        allowed, reason = _is_command_allowed("cat", [path])
+        assert allowed is True, reason
 
     @pytest.mark.parametrize("metachar_args", [
         ["foo;rm", "-rf"],
@@ -77,12 +101,14 @@ class TestIsCommandAllowed:
     def test_systemctl_write_subcommands_blocked(self, subcmd):
         allowed, reason = _is_command_allowed("systemctl", [subcmd, "nginx"])
         assert allowed is False
-        assert "systemctl_write_subcommand_blocked" in reason
+        # Hàng rào WRITE_VERBS chạy độc lập catalogue, nên một entry khai lỏng cũng
+        # không mở được đường mutate; `deny_subcommands` là lớp thứ hai.
+        assert "write_verb_blocked" in reason or "subcommand_denied" in reason
 
     def test_systemctl_unknown_subcommand_blocked(self):
         allowed, reason = _is_command_allowed("systemctl", ["frobnicate", "nginx"])
         assert allowed is False
-        assert "systemctl_subcommand_not_allowed" in reason
+        assert "subcommand_not_in_catalog" in reason
 
     def test_systemctl_with_no_args_allowed(self):
         # no subcommand at all — nothing to validate, falls through
@@ -93,10 +119,18 @@ class TestIsCommandAllowed:
     def test_global_write_flag_blocked_on_any_whitelisted_command(self, flag):
         allowed, reason = _is_command_allowed("ps", [flag])
         assert allowed is False
-        assert "write_flag_blocked" in reason
+        assert "write_verb_blocked" in reason
 
-    def test_whitelist_and_blocklist_are_disjoint(self):
-        assert COMMAND_WHITELIST.isdisjoint(_CONTENT_READ_BLOCKED)
+    def test_catalog_declares_no_write_verb_subcommand(self):
+        """Hàng rào ở tầng LOAD: không entry nào được khai một subcommand mang nghĩa
+        ghi. Kiểm ở đây nghĩa là một PR sửa YAML làm test VỠ, chứ không âm thầm cấp
+        quyền mutate."""
+        from pkg.diagnostics.command_catalog import WRITE_VERBS
+        from pkg.diagnostics.validator import get_catalog
+
+        for spec in get_catalog().specs.values():
+            offending = {s.lower() for s in spec.subcommands} & WRITE_VERBS
+            assert not offending, f"{spec.command}: {offending}"
 
     # --- CRITICAL #1: subcommand/flag allowlist (audit 2026-07-22) ---------
 
@@ -357,7 +391,7 @@ class TestExecuteCommand:
         mock_exec.assert_not_called()
         assert result["blocked"] is True
         assert result["rc"] == -1
-        assert "data_exfil_blocked" in result["block_reason"]
+        assert "secret_like_path" in result["block_reason"]
 
     @pytest.mark.asyncio
     async def test_allowed_command_runs_subprocess_and_returns_output(self):

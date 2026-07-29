@@ -186,6 +186,31 @@ if ! step_done "package"; then
   run cp -r "$AGENT_SRC/remote_agent" "$SITE_PKG/"
   log "  Installed remote_agent → $SITE_PKG/remote_agent ✓"
 
+  # pkg.diagnostics + pkg.domain: validator dùng chung với gateway. Không có nó,
+  # command_executor import lỗi ngay lúc khởi động.
+  if [[ -d "$AGENT_SRC/pkg" ]]; then
+    run cp -r "$AGENT_SRC/pkg" "$SITE_PKG/"
+    log "  Installed pkg (diagnostics/domain) → $SITE_PKG/pkg ✓"
+  fi
+
+  # Catalogue lệnh chẩn đoán. Layout site-packages KHÔNG giống repo, nên đường dẫn
+  # mặc định của loader (<root>/config/…) không đúng ở đây — phải trỏ tường minh qua
+  # OMNI_DIAG_CATALOG_FILE trong config.env (bước 4).
+  CATALOG_SRC=""
+  for cand in "$SCRIPT_DIR/config/diagnostic_commands.json" \
+              "$SCRIPT_DIR/config/diagnostic_commands.yaml" \
+              "$SCRIPT_DIR/../config/diagnostic_commands.yaml"; do
+    [[ -f "$cand" ]] && { CATALOG_SRC="$cand"; break; }
+  done
+  if [[ -n "$CATALOG_SRC" ]]; then
+    run mkdir -p "$INSTALL_DIR/config"
+    run cp "$CATALOG_SRC" "$INSTALL_DIR/config/$(basename "$CATALOG_SRC")"
+    CATALOG_DST="$INSTALL_DIR/config/$(basename "$CATALOG_SRC")"
+    log "  Installed diagnostic catalogue → $CATALOG_DST ✓"
+  else
+    warn "  KHÔNG tìm thấy catalogue lệnh chẩn đoán — agent sẽ từ chối MỌI lệnh (fail-closed)"
+  fi
+
   mark_done "package"
 fi
 
@@ -204,6 +229,7 @@ OMNI_AGENT_COLLECT_INTERVAL=${COLLECT_INTERVAL}
 OMNI_AGENT_LOG_PATHS=${LOG_PATHS}
 OMNI_AGENT_K8S_ENABLED=${K8S_ENABLED}
 OMNI_AGENT_NAMESPACE=${K8S_NAMESPACE}
+OMNI_DIAG_CATALOG_FILE=${CATALOG_DST:-$(ls "$INSTALL_DIR"/config/diagnostic_commands.* 2>/dev/null | head -1)}
 EOF
     chmod 600 "$CONFIG_DIR/config.env"
     chown -R "$AGENT_USER:$AGENT_USER" "$CONFIG_DIR"

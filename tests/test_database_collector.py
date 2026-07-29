@@ -287,7 +287,9 @@ class TestRunFunction:
             raise asyncio.TimeoutError()
 
         with patch("remote_agent.collectors.database.asyncio.wait_for", side_effect=_wf_timeout):
-            out, err, rc = await _run(["echo", "x"], timeout=0.001)
+            # `uname` thay `echo`: mọi lệnh của collector nay đi qua exec_guard, và
+            # `echo` không có entry trong catalogue chẩn đoán (đúng thiết kế).
+            out, err, rc = await _run(["uname", "-s"], timeout=0.001)
 
         assert rc == 1
         assert "timeout" in err
@@ -297,7 +299,7 @@ class TestRunFunction:
         from remote_agent.collectors.database import _run
 
         with patch("asyncio.create_subprocess_exec", side_effect=OSError("no such file")):
-            out, err, rc = await _run(["nonexistent_xyz"])
+            out, err, rc = await _run(["uname", "-s"])
 
         assert rc == 1
         assert "no such file" in err
@@ -306,6 +308,6 @@ class TestRunFunction:
     async def test_run_success(self):
         from remote_agent.collectors.database import _run
 
-        out, err, rc = await _run(["echo", "hello"])
+        out, err, rc = await _run(["uname", "-s"])
         assert rc == 0
-        assert "hello" in out
+        assert out.strip()

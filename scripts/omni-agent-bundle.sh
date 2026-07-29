@@ -62,6 +62,35 @@ rsync -a --exclude='__pycache__' --exclude='*.pyc' \
 rsync -a --exclude='__pycache__' --exclude='*.pyc' \
   "$REPO_ROOT/src/aoip" "$STAGE_DIR/"
 
+# Catalogue lệnh chẩn đoán + taxonomy domain: agent cưỡng chế bằng CHÍNH validator dùng
+# chung với gateway (src/pkg/diagnostics/validator.py), nên hai package này phải có
+# trong bundle. Thiếu ⇒ catalogue load lỗi ⇒ agent từ chối MỌI lệnh (fail-closed).
+rsync -a --exclude='__pycache__' --exclude='*.pyc' \
+  "$REPO_ROOT/src/pkg" "$STAGE_DIR/"
+# Chỉ giữ 2 package cần thiết — bundle không mang cả src/pkg/ (rag, reasoning,
+# observability... kéo theo dependency mà máy khách không có).
+find "$STAGE_DIR/pkg" -mindepth 1 -maxdepth 1 \
+  ! -name '__init__.py' ! -name 'diagnostics' ! -name 'domain' -exec rm -rf {} +
+
+# Catalogue dạng JSON: requirements-agent.txt KHÔNG có PyYAML (cố ý — không thêm
+# dependency vào tiến trình chạy trên hạ tầng khách). Loader tự fallback JSON khi
+# import yaml thất bại, nên bundle mang bản JSON sinh từ YAML gốc lúc build.
+mkdir -p "$STAGE_DIR/config"
+# Máy BUILD phải có PyYAML (repo .venv có); máy KHÁCH thì không cần.
+BUILD_PY="python3"
+[[ -x "$REPO_ROOT/.venv/bin/python" ]] && BUILD_PY="$REPO_ROOT/.venv/bin/python"
+"$BUILD_PY" - "$REPO_ROOT/config/diagnostic_commands.yaml" \
+         "$STAGE_DIR/config/diagnostic_commands.json" <<'PYEOF'
+import json, sys
+import yaml
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, encoding="utf-8") as fh:
+    data = yaml.safe_load(fh)
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, ensure_ascii=False, indent=1)
+print(f"    catalogue: {len(data['commands'])} lenh -> {dst}")
+PYEOF
+
 # Copy installer files
 cp "$REPO_ROOT/scripts/omni-agent-install.sh" "$STAGE_DIR/install.sh"
 cp "$REPO_ROOT/scripts/omni-agent.service"     "$STAGE_DIR/omni-agent.service"

@@ -15,6 +15,8 @@ import json
 import logging
 from typing import Any
 
+from pkg.domain.taxonomy import TRACK_PLAYBOOK
+
 logger = logging.getLogger(__name__)
 
 _READINESS_KEY = "omni:tier:readiness:{tenant}"
@@ -78,11 +80,18 @@ async def tier_readiness_loop(ctx: Any, stop: asyncio.Event) -> None:
                 entered_at = await _tier_entered_at(pool, tenant_id)
             set_autonomy_tier(tier)
             # G1↔G2: số quy trình đã tốt nghiệp là điều kiện nâng tier, không chỉ acceptance.
+            # CHỈ đếm track=playbook: đó là bằng chứng "quy trình đã chạy và được verify".
+            # Track advisory chỉ nói người vận hành ĐỒNG Ý với một chẩn đoán — đồng ý với
+            # chẩn đoán không phải uỷ quyền cho máy tự thực thi, nên không được cộng vào
+            # hạn mức nâng tier. Trước migration 0013 hai loại này nằm chung cột `domain`
+            # và bị đếm gộp.
             graduated = 0
             if repo is not None:
                 try:
                     graduated = len(
-                        await repo.list_playbook_graduations(tenant_id, state="GRADUATED")
+                        await repo.list_playbook_graduations(
+                            tenant_id, state="GRADUATED", track=TRACK_PLAYBOOK
+                        )
                     )
                 except Exception as exc:  # noqa: BLE001 — thiếu số liệu = 0 = fail-closed
                     logger.warning("tier_readiness: graduation read failed: %s", exc)

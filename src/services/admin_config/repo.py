@@ -14,9 +14,19 @@ import logging
 import time
 from typing import Any
 
+from pkg.domain.taxonomy import ALL_TRACKS, TRACK_PLAYBOOK, require_domain
 from services.admin_config import cache
 
 logger = logging.getLogger(__name__)
+
+
+def _require_track(value: str | None) -> str:
+    """Validate nguồn học. Ném lỗi thay vì im lặng: track sai ⇒ bằng chứng rơi vào
+    hạn mức quyền của loại khác, đúng cái bug migration 0013 phải sửa."""
+    v = (value or "").strip().lower()
+    if v not in ALL_TRACKS:
+        raise ValueError(f"track khong hop le: {value!r} — dung mot trong {ALL_TRACKS}")
+    return v
 
 
 def _now_token() -> int:
@@ -550,27 +560,40 @@ class AdminConfigRepo:
         playbook_id: str,
         success: bool,
         crat_ref: str | None = None,
+        track: str = TRACK_PLAYBOOK,
     ) -> dict[str, Any]:
         """Tăng success/fail counter, trả về hàng SAU khi cập nhật.
 
         Counter sống ở Postgres (không phải Redis) vì đây là bằng chứng dùng để nâng
         bậc tự trị — phải bền qua restart/flush cache, khác với counter hot-path.
+
+        ``track`` = NGUỒN HỌC (advisory | playbook | execution), tách khỏi ``domain``
+        kỹ thuật. Trước migration 0013 hai khái niệm này dùng chung một cột, nên
+        `list_playbook_graduations` trả về hỗn hợp và tier_loops đếm gộp.
+
+        ``domain`` đi qua ``require_domain`` — đây là đường GHI vào nguồn sự thật dùng
+        để trao quyền tự chủ; ghi một tên rác vào đây thì mọi báo cáo dựng trên nó lệch
+        mà không có lỗi nào bật ra.
         """
+        domain = require_domain(domain)
+        track = _require_track(track)
         col = "success_count" if success else "fail_count"
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 f"INSERT INTO omni_admin.playbook_graduation "  # noqa: S608 — col là literal nội bộ
-                f"(tenant_id, domain, playbook_id, state, {col}, crat_ref) "
-                f"VALUES ($1, $2, $3, 'DRAFT', 1, $4) "
-                f"ON CONFLICT (tenant_id, domain, playbook_id) DO UPDATE SET "
+                f"(tenant_id, domain, playbook_id, state, {col}, crat_ref, track) "
+                f"VALUES ($1, $2, $3, 'DRAFT', 1, $4, $5) "
+                f"ON CONFLICT (tenant_id, track, domain, playbook_id) DO UPDATE SET "
                 f"{col} = omni_admin.playbook_graduation.{col} + 1, "
                 f"crat_ref = COALESCE(EXCLUDED.crat_ref, omni_admin.playbook_graduation.crat_ref), "
                 f"updated_at = now() "
-                f"RETURNING tenant_id, domain, playbook_id, state, success_count, fail_count",
+                f"RETURNING tenant_id, domain, track, playbook_id, state, "
+                f"success_count, fail_count",
                 tenant_id,
                 domain,
                 playbook_id,
                 crat_ref,
+                track,
             )
             return dict(row) if row else {}
 
@@ -582,36 +605,51 @@ class AdminConfigRepo:
         playbook_id: str,
         state: str,
         crat_ref: str | None = None,
+        track: str = TRACK_PLAYBOOK,
     ) -> None:
+        domain = require_domain(domain)
+        track = _require_track(track)
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "UPDATE omni_admin.playbook_graduation SET state=$4, "
                 "crat_ref=COALESCE($5, crat_ref), updated_at=now() "
-                "WHERE tenant_id=$1 AND domain=$2 AND playbook_id=$3",
+                "WHERE tenant_id=$1 AND domain=$2 AND playbook_id=$3 AND track=$6",
                 tenant_id,
                 domain,
                 playbook_id,
                 state,
                 crat_ref,
+                track,
             )
 
     async def list_playbook_graduations(
-        self, tenant_id: str = "default", *, state: str | None = None
+        self,
+        tenant_id: str = "default",
+        *,
+        state: str | None = None,
+        track: str | None = None,
     ) -> list[dict[str, Any]]:
+        """Liệt kê graduation. ``track=None`` = mọi track (tương thích caller cũ).
+
+        Ai dùng con số này để NÂNG TIER phải truyền ``track`` tường minh — đếm gộp
+        advisory (người đồng ý với một chẩn đoán) với playbook (mutation đã verify) là
+        đếm hai loại bằng chứng khác bản chất vào cùng một hạn mức quyền.
+        """
+        clauses = ["tenant_id=$1"]
+        args: list[Any] = [tenant_id]
+        if state:
+            args.append(state)
+            clauses.append(f"state=${len(args)}")
+        if track:
+            args.append(_require_track(track))
+            clauses.append(f"track=${len(args)}")
+        where = " AND ".join(clauses)
         async with self._pool.acquire() as conn:
-            if state:
-                rows = await conn.fetch(
-                    "SELECT * FROM omni_admin.playbook_graduation "
-                    "WHERE tenant_id=$1 AND state=$2 ORDER BY updated_at DESC",
-                    tenant_id,
-                    state,
-                )
-            else:
-                rows = await conn.fetch(
-                    "SELECT * FROM omni_admin.playbook_graduation "
-                    "WHERE tenant_id=$1 ORDER BY updated_at DESC",
-                    tenant_id,
-                )
+            rows = await conn.fetch(
+                "SELECT * FROM omni_admin.playbook_graduation "  # noqa: S608 — where là literal nội bộ
+                f"WHERE {where} ORDER BY updated_at DESC",
+                *args,
+            )
             return [dict(r) for r in rows]
 
     # ---- list reads (Admin UI matrices/tables) ----------------------------

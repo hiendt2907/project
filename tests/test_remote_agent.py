@@ -909,7 +909,9 @@ class TestServicesRunHelper:
             raise _asyncio.TimeoutError()
 
         with patch("remote_agent.collectors.services.asyncio.wait_for", side_effect=_wf_timeout):
-            out, err, rc = await svc._run(["sleep", "999"])
+            # Lệnh phải có trong catalogue chẩn đoán, nếu không exec_guard chặn
+            # trước khi tới nhánh timeout đang được test.
+            out, err, rc = await svc._run(["uname", "-s"])
 
         assert rc == 1
         assert "timeout" in err.lower()

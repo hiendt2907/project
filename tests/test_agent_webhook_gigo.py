@@ -179,7 +179,9 @@ class TestQualityMetadata:
         env = kafka.decoded()[0]
         assert env["_quality_tier"] in ("critical", "high")
         assert env["_lm_eligible"] is True
-        assert env["_domain"] == "container_logs"   # remote_log_errors → container_logs domain
+        # remote_log_errors → nhánh container/pod log; giá trị nay là canonical
+        # `kubernetes` (`container_logs` cũ) — xem pkg/domain/taxonomy.py.
+        assert env["_domain"] == "kubernetes"
         assert env["_archive_eligible"] is True
 
     @pytest.mark.asyncio

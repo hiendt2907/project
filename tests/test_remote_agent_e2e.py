@@ -202,7 +202,8 @@ class TestE2ECommandChannelRoundTrip:
     async def test_full_round_trip_real_subprocess_execution(self, monkeypatch):
         """Simulates Omni-side enqueue, then drives the REAL agent-side
         poll -> execute -> submit cycle with a real read-only OS command
-        (`uname -a` is in COMMAND_WHITELIST and exists on every POSIX host).
+        (`uname -a` has an entry in config/diagnostic_commands.yaml and exists on
+        every POSIX host).
         """
         app = _build_app()
         agent = _make_emitter(monkeypatch, app)
@@ -267,7 +268,7 @@ class TestE2ECommandChannelRoundTrip:
             {"cmd_id": "x1", "command": "cat", "args": ["/etc/shadow"]},
         ])
         assert results[0]["blocked"] is True
-        assert "data_exfil_blocked" in results[0]["block_reason"]
+        assert "secret_like_path" in results[0]["block_reason"]
 
     @pytest.mark.asyncio
     async def test_poll_with_no_pending_commands_returns_empty(self, monkeypatch):

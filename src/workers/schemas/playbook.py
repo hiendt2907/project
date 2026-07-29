@@ -12,11 +12,28 @@ Bất biến:
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field, field_validator
 
-PlaybookDomain = Literal["k8s", "os", "network", "service", "application", "api", "hardware"]
+from pkg.domain.taxonomy import CANONICAL_DOMAINS, normalize_domain
+
+# Từ vựng domain là của `pkg.domain.taxonomy`, KHÔNG phải của module này. Liệt kê lại ở
+# đây chính là gốc của việc lệch từ vựng ('k8s' vs 'kubernetes', 'os' vs 'os_host').
+# Literal buộc phải viết literal tường minh (type checker không đọc được tuple runtime),
+# nên chốt bằng assert bên dưới: thêm domain vào taxonomy mà quên chỗ này ⇒ vỡ lúc import,
+# không phải vỡ âm thầm ở runtime nhiều tuần sau.
+PlaybookDomain = Literal[
+    "kubernetes", "os_host", "network", "storage", "database",
+    "service", "application", "security", "hardware",
+]
+
+if set(get_args(PlaybookDomain)) != set(CANONICAL_DOMAINS):  # pragma: no cover — invariant
+    raise RuntimeError(
+        "PlaybookDomain lech CANONICAL_DOMAINS: "
+        f"{sorted(set(get_args(PlaybookDomain)) ^ set(CANONICAL_DOMAINS))}"
+    )
+
 PlaybookBackend = Literal["k8s", "remote"]
 RollbackType = Literal["none", "snapshot", "compensating"]
 
@@ -74,7 +91,7 @@ class PlaybookSpec(BaseModel):
     playbook_id: str
     version: int = Field(default=1, ge=1)
     name: str
-    domain: PlaybookDomain = "k8s"
+    domain: PlaybookDomain = "kubernetes"
     trigger: TriggerMatch = Field(default_factory=TriggerMatch)
     proof_of_fault: ProofOfFault = Field(default_factory=ProofOfFault)
     steps: list[PlaybookStepSpec] = Field(min_length=1)
@@ -84,6 +101,20 @@ class PlaybookSpec(BaseModel):
     initial_graduation: str = GRAD_CANDIDATE
     approved_by: str = ""
     notes: str = ""
+
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _canon_domain(cls, v: Any) -> Any:
+        """Chuẩn hoá khi ĐỌC: PlaybookSpec đã lưu trong Redis từ trước dùng 'k8s'/'os'.
+
+        Không chuẩn hoá ở đây thì mọi spec cũ trong `pbspec:*` sẽ fail validate và
+        matcher im lặng không tìm được playbook nào — mất năng lực, không có lỗi nào bật.
+        Giá trị lạ vẫn để nguyên cho Literal từ chối (đường ghi phải ồn ào).
+        """
+        if not isinstance(v, str):
+            return v
+        canon = normalize_domain(v)
+        return canon if canon in CANONICAL_DOMAINS else v
 
     @field_validator("initial_graduation")
     @classmethod

@@ -36,7 +36,7 @@ class _Repo:
                         "graduated_at": ts}],
         }
 
-    async def list_playbook_graduations(self, tenant_id, *, state=None):
+    async def list_playbook_graduations(self, tenant_id, *, state=None, track=None):
         return list(self.rows.get(tenant_id, []))
 
 

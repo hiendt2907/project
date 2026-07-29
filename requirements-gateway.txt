@@ -6,3 +6,6 @@ aiokafka>=0.11.0
 prometheus-client>=0.21.0
 # Admin config store (Postgres omni_admin source-of-truth)
 asyncpg>=0.29.0
+# Catalogue lệnh chẩn đoán (config/diagnostic_commands.yaml). Loader có fallback JSON
+# cho bundle agent tối giản, nhưng gateway đọc chính file YAML nên cần parser thật.
+pyyaml>=6.0.0

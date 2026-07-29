@@ -1,7 +1,13 @@
 """Domain-aware signal detection for remote agent evidence.
 
-8 domains: os_system, network, storage, services, container_logs,
-           database, application, security, unknown.
+Từ vựng domain là của ``pkg.domain.taxonomy`` (canonical). Module này CHỈ phân loại;
+nó không được sở hữu tên domain. Trước 2026-07-30 nó tự khai 8 tên riêng
+(``os_system``/``services``/``container_logs``) không cầu nối với hai từ vựng khác,
+nên không thể trả lời "Omni làm được gì trên domain X" mà không đọc cả ba file.
+
+ĐỔI GIÁ TRỊ, KHÔNG ĐỔI HÀNH VI: mỗi hằng ``DOMAIN_*`` giữ nguyên vai trò trong cascade
+phân loại, chỉ trả về tên canonical. Ánh xạ 1-1 nên không có hai nhánh nào bị trộn:
+os_system→os_host, services→service, container_logs→kubernetes, còn lại giữ nguyên tên.
 
 Each domain defines keyword sets per severity tier (critical/high/medium/baseline).
 All keyword matching is case-insensitive against alert_hint + raw content.
@@ -13,24 +19,37 @@ import json
 import re
 from typing import Any
 
+from pkg.domain import taxonomy
+
 # ---------------------------------------------------------------------------
 # Domain taxonomy
 # ---------------------------------------------------------------------------
 
-DOMAIN_OS = "os_system"
-DOMAIN_NETWORK = "network"
-DOMAIN_STORAGE = "storage"
-DOMAIN_SERVICES = "services"
-DOMAIN_CONTAINER = "container_logs"
-DOMAIN_DATABASE = "database"
-DOMAIN_APPLICATION = "application"
-DOMAIN_SECURITY = "security"
-DOMAIN_UNKNOWN = "unknown"
+# Alias sang canonical — KHÔNG khai chuỗi mới ở đây. `DOMAIN_CONTAINER` trỏ
+# `kubernetes` vì log container/pod là bằng chứng tầng K8s; `DOMAIN_SERVICES` trỏ
+# `service` (số ít) — cùng khái niệm, chỉ khác cách viết cũ.
+DOMAIN_OS = taxonomy.OS_HOST
+DOMAIN_NETWORK = taxonomy.NETWORK
+DOMAIN_STORAGE = taxonomy.STORAGE
+DOMAIN_SERVICES = taxonomy.SERVICE
+DOMAIN_CONTAINER = taxonomy.KUBERNETES
+DOMAIN_DATABASE = taxonomy.DATABASE
+DOMAIN_APPLICATION = taxonomy.APPLICATION
+DOMAIN_SECURITY = taxonomy.SECURITY
+DOMAIN_UNKNOWN = taxonomy.UNKNOWN
 
+# 8 domain module này phân loại được — KHÁC `taxonomy.CANONICAL_DOMAINS` (9, có
+# `hardware`): không có probe nào của agent phát tín hiệu hardware, nên khai ở đây là
+# khai một năng lực không tồn tại.
 ALL_DOMAINS = (
     DOMAIN_OS, DOMAIN_NETWORK, DOMAIN_STORAGE, DOMAIN_SERVICES,
     DOMAIN_CONTAINER, DOMAIN_DATABASE, DOMAIN_APPLICATION, DOMAIN_SECURITY,
 )
+
+if len(set(ALL_DOMAINS)) != len(ALL_DOMAINS):  # pragma: no cover — invariant
+    raise RuntimeError("DOMAIN_* alias bi trung nhau: hai nhanh phan loai se bi tron")
+if set(ALL_DOMAINS) - set(taxonomy.CANONICAL_DOMAINS):  # pragma: no cover — invariant
+    raise RuntimeError("DOMAIN_* khong phai canonical: them alias vao pkg.domain.taxonomy")
 
 # ---------------------------------------------------------------------------
 # Probe-prefix → domain mapping (checked before content-based fallback)

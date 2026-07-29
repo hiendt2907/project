@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from remote_agent import exec_guard
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ _DOC_MAX_BYTES = 8000
 
 async def _run(cmd: list[str], timeout: float = 10.0) -> tuple[str, int]:
     """Run read-only subprocess. Returns (stdout, returncode). Never raises."""
+    # Cùng validator với command channel — collector KHÔNG có đường riêng.
+    reason = exec_guard.check(cmd)
+    if reason:
+        return "", 1
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,

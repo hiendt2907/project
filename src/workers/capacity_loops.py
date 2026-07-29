@@ -105,6 +105,11 @@ async def capacity_report_loop(ctx: Any, stop: asyncio.Event) -> None:
                 )
 
                 rates = await read_outcome_rates(ctx.redis, tenant_id=tenant)
+                # CỐ Ý đọc CẢ HAI track: báo cáo cho khách phải kể cả kinh nghiệm học từ
+                # phán quyết người (advisory), không chỉ playbook đã chạy. Nhưng mỗi hàng
+                # mang cột `track` và `build_sre_report` in nhãn "Học từ" — gộp mà KHÔNG
+                # nhãn chính là cái làm người đọc tưởng Omni đã tự xử lý được.
+                # Khác với tier_loops: ở đó là hạn mức QUYỀN, chỉ đếm track=playbook.
                 grads = []
                 if repo is not None:
                     try:

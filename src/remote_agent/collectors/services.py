@@ -20,6 +20,7 @@ import logging
 from typing import Any
 
 from remote_agent import pkg_origin
+from remote_agent import exec_guard
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ _HAPROXY_STATS_PORT = 9000  # prometheus-haproxy-exporter default
 
 async def _run(cmd: list[str], stdin: str | None = None, timeout: float = 8.0) -> tuple[str, str, int]:
     """Run subprocess, optionally pipe stdin. Never raises."""
+    # Cùng validator với command channel — collector KHÔNG có đường riêng.
+    reason = exec_guard.check(cmd)
+    if reason:
+        return "", f"blocked: {reason}", 1
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,

@@ -14,6 +14,7 @@ import asyncio
 import logging
 from typing import Any
 
+from remote_agent import exec_guard
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,10 @@ _NFS_STALE_ERROR_KEYWORDS = ("stale", "i/o error", "input/output", "transport en
 
 async def _run(cmd: list[str], timeout: float = 10.0) -> tuple[str, str, int]:
     """Run subprocess. Never raises."""
+    # Cùng validator với command channel — collector KHÔNG có đường riêng.
+    reason = exec_guard.check(cmd)
+    if reason:
+        return "", f"blocked: {reason}", 1
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,

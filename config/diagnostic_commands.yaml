@@ -1,0 +1,976 @@
+# ============================================================================
+# CATALOGUE LỆNH CHẨN ĐOÁN — NGUỒN SỰ THẬT DUY NHẤT
+# ============================================================================
+#
+# File này là nguồn sự thật DUY NHẤT cho câu hỏi "remote agent / gateway được
+# chạy lệnh gì". Trước đây danh sách bị hardcode ở ba chỗ (command_executor.py,
+# gateway/routes/agent_commands.py, và collectors gọi subprocess trực tiếp
+# không qua validator nào). Hai bản sao đồng bộ bằng tay là nợ chờ nổ.
+# Loader: `src/pkg/diagnostics/command_catalog.py`.
+#
+# CATALOGUE NÀY KHÔNG CẤP QUYỀN MUTATE — cho bất kỳ domain nào.
+# Mọi thay đổi trạng thái hệ thống vẫn CHỈ đi qua đường cũ: K8s SDK
+# (`MUTATE_TOOL_ALLOWLIST`) và capability có kiểu (`aoip/capabilities/`,
+# `MODE_HUMAN_APPROVED`). Loader ném `CatalogError` ngay lúc LOAD nếu bất kỳ
+# entry nào khai một subcommand mang nghĩa GHI (xem `WRITE_VERBS`) — nghĩa là
+# một PR sửa file này sẽ làm test/khởi động VỠ, chứ không âm thầm mở đường
+# mutate. Đừng cố "sửa cho qua" bằng cách nới loader.
+#
+# MỞ RỘNG KHÔNG SỬA CODE, KHÔNG SỬA FILE NÀY:
+#   OMNI_DIAG_COMMAND_CATALOG=/path/a.yaml:/path/b.yaml
+# Các file bổ sung merge theo `command`. Merge chỉ SIẾT được: `deny_subcommands`
+# và `deny_flags` HỢP LẠI với bản gốc, nên một file phủ ngoài không thể bỏ một
+# deny đã có. Dùng cơ chế này để siết theo môi trường khách, không phải để nới.
+#
+# NGUYÊN TẮC ĐẶT ENTRY:
+#   - Lệnh vừa đọc vừa ghi (kubectl, systemctl, docker, ip, nft) ⇒ LIỆT KÊ TRẮNG
+#     chỉ subcommand đọc, VÀ thêm `deny_subcommands` cho các động từ ghi nguy
+#     hiểm nhất. Phòng thủ hai lớp: whitelist rỗng-nghĩa-là-cho-tất-cả nên nếu
+#     ai đó xoá `subcommands`, `deny_subcommands` vẫn còn đứng.
+#   - `reads_content: true` ⇒ phải qua kiểm phạm vi đường dẫn
+#     (`is_path_readable`). Khai `read_allow` HẸP nhất còn dùng được; đừng mở `/`.
+#   - `deny_flags` dành cho các cờ biến một lệnh đọc thành lệnh ghi/chạy.
+#   - Mỗi entry có `note` giải thích VÌ SAO giới hạn như vậy. Người vận hành sẽ
+#     sửa file này; lý do quan trọng hơn mô tả.
+#
+# `HARD_READ_DENY` trong loader (dữ liệu DB, /home, /root, /mnt, backup...) và
+# mẫu tên bí mật (.env, id_rsa, shadow, .pgpass...) chặn cứng — không entry nào
+# override được, dù có khai trong `read_allow` (loader sẽ ném lỗi).
+# ============================================================================
+
+commands:
+
+  # ==========================================================================
+  # KUBERNETES
+  # ==========================================================================
+
+  - command: kubectl
+    domain: kubernetes
+    subcommands:
+      [get, describe, logs, top, events, explain, version, api-resources,
+       api-versions, cluster-info, auth, wait, options]
+    deny_subcommands:
+      [apply, delete, create, patch, edit, replace, scale, autoscale, rollout,
+       drain, cordon, uncordon, taint, annotate, label, exec, attach, cp,
+       port-forward, proxy, run, expose, debug, config, plugin, kustomize]
+    deny_flags:
+      ["--token", "--kubeconfig", "--as", "--as-group", "--server",
+       "--client-certificate", "--client-key", "--username", "--password",
+       "--insecure-skip-tls-verify", "-f", "--filename", "--patch", "--dry-run=none"]
+    timeout_s: 30.0
+    note: >-
+      Chỉ đường ĐỌC state cluster. `exec`/`cp`/`port-forward`/`proxy`/`debug` bị
+      chặn không phải vì chúng ghi mà vì chúng mở kênh chạy lệnh tuỳ ý bên trong
+      pod — vượt hoàn toàn khỏi biên catalogue này. `config` bị chặn cả cụm — kể
+      cả `config view` vốn chỉ đọc — vì `config set-context` đổi cluster đích của
+      MỌI lệnh sau đó, và không tách được ở tầng token đầu tiên. `--as`/`--token`/`--kubeconfig` bị
+      chặn vì đó là đổi DANH TÍNH: RBAC của Omni là hàng rào thật, cho phép mạo
+      danh là tự vô hiệu hoá nó.
+
+  - command: crictl
+    domain: kubernetes
+    subcommands:
+      [ps, pods, inspect, inspectp, inspecti, logs, stats, statsp, images,
+       imagefsinfo, info, version]
+    deny_subcommands:
+      [exec, attach, run, runp, create, start, stop, rm, rmp, rmi, pull, port-forward,
+       update, load, save, config, completion]
+    timeout_s: 25.0
+    note: >-
+      Đường chẩn đoán container khi kubelet/apiserver đã hỏng — lúc đó kubectl vô
+      dụng nên crictl là lối duy nhất còn nhìn thấy container. Chỉ subcommand đọc;
+      `exec`/`attach`/`run` chặn vì mở shell trong container.
+
+  - command: docker
+    domain: kubernetes
+    subcommands: [ps, inspect, logs, stats, images, version, info, top, port, history, events, diff]
+    deny_subcommands:
+      [run, exec, create, start, stop, restart, kill, rm, rmi, build, push, pull,
+       cp, commit, save, load, tag, network, volume, compose, swarm, login, system, container, image]
+    deny_flags: ["--host", "-H", "--context", "--config", "--tlskey", "--tlscert"]
+    timeout_s: 25.0
+    note: >-
+      Chỉ dùng khi host khách chạy Docker trực tiếp (không K8s). Chặn cả nhóm lệnh
+      trung gian `container`/`image`/`system` vì `docker container exec` là đường
+      vòng tới đúng thứ đã chặn ở dạng ngắn. `-H`/`--context` chặn vì trỏ được
+      sang daemon khác — bao gồm daemon mà agent không có quyền chẩn đoán.
+
+  - command: podman
+    domain: kubernetes
+    subcommands: [ps, inspect, logs, stats, images, version, info, top, port, history, events, diff, healthcheck]
+    deny_subcommands:
+      [run, exec, create, start, stop, kill, rm, rmi, build, push, pull, cp,
+       commit, save, load, tag, network, volume, pod, machine, system, container, image, unshare]
+    deny_flags: ["--url", "--remote", "--identity", "--connection"]
+    timeout_s: 25.0
+    note: >-
+      Cùng lý do với docker. `unshare` chặn thêm vì nó chạy lệnh tuỳ ý trong
+      namespace của user — không phải subcommand chẩn đoán dù nghe vô hại.
+
+  # ==========================================================================
+  # OS_HOST
+  # ==========================================================================
+
+  - command: ps
+    domain: os_host
+    deny_flags: ["--environ", "--environment", "e"]
+    timeout_s: 10.0
+    note: >-
+      Cờ BSD `e` (dạng cụm không dấu gạch, `ps auxe`) in ENVIRONMENT của MỌI
+      tiến trình — rò secret xuyên tiến trình, kể cả OMNI_AGENT_API_KEY của chính
+      agent. `--environ` chặn phòng thủ dù procps không định nghĩa. `-eo`/`-ef`
+      vẫn dùng được vì 'o'/'f' không thuộc cụm cờ env-dump.
+
+  - command: pgrep
+    domain: os_host
+    deny_flags: ["-signal", "--signal"]
+    timeout_s: 10.0
+    note: >-
+      Chỉ tìm PID theo tên. Chặn cờ signal vì pkill/pgrep dùng chung mã nguồn và
+      một số bản build nhận `--signal` ở cả hai — gửi tín hiệu là mutate.
+
+  - command: top
+    domain: os_host
+    deny_flags: ["-w"]
+    timeout_s: 15.0
+    note: >-
+      Chỉ dùng batch mode (`-b -n1`) trong thực tế; chế độ tương tác không có
+      TTY nên tự thoát. `-w` (ghi file cấu hình ~/.toprc) là ghi đĩa.
+
+  - command: free
+    domain: os_host
+    timeout_s: 10.0
+    note: Đọc thuần /proc/meminfo, không có cờ nào ghi. Nguồn cho lane SYS_RESOURCE.
+
+  - command: vmstat
+    domain: os_host
+    timeout_s: 15.0
+    note: Đọc thuần counter kernel. Không cờ ghi.
+
+  - command: iostat
+    domain: os_host
+    timeout_s: 20.0
+    note: Đọc thống kê I/O từ /proc/diskstats. Cần cho phân biệt CPU-bound vs IO-bound.
+
+  - command: mpstat
+    domain: os_host
+    timeout_s: 15.0
+    note: Per-CPU breakdown — phân biệt tải dồn một core với tải đều, thứ `top` gộp mất.
+
+  - command: pidstat
+    domain: os_host
+    timeout_s: 20.0
+    note: Quy tải về từng tiến trình. Đây là bước "WHO" trong advisory, không chỉ "WHAT".
+
+  - command: sar
+    domain: os_host
+    deny_flags: ["-o", "--outfile"]
+    timeout_s: 25.0
+    note: >-
+      Đọc lịch sử sysstat — dữ liệu duy nhất trả lời "trước sự cố có bất thường
+      không". `-o` ghi file nhị phân nên chặn.
+
+  - command: uptime
+    domain: os_host
+    timeout_s: 10.0
+    note: Load average + thời gian chạy. Reboot bất thường lộ ra ở đây trước tiên.
+
+  - command: uname
+    domain: os_host
+    timeout_s: 10.0
+    note: Kernel/arch — cần để chọn playbook đúng distro. Không cờ ghi.
+
+  - command: id
+    domain: os_host
+    timeout_s: 10.0
+    note: Xác nhận agent đang chạy dưới user nào — chứng cứ cho báo cáo least-privilege.
+
+  - command: who
+    domain: os_host
+    timeout_s: 10.0
+    note: Ai đang đăng nhập. Đọc /run/utmp, không cờ ghi.
+
+  - command: w
+    domain: os_host
+    timeout_s: 10.0
+    note: Như `who` kèm lệnh đang chạy. Thay đổi do người vận hành thường lộ ở đây.
+
+  - command: last
+    domain: os_host
+    deny_flags: ["-f", "--file", "-c"]
+    timeout_s: 15.0
+    note: >-
+      Lịch sử login/reboot. `-f` chỉ định file wtmp khác — đường vòng để đọc file
+      tuỳ ý qua parser của `last`, nên chặn.
+
+  - command: dmesg
+    domain: os_host
+    deny_flags: ["-C", "--clear", "-c", "--read-clear", "-w", "--follow", "-S", "--syslog"]
+    timeout_s: 20.0
+    note: >-
+      Ring buffer kernel — nguồn duy nhất thấy OOM-kill, lỗi disk, reset NIC.
+      `-C`/`-c` XOÁ buffer (mutate, và phá chứng cứ của lần chẩn đoán sau).
+      `-w` chặn vì chạy vô hạn, làm treo executor.
+
+  - command: lscpu
+    domain: os_host
+    timeout_s: 10.0
+    note: Topology CPU — cần để chuẩn hoá z-score theo số core (3σ trên host 4 core khác host 64 core).
+
+  - command: lsmod
+    domain: os_host
+    timeout_s: 10.0
+    note: Module kernel đã nạp. Chỉ đọc /proc/modules; modprobe/insmod KHÔNG có trong catalogue.
+
+  - command: sysctl
+    domain: os_host
+    deny_flags: ["-w", "--write", "-p", "--load", "-a-w", "--system"]
+    timeout_s: 10.0
+    note: >-
+      Chỉ ĐỌC tham số kernel (`sysctl -a`, `sysctl net.core.somaxconn`). `-w`,
+      `-p`, `--system` áp cấu hình mới — đó là mutate hệ thống ở mức nguy hiểm
+      nhất (đổi được cả network stack). Cùng một binary làm cả hai việc nên phải
+      chặn bằng cờ, không bằng subcommand.
+
+  - command: numactl
+    domain: os_host
+    deny_flags: ["--physcpubind", "--cpunodebind", "--membind", "--interleave", "--preferred", "-C", "-N", "-m", "-i"]
+    timeout_s: 10.0
+    note: >-
+      CHỈ dùng `numactl --hardware`/`--show`. Mọi cờ bind đều biến numactl thành
+      trình PHÓNG tiến trình khác với ràng buộc NUMA — tức thực thi tuỳ ý.
+
+  - command: dpkg
+    domain: os_host
+    deny_flags:
+      ["-i", "--install", "-r", "--remove", "-P", "--purge", "--configure",
+       "--unpack", "--force-all", "--force-depends", "--triggers-only", "-x", "-X"]
+    timeout_s: 20.0
+    note: >-
+      Chỉ truy vấn gói (`-l`, `-s`, `-L`, `-S`). Trả lời "phiên bản nginx nào
+      đang chạy" mà không cần đọc file. Mọi cờ đổi trạng thái gói bị chặn tường minh.
+
+  - command: rpm
+    domain: os_host
+    deny_flags:
+      ["-i", "--install", "-e", "--erase", "-U", "--upgrade", "-F", "--freshen",
+       "--reinstall", "--force", "--nodeps", "--replacepkgs", "--justdb", "--import"]
+    timeout_s: 20.0
+    note: >-
+      Chỉ query mode (`-q`, `-qa`, `-qi`, `-V`). Lưu ý `-i` mang HAI nghĩa: kèm
+      `-q` là "info" (đọc), đứng một mình là "install" (ghi). Không phân biệt
+      được an toàn ở tầng cờ nên chặn `-i`; dùng `--info` cùng `-q` thay thế.
+
+  - command: file
+    domain: os_host
+    reads_content: true
+    read_allow: ["/proc", "/sys", "/etc", "/var/log", "/run", "/usr", "/opt", "/tmp"]
+    timeout_s: 10.0
+    note: >-
+      Đọc magic bytes để nhận dạng loại file (log bị nén? core dump?).
+      `reads_content: true` vì có đọc byte thật, dù chỉ vài chục byte đầu — vẫn
+      phải qua kiểm phạm vi đường dẫn.
+
+  - command: ls
+    domain: os_host
+    timeout_s: 10.0
+    note: Metadata thư mục. `HARD_READ_DENY` không áp cho liệt kê tên, nhưng đường dẫn vẫn qua validator ở tầng gọi.
+
+  - command: find
+    domain: os_host
+    deny_flags:
+      ["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprintf",
+       "-fls", "-print0-exec", "-cat"]
+    timeout_s: 30.0
+    note: >-
+      Tìm file theo metadata (kích thước, mtime) — cách duy nhất trả lời "file
+      nào phình làm đầy đĩa". `-exec`/`-execdir`/`-ok` biến find thành trình chạy
+      lệnh TUỲ Ý (chặn đường vòng vượt toàn bộ catalogue); `-delete` và các cờ
+      `-fprint*` ghi đĩa.
+
+  - command: getconf
+    domain: os_host
+    timeout_s: 10.0
+    note: Hằng số hệ thống (PAGE_SIZE, CLK_TCK) — cần để quy đổi đơn vị counter /proc cho đúng.
+
+  # ==========================================================================
+  # NETWORK
+  # ==========================================================================
+
+  - command: ip
+    domain: network
+    subcommands: [addr, address, a, link, l, route, r, neigh, neighbour, n, rule, maddr, mroute, tunnel, tuntap, stats]
+    deny_subcommands: [add, del, delete, change, replace, set, flush, append, prepend, netns, monitor, xfrm, vrf, token]
+    timeout_s: 15.0
+    note: >-
+      `ip` là công cụ object+action: hành động ghi (`add`/`set`/`flush`) đứng ở
+      slot positional THỨ HAI, nên whitelist slot đầu KHÔNG đủ — phải deny theo
+      sự hiện diện của động từ ở bất kỳ đâu (tầng gọi làm việc đó dựa trên
+      `deny_subcommands` này). `netns` chặn vì `ip netns exec` chạy lệnh tuỳ ý.
+      `monitor` chặn vì chạy vô hạn.
+
+  - command: ss
+    domain: network
+    deny_flags: ["-K", "--kill", "-E"]
+    timeout_s: 15.0
+    note: >-
+      Ảnh socket đang mở — nguồn chính cho "port có LISTEN không", "bao nhiêu
+      TIME_WAIT". `-K` ĐÓNG socket đang sống: read-only tool có đúng một cờ ghi,
+      và nó cắt kết nối production.
+
+  - command: netstat
+    domain: network
+    timeout_s: 20.0
+    note: Bản cũ của `ss`, giữ cho host không có iproute2. Không có cờ mutate.
+
+  - command: ping
+    domain: network
+    deny_flags: ["-f", "--flood", "-l", "-A"]
+    timeout_s: 20.0
+    note: >-
+      Chỉ thăm dò reachability, luôn phải kèm `-c` (số packet) ở tầng gọi.
+      `-f`/`-l` (flood/preload) biến ping thành công cụ tạo tải — tự gây sự cố
+      trong lúc đang chẩn đoán sự cố.
+
+  - command: traceroute
+    domain: network
+    deny_flags: ["-F", "--dont-fragment"]
+    timeout_s: 45.0
+    note: >-
+      Định vị hop nào mất gói — dữ liệu duy nhất phân biệt "app chậm" với "đường
+      mạng giữa hai DC chậm". Timeout dài vì bản chất lệnh chờ TTL từng hop.
+
+  - command: mtr
+    domain: network
+    deny_flags: ["--curses", "-t"]
+    timeout_s: 60.0
+    note: >-
+      traceroute có thống kê mất gói theo hop. BẮT BUỘC dùng `--report -c N` ở
+      tầng gọi; chế độ curses/interactive chạy vô hạn nên chặn.
+
+  - command: dig
+    domain: network
+    deny_flags: ["-f", "-k", "-y"]
+    timeout_s: 20.0
+    note: >-
+      Phân giải DNS — sự cố "service không kết nối được" rất thường là DNS chứ
+      không phải mạng. `-f` đọc danh sách query từ file (đường vòng đọc file);
+      `-k`/`-y` mang khoá TSIG, không phải việc chẩn đoán.
+
+  - command: host
+    domain: network
+    timeout_s: 15.0
+    note: Bản gọn của dig, giữ cho host tối giản không có bind-utils đầy đủ.
+
+  - command: nslookup
+    domain: network
+    timeout_s: 15.0
+    note: Bản legacy; giữ vì nhiều image container chỉ có đúng lệnh này.
+
+  - command: arp
+    domain: network
+    deny_flags: ["-d", "-s", "-f", "--file"]
+    timeout_s: 10.0
+    note: >-
+      Đọc ARP cache — phát hiện trùng IP / ARP spoof (đầu vào cho lane SIEM).
+      `-d`/`-s` xoá/đặt entry là mutate bảng định tuyến L2.
+
+  - command: route
+    domain: network
+    subcommands: []
+    deny_subcommands: [add, del, delete, flush, change]
+    timeout_s: 10.0
+    note: Chỉ `route -n`. Động từ ghi của `route` là positional nên chặn qua deny_subcommands.
+
+  - command: ethtool
+    domain: network
+    deny_flags:
+      ["-s", "--change", "-A", "--pause", "-C", "--coalesce", "-G", "--set-ring",
+       "-K", "--offload", "-L", "--set-channels", "-N", "--config-nfc",
+       "-U", "--config-ntuple", "-X", "--set-rxfh-indir", "-E", "--change-eeprom",
+       "-f", "--flash", "-r", "--negotiate", "-p", "--identify", "--reset"]
+    timeout_s: 15.0
+    note: >-
+      Đọc trạng thái NIC (`-S` statistics, `-i` driver, không cờ = link/speed) —
+      cách duy nhất thấy lỗi tầng vật lý: rx_crc_errors, link flap, autoneg sai.
+      Danh sách deny dài vì ethtool có RẤT nhiều cờ ghi trực tiếp xuống firmware
+      NIC; `-E`/`-f` ghi EEPROM/flash, hỏng là hỏng vĩnh viễn.
+
+  - command: tcpdump
+    domain: network
+    deny_flags:
+      ["-w", "-W", "-z", "-Z", "-A", "-X", "-XX", "-x", "--post-rotate-command",
+       "-G", "-C", "-U", "-r"]
+    timeout_s: 30.0
+    note: >-
+      CÂN NHẮC KỸ, VÀ CÓ RỦI RO CÒN LẠI. Giữ vì có loại sự cố không có cách chẩn
+      đoán khác (TCP retransmit, RST đến từ đâu, handshake TLS đứt ở bước nào).
+      BẮT BUỘC ở tầng gọi: luôn có `-c <count>` VÀ giới hạn thời gian; không có
+      thì lệnh chạy vô hạn và ngốn đĩa/CPU host khách. Chặn `-w`/`-W`/`-G`/`-C`
+      (ghi pcap ra đĩa = tạo bản sao dữ liệu khách trên đĩa khách), `-z`/`-Z`
+      (`-z` chạy lệnh sau mỗi lần rotate = thực thi tuỳ ý), `-A`/`-x`/`-X`/`-XX`
+      (in PAYLOAD gói — đó là nội dung dữ liệu khách, gồm cả credential trong
+      request chưa mã hoá). Chỉ header/metadata được ra. `-r` chặn vì đọc pcap
+      file tuỳ ý, vòng qua kiểm phạm vi đường dẫn.
+
+  - command: nft
+    domain: network
+    subcommands: [list]
+    deny_subcommands: [add, create, insert, delete, flush, replace, rename, reset, import, monitor]
+    deny_flags: ["-f", "--file"]
+    timeout_s: 15.0
+    note: >-
+      CHỈ `nft list ruleset|tables|chains`. Firewall là nơi một lệnh sai cắt đứt
+      toàn bộ traffic production — nên whitelist đúng MỘT subcommand, và chặn
+      `-f` (nạp ruleset từ file, đường vòng làm mọi thứ).
+
+  - command: iptables
+    domain: network
+    deny_flags:
+      ["-A", "-I", "-D", "-R", "-F", "-X", "-N", "-E", "-P", "-Z", "-Y",
+       "--append", "--insert", "--delete", "--flush", "--delete-chain",
+       "--new-chain", "--policy", "--zero", "--replace"]
+    timeout_s: 15.0
+    note: >-
+      CHỈ `-L`/`-S`/`-n -v`. iptables không dùng subcommand mà dùng cờ để chọn
+      chế độ, nên hàng rào duy nhất là deny_flags và nó phải ĐẦY ĐỦ. `-Z` (zero
+      counter) cũng chặn: nó phá chính chứng cứ mà lần chẩn đoán sau cần.
+
+  - command: ip6tables
+    domain: network
+    deny_flags:
+      ["-A", "-I", "-D", "-R", "-F", "-X", "-N", "-E", "-P", "-Z", "-Y",
+       "--append", "--insert", "--delete", "--flush", "--delete-chain",
+       "--new-chain", "--policy", "--zero", "--replace"]
+    timeout_s: 15.0
+    note: Cùng lý do với iptables — IPv6 phải chặn riêng, không dùng chung binary.
+
+  - command: conntrack
+    domain: network
+    deny_flags: ["-D", "--delete", "-F", "--flush", "-U", "--update", "-I", "--create", "-E", "--event"]
+    timeout_s: 15.0
+    note: >-
+      `conntrack -L`/`-C` là cách duy nhất chứng minh "đầy bảng conntrack" — thủ
+      phạm kinh điển của drop ngẫu nhiên trên gateway. `-F` xoá bảng làm đứt mọi
+      kết nối NAT đang sống; `-E` chạy vô hạn.
+
+  - command: curl
+    domain: network
+    local_targets_only: true
+    deny_flags:
+      ["-o", "--output", "-O", "--remote-name", "--upload-file", "-T", "-d",
+       "--data", "--data-binary", "--data-raw", "--data-urlencode", "-F", "--form",
+       "-X", "--request", "-K", "--config", "--trace", "--trace-ascii",
+       "--dump-header", "-D", "--cookie-jar", "-c", "--create-dirs", "--proxy",
+       "-x", "--netrc", "--netrc-file", "-u", "--user", "-E", "--cert"]
+    timeout_s: 20.0
+    note: >-
+      CÂN NHẮC KỸ. curl/wget là công cụ EXFIL kinh điển — một lệnh là gửi được
+      toàn bộ nội dung file ra Internet. Giữ vì lane APP_HTTP cần chứng minh
+      "endpoint trả 5xx" từ CHÍNH host khách, không phải từ Omni (đường mạng
+      khác nhau ⇒ kết luận khác nhau). Ràng buộc: chỉ GET/HEAD — `-X` bị chặn
+      HOÀN TOÀN nên không đặt được method khác (POST/PUT/DELETE là mutate lên hệ
+      thống khách); mọi cờ ghi file (`-o`/`-O`/`-D`/`-c`/`--trace*`) bị chặn nên
+      không tạo được bản sao dữ liệu trên đĩa; mọi cờ GỬI body (`-d`/`-F`/`-T`)
+      bị chặn nên không đẩy được dữ liệu đi. `-u`/`--netrc`/`-E` chặn vì mang
+      credential vào lệnh, và credential đó sẽ nằm trong log CRAT. Tầng gọi nên
+      dùng `-sS -I` hoặc `-o /dev/null -w '%{http_code}'` — lưu ý dạng thứ hai
+      cần `-o` nên phải đi qua capability riêng, không qua catalogue này.
+
+  # ==========================================================================
+  # DATABASE
+  # Không entry DB nào đặt `reads_content: true`: các client này không nhận
+  # đường dẫn (cờ `-f`/`--file` bị chặn), nên hàng rào thật là `statement_verbs`
+  # — chỉ động từ chẩn đoán. KHÔNG cho SELECT tuỳ ý trên bảng nghiệp vụ.
+  # ==========================================================================
+
+  - command: mysql
+    domain: database
+    statement_verbs: [show, explain, describe, desc, status, help, use, select]
+    deny_flags:
+      ["-f", "--file", "--tee", "-T", "--html", "--xml", "-p", "--password",
+       "--init-command", "--local-infile", "--load-data-local-dir", "-o", "--safe-updates"]
+    timeout_s: 25.0
+    note: >-
+      `SHOW SLAVE STATUS`, `SHOW ENGINE INNODB STATUS`, `SHOW PROCESSLIST`,
+      `EXPLAIN` — bốn thứ này giải quyết phần lớn sự cố MySQL và không lệnh nào
+      đọc một hàng dữ liệu nghiệp vụ. `select` CÓ trong danh sách nhưng bị
+      validator giới hạn ở schema hệ thống (`_SYSTEM_SCHEMA_PREFIXES`:
+      information_schema/performance_schema/mysql/sys/stats/global_variables) —
+      `SELECT * FROM customers` bị từ chối, còn `SELECT … FROM stats.
+      stats_mysql_global` (ProxySQL) chạy được. Không có `select` thì collector
+      ProxySQL chết, mà chặn theo ĐỘNG TỪ là chặn sai chỗ: nguy hiểm nằm ở BẢNG
+      bị đọc, không ở động từ. `INV_DATA_RESIDENCY` vẫn giữ bằng kiểm schema.
+      `--init-command` chạy SQL tuỳ ý trước phiên (vòng qua kiểm động từ);
+      `--local-infile` đọc file local qua đường LOAD DATA; `-p` inline chặn vì
+      password sẽ rơi vào log CRAT (dùng file option phía khách).
+
+  - command: mysqladmin
+    domain: database
+    subcommands: [status, extended-status, ping, processlist, version, variables]
+    deny_subcommands: [shutdown, kill, flush-logs, flush-hosts, flush-tables, reload, refresh, password, create, drop, debug, start-slave, stop-slave]
+    timeout_s: 20.0
+    note: >-
+      Siết tối đa có chủ đích: mysqladmin chạy MỌI token non-option như một lệnh
+      RIÊNG theo thứ tự (`mysqladmin status shutdown` chạy cả hai), và cờ như
+      `-h`/`-u` ăn luôn token đứng sau làm giá trị — cả hai tính chất này đánh
+      bại kiểu quét "token non-flag đầu tiên". Nên: whitelist trắng động từ, và
+      tầng gọi không truyền cờ kết nối.
+
+  - command: psql
+    domain: database
+    statement_verbs: [select, show, explain, table]
+    deny_flags:
+      ["-f", "--file", "-o", "--output", "-L", "--log-file", "-w", "--no-password",
+       "-W", "--password", "-1", "--single-transaction", "--csv"]
+    timeout_s: 25.0
+    note: >-
+      Postgres khác MySQL: thông tin chẩn đoán KHÔNG nằm sau `SHOW` mà nằm trong
+      view hệ thống (`pg_stat_activity`, `pg_locks`, `pg_stat_replication`) và
+      chỉ truy cập được bằng SELECT. Nên `select` PHẢI có trong danh sách này —
+      đây là chỗ nới rõ ràng nhất của catalogue. Bù lại, tầng gọi PHẢI giới hạn
+      SELECT vào schema `pg_catalog`/`pg_stat_*`/`information_schema`; SELECT lên
+      bảng nghiệp vụ là vi phạm `INV_DATA_RESIDENCY` và phải bị chặn ở đó, không
+      ở đây. `-f`/`-o`/`-L` chặn vì đọc/ghi file.
+
+  - command: pg_isready
+    domain: database
+    timeout_s: 15.0
+    note: Chỉ trả exit code liveness. Không nhận SQL, không đọc dữ liệu — entry an toàn nhất của domain này.
+
+  - command: redis-cli
+    domain: database
+    statement_verbs:
+      [info, ping, dbsize, lastsave, latency, slowlog, memory, command, client,
+       role, time, type, ttl, object, debug-sleep, cluster-info, acl-whoami]
+    deny_flags:
+      ["--rdb", "--pipe", "--eval", "--bigkeys", "--memkeys", "--hotkeys",
+       "--scan", "--lru-test", "-x", "--cluster"]
+    timeout_s: 20.0
+    note: >-
+      `INFO`, `SLOWLOG GET`, `LATENCY`, `MEMORY STATS`, `CLIENT LIST` — đủ chẩn
+      đoán Redis mà không đọc một key nào. KHÔNG có `get`/`keys`/`scan`/`hgetall`
+      trong danh sách: key Redis của khách là dữ liệu nghiệp vụ. `--rdb` TẢI
+      TOÀN BỘ dataset về (exfil hoàn hảo trong một cờ); `--eval` chạy Lua tuỳ ý
+      (mutate); `--bigkeys`/`--hotkeys`/`--scan` quét toàn bộ keyspace, vừa lộ
+      tên key vừa nặng cho instance đang sự cố. `FLUSHALL`/`FLUSHDB` không cần
+      chặn riêng vì không nằm trong whitelist động từ.
+
+  - command: mongosh
+    domain: database
+    statement_verbs: [db.serverstatus, db.stats, db.currentop, db.hello, rs.status, sh.status, db.runcommand, explain, help, show]
+    deny_flags: ["--file", "-f", "--eval-file", "--norc"]
+    timeout_s: 25.0
+    note: >-
+      Chỉ các helper chẩn đoán ở cấp server/replica-set. `db.<collection>.find()`
+      KHÔNG có trong danh sách — đó là đọc document nghiệp vụ. `db.runCommand`
+      giữ lại vì nhiều chỉ số chỉ lấy được qua nó, nhưng tầng gọi phải whitelist
+      tên command bên trong.
+
+  - command: proxysql
+    domain: database
+    deny_flags: ["--initial", "--reload", "-c", "--config", "-D", "--datadir", "-f", "--foreground"]
+    timeout_s: 15.0
+    note: >-
+      Chỉ dùng `proxysql --version` để xác nhận build. Mọi chẩn đoán ProxySQL
+      THẬT đi qua admin interface bằng `mysql` (user `radmin`, xem
+      `feedback_proxysql_default_user`) và chịu `statement_verbs` của entry
+      `mysql`. `--initial` XOÁ SẠCH config DB của ProxySQL — cờ nguy hiểm nhất
+      trong toàn catalogue này, chặn tường minh.
+
+  # ==========================================================================
+  # STORAGE
+  # ==========================================================================
+
+  - command: df
+    domain: storage
+    timeout_s: 15.0
+    note: Đầy đĩa là nguyên nhân sự cố phổ biến nhất trên host khách. Không cờ ghi.
+
+  - command: du
+    domain: storage
+    timeout_s: 45.0
+    note: >-
+      Quy dung lượng về từng thư mục — bước "WHO" sau khi `df` cho biết "WHAT".
+      Timeout dài vì phải đi hết cây thư mục; tầng gọi nên luôn giới hạn `-d`.
+
+  - command: lsblk
+    domain: storage
+    timeout_s: 10.0
+    note: Bản đồ block device. Chỉ đọc sysfs.
+
+  - command: blkid
+    domain: storage
+    deny_flags: ["-g", "--garbage-collect"]
+    timeout_s: 15.0
+    note: UUID/loại filesystem. `-g` ghi lại cache blkid nên chặn.
+
+  - command: findmnt
+    domain: storage
+    timeout_s: 10.0
+    note: >-
+      Cây mount thật (đọc /proc/self/mountinfo) — cần để phân biệt "mount point
+      biến mất" với "filesystem read-only", hai triệu chứng nhìn giống nhau.
+
+  - command: stat
+    domain: storage
+    timeout_s: 10.0
+    note: Metadata inode (kích thước, mtime, quyền). Không đọc byte nội dung nên không cần read_allow.
+
+  - command: smartctl
+    domain: storage
+    deny_flags:
+      ["-t", "--test", "-s", "--smart", "-o", "--offlineauto", "-S", "--saveauto",
+       "-X", "--abort", "-F", "--firmwarebug", "--set"]
+    timeout_s: 25.0
+    note: >-
+      `smartctl -a`/`-H` là cảnh báo SỚM duy nhất cho ổ sắp chết
+      (Reallocated_Sector_Ct tăng) — giá trị dự báo cao nhất trong domain này.
+      `-t` KHỞI CHẠY self-test làm chậm ổ đang sự cố; `-s`/`-S`/`--set` ghi cấu
+      hình xuống firmware ổ.
+
+  - command: lvs
+    domain: storage
+    timeout_s: 15.0
+    note: Logical volume. Binary chỉ đọc; lvcreate/lvremove là binary KHÁC và không có trong catalogue.
+
+  - command: vgs
+    domain: storage
+    timeout_s: 15.0
+    note: Volume group — thấy được "hết free extent" trước khi snapshot đầy gây treo I/O.
+
+  - command: pvs
+    domain: storage
+    timeout_s: 15.0
+    note: Physical volume. Cùng nhóm với lvs/vgs, cùng lý do.
+
+  - command: mdadm
+    domain: storage
+    deny_flags:
+      ["--create", "-C", "--add", "-a", "--remove", "-r", "--fail", "-f",
+       "--stop", "-S", "--zero-superblock", "--grow", "-G", "--assemble", "-A",
+       "--build", "-B", "--manage", "--incremental", "--monitor"]
+    timeout_s: 20.0
+    note: >-
+      CHỈ `--detail`/`--examine`/`--query`. Phát hiện RAID degraded trước khi ổ
+      thứ hai chết. Toàn bộ cờ quản trị bị chặn vì `--fail`/`--remove` trên array
+      đang degraded là mất dữ liệu ngay lập tức.
+
+  - command: nfsstat
+    domain: storage
+    deny_flags: ["-z", "--zero"]
+    timeout_s: 15.0
+    note: NFS trên cust-edge là điểm treo I/O thật đã gặp ở lab. `-z` reset counter nên chặn.
+
+  # ==========================================================================
+  # SERVICE
+  # ==========================================================================
+
+  - command: systemctl
+    domain: service
+    subcommands:
+      [status, is-active, is-enabled, is-failed, is-system-running, list-units,
+       list-unit-files, list-sockets, list-timers, list-dependencies, list-jobs,
+       show, cat, help, get-default, show-environment]
+    deny_subcommands:
+      [start, stop, restart, reload, try-restart, reload-or-restart, enable,
+       disable, mask, unmask, kill, reset-failed, daemon-reload, daemon-reexec,
+       set-property, set-default, edit, isolate, poweroff, reboot, halt,
+       suspend, hibernate, switch-root, revert, link, preset, import-environment]
+    timeout_s: 20.0
+    note: >-
+      Ranh giới nguy hiểm nhất trong file này: cùng một binary vừa là công cụ
+      chẩn đoán chính của lane SYS_HARD_FAIL, vừa là cách khởi động lại
+      production. Whitelist trắng, và deny liệt kê ĐẦY ĐỦ mọi động từ ghi kể cả
+      `poweroff`/`reboot`/`isolate` (isolate đổi target = tắt hàng loạt service).
+      Remediation service PHẢI đi qua `aoip/capabilities` với `MODE_HUMAN_APPROVED`,
+      không qua đây.
+
+  - command: journalctl
+    domain: service
+    reads_content: true
+    read_allow: ["/var/log", "/run/log"]
+    deny_flags:
+      ["--vacuum-size", "--vacuum-time", "--vacuum-files", "--rotate", "--flush",
+       "--sync", "--relinquish-var", "--setup-keys", "--verify", "-f", "--follow",
+       "-D", "--directory", "--file", "--root", "--image"]
+    timeout_s: 30.0
+    note: >-
+      Log systemd là chứng cứ chính cho "service chết vì sao". `--vacuum-*`,
+      `--rotate`, `--flush` XOÁ/ĐỔI CHỖ log — vừa là mutate, vừa phá chứng cứ.
+      `-f` chạy vô hạn làm treo executor (tầng gọi phải dùng `-n`/`--since`).
+      `-D`/`--file`/`--root` chặn vì trỏ journal ở đường dẫn tuỳ ý, vòng qua
+      `read_allow`.
+
+  - command: initctl
+    domain: service
+    subcommands: [status, list, version, help]
+    deny_subcommands: [start, stop, restart, reload, emit]
+    timeout_s: 15.0
+    note: Chỉ cho host upstart cũ (không systemd). Cùng logic siết như systemctl.
+
+  - command: service
+    domain: service
+    subcommands: [status]
+    deny_subcommands: [start, stop, restart, reload, force-reload]
+    timeout_s: 20.0
+    note: >-
+      Wrapper SysV còn tồn tại trên nhiều distro. Đúng MỘT subcommand đọc; động
+      từ đứng ở slot thứ hai (`service nginx restart`) nên tầng gọi phải kiểm cả
+      hai token, `deny_subcommands` là hàng rào thứ hai.
+
+  # ==========================================================================
+  # APPLICATION — đọc nội dung log/config, `INV_DIAG_SCOPE_BOUNDED`
+  # `read_allow` cố tình HẸP: log ứng dụng nằm ở /var/log, cấu hình ở /etc,
+  # trạng thái runtime ở /proc + /run. Không mở `/`, không mở /home, /mnt (đã
+  # bị HARD_READ_DENY chặn cứng dù có khai).
+  # ==========================================================================
+
+  - command: cat
+    domain: application
+    reads_content: true
+    read_allow: ["/proc", "/sys", "/etc", "/var/log", "/run"]
+    timeout_s: 15.0
+    note: >-
+      `cat /proc/meminfo`, `cat /etc/nginx/nginx.conf` — không có cách nào chẩn
+      đoán tầng app mà không đọc nội dung. Đây là chỗ `INV_NO_DATA_EXFIL` cũ
+      (chặn theo TÊN LỆNH) được thay bằng chặn theo PHẠM VI: cat được phép, chỉ
+      trong 5 thư mục vận hành trên. `/var/lib/mysql`, `/home`, `.env`, khoá SSH
+      vẫn bị chặn cứng ở loader, không entry nào override được.
+
+  - command: tail
+    domain: application
+    reads_content: true
+    read_allow: ["/var/log", "/proc", "/run"]
+    timeout_s: 20.0
+    note: >-
+      Log mới nhất là chứng cứ đắt nhất khi sự cố đang diễn ra. `read_allow` hẹp
+      hơn `cat` (không /etc, không /sys) vì tail chỉ dùng cho log. Tầng gọi phải
+      dùng `-n`, KHÔNG `-f` (chạy vô hạn, treo executor).
+    deny_flags: ["-f", "--follow", "-F", "--retry"]
+
+  - command: head
+    domain: application
+    reads_content: true
+    read_allow: ["/var/log", "/proc", "/etc", "/run"]
+    timeout_s: 15.0
+    note: Đầu file — đọc header log đã rotate, hoặc vài dòng đầu config. Cùng phạm vi với tail + /etc.
+
+  - command: grep
+    domain: application
+    reads_content: true
+    read_allow: ["/var/log", "/proc", "/etc", "/run"]
+    deny_flags: ["-r", "-R", "--recursive", "--include", "--exclude-dir", "-f", "--file"]
+    timeout_s: 25.0
+    note: >-
+      Lọc log theo mẫu — bước biến 2GB log thành 20 dòng liên quan. Chặn `-r`/`-R`
+      vì grep đệ quy đi vượt qua đường dẫn đã kiểm (`is_path_readable` kiểm điểm
+      BẮT ĐẦU, không kiểm mọi file con); `-f` đọc mẫu từ file tuỳ ý.
+
+  - command: egrep
+    domain: application
+    reads_content: true
+    read_allow: ["/var/log", "/proc", "/etc", "/run"]
+    deny_flags: ["-r", "-R", "--recursive", "-f", "--file"]
+    timeout_s: 25.0
+    note: Bí danh `grep -E`, phải khai riêng vì hàng rào kiểm theo BASENAME lệnh.
+
+  - command: zgrep
+    domain: application
+    reads_content: true
+    read_allow: ["/var/log"]
+    deny_flags: ["-r", "-R", "--recursive", "-f", "--file"]
+    timeout_s: 30.0
+    note: >-
+      Log đã rotate + nén là nơi chứa chứng cứ của sự cố HÔM QUA. Chỉ /var/log vì
+      đó là chỗ duy nhất có file .gz đáng đọc.
+
+  - command: wc
+    domain: application
+    reads_content: true
+    read_allow: ["/var/log", "/proc", "/etc", "/run"]
+    timeout_s: 20.0
+    note: >-
+      Đếm dòng — biến "log có lỗi" thành "1.243 lỗi trong 5 phút", tức từ định
+      tính sang định lượng, thứ cần cho ngưỡng 3σ.
+
+  - command: jq
+    domain: application
+    reads_content: true
+    read_allow: ["/var/log", "/proc", "/etc", "/run"]
+    deny_flags: ["-f", "--from-file", "--rawfile", "--slurpfile", "--args", "--jsonargs"]
+    timeout_s: 20.0
+    note: >-
+      Log JSON (phần lớn app hiện đại) không đọc được bằng grep một cách đáng
+      tin. `-f`/`--rawfile`/`--slurpfile` nạp nội dung từ đường dẫn thứ hai —
+      vòng qua kiểm phạm vi vốn chỉ soi tham số file chính.
+
+  - command: awk
+    domain: application
+    reads_content: true
+    read_allow: ["/var/log", "/proc", "/etc", "/run"]
+    deny_flags: ["-i", "--include", "-f", "--file", "--exec", "-E"]
+    timeout_s: 25.0
+    note: >-
+      Tổng hợp cột trong log (đếm theo status code, tính p95 latency từ access
+      log). `-i inplace` GHI ĐÈ file gốc — awk là lệnh đọc duy nhất trong file
+      này có chế độ ghi tại chỗ. `-f` nạp script từ file; và lưu ý awk gọi được
+      `system()` trong script nên tầng gọi phải từ chối script chứa `system`
+      hoặc `|` — `deny_flags` KHÔNG đủ cho rủi ro này.
+
+  - command: nproc
+    domain: application
+    timeout_s: 10.0
+    note: Số CPU khả dụng cho tiến trình — mẫu số để quy đổi load average thành phần trăm.
+
+  # ==========================================================================
+  # SECURITY
+  # ==========================================================================
+
+  - command: lsof
+    domain: security
+    deny_flags: ["-k", "-K"]
+    timeout_s: 30.0
+    note: >-
+      "Tiến trình nào giữ file đã xoá làm đĩa không giải phóng", "tiến trình nào
+      mở port lạ" — cả hai đều là câu hỏi security lẫn storage. Đặt ở security vì
+      dùng chính cho lane SIEM (phát hiện binary lạ đang listen).
+
+  - command: auditctl
+    domain: security
+    deny_flags: ["-a", "-A", "-d", "-D", "-w", "-W", "-e", "-f", "-r", "-b", "--reset-lost", "-R"]
+    timeout_s: 15.0
+    note: >-
+      CHỈ `-l` (liệt kê rule) và `-s` (status). auditd là hệ thống ghi chứng cứ;
+      cho sửa rule của nó là cho phép làm mù chính nguồn chứng cứ SIEM. `-D` xoá
+      SẠCH mọi rule, `-e 0` tắt audit — hai lệnh đầu tiên một kẻ tấn công sẽ chạy.
+
+  - command: ausearch
+    domain: security
+    reads_content: true
+    read_allow: ["/var/log/audit", "/var/log"]
+    deny_flags: ["-if", "--input", "--input-logs"]
+    timeout_s: 30.0
+    note: >-
+      Truy vấn audit log — nguồn cho kill-chain reconstruction của lane
+      SIEM_SECURITY. `-if` chỉ định file đầu vào tuỳ ý, vòng qua `read_allow`.
+
+  - command: getenforce
+    domain: security
+    timeout_s: 10.0
+    note: SELinux đang enforce hay permissive. `setenforce` là binary KHÁC và không có trong catalogue.
+
+  - command: sestatus
+    domain: security
+    timeout_s: 10.0
+    note: Chi tiết trạng thái SELinux. Chỉ đọc, không có cờ ghi.
+
+  - command: aa-status
+    domain: security
+    timeout_s: 10.0
+    note: Tương đương sestatus cho AppArmor (Ubuntu) — host lab dùng AppArmor chứ không SELinux.
+
+  - command: fail2ban-client
+    domain: security
+    subcommands: [status, get, ping, version]
+    deny_subcommands: [set, start, stop, reload, restart, unban, ban, flushlogs, add]
+    timeout_s: 15.0
+    note: >-
+      `status <jail>` cho biết bao nhiêu IP đang bị chặn — chứng cứ brute-force
+      trực tiếp. `unban` là mutate, và tệ hơn: mở lại đường cho chính IP đang tấn công.
+
+  - command: ufw
+    domain: security
+    subcommands: [status, show, version]
+    deny_subcommands: [allow, deny, reject, limit, delete, insert, enable, disable, reset, default, logging]
+    timeout_s: 15.0
+    note: Chỉ đọc trạng thái firewall. Mọi động từ luật là mutate và cắt được traffic production.
+
+  - command: lastb
+    domain: security
+    deny_flags: ["-f", "--file"]
+    timeout_s: 20.0
+    note: >-
+      Login THẤT BẠI — tín hiệu brute-force SSH sớm nhất. Tách khỏi `last` vì
+      đọc btmp (file khác) và mang ý nghĩa security khác hẳn.
+
+  - command: faillog
+    domain: security
+    deny_flags: ["-r", "--reset", "-m", "--maximum", "-l", "--lock-time", "-u-r"]
+    timeout_s: 15.0
+    note: Đếm login thất bại theo user. `-r` RESET bộ đếm = xoá chứng cứ; `-m`/`-l` đổi chính sách khoá.
+
+  - command: getcap
+    domain: security
+    timeout_s: 15.0
+    note: >-
+      Binary nào có Linux capability — đường leo thang đặc quyền kinh điển bị bỏ
+      sót khi chỉ soi bit setuid. `setcap` là binary khác, không có trong catalogue.
+
+  - command: sshd
+    domain: security
+    deny_flags: ["-D", "-d", "-e", "-f", "-o", "-p", "-i"]
+    timeout_s: 15.0
+    note: >-
+      CHỈ `sshd -T` (dump cấu hình hiệu lực) — cách duy nhất biết chắc
+      PermitRootLogin/PasswordAuthentication thật sự đang là gì sau khi gộp mọi
+      Include và Match block; đọc `sshd_config` bằng `cat` cho kết quả SAI khi có
+      override. Mọi cờ khác chặn vì `sshd -D`/`-p` KHỞI CHẠY một daemon nghe port.
+
+  # ==========================================================================
+  # HARDWARE
+  # ==========================================================================
+
+  - command: lspci
+    domain: hardware
+    timeout_s: 15.0
+    note: >-
+      Kiểm kê thiết bị PCI — cần khi NIC/HBA biến mất khỏi hệ thống, triệu chứng
+      nhìn giống lỗi driver nhưng thực ra là lỗi phần cứng.
+
+  - command: lsusb
+    domain: hardware
+    timeout_s: 15.0
+    note: Thiết bị USB (gồm cả dongle license và USB-NIC gắn tạm mà không ai ghi lại).
+
+  - command: dmidecode
+    domain: hardware
+    deny_flags: ["--dump-bin", "--from-dump", "--set"]
+    timeout_s: 20.0
+    note: >-
+      Model máy, BIOS version, cấu hình DIMM — cần để đối chiếu lỗi ECC với đúng
+      khe cắm. `--dump-bin` ghi file nhị phân; `--from-dump` đọc file tuỳ ý.
+
+  - command: sensors
+    domain: hardware
+    deny_flags: ["-s", "--set", "-c", "--config-file"]
+    timeout_s: 15.0
+    note: >-
+      Nhiệt độ và quạt — throttling nhiệt biểu hiện y hệt "CPU chậm không rõ lý
+      do" ở tầng metric. `-s` GHI giá trị vào chip cảm biến.
+
+  - command: nvme
+    domain: hardware
+    subcommands: [list, id-ctrl, id-ns, smart-log, error-log, list-ns, show-regs, fw-log, self-test-log]
+    deny_subcommands:
+      [format, sanitize, write, write-zeroes, write-uncor, dsm, security-send,
+       reset, subsystem-reset, delete-ns, create-ns, attach-ns, detach-ns,
+       fw-download, fw-commit, fw-activate, set-feature, device-self-test]
+    timeout_s: 20.0
+    note: >-
+      `smart-log` cho wear-level và media error của SSD NVMe — cảnh báo sớm ổ hết
+      tuổi ghi. Deny dài và tường minh vì nvme-cli có `format`/`sanitize` XOÁ
+      SẠCH ổ trong một lệnh không hỏi lại; đây là cặp lệnh phá huỷ nhất trong mọi
+      binary xuất hiện ở file này.
+
+  - command: ipmitool
+    domain: hardware
+    subcommands: [sdr, sel, fru, mc-info, lan-print, sensor, chassis-status]
+    deny_subcommands:
+      [power, chassis, reset, raw, user, lan, mc, sol, bmc, hpm, delloem, set, sunoem]
+    timeout_s: 25.0
+    note: >-
+      SEL (system event log) của BMC là nơi duy nhất ghi lỗi phần cứng xảy ra khi
+      OS đã treo — không có nguồn nào khác thay thế được. Chặn `power`/`chassis`
+      (TẮT/BẬT máy vật lý — mutate ở mức không thể rollback bằng software) và
+      `raw` (gửi lệnh IPMI byte thô, vượt mọi whitelist subcommand).
