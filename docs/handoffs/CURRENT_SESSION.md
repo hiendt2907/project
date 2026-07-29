@@ -1,6 +1,6 @@
 # Current Session Handoff
 
-## ĐANG LÀM (deliverable 2) — đồng bộ taxonomy domain + catalogue lệnh chẩn đoán
+## ✅ XONG (deliverable 2) — `ccd9a77`, CHƯA PUSH — taxonomy domain + catalogue lệnh
 Thiết kế: `plans/unify-domain-and-diagnostic-catalog-2026-07-30.md`.
 
 **Hiện trạng đã khảo sát (runtime, không suy diễn):** BA từ vựng "domain" không cầu nối
@@ -17,8 +17,22 @@ validator hoàn toàn và đang chạy `cat` — chính lệnh nằm trong `_CON
   (`WRITE_VERBS` → entry khai động từ ghi thì load LỖI), `is_path_readable()` chống
   path traversal + chặn cứng thư mục dữ liệu DB/home/backup/secret
 
-**Subagent:** ✅ catalogue YAML (**99 lệnh / 9 domain**, 45 test) · ⏳ rewire agent+gateway
-dùng chung loader (xoá bản sao) + Dockerfile + bundle · ⏳ migration 0013 + adopt canonical.
+**Kết quả:** 6999 passed (baseline 6872) · migration 0013 áp lên cluster · gateway +
+worker pod xác minh bằng `import` thật (99 lệnh, 9 domain, 9/9 case chặn/cho phép đúng).
+
+**Con số then chốt:** `tier_loops` từng đếm **3 playbook tốt nghiệp** vào việc đề xuất
+nâng tier — số thật là **0**. Ba hàng đó là `track=advisory`, không phải playbook.
+
+**Phủ domain:** os_host 26 · network 18 · storage 12 · security 12 · application 10 ·
+database 7 · hardware 6 · kubernetes 4 · service 4 = **99 lệnh**.
+
+**3 lỗ hổng tự phát hiện + vá trong cùng đợt** (chi tiết ở commit message `ccd9a77`):
+`_SECRETISH` neo sai làm `server.key` đọc được · `curl` trỏ host bất kỳ (thêm
+`local_targets_only`, KHÔNG resolve hostname vì DNS rebinding) · `mysql` thiếu `select`
+làm ProxySQL collector chết (mở `select` nhưng giới hạn schema hệ thống).
+
+**Còn treo, cần user quyết:** `cat /etc/passwd` nay đọc được (`/etc` trong phạm vi;
+`/etc/shadow` + khoá vẫn chặn) — cố ý theo thiết kế, nêu rõ để bạn biết.
 
 ### Lỗ hổng trong loader TÔI viết, agent catalogue tìm ra — đã sửa
 `_SECRETISH` neo `(^|/)` nên `\.key`/`\.pem` chỉ khớp file **tên là** `.key`, không khớp
