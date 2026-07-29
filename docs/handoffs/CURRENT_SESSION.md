@@ -127,8 +127,28 @@ LaunchAgent `~/Library/LaunchAgents/com.omnisre.cloudflared.plist`.
 - Secret scan: 0 secret thật. `.gitignore` xác minh bằng `git add --dry-run`
 
 ## Blockers
-**Landing page chưa connect Cloudflare Pages** — code đã push xong, chỉ còn thao tác
-Dashboard của user (connect repo, output dir `cloudflare/pages`, custom domain `www`).
+**Landing page chưa deploy** — chờ user chạy `npx --yes wrangler@latest login`
+(mở browser, không tự động hoá được). Sau đó chạy `make deploy-landing`.
+
+## Landing page dùng DIRECT UPLOAD, KHÔNG nối GitHub (user chốt 2026-07-29)
+Ban đầu tôi hiểu nhầm thành "Pages tự build từ repo"; user yêu cầu rõ không dùng
+GitHub. Đã đổi sang `wrangler pages deploy` — chỉ thư mục `cloudflare/pages/` được
+đẩy lên, repo private không bị cấp quyền đọc cho Cloudflare.
+
+Lựa chọn này an toàn hơn thật sự: repo chứa manifest RBAC, tên topic Kafka, mẫu DSN
+và lịch sử commit liên quan pentest.
+
+`make deploy-landing` (target mới) có gate chặn upload nếu phát hiện `.md`/`.DS_Store`
+trong thư mục được phục vụ. Project name Cloudflare: `omnisre`.
+
+**Rò rỉ đã chặn kịp:** `cloudflare/pages/README.md` sẽ bị phục vụ công khai tại
+`www.omnisre.xyz/README.md` (tài liệu nội bộ, có nhắc cấu trúc repo + commit hash).
+Đã `git mv` ra `cloudflare/PAGES.md`. Cũng `git rm` `.nojekyll` (artifact GitHub
+Pages, Cloudflare không dùng). **Quy tắc: mọi file trong `cloudflare/pages/` đều
+public — không đặt tài liệu/ghi chú/file tạm vào đó.**
+
+Thư mục upload giờ đúng 5 file: `index.html` · `vi/index.html` · `style.css` ·
+`_headers` · `_redirects` (68K).
 
 ## ĐÃ COMMIT + PUSH (4 commit, 2026-07-29)
 `7ea24e7 → a496833`
@@ -191,11 +211,11 @@ OIDC → `app.omnisre.xyz/dex/auth` → callback → phiên portal. Gate cuối 
 Toàn bộ hệ thống public hoạt động đúng thiết kế.
 
 ## Next step chính xác
-1. **User connect Cloudflare Pages** (thao tác Dashboard, không tự động hoá được):
-   Workers & Pages → Create → Pages → Connect to Git → repo `hiendt2907/project`.
-   Framework preset **None**, build command **để trống**, output directory
-   `cloudflare/pages`, production branch `main`. Rồi Custom domains → `www.omnisre.xyz`.
-   Verify sau đó: `curl -sI https://www.omnisre.xyz/` và `.../vi/`.
+1. **User chạy `npx --yes wrangler@latest login`** (mở browser, chọn tài khoản có
+   zone `omnisre.xyz`). Rồi `make deploy-landing`. Sau lần deploy đầu, gắn custom
+   domain trong Dashboard: Workers & Pages → `omnisre` → Custom domains →
+   `www.omnisre.xyz`. Verify: `curl -sI https://www.omnisre.xyz/` và `.../vi/`,
+   kiểm header CSP không còn `'unsafe-inline'`.
 2. **User cất mật khẩu** ở scratchpad `ADMIN_PASSWORD.txt` rồi xoá file.
 3. Cân nhắc `brew upgrade cloudflared` (2026.5.0 → 2026.7.3).
 4. Việc cũ còn treo (mục dưới) — không thuộc deliverable này.

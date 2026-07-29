@@ -137,20 +137,26 @@ curl -sI -H 'Host: provider.ai-agent.local' http://192.168.139.2/ | head -1  # 2
 
 ---
 
-## Bước 2 — Landing page lên Cloudflare Pages
+## Bước 2 — Landing page lên Cloudflare Pages (Direct Upload)
 
-Dashboard → Workers & Pages → Create → Pages → Connect to Git.
+**Không nối repo vào Cloudflare.** Repo là private và chứa manifest RBAC, tên topic
+Kafka, mẫu DSN cùng lịch sử commit liên quan pentest; cấp cho Cloudflare quyền đọc
+nó chỉ để phục vụ 5 file tĩnh là mở một đường truy cập thừa. Direct Upload chỉ đẩy
+đúng thư mục `cloudflare/pages/`.
 
-| Trường | Giá trị |
-|---|---|
-| Framework preset | **None** |
-| Build command | *(trống)* |
-| Build output directory | `cloudflare/pages` |
-| Production branch | `main` |
+```bash
+npx --yes wrangler@latest login    # một lần duy nhất, mở browser
+make deploy-landing
+```
 
-Sau khi deploy: Custom domains → `www.omnisre.xyz`.
+Sau lần deploy đầu: Dashboard → Workers & Pages → `omnisre` → Custom domains →
+`www.omnisre.xyz`.
 
-Không cần GitHub Actions. Tích hợp native đủ, và không tạo thêm chỗ để rò rỉ API token.
+`make deploy-landing` chặn trước nếu có file `.md` hay `.DS_Store` lọt vào thư mục
+được phục vụ — **mọi file trong `cloudflare/pages/` đều truy cập được từ Internet**.
+
+Cũng không dùng GitHub Actions: repo đã gỡ toàn bộ workflow vì hết quota
+(commit `2038de1`). Pages build trên hạ tầng Cloudflare nên không tiêu phút Actions.
 
 ---
 

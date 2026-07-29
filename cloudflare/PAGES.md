@@ -5,14 +5,17 @@ không tài nguyên từ host ngoài. Đó là điều kiện để CSP siết t
 `default-src 'none'` và để dùng Cloudflare Pages Free mà không cần CI.
 
 ```
-cloudflare/pages/
+cloudflare/pages/          ← MỌI file trong đây đều được phục vụ CÔNG KHAI
 ├── index.html      EN  → https://www.omnisre.xyz/
 ├── vi/index.html   VI  → https://www.omnisre.xyz/vi/
 ├── style.css       dùng chung cho cả hai trang
-├── _headers        security headers + CSP
-├── _redirects      /console → app.omnisre.xyz
-└── .nojekyll
+├── _headers        security headers + CSP   (Pages không phục vụ file bắt đầu bằng _)
+└── _redirects      /console → app.omnisre.xyz
 ```
+
+⚠️ **Không đặt tài liệu, ghi chú hay file tạm vào `cloudflare/pages/`.** Mọi thứ trong
+đó đều truy cập được từ Internet. Chính file README này từng nằm trong `pages/` và sẽ
+bị phục vụ tại `www.omnisre.xyz/README.md` — đã chuyển ra ngoài.
 
 ## Vì sao hai trang riêng thay vì một nút chuyển ngôn ngữ
 
@@ -27,21 +30,28 @@ hai bản trôi lệch nhau về giao diện.
 
 **Sửa nội dung phải sửa CẢ HAI file.** Không có cơ chế nào ép điều đó — hãy tự kiểm.
 
-## Cấu hình Cloudflare Pages
+## Deploy — Direct Upload, KHÔNG qua GitHub
 
-| Trường | Giá trị |
-|---|---|
-| Framework preset | **None** |
-| Build command | *(để trống)* |
-| Build output directory | `cloudflare/pages` |
-| Root directory | `/` |
-| Production branch | `main` |
+Repo này là private và chứa manifest RBAC, tên topic Kafka, mẫu DSN cùng lịch sử
+commit liên quan pentest. Nối nó vào Cloudflare chỉ để phục vụ 5 file tĩnh là mở một
+đường truy cập không cần thiết. Dùng Direct Upload: chỉ đúng thư mục `pages/` được
+đẩy lên, Cloudflare không đọc gì khác.
 
-Custom domain: `www.omnisre.xyz`.
+```bash
+make deploy-landing          # = wrangler pages deploy cloudflare/pages
+```
 
-Không cần GitHub Actions — tích hợp Pages ↔ GitHub native đã đủ. Quan trọng hơn:
-**Pages build trên hạ tầng Cloudflare, không tiêu phút GitHub Actions** (repo này đã
-gỡ toàn bộ workflow vì hết quota, xem commit `2038de1`).
+Lần đầu cần đăng nhập một lần (mở browser):
+
+```bash
+npx --yes wrangler@latest login
+```
+
+Sau lần deploy đầu, gắn custom domain trong Dashboard:
+Workers & Pages → `omnisre` → Custom domains → `www.omnisre.xyz`.
+
+Không dùng GitHub Actions, và cũng không dùng tích hợp Pages ↔ GitHub. Repo đã gỡ
+toàn bộ workflow vì hết quota (commit `2038de1`).
 
 ## Ràng buộc bảo mật — đọc trước khi sửa
 

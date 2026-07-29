@@ -5,9 +5,17 @@ port trên router, **không** cần IP tĩnh. Core vẫn chạy trên MacBook (O
 
 ```
 cloudflare/
-├── pages/     landing page tĩnh → www.omnisre.xyz (Cloudflare Pages)
+├── PAGES.md   tài liệu cho landing page (CỐ Ý nằm ngoài pages/)
+├── pages/     landing page tĩnh → www.omnisre.xyz — MỌI file trong đây là public
 ├── tunnel/    cấu hình + LaunchAgent + script cho cloudflared
 └── k8s/       template config chứa secret (KHÔNG commit bản đã điền)
+```
+
+Landing page deploy bằng **Direct Upload**, không nối repo vào Cloudflare:
+
+```bash
+npx --yes wrangler@latest login    # một lần
+make deploy-landing
 ```
 
 Manifest Kubernetes của mặt public **không** nằm ở đây — chúng theo convention sẵn có
