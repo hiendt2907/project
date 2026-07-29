@@ -1,0 +1,43 @@
+# Cloudflare Tunnel — mẫu cấu hình cho Omni Console public.
+# Copy sang ~/.cloudflared/config.yml rồi thay placeholder. KHÔNG commit bản đã điền
+# (nó lộ tunnel ID; credentials JSON thì tuyệt đối không được vào git).
+#
+#   cp cloudflare/tunnel/config.example.yml ~/.cloudflared/config.yml
+#   # thay __CLOUDFLARE_TUNNEL_ID__ và __HOME__
+#   cloudflared tunnel ingress validate --config ~/.cloudflared/config.yml
+#
+# Named tunnel, KHÔNG dùng Quick Tunnel (URL ngẫu nhiên, không ổn định, không dùng
+# cho thứ có Access ở trước).
+
+tunnel: __CLOUDFLARE_TUNNEL_ID__
+credentials-file: __HOME__/.cloudflared/__CLOUDFLARE_TUNNEL_ID__.json
+
+# Log vừa đủ để chẩn đoán; không log body/header (tránh lọt cookie phiên).
+loglevel: info
+
+ingress:
+  # ── Omni Console ────────────────────────────────────────────────────────────
+  # Đích là Traefik LoadBalancer của OrbStack, KHÔNG phải từng Service riêng lẻ.
+  # Nhờ vậy toàn bộ routing (/auth, /api/provider/v1, /dex, /) và mọi middleware
+  # hiện có được tái dùng nguyên vẹn — xem k8s/ingress/omnisre-public.yaml.
+  - hostname: app.omnisre.xyz
+    service: http://192.168.139.2:80
+    originRequest:
+      # KHÔNG đặt httpHostHeader: Ingress `omnisre-public-console` khai báo đúng
+      # host app.omnisre.xyz, nên Host gốc phải được giữ nguyên để Traefik khớp.
+      connectTimeout: 10s
+      # SSE/streaming cần chunked; tắt sẽ buffer toàn bộ response.
+      disableChunkedEncoding: false
+      # Giữ kết nối lâu cho stream (nếu console có route SSE).
+      tcpKeepAlive: 30s
+      noHappyEyeballs: false
+
+  # ── Catch-all: bắt buộc, phải là mục CUỐI ───────────────────────────────────
+  # Mọi hostname khác trỏ vào tunnel này đều trả 404. Đây là thứ ngăn ai đó dựng
+  # DNS trỏ vào tunnel rồi chạm tới dịch vụ nội bộ.
+  - service: http_status:404
+
+# CỐ Ý KHÔNG có ở đây (chưa public ở iteration này — xem ADR 0001):
+#   api.omnisre.xyz    → omni-gateway
+#   agent.omnisre.xyz  → agent runtime
+# Mở chúng là một phase riêng, cần service authentication + rate limiting + verify.

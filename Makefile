@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: agent-bundle agent-bundle-offline agent-keygen publish-agent-release tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap e2e-portal product-release-gate chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
+.PHONY: sync-public sync-public-ui sync-public-backend sync-public-all agent-bundle agent-bundle-offline agent-keygen publish-agent-release tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap e2e-portal product-release-gate chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
 
 NS ?= multi-agent
 
@@ -162,6 +162,23 @@ deploy-fullstack: docker-worker ## Build image + deploy omni-fullstack (single p
 	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-fullstack.yaml
 	./scripts/with_working_kube.sh rollout restart deployment/omni-fullstack -n multi-agent
 	./scripts/with_working_kube.sh rollout status deployment/omni-fullstack -n multi-agent --timeout=180s
+
+## ── Public plane (app.omnisre.xyz) ───────────────────────────────────────────
+## Đồng bộ code local lên mặt public. Script tự build image RỒI so imageID của pod
+## với image local — `rollout restart` một mình KHÔNG build gì (imagePullPolicy:
+## IfNotPresent + tag :latest), nên "rollout successful" là tín hiệu giả.
+## Mặc định KHÔNG đụng lab .local; dùng sync-public-all nếu muốn cả hai.
+sync-public: ## Build + deploy UI và backend lên public plane
+	bash scripts/sync_public_plane.sh
+
+sync-public-ui: ## Chỉ Next.js shell → aoip-provider-web-public
+	bash scripts/sync_public_plane.sh --ui
+
+sync-public-backend: ## Chỉ FastAPI console → aoip-provider-portal-public
+	bash scripts/sync_public_plane.sh --backend
+
+sync-public-all: ## Đồng bộ CẢ public lẫn lab .local (blast radius rộng hơn)
+	bash scripts/sync_public_plane.sh --with-lab
 
 deploy-kafka:
 	./scripts/with_working_kube.sh apply -f k8s/kafka/kafka-single.yaml

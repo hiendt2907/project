@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Omni — Autonomous SRE for Kubernetes</title>
+<meta name="description" content="Omni is a multi-agent SRE automation platform that diagnoses Kubernetes and Linux infrastructure incidents through four evidence lanes and executes governed remediation with a cryptographic audit trail.">
+<meta property="og:title" content="Omni — Autonomous SRE for Kubernetes">
+<meta property="og:description" content="Multi-agent SRE automation: four evidence lanes, local LLM reasoning, governed remediation, cryptographic audit trail.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://www.omnisre.xyz/">
+<link rel="canonical" href="https://www.omnisre.xyz/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%235eead4' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%235eead4'/%3E%3C/svg%3E">
+<style>
+:root{
+  --ink:#0b0e14;
+  --ink-2:#11161f;
+  --line:#1e2733;
+  --line-2:#2b3644;
+  --fg:#e6edf6;
+  --fg-dim:#8b9bb0;
+  --fg-faint:#5d6b7d;
+  --acc:#5eead4;
+  --acc-2:#7dd3fc;
+  --warn:#fbbf24;
+  --danger:#f87171;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+  --measure:min(72ch,100%);
+  --gut:clamp(1.25rem,5vw,4rem);
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--ink);color:var(--fg);
+  font-family:var(--sans);line-height:1.6;
+  font-size:clamp(1rem,.96rem+.2vw,1.075rem);
+  overflow-x:hidden;
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(60rem 40rem at 78% -10%, rgba(94,234,212,.10), transparent 60%),
+    radial-gradient(50rem 36rem at 6% 8%, rgba(125,211,252,.07), transparent 60%);
+}
+main,header,footer{position:relative;z-index:1}
+a{color:var(--acc-2);text-decoration:none;border-bottom:1px solid rgba(125,211,252,.3);transition:border-color .2s,color .2s}
+a:hover{color:var(--acc);border-color:var(--acc)}
+a:focus-visible{outline:2px solid var(--acc);outline-offset:3px;border-radius:2px}
+.wrap{max-width:78rem;margin:0 auto;padding-inline:var(--gut)}
+h1,h2,h3{line-height:1.12;letter-spacing:-.022em;margin:0}
+.eyebrow{
+  font-family:var(--mono);font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--acc);margin:0 0 1.25rem
+}
+
+/* ---------- header ---------- */
+header{border-bottom:1px solid var(--line)}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding-block:1.15rem}
+.brand{display:flex;align-items:center;gap:.65rem;font-family:var(--mono);font-weight:600;letter-spacing:-.01em}
+.dot{width:.55rem;height:.55rem;border-radius:50%;background:var(--acc);box-shadow:0 0 0 4px rgba(94,234,212,.14)}
+.bar nav{display:flex;gap:1.5rem;font-size:.86rem;color:var(--fg-dim)}
+.bar nav a{border:0;color:var(--fg-dim)}
+.bar nav a:hover{color:var(--fg)}
+@media(max-width:680px){.bar nav{display:none}}
+
+/* ---------- hero ---------- */
+.hero{padding-block:clamp(4rem,10vw,8rem) clamp(3rem,7vw,5rem)}
+.hero h1{
+  font-size:clamp(2.35rem,1.1rem+5.4vw,5rem);font-weight:680;
+  max-width:18ch;text-wrap:balance
+}
+.hero h1 em{font-style:normal;color:var(--acc);}
+.lede{margin:1.75rem 0 0;max-width:var(--measure);color:var(--fg-dim);font-size:clamp(1.05rem,1rem+.4vw,1.3rem)}
+.hero-meta{
+  display:flex;flex-wrap:wrap;gap:.5rem;margin-top:2.25rem;
+  font-family:var(--mono);font-size:.75rem
+}
+.tag{
+  border:1px solid var(--line-2);border-radius:2rem;padding:.35rem .85rem;
+  color:var(--fg-dim);background:rgba(255,255,255,.015)
+}
+
+/* ---------- stats strip ---------- */
+.strip{
+  border-block:1px solid var(--line);
+  background:linear-gradient(180deg,rgba(255,255,255,.018),transparent)
+}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line)}
+@media(max-width:820px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--ink);padding:2rem clamp(1rem,2.5vw,2rem)}
+.stat b{display:block;font-family:var(--mono);font-size:clamp(1.6rem,1.2rem+1.4vw,2.4rem);font-weight:600;color:var(--fg);letter-spacing:-.03em}
+.stat span{display:block;margin-top:.4rem;font-size:.8rem;color:var(--fg-faint);line-height:1.45}
+
+/* ---------- sections ---------- */
+section{padding-block:clamp(3.5rem,8vw,6.5rem)}
+section + section{border-top:1px solid var(--line)}
+h2{font-size:clamp(1.6rem,1.2rem+1.5vw,2.5rem);font-weight:640;max-width:20ch;text-wrap:balance}
+.sub{margin:1.1rem 0 0;max-width:var(--measure);color:var(--fg-dim)}
+
+/* problem */
+.split{display:grid;grid-template-columns:1fr 1fr;gap:clamp(2rem,5vw,4.5rem);align-items:start}
+@media(max-width:900px){.split{grid-template-columns:1fr}}
+.pain{list-style:none;margin:0;padding:0;display:grid;gap:1.1rem}
+.pain li{display:grid;grid-template-columns:auto 1fr;gap:.9rem;align-items:baseline;color:var(--fg-dim)}
+.pain b{color:var(--fg);font-weight:600}
+.mark{font-family:var(--mono);color:var(--danger);font-size:.9rem}
+
+/* lanes */
+.lanes{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);margin-top:3rem;border:1px solid var(--line)}
+@media(max-width:980px){.lanes{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.lanes{grid-template-columns:1fr}}
+.lane{background:var(--ink-2);padding:1.85rem 1.5rem;transition:background .25s}
+.lane:hover{background:#151c27}
+.lane .n{font-family:var(--mono);font-size:.72rem;color:var(--acc);letter-spacing:.12em}
+.lane h3{margin:.85rem 0 .6rem;font-size:1.02rem;font-weight:620}
+.lane p{margin:0;font-size:.88rem;color:var(--fg-dim);line-height:1.55}
+
+/* pipeline */
+.flow{
+  margin-top:2.75rem;border:1px solid var(--line);border-radius:.5rem;
+  background:var(--ink-2);padding:clamp(1.25rem,3vw,2rem);
+  overflow-x:auto
+}
+.flow pre{
+  margin:0;font-family:var(--mono);font-size:.79rem;line-height:1.85;
+  color:var(--fg-dim);white-space:pre
+}
+.flow .hl{color:var(--acc)}
+.flow .hl2{color:var(--acc-2)}
+.flow .gate{color:var(--warn)}
+
+/* governance cards */
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:1.25rem;margin-top:3rem}
+@media(max-width:900px){.cards{grid-template-columns:1fr}}
+.card{
+  border:1px solid var(--line);border-radius:.5rem;padding:1.75rem;
+  background:linear-gradient(180deg,rgba(255,255,255,.022),transparent)
+}
+.card h3{font-size:1rem;font-weight:620;margin-bottom:.7rem}
+.card p{margin:0;font-size:.89rem;color:var(--fg-dim)}
+.card code{font-family:var(--mono);font-size:.82em;color:var(--acc);background:rgba(94,234,212,.07);padding:.1em .4em;border-radius:.2em}
+
+/* tiers table */
+.tiers{width:100%;border-collapse:collapse;margin-top:2.5rem;font-size:.9rem}
+.tiers th,.tiers td{text-align:left;padding:.95rem 1rem;border-bottom:1px solid var(--line);vertical-align:top}
+.tiers th{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-faint);font-weight:500}
+.tiers td:first-child{font-family:var(--mono);color:var(--acc);white-space:nowrap}
+.tiers td{color:var(--fg-dim)}
+.tbl-scroll{overflow-x:auto}
+
+/* stack */
+.stack{display:grid;grid-template-columns:repeat(auto-fill,minmax(15rem,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin-top:2.5rem}
+.st{background:var(--ink);padding:1.4rem 1.35rem}
+.st dt{font-family:var(--mono);font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-faint)}
+.st dd{margin:.55rem 0 0;font-size:.9rem;color:var(--fg)}
+
+/* status */
+.status{display:grid;gap:.9rem;margin-top:2.25rem;max-width:var(--measure)}
+.status div{display:grid;grid-template-columns:auto 1fr;gap:.85rem;align-items:baseline;color:var(--fg-dim);font-size:.94rem}
+.ok{color:var(--acc);font-family:var(--mono)}
+.wip{color:var(--warn);font-family:var(--mono)}
+
+/* cta */
+.cta{border-top:1px solid var(--line);background:linear-gradient(180deg,rgba(94,234,212,.035),transparent)}
+.cta h2{max-width:24ch}
+.btns{display:flex;flex-wrap:wrap;gap:.85rem;margin-top:2rem}
+.btn{
+  display:inline-block;padding:.8rem 1.5rem;border-radius:.4rem;font-size:.92rem;
+  font-weight:560;border:1px solid var(--line-2);color:var(--fg);background:transparent;transition:.2s
+}
+.btn:hover{border-color:var(--acc);color:var(--acc)}
+.btn-p{background:var(--acc);color:#062b26;border-color:var(--acc)}
+.btn-p:hover{background:#7ff0dd;color:#062b26;border-color:#7ff0dd}
+
+footer{border-top:1px solid var(--line);padding-block:2.5rem;color:var(--fg-faint);font-size:.84rem}
+.foot{display:flex;flex-wrap:wrap;gap:1rem;justify-content:space-between}
+
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <div class="brand"><span class="dot"></span> Omni</div>
+    <nav>
+      <a href="#problem">Problem</a>
+      <a href="#how">How it works</a>
+      <a href="#governance">Governance</a>
+      <a href="#stack">Stack</a>
+      <a href="#status">Status</a>
+      <a href="https://app.omnisre.xyz" rel="noopener">Console</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Autonomous Site Reliability Engineering</p>
+    <h1>Infrastructure that <em>diagnoses itself</em> — and proves what it did.</h1>
+    <p class="lede">
+      Omni is a multi-agent SRE platform for Kubernetes and Linux fleets. It collects evidence
+      through four independent diagnostic lanes, reasons over it with a locally hosted LLM, and
+      executes remediation only through a governed, cryptographically audited path.
+    </p>
+    <div class="hero-meta">
+      <span class="tag">Kubernetes</span>
+      <span class="tag">Multi-agent</span>
+      <span class="tag">Local LLM inference</span>
+      <span class="tag">Multi-tenant</span>
+      <span class="tag">SOX §404 / PCI-DSS v4.0 audit trail</span>
+    </div>
+  </div>
+</section>
+
+<div class="strip">
+  <div class="wrap">
+    <div class="stats">
+      <div class="stat"><b>4</b><span>independent evidence lanes feeding every diagnosis</span></div>
+      <div class="stat"><b>5</b><span>forecast horizons per advisory, from minutes to days</span></div>
+      <div class="stat"><b>3</b><span>autonomy tiers, from shadow-only to supervised execution</span></div>
+      <div class="stat"><b>6,700+</b><span>automated tests gating every change to the control plane</span></div>
+    </div>
+  </div>
+</div>
+
+<section id="problem">
+  <div class="wrap split">
+    <div>
+      <p class="eyebrow">The problem</p>
+      <h2>Alerts are cheap. Correct, accountable action is not.</h2>
+      <p class="sub">
+        Modern observability stacks are very good at telling an on-call engineer that something is
+        wrong. They are very bad at telling them <em>what</em> is wrong, <em>who</em> is affected,
+        and <em>whether</em> it is safe to act. That gap is filled by humans at 3&nbsp;a.m.
+      </p>
+    </div>
+    <ul class="pain">
+      <li><span class="mark">01</span><span><b>Signal without meaning.</b> A CPU spike, a 5xx burst and a failed unit are three alerts, not one incident. Correlation is left to the operator.</span></li>
+      <li><span class="mark">02</span><span><b>Context lives in people.</b> Runbooks go stale. The engineer who understood the topology left. Onboarding a new system means rebuilding that knowledge by hand.</span></li>
+      <li><span class="mark">03</span><span><b>Automation is untrusted.</b> Teams that could automate remediation often refuse to, because a wrong mutation is worse than a slow human — and because nothing proves afterwards what the automation actually did.</span></li>
+      <li><span class="mark">04</span><span><b>Regulated environments can't send data out.</b> Finance and public-sector operators cannot ship production telemetry to a third-party model API.</span></li>
+    </ul>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <p class="eyebrow">How it works</p>
+    <h2>Four evidence lanes, one reasoned advisory.</h2>
+    <p class="sub">
+      Every signal enters through a typed lane with its own detection logic. Lanes are independent,
+      so a diagnosis is never built on a single noisy metric.
+    </p>
+
+    <div class="lanes">
+      <article class="lane">
+        <div class="n">LANE 01</div>
+        <h3>System resource</h3>
+        <p>Rolling 3&sigma; baselines over CPU and memory, computed separately for in-cluster workloads and remote hosts, so "normal" is learned per machine rather than assumed.</p>
+      </article>
+      <article class="lane">
+        <div class="n">LANE 02</div>
+        <h3>Hard failure</h3>
+        <p>An OS-level state machine tracks units, mounts and kernel state. Deterministic invariants decide what counts as a real failure before any model is consulted.</p>
+      </article>
+      <article class="lane">
+        <div class="n">LANE 03</div>
+        <h3>Application HTTP</h3>
+        <p>Log-surge probes classify traffic by status family — 5xx, 429, 401 — separating a capacity problem from an abuse problem from an auth regression.</p>
+      </article>
+      <article class="lane">
+        <div class="n">LANE 04</div>
+        <h3>Security</h3>
+        <p>Security incidents are correlated into kill chains across entities and time, then forecast forward, rather than reported as isolated events.</p>
+      </article>
+    </div>
+
+    <div class="flow" role="img" aria-label="Pipeline diagram: evidence sources flow through retrieval and reasoning into a governance gate, which routes to suggest, human approval, or execution with feedback.">
+<pre>
+  remote agents          alert sources
+  (read-only,               (cluster,
+   Linux fleet)            app, security)
+        │                        │
+        ▼                        ▼
+  <span class="hl2">knowledge lane</span>          <span class="hl2">diagnostic lane</span>
+  no model inference           │
+                               ▼
+                      <span class="hl">retrieval over prior incidents</span>
+                               │
+                               ▼
+                      <span class="hl">local LLM reasoning</span>
+                     what · who · why · how-to
+                       + 5-horizon forecast
+                               │
+                               ▼
+                      <span class="gate">GOVERNANCE GATE</span>  ← fail-closed
+                               │
+             ┌─────────────────┼─────────────────┐
+             ▼                 ▼                 ▼
+          suggest        human approval       execute
+             │                 │                 │
+             └─────────────────┴────────┬────────┘
+                                        ▼
+                              <span class="hl2">outcome feedback</span>
+                          re-evaluated, then learned from
+</pre>
+    </div>
+  </div>
+</section>
+
+<section id="governance">
+  <div class="wrap">
+    <p class="eyebrow">Governance</p>
+    <h2>Autonomy you can switch off, and audit after the fact.</h2>
+    <p class="sub">
+      Omni is designed for operators who are accountable for the systems it touches. Every
+      safety property is fail-closed: if the audit path is unavailable, the action does not happen.
+    </p>
+
+    <div class="cards">
+      <article class="card">
+        <h3>Read/write separation</h3>
+        <p>The reasoning path is strictly read-only. Every mutation flows through a single executor with an explicit tool allowlist and namespace isolation. The reasoning layer cannot mutate the cluster even if the model asks it to.</p>
+      </article>
+      <article class="card">
+        <h3>Cryptographic audit trail</h3>
+        <p>Decisions, dispatches, human approvals, trapped mutations and rollbacks are written to a SHA-256 hash chain with Ed25519 signatures — designed against SOX §404 and PCI-DSS v4.0 evidence requirements.</p>
+      </article>
+      <article class="card">
+        <h3>Master kill switch</h3>
+        <p>Automatic execution is disabled by default. Turning it on is a deliberate, per-tenant configuration change, and the effective value is observable at runtime rather than inferred from a document.</p>
+      </article>
+    </div>
+
+    <div class="tbl-scroll">
+      <table class="tiers">
+        <caption class="sub" style="caption-side:top;text-align:left;margin-bottom:.5rem">Tenants advance through autonomy tiers only after their own operational evidence supports it.</caption>
+        <thead>
+          <tr><th scope="col">Tier</th><th scope="col">Behaviour</th><th scope="col">Intended for</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>shadow</td><td>Diagnoses and forecasts, takes no action. Advisories are delivered to operators for scoring.</td><td>New tenants; building trust and a ground-truth record.</td></tr>
+          <tr><td>minimal</td><td>Executes a narrow, reversible set of remediations; everything else escalates to a human.</td><td>Tenants with a measured advisory accuracy record.</td></tr>
+          <tr><td>autonomous</td><td>Executes within policy, with pre-mutation snapshots and rollback, still fully audited.</td><td>Mature, well-understood workloads.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="stack">
+  <div class="wrap">
+    <p class="eyebrow">Engineering</p>
+    <h2>Async-first, event-driven, and able to run entirely on-premise.</h2>
+    <p class="sub">
+      Inference runs locally, so production telemetry never leaves the customer's boundary — the
+      requirement that rules out most hosted-model approaches in regulated sectors.
+    </p>
+    <dl class="stack">
+      <div class="st"><dt>Control plane</dt><dd>Python, asyncio end-to-end, FastAPI ingress</dd></div>
+      <div class="st"><dt>Event backbone</dt><dd>Kafka — split evidence, action and feedback topics</dd></div>
+      <div class="st"><dt>Reasoning</dt><dd>Locally hosted LLM inference, no external model calls</dd></div>
+      <div class="st"><dt>Retrieval</dt><dd>Vector search over prior incidents and playbooks</dd></div>
+      <div class="st"><dt>State</dt><dd>PostgreSQL for configuration and ledgers; Redis for hot paths</dd></div>
+      <div class="st"><dt>Targets</dt><dd>Kubernetes workloads plus agent-instrumented Linux hosts</dd></div>
+      <div class="st"><dt>Edge agent</dt><dd>Read-only collector, hardened against command injection and data exfiltration</dd></div>
+      <div class="st"><dt>Interfaces</dt><dd>Provider and tenant web portals, HTTP API, chat notifications</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section id="status">
+  <div class="wrap">
+    <p class="eyebrow">Where we are</p>
+    <h2>Working system in a lab environment, moving toward production pilots.</h2>
+    <p class="sub">
+      We would rather state this plainly than overclaim. The following reflects what has been
+      verified by running the system, not what is planned.
+    </p>
+    <div class="status">
+      <div><span class="ok">RUNNING</span><span>Full diagnostic pipeline operating continuously against a live Kubernetes cluster and a fleet of instrumented Linux hosts.</span></div>
+      <div><span class="ok">RUNNING</span><span>Multi-tenant control plane with per-tenant configuration, isolation and enrolled remote agents.</span></div>
+      <div><span class="ok">RUNNING</span><span>Cryptographic audit ledger, human-approval workflow, and provider/tenant portals.</span></div>
+      <div><span class="ok">RUNNING</span><span>Automatic system-topology discovery, producing a continuously updated model of each customer environment.</span></div>
+      <div><span class="wip">NEXT</span><span>Managed cloud deployment — GKE for the control plane, Pub/Sub or managed Kafka for the event backbone, Cloud SQL for ledgers, and accelerated inference for tenants who permit hosted models.</span></div>
+      <div><span class="wip">NEXT</span><span>Design-partner pilots with operators running regulated Kubernetes workloads.</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="wrap">
+    <p class="eyebrow">Contact</p>
+    <h2>Talking to infrastructure teams and design partners.</h2>
+    <p class="sub">
+      If you operate Kubernetes or a Linux fleet under compliance constraints and the on-call
+      burden is the bottleneck, we would like to hear how you work today.
+    </p>
+    <div class="btns">
+      <a class="btn btn-p" href="mailto:danghien2907@gmail.com">Email the team</a>
+      <!-- Console là khu vực kín: Cloudflare Access chỉ cho phép email quản trị.
+           Khách truy cập sẽ thấy màn hình Access, không phải lỗi — có chủ đích. -->
+      <a class="btn" href="https://app.omnisre.xyz" rel="noopener">Operator console</a>
+      <a class="btn" href="https://github.com/hiendt2907">GitHub</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span>Omni — Autonomous SRE platform.</span>
+    <span>Built and operated by an independent engineering team.</span>
+  </div>
+</footer>
+
+</body>
+</html>

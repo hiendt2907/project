@@ -1,0 +1,58 @@
+# Ingress cho mặt PUBLIC — app.omnisre.xyz (qua Cloudflare Tunnel → Traefik).
+#
+# Host này tự mô tả đúng hostname công khai: cloudflared KHÔNG rewrite Host về
+# provider.ai-agent.local. Nhờ vậy log/request context phản ánh đúng host thật và
+# public plane không phụ thuộc ingress lab.
+#
+# entrypoints: web (HTTP) — TLS chấm dứt ở Cloudflare edge; chặng
+# cloudflared → Traefik (192.168.139.2:80) nằm trọn trong MacBook, không ra khỏi máy.
+#
+# Ưu tiên router của Traefik theo ĐỘ DÀI path (rule dài hơn thắng), nên thứ tự khai
+# báo dưới đây không quyết định; /api/provider/v1 và /auth và /dex đều cụ thể hơn /.
+#
+# KHÔNG có middleware buffering: `body-limit-10m` là buffering middleware và sẽ gom
+# response (đã cắn thật với SSE — xem k8s/ingress/ai-agent-local.yaml). Portal lab
+# cũng không gắn middleware nào; giữ nguyên hành vi đó.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omnisre-public-console
+  namespace: multi-agent
+  labels:
+    omni.io/plane: public
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    omni.io/owner: "danghien2907@gmail.com"
+    omni.io/exposure: "internet-via-cloudflare-access"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: app.omnisre.xyz
+      http:
+        paths:
+          # Auth front door: /auth/login, /auth/callback → FastAPI backend public.
+          # Backend đặt cookie phiên trực tiếp ⇒ same-origin, không cần CORS.
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-portal-public, port: {number: 8081}}
+
+          - path: /api/provider/v1
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-portal-public, port: {number: 8081}}
+
+          # Dex public. KHÔNG strip prefix: issuer là https://app.omnisre.xyz/dex nên
+          # Dex tự phục vụ mọi route dưới /dex (/dex/auth, /dex/token, /dex/keys,
+          # /dex/.well-known/openid-configuration). Strip sẽ làm discovery 404 và
+          # verify_id_token fail vì `iss` không khớp.
+          - path: /dex
+            pathType: Prefix
+            backend:
+              service: {name: aoip-dex-public, port: {number: 5556}}
+
+          # UI shell Next.js (public instance).
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-web-public, port: {number: 3001}}

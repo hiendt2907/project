@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent template cho cloudflared. install-macos.sh thay các placeholder:
+    __CLOUDFLARED_BIN__  ← $(command -v cloudflared)   (Apple Silicon /opt/homebrew,
+                                                        Intel /usr/local — không đoán)
+    __CONFIG_PATH__      ← $HOME/.cloudflared/config.yml
+    __LOG_DIR__          ← $HOME/Library/Logs
+
+  Dùng LaunchAgent thay vì `cloudflared service install` để plist được version-control
+  dưới dạng template trong repo; `service install` ghi thẳng ra ngoài repo và hard-code
+  đường dẫn lúc chạy, không audit được.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.omnisre.cloudflared</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__CLOUDFLARED_BIN__</string>
+        <string>tunnel</string>
+        <string>--config</string>
+        <string>__CONFIG_PATH__</string>
+        <string>run</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart khi crash, NHƯNG không restart khi ta chủ động dừng (exit 0).
+         SuccessfulExit=false = "chỉ giữ sống nếu lần thoát trước là thất bại". -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Chặn crash-loop đốt CPU khi Traefik/OrbStack chưa sẵn sàng lúc máy vừa boot. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/omnisre-cloudflared.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/omnisre-cloudflared.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

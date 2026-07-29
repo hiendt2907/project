@@ -1,0 +1,61 @@
+# Template config cho Dex PUBLIC — KHÔNG commit bản đã điền.
+#
+# Đây KHÔNG phải manifest Kubernetes. Đây là nội dung `config.yaml` sẽ được nhét vào
+# Secret `aoip-dex-public-config`. Lý do dùng Secret thay vì ConfigMap: file này chứa
+# client secret và bcrypt hash của tài khoản đăng nhập cho một endpoint ra Internet.
+#
+# Cách dùng (chi tiết ở docs/runbooks/cloudflare-public-access.md):
+#
+#   cp cloudflare/k8s/aoip-dex-public-config.example.yaml /tmp/dex-public.yaml
+#   # điền __PLACEHOLDER__ bên dưới
+#   kubectl -n multi-agent create secret generic aoip-dex-public-config \
+#       --from-file=config.yaml=/tmp/dex-public.yaml
+#   shred -u /tmp/dex-public.yaml    # macOS: rm -P /tmp/dex-public.yaml
+#
+# Sinh giá trị:
+#   client secret : openssl rand -hex 32
+#
+#     ⚠️ PHẢI dùng hex, KHÔNG dùng `openssl rand -base64`. RFC 6749 §2.3.1 quy định
+#     client_secret trong HTTP Basic phải được form-urlencode trước khi gửi; Dex tuân
+#     thủ và URL-decode giá trị nhận được, nên ký tự `+` trong secret base64 sẽ bị
+#     giải thành DẤU CÁCH. Client (`httpx` với `auth=(id, secret)`) lại gửi Basic thô
+#     không encode ⇒ hai bên so hai chuỗi khác nhau, Dex trả
+#     `invalid client_secret on token request` dù Secret trong K8s giống hệt nhau.
+#     Đã cắn thật 2026-07-29 — mất một vòng chẩn đoán vì hash hai Secret khớp hoàn hảo.
+#     Hex chỉ dùng [0-9a-f] nên không có ký tự nào bị URL-decode biến dạng.
+#   password hash : docker run --rm -it ghcr.io/dexidp/dex:v2.39.1 dex hash --help
+#                   (hoặc: htpasswd -bnBC 10 "" 'MẬT_KHẨU' | tr -d ':\n' | sed 's/$2y/$2a/')
+#
+# TUYỆT ĐỐI KHÔNG tái dùng credential của lab (`aoip-dex` ConfigMap). Mật khẩu lab
+# `Password123!` và secret `provider-portal-secret` đã nằm công khai trong git history —
+# dùng lại cho mặt public đồng nghĩa với không có mật khẩu.
+
+issuer: https://app.omnisre.xyz/dex
+
+storage:
+  type: memory          # giống lab: không state chia sẻ, restart = mất phiên OIDC dở dang
+
+web:
+  http: 0.0.0.0:5556    # TLS do Cloudflare đảm nhiệm ở edge; trong cluster là HTTP
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  - id: aoip-provider-portal-public
+    name: Omni Console (public)
+    secret: __DEX_PUBLIC_CLIENT_SECRET__
+    redirectURIs:
+      - https://app.omnisre.xyz/auth/callback
+
+enablePasswordDB: true
+
+# Tài khoản đăng nhập cho mặt public. Email PHẢI khớp một `portal:user:` đã có role
+# provider trong Redis, nếu không login sẽ qua OIDC nhưng bị chặn ở
+# `resolve_provider_principal` với 403 "no authorized role for this portal"
+# (src/aoip/console/app.py:160-162). Xem runbook để kiểm tra/seed.
+staticPasswords:
+  - email: __DEX_PUBLIC_ADMIN_EMAIL__
+    hash: "__DEX_PUBLIC_ADMIN_BCRYPT_HASH__"
+    username: __DEX_PUBLIC_ADMIN_USERNAME__
+    userID: __DEX_PUBLIC_ADMIN_UUID__

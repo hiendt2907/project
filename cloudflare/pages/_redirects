@@ -1,0 +1,9 @@
+# Cloudflare Pages redirects. Cú pháp: <from> <to> <status>
+#
+# Lối tắt tới console. Đích nằm sau Cloudflare Access nên khách vãng lai sẽ gặp màn
+# hình đăng nhập Access — đúng thiết kế, không phải lỗi.
+/console  https://app.omnisre.xyz/  302
+
+# Cố ý KHÔNG có redirect apex → www ở đây: apex chỉ đi qua Pages nếu được gắn làm
+# custom domain thứ hai. Nếu gắn, thêm dòng dưới và bỏ comment:
+# https://omnisre.xyz/*  https://www.omnisre.xyz/:splat  301

@@ -1,0 +1,150 @@
+# Omni Console PUBLIC plane — backend FastAPI + shell Next.js cho app.omnisre.xyz.
+#
+# TÁCH khỏi `aoip-provider-portal` / `aoip-provider-web` (lab). File này chỉ THÊM
+# resource mới; không sửa một dòng nào của manifest lab.
+#
+# ── Vì sao phải tách CẢ frontend, không chỉ backend ──────────────────────────────
+# `aoip-provider-web` (lab) có AOIP_BACKEND_URL=http://aoip-provider-portal:8081 cứng.
+# Server component gọi backend qua biến đó kèm cookie chuyển tiếp
+# (ui/packages/api-client/src/index.ts:20). Nếu Ingress public trỏ `/` về web lab thì
+# request công khai sẽ đi qua backend LAB — và vì `portal:session:{sid}` nằm chung
+# Redis, nó sẽ chạy được một cách IM LẶNG. Đó chính là hợp nhất hai plane. Nên public
+# có web riêng, **cùng image `aoip-provider-web:latest`**, chỉ khác env. Không fork code.
+#
+# ── Cái gì dùng chung, và vì sao an toàn ────────────────────────────────────────
+# Redis + PostgreSQL + omni-gateway dùng chung. Đã kiểm tra keyspace:
+#   portal:session:{sid}   sid ngẫu nhiên  → hai plane không đụng nhau
+#   portal:oidc:flow:{st}  state ngẫu nhiên → không đụng; replay chéo bị chặn bởi
+#                          verify_id_token kiểm `iss` (src/aoip/console/oidc.py:104)
+#   portal:user: / proles: / membership:  keyed theo EMAIL → CỐ Ý dùng chung
+#                          (cùng một con người, cùng một bộ quyền). Không ghi đè.
+# Cookie `aoip_provider_session` không set `domain=` (app.py:165-167) nên host-scoped:
+# app.omnisre.xyz và provider.ai-agent.local có hai jar tách biệt trên trình duyệt.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aoip-provider-portal-public
+  namespace: multi-agent
+  labels:
+    app: aoip-provider-portal-public
+    omni.io/plane: public
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: aoip-provider-portal-public}}
+  template:
+    metadata:
+      labels:
+        app: aoip-provider-portal-public
+        omni.io/plane: public
+    spec:
+      containers:
+        - name: portal
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "aoip.console.server:provider_app", "--host", "0.0.0.0", "--port", "8081"]
+          ports: [{containerPort: 8081}]
+          env:
+            - {name: OMNI_REDIS_URL, value: "redis://redis:6379/0"}
+            - name: OMNI_ADMIN_PG_DSN
+              valueFrom: {secretKeyRef: {name: omni-pg-secret, key: OMNI_ADMIN_PG_DSN}}
+
+            # CSRF allow-list (_install_security, app.py:171-190). Chỉ origin public.
+            # Thiếu/sai ⇒ mọi POST/PUT/PATCH/DELETE trả 403 "cross-origin mutation blocked".
+            - {name: AOIP_PROVIDER_ORIGINS, value: "https://app.omnisre.xyz"}
+
+            # ── OIDC: browser-facing URL phải là https public ────────────────────
+            # ISSUER khớp tuyệt đối claim `iss` do aoip-dex-public phát hành; lệch một
+            # ký tự ⇒ verify_id_token raise "issuer mismatch". Đây cũng chính là cơ chế
+            # khiến token của plane này KHÔNG dùng được ở plane kia.
+            - {name: AOIP_OIDC_PROVIDER_ISSUER, value: "https://app.omnisre.xyz/dex"}
+            - {name: AOIP_OIDC_PROVIDER_AUTHORIZE_URL, value: "https://app.omnisre.xyz/dex/auth"}
+            # redirect_uri bắt đầu bằng https ⇒ cookie phiên tự động có cờ Secure
+            # (secure = cfg.redirect_uri.startswith("https://"), app.py:164).
+            - {name: AOIP_OIDC_PROVIDER_REDIRECT_URI, value: "https://app.omnisre.xyz/auth/callback"}
+            - {name: AOIP_POST_LOGIN_REDIRECT, value: "https://app.omnisre.xyz/"}
+            - {name: AOIP_OIDC_PROVIDER_CLIENT_ID, value: "aoip-provider-portal-public"}
+            - name: AOIP_OIDC_PROVIDER_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: aoip-provider-portal-public-secret
+                  key: AOIP_OIDC_PROVIDER_CLIENT_SECRET
+            # ── OIDC: server-to-server, đi thẳng svc nội bộ, KHÔNG qua Cloudflare ──
+            - {name: AOIP_OIDC_PROVIDER_TOKEN_URL, value: "http://aoip-dex-public:5556/dex/token"}
+            - {name: AOIP_OIDC_PROVIDER_JWKS_URL, value: "http://aoip-dex-public:5556/dex/keys"}
+          readinessProbe:
+            httpGet: {path: /, port: 8081}   # shell trả 200; /me trả 401 nên không dùng làm probe
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /assets/shell.css, port: 8081}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket: {port: 8081}
+            failureThreshold: 30
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aoip-provider-portal-public
+  namespace: multi-agent
+  labels: {app: aoip-provider-portal-public, omni.io/plane: public}
+spec:
+  selector: {app: aoip-provider-portal-public}
+  ports: [{name: http, port: 8081, targetPort: 8081}]
+---
+# Shell Next.js — CÙNG image với lab, chỉ đổi AOIP_BACKEND_URL sang backend public.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aoip-provider-web-public
+  namespace: multi-agent
+  labels:
+    app: aoip-provider-web-public
+    omni.io/plane: public
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: aoip-provider-web-public}}
+  template:
+    metadata:
+      labels:
+        app: aoip-provider-web-public
+        omni.io/plane: public
+    spec:
+      containers:
+        - name: web
+          image: aoip-provider-web:latest   # KHÔNG build riêng — cùng artifact với lab
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 3001}]
+          env:
+            - {name: HOSTNAME, value: "0.0.0.0"}
+            - {name: PORT, value: "3001"}
+            # Điểm khác biệt DUY NHẤT so với aoip-provider-web (lab):
+            - {name: AOIP_BACKEND_URL, value: "http://aoip-provider-portal-public:8081"}
+            # Gateway dùng chung — read-only, đã scope theo tenant ở gateway.
+            - {name: OMNI_GATEWAY_URL, value: "http://omni-gateway:80"}
+            - name: OMNI_GATEWAY_API_KEY
+              valueFrom: {secretKeyRef: {name: omni-gateway-secret, key: OMNI_GATEWAY_API_KEY}}
+          readinessProbe:
+            httpGet: {path: /, port: 3001}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: 3001}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket: {port: 3001}
+            failureThreshold: 30
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aoip-provider-web-public
+  namespace: multi-agent
+  labels: {app: aoip-provider-web-public, omni.io/plane: public}
+spec:
+  selector: {app: aoip-provider-web-public}
+  ports: [{name: http, port: 3001, targetPort: 3001}]

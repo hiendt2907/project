@@ -1,0 +1,68 @@
+# AOIP Dex PUBLIC — OIDC issuer riêng cho mặt public (app.omnisre.xyz).
+#
+# TÁCH HOÀN TOÀN khỏi `aoip-dex` (lab, issuer http://dex.ai-agent.local/dex).
+# Tách được vì Dex chạy `storage: {type: memory}` — không có state dùng chung giữa
+# hai instance (xác minh: k8s/deployments/aoip-dex.yaml:11-12).
+#
+# KHÁC BIỆT CÓ CHỦ ĐÍCH so với `aoip-dex`:
+#   1. Config nằm trong **Secret**, không phải ConfigMap. Public Dex chứa client
+#      secret + password hash cho một endpoint ra Internet; committing chúng như
+#      lab đang làm là không chấp nhận được. Secret do operator tạo từ
+#      `cloudflare/k8s/aoip-dex-public-config.example.yaml` (xem runbook).
+#   2. Thiếu Secret ⇒ pod KHÔNG khởi động được (fail closed). Đây là hành vi mong
+#      muốn: không có đường nào chạy Dex public bằng credential mặc định.
+#
+# Lab KHÔNG bị đụng tới: file này chỉ THÊM resource mới.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aoip-dex-public
+  namespace: multi-agent
+  labels:
+    app: aoip-dex-public
+    omni.io/plane: public
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: aoip-dex-public}}
+  template:
+    metadata:
+      labels:
+        app: aoip-dex-public
+        omni.io/plane: public
+    spec:
+      containers:
+        - name: dex
+          image: ghcr.io/dexidp/dex:v2.39.1
+          args: ["dex", "serve", "/etc/dex/config.yaml"]
+          ports: [{containerPort: 5556}]
+          volumeMounts:
+            - {name: config, mountPath: /etc/dex, readOnly: true}
+          readinessProbe:
+            # Path chứa /dex vì issuer là https://app.omnisre.xyz/dex — Dex phục vụ
+            # dưới đúng prefix của issuer. Không strip prefix ở Ingress.
+            httpGet: {path: /dex/.well-known/openid-configuration, port: 5556}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /dex/.well-known/openid-configuration, port: 5556}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 256Mi}
+      volumes:
+        - name: config
+          secret:
+            secretName: aoip-dex-public-config   # operator tạo; thiếu ⇒ pod Pending
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aoip-dex-public
+  namespace: multi-agent
+  labels:
+    app: aoip-dex-public
+    omni.io/plane: public
+spec:
+  selector: {app: aoip-dex-public}
+  ports: [{name: http, port: 5556, targetPort: 5556}]
