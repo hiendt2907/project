@@ -48,3 +48,6 @@ cloudflare/**/*credentials*.json
 cloudflare/k8s/*-config.yaml
 !cloudflare/k8s/*-config.example.yaml
 *.cloudflared.plist
+
+# Cache do wrangler tự tạo khi deploy Pages — không thuộc source.
+.wrangler/

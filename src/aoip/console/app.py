@@ -654,6 +654,78 @@ def create_tenant_app(redis, *, oidc_http=None) -> FastAPI:
     async def approvals(p: Principal = Depends(tenant_principal)) -> dict:
         return {"tenant": p.tenant, "pending": await trace.pending_approvals(p.tenant)}
 
+    # ── Reports (G4) — worker sinh, portal chỉ đọc ────────────────────────────
+    # Dữ liệu do `workers.capacity_loops.capacity_report_loop` publish vào Redis.
+    # Gateway đã có `/reports/*` nhưng tenant portal KHÔNG đi qua gateway (nó gọi
+    # thẳng app này), nên phải phơi ở đây. Tenant lấy TỪ PRINCIPAL — không có
+    # tham số tenant_id nào để client can thiệp, khác hẳn bề mặt gateway vốn phải
+    # dùng resolve_scope vì nhận tenant_id trên query string.
+    @app.get("/api/tenant/v1/reports/sre")
+    async def tenant_sre_report(p: Principal = Depends(tenant_principal)) -> dict:
+        raw = await redis.get(f"omni:report:sre:{p.tenant}")
+        if not raw:
+            raise HTTPException(404, "chưa có báo cáo cho tenant này — worker chưa sinh lần nào")
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        return {"tenant": p.tenant, "report": raw}
+
+    @app.get("/api/tenant/v1/reports/capacity")
+    async def tenant_capacity_advice(p: Principal = Depends(tenant_principal)) -> dict:
+        """Đề xuất dung lượng. LUÔN là văn bản — không kèm tool/args chạy được."""
+        raw = await redis.get(f"omni:capacity:advice:{p.tenant}")
+        if not raw:
+            return {"tenant": p.tenant, "advice": []}
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            import json as _json
+
+            advice = _json.loads(raw)
+        except (TypeError, ValueError):
+            advice = []
+        return {"tenant": p.tenant, "advice": advice}
+
+    @app.get("/api/tenant/v1/hitl/pending")
+    async def tenant_hitl_pending(p: Principal = Depends(tenant_principal)) -> dict:
+        """Hàng đợi HITL từ PostgreSQL (`omni_admin.hitl_decision`).
+
+        Khác `/approvals`: `/approvals` đọc Redis trace (read-model của runtime), còn
+        đây là sổ HITL bền vững có CRAT. Hai nguồn khác nhau, cố ý phơi cả hai.
+
+        Read-only. Quyền QUYẾT ĐỊNH cố ý KHÔNG có ở portal tenant: nó nằm ở
+        `/autonomy/hitl/{id}/decide` trên gateway, nơi có ledger CRAT + outbox +
+        publish Kafka. Nhân bản đường ghi đó ở đây sẽ tạo con đường thứ hai vào
+        cùng một ledger — chính xác là thứ không nên có với dữ liệu chịu kiểm toán.
+        """
+        pool = getattr(app.state, "pool", None)
+        if pool is None:
+            raise HTTPException(503, "admin store chưa sẵn sàng")
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT pending_id, tool_name, risk_class, tier_at_time, channel, "
+                "actor, created_at FROM omni_admin.hitl_decision "
+                "WHERE tenant_id = $1 AND decision = 'PENDING' "
+                "ORDER BY created_at DESC LIMIT 100",
+                p.tenant,
+            )
+        return {
+            "tenant": p.tenant,
+            "pending": [
+                {
+                    "pending_id": r["pending_id"],
+                    "tool_name": r["tool_name"],
+                    "risk_class": r["risk_class"],
+                    "tier_at_time": r["tier_at_time"],
+                    "channel": r["channel"],
+                    "actor": r["actor"],
+                    # isoformat tại đây: JSONResponse không encode datetime và đã
+                    # từng làm endpoint /reports/playbooks của gateway trả 500.
+                    "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                }
+                for r in rows
+            ],
+        }
+
     @app.get("/api/tenant/v1/agents")
     async def agents(p: Principal = Depends(tenant_principal)) -> dict:
         # Filter at the projection boundary, before returning any cross-tenant
