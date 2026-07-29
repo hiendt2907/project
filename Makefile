@@ -186,10 +186,7 @@ sync-public-all: ## Đồng bộ CẢ public lẫn lab .local (blast radius rộ
 ## Chỉ thư mục cloudflare/pages/ được đẩy lên. Đăng nhập lần đầu:
 ##   npx --yes wrangler@latest login
 deploy-landing: ## Upload landing page lên Cloudflare Pages (không qua GitHub)
-	@test -z "$$(find cloudflare/pages -name '*.md' -o -name '.DS_Store' | head -1)" \
-	  || (echo "✗ có file không nên public trong cloudflare/pages — xem cloudflare/PAGES.md"; exit 1)
-	npx --yes wrangler@latest pages deploy cloudflare/pages \
-	  --project-name=omnisre --branch=main --commit-dirty=true
+	bash scripts/deploy_landing.sh
 
 deploy-kafka:
 	./scripts/with_working_kube.sh apply -f k8s/kafka/kafka-single.yaml

@@ -127,8 +127,39 @@ LaunchAgent `~/Library/LaunchAgents/com.omnisre.cloudflared.plist`.
 - Secret scan: 0 secret thật. `.gitignore` xác minh bằng `git add --dry-run`
 
 ## Blockers
-**Landing page chưa deploy** — chờ user chạy `npx --yes wrangler@latest login`
-(mở browser, không tự động hoá được). Sau đó chạy `make deploy-landing`.
+**Landing page chưa deploy — kẹt ở xác thực Cloudflare.**
+
+User đã thử `wrangler login`, authorize trên ĐIỆN THOẠI → thất bại. Root cause:
+OAuth của wrangler callback về `http://localhost:8976/oauth/callback`, địa chỉ này
+phải mở trên CHÍNH máy chạy wrangler. Authorize ở thiết bị khác thì callback rơi vào
+localhost của thiết bị đó, không có wrangler nào lắng nghe. `whoami` xác nhận vẫn
+"not authenticated", `~/.config/.wrangler/config/` chưa tồn tại.
+
+Hai đường, user chọn:
+- **A** — chạy `npx --yes wrangler@latest login` và authorize NGAY TRÊN MAC.
+- **B** (khuyến nghị, làm được từ điện thoại) — tạo API token:
+  dash.cloudflare.com → My Profile → API Tokens → Create Token → Custom token →
+  Permissions **Account · Cloudflare Pages · Edit** (chỉ một quyền này; KHÔNG dùng
+  Global API Key). Lưu:
+  ```
+  mkdir -p ~/.config/cloudflare
+  printf %s '<TOKEN>' > ~/.config/cloudflare/omnisre-pages.token
+  chmod 600 ~/.config/cloudflare/omnisre-pages.token
+  ```
+  `scripts/deploy_landing.sh` tự dò theo thứ tự: `CLOUDFLARE_API_TOKEN` env →
+  file token (từ chối nếu quyền ≠ 600) → phiên `wrangler login`. File nằm ngoài repo.
+
+Sau khi có xác thực: `make deploy-landing`, rồi gắn custom domain trên Dashboard
+(Workers & Pages → `omnisre` → Custom domains → `www.omnisre.xyz`).
+
+## 3 gate trước khi upload (scripts/deploy_landing.sh)
+Mọi file trong `cloudflare/pages/` đều đọc được từ Internet, nên script chặn trước:
+1. File không nên public: `*.md`, `.DS_Store`, `*.map`, `*.bak`, `.env*`, `*.key`, `*.pem`
+2. Tài nguyên từ host ngoài — CSP `default-src 'none'` chặn IM LẶNG, không báo lỗi
+3. `<script>` hoặc inline event handler — cũng bị chặn im lặng
+
+Gate 1 chính là thứ suýt để lọt `cloudflare/pages/README.md` ra công khai.
+Đã chạy thử: `✓ gate nội dung: 5 file, không có gì bất thường`.
 
 ## Landing page dùng DIRECT UPLOAD, KHÔNG nối GitHub (user chốt 2026-07-29)
 Ban đầu tôi hiểu nhầm thành "Pages tự build từ repo"; user yêu cầu rõ không dùng
@@ -211,11 +242,10 @@ OIDC → `app.omnisre.xyz/dex/auth` → callback → phiên portal. Gate cuối 
 Toàn bộ hệ thống public hoạt động đúng thiết kế.
 
 ## Next step chính xác
-1. **User chạy `npx --yes wrangler@latest login`** (mở browser, chọn tài khoản có
-   zone `omnisre.xyz`). Rồi `make deploy-landing`. Sau lần deploy đầu, gắn custom
-   domain trong Dashboard: Workers & Pages → `omnisre` → Custom domains →
-   `www.omnisre.xyz`. Verify: `curl -sI https://www.omnisre.xyz/` và `.../vi/`,
-   kiểm header CSP không còn `'unsafe-inline'`.
+1. **User xác thực Cloudflare** — cách A hoặc B ở mục Blockers. Rồi
+   `make deploy-landing`, gắn custom domain, verify:
+   `curl -sI https://www.omnisre.xyz/ | head -1` · `.../vi/` ·
+   kiểm header CSP không còn `'unsafe-inline'` và `<html lang>` đúng mỗi trang.
 2. **User cất mật khẩu** ở scratchpad `ADMIN_PASSWORD.txt` rồi xoá file.
 3. Cân nhắc `brew upgrade cloudflared` (2026.5.0 → 2026.7.3).
 4. Việc cũ còn treo (mục dưới) — không thuộc deliverable này.
