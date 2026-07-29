@@ -200,6 +200,35 @@ kubectl -n multi-agent get pods -l omni.io/plane=public                       # 
 
 ---
 
+## Apex `omnisre.xyz` — chưa cấu hình
+
+`dig omnisre.xyz` **rỗng**: ai gõ thẳng `omnisre.xyz` (không có `www`) sẽ không vào
+được. Hai cách, đều là thao tác Dashboard vì token deploy chỉ có quyền Pages·Edit,
+không sửa được DNS/rule của zone.
+
+**Khuyến nghị — Redirect Rule (301 apex → www).** Giữ đúng MỘT hostname chính tắc,
+tránh nội dung trùng lặp trên hai domain:
+
+Dashboard → zone `omnisre.xyz` → Rules → Redirect Rules → Create rule
+| | |
+|---|---|
+| When | `Hostname` `equals` `omnisre.xyz` |
+| Then | Static redirect → `https://www.omnisre.xyz` |
+| Status | `301` · bật **Preserve query string** |
+
+Cần thêm một bản ghi DNS để apex có gì đó phân giải: `AAAA` `@` → `100::` (proxied,
+cam) — địa chỉ discard, Cloudflare vẫn chặn ở edge và áp rule trước khi tới đâu cả.
+
+**Cách còn lại — thêm apex làm custom domain thứ hai của Pages.** Đơn giản hơn nhưng
+phục vụ cùng nội dung ở hai hostname. Chấp nhận được vì cả hai trang đã có
+`<link rel="canonical">` trỏ `www`, nhưng vẫn kém sạch hơn về SEO.
+
+Sau khi làm, kiểm chứng:
+```bash
+curl -sI https://omnisre.xyz/ | head -1     # kỳ vọng 301
+curl -s -o /dev/null -w '%{redirect_url}\n' https://omnisre.xyz/
+```
+
 ## Đồng bộ code local → public
 
 ```bash
