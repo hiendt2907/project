@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Omni — Vận hành hạ tầng tự chủ cho Kubernetes và máy chủ Linux</title>
+<link rel="alternate" hreflang="en" href="https://www.omnisre.xyz/">
+<link rel="alternate" hreflang="vi" href="https://www.omnisre.xyz/vi/">
+<link rel="alternate" hreflang="x-default" href="https://www.omnisre.xyz/">
+<meta name="description" content="Omni là nền tảng SRE đa tác tử. Thu thập bằng chứng qua bốn lane chẩn đoán độc lập, suy luận bằng LLM chạy tại chỗ, và chỉ khắc phục qua một đường đi có kiểm soát cùng sổ audit ký mã hoá.">
+<meta name="theme-color" content="#0a0d10">
+<meta property="og:title" content="Omni — Vận hành hạ tầng tự chủ">
+<meta property="og:description" content="Hạ tầng tự chẩn đoán — và chứng minh được nó đã làm gì. Bốn lane bằng chứng, suy luận tại chỗ, cơ chế fail-closed.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://www.omnisre.xyz/vi/">
+<meta property="og:locale" content="vi_VN">
+<link rel="canonical" href="https://www.omnisre.xyz/vi/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0d10'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%234fd1c5' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='2.6' fill='%234fd1c5'/%3E%3C/svg%3E">
+
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <div class="brand"><span class="mark" aria-hidden="true"></span> Omni</div>
+    <nav aria-label="Điều hướng chính">
+      <a href="#problem">Vấn đề</a>
+      <a href="#how">Cách hoạt động</a>
+      <a href="#governance" class="nav-hide">Kiểm soát</a>
+      <a href="#stack" class="nav-hide">Kỹ thuật</a>
+      <a href="#status">Hiện trạng</a>
+      <span class="lang">
+        <a href="/" hreflang="en" lang="en">EN</a>
+        <span aria-current="true">VI</span>
+      </span>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="hero" aria-labelledby="hero-h">
+  <div class="wrap">
+    <p class="eyebrow">Vận hành hạ tầng tự chủ</p>
+    <h1 id="hero-h">Hạ tầng <em>tự chẩn đoán</em> — và chứng minh được nó đã làm gì.</h1>
+    <p class="lede">
+      Omni là nền tảng SRE đa tác tử cho Kubernetes và các đội máy chủ Linux. Hệ thống thu thập
+      bằng chứng qua bốn lane chẩn đoán độc lập, suy luận bằng LLM chạy ngay tại chỗ, và chỉ thực
+      thi khắc phục qua một đường đi có kiểm soát cùng sổ audit ký mã hoá.
+    </p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="#how">Xem cách hoạt động</a>
+      <a class="btn" href="mailto:danghien2907@gmail.com">Liên hệ</a>
+    </div>
+
+    <div class="readout">
+      <div class="cell"><b>4</b><span>lane bằng chứng độc lập phía sau mỗi chẩn đoán</span></div>
+      <div class="cell"><b>5</b><span>mốc dự báo cho mỗi khuyến nghị, từ vài phút tới vài ngày</span></div>
+      <div class="cell"><b>3</b><span>mức tự chủ, từ chỉ quan sát tới thực thi có giám sát</span></div>
+      <div class="cell"><b>6.700+</b><span>kiểm thử tự động canh cửa control plane</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="problem" aria-labelledby="problem-h">
+  <div class="wrap split">
+    <div class="reveal">
+      <p class="eyebrow">Vấn đề</p>
+      <h2 id="problem-h">Cảnh báo thì rẻ. Hành động đúng và chịu trách nhiệm được thì không.</h2>
+      <p class="sub">
+        Phần lớn đội ngũ không thiếu giám sát. Thứ họ thiếu là một đường đi đáng tin từ một bức
+        tường tín hiệu tới một quyết định mà ai đó dám ký tên vào.
+      </p>
+    </div>
+    <ul class="pain reveal">
+      <li><span class="mark-n">01</span><span><b>Tín hiệu không có nghĩa.</b> CPU vọt, 5xx dồn dập và một unit chết là ba cảnh báo, không phải một sự cố. Việc nối chúng lại bị đẩy cho người trực, lúc 3 giờ sáng.</span></li>
+      <li><span class="mark-n">02</span><span><b>Hiểu biết nằm trong đầu người.</b> Runbook cũ đi. Kỹ sư nắm rõ topology thì nghỉ việc. Nhận một hệ thống mới đồng nghĩa xây lại toàn bộ hiểu biết đó bằng tay.</span></li>
+      <li><span class="mark-n">03</span><span><b>Không ai tin tự động hoá.</b> Nhiều đội đủ sức tự động hoá khắc phục nhưng vẫn từ chối, vì một thao tác sai còn tệ hơn một con người chậm — và vì sau đó không có gì chứng minh được tự động hoá đã thực sự làm gì.</span></li>
+      <li><span class="mark-n">04</span><span><b>Môi trường tuân thủ không được đẩy dữ liệu ra ngoài.</b> Tài chính và khu vực công không thể gửi telemetry production sang API mô hình của bên thứ ba.</span></li>
+    </ul>
+  </div>
+</section>
+
+<section id="how" aria-labelledby="how-h">
+  <div class="wrap">
+    <div class="reveal">
+      <p class="eyebrow">Cách hoạt động</p>
+      <h2 id="how-h">Bốn lane bằng chứng, một khuyến nghị có lập luận.</h2>
+      <p class="sub">
+        Mọi tín hiệu đi vào qua một lane có kiểu rõ ràng, với logic phát hiện riêng. Các lane độc
+        lập với nhau, nên một chẩn đoán không bao giờ dựng trên một chỉ số nhiễu duy nhất.
+      </p>
+    </div>
+
+    <div class="lanes reveal">
+      <article class="lane">
+        <span class="n">LANE 01 · TÀI NGUYÊN</span>
+        <h3>Tài nguyên hệ thống</h3>
+        <p>Baseline 3&sigma; trượt trên CPU và bộ nhớ, tính riêng cho workload trong cluster và cho máy chủ từ xa — nên “bình thường” được <em>học</em> theo từng máy chứ không phải mặc định.</p>
+      </article>
+      <article class="lane">
+        <span class="n">LANE 02 · TRẠNG THÁI</span>
+        <h3>Hỏng cứng</h3>
+        <p>Một máy trạng thái ở tầng OS theo dõi unit, mount và trạng thái kernel. Các bất biến tất định quyết định thế nào là hỏng thật, trước khi hỏi tới bất kỳ mô hình nào.</p>
+      </article>
+      <article class="lane">
+        <span class="n">LANE 03 · ỨNG DỤNG</span>
+        <h3>HTTP ứng dụng</h3>
+        <p>Probe phát hiện bùng log phân loại lưu lượng theo họ mã trạng thái — 5xx, 429, 401 — tách bài toán quá tải khỏi bài toán lạm dụng, và khỏi lỗi xác thực.</p>
+      </article>
+      <article class="lane">
+        <span class="n">LANE 04 · AN NINH</span>
+        <h3>An ninh</h3>
+        <p>Sự cố an ninh được nối thành chuỗi tấn công xuyên thực thể và thời gian, rồi dự báo tiếp — thay vì báo cáo như những sự kiện rời rạc.</p>
+      </article>
+    </div>
+
+    <div class="flow reveal" role="img" aria-label="Sơ đồ luồng: agent từ xa và các nguồn cảnh báo đi vào lane tri thức và lane chẩn đoán. Lane chẩn đoán đi qua truy hồi sự cố cũ, rồi suy luận bằng LLM tại chỗ sinh ra cái gì, ai, tại sao, khắc phục ra sao kèm dự báo năm mốc, rồi tới cổng kiểm soát fail-closed, cổng này rẽ sang khuyến nghị, phê duyệt bởi người, hoặc thực thi. Cả ba nhánh đều sinh phản hồi kết quả để đánh giá lại và học.">
+      <div class="sources">
+        <div class="node source">
+          <div class="t">agent từ xa</div>
+          <div class="d">bộ thu thập chỉ-đọc trên đội máy Linux</div>
+        </div>
+        <div class="node source">
+          <div class="t">nguồn cảnh báo</div>
+          <div class="d">cluster · ứng dụng · an ninh</div>
+        </div>
+      </div>
+      <div class="link"></div>
+      <div class="node">
+        <div class="t">lane tri thức &nbsp;·&nbsp; lane chẩn đoán</div>
+        <div class="d">quan sát thường nhật không bao giờ vào đường cảnh báo, và không gọi mô hình</div>
+      </div>
+      <div class="link l2"></div>
+      <div class="node think">
+        <div class="t">truy hồi sự cố đã gặp</div>
+        <div class="d">lần trước nhìn giống thế này thì đã xảy ra chuyện gì</div>
+      </div>
+      <div class="link l3"></div>
+      <div class="node think">
+        <div class="t">suy luận bằng LLM tại chỗ</div>
+        <div class="d">cái gì · ai · tại sao · khắc phục ra sao &nbsp;+&nbsp; dự báo năm mốc</div>
+      </div>
+      <div class="link l4"></div>
+      <div class="node gate">
+        <div class="t">CỔNG KIỂM SOÁT</div>
+        <div class="d">fail-closed — không ghi được audit thì không hành động</div>
+      </div>
+      <div class="link"></div>
+      <div class="fan">
+        <div class="node out"><div class="t">khuyến nghị</div></div>
+        <div class="node out"><div class="t">người phê duyệt</div></div>
+        <div class="node out"><div class="t">thực thi</div></div>
+      </div>
+      <div class="link l2"></div>
+      <div class="node">
+        <div class="t">phản hồi kết quả</div>
+        <div class="d">đánh giá lại, rồi học từ đó</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="governance" aria-labelledby="gov-h">
+  <div class="wrap">
+    <div class="reveal">
+      <p class="eyebrow">Kiểm soát</p>
+      <h2 id="gov-h">Tự chủ có thể tắt được, và audit lại được sau khi việc đã xảy ra.</h2>
+      <p class="sub">
+        Omni được thiết kế cho người vận hành phải chịu trách nhiệm về hệ thống mà nó chạm vào.
+        Mọi thuộc tính an toàn đều fail-closed: nếu đường ghi audit không khả dụng, hành động
+        không xảy ra.
+      </p>
+    </div>
+
+    <div class="cards reveal">
+      <article class="card">
+        <h3>Tách đọc khỏi ghi</h3>
+        <p>Đường suy luận là chỉ-đọc tuyệt đối. Mọi thay đổi đi qua một executor duy nhất, với danh sách công cụ được cho phép tường minh và cách ly theo namespace. Tầng suy luận không thể thay đổi cluster kể cả khi mô hình yêu cầu.</p>
+      </article>
+      <article class="card">
+        <h3>Sổ audit ký mã hoá</h3>
+        <p>Quyết định, lệnh gửi đi, phê duyệt của người, thao tác bị chặn và các lần rollback đều được ghi vào chuỗi băm SHA-256 kèm chữ ký Ed25519 — thiết kế theo yêu cầu bằng chứng của SOX §404 và PCI-DSS v4.0.</p>
+      </article>
+      <article class="card">
+        <h3>Công tắc dừng tổng</h3>
+        <p>Thực thi tự động mặc định tắt. Bật nó lên là một thay đổi cấu hình có chủ đích, theo từng khách hàng, và giá trị đang có hiệu lực quan sát được lúc chạy chứ không suy ra từ tài liệu.</p>
+      </article>
+    </div>
+
+    <div class="tbl-scroll reveal">
+      <table>
+        <caption>Khách hàng chỉ được nâng mức tự chủ khi chính dữ liệu vận hành của họ đủ cơ sở.</caption>
+        <thead>
+          <tr><th scope="col">Mức</th><th scope="col">Hành vi</th><th scope="col">Dành cho</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>shadow</td><td>Chẩn đoán và dự báo, không hành động. Khuyến nghị được gửi tới người vận hành để chấm điểm.</td><td>Khách hàng mới; giai đoạn xây niềm tin và tạo dữ liệu đối chứng.</td></tr>
+          <tr><td>minimal</td><td>Thực thi một tập khắc phục hẹp và đảo ngược được; mọi thứ khác chuyển cho người.</td><td>Khách hàng đã có số liệu đo được về độ chính xác của khuyến nghị.</td></tr>
+          <tr><td>autonomous</td><td>Thực thi trong phạm vi chính sách, có snapshot trước khi thay đổi và có rollback, vẫn ghi audit đầy đủ.</td><td>Hệ thống đã ổn định và được hiểu rõ.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="stack" aria-labelledby="stack-h">
+  <div class="wrap">
+    <div class="reveal">
+      <p class="eyebrow">Kỹ thuật</p>
+      <h2 id="stack-h">Async-first, hướng sự kiện, và chạy trọn vẹn được tại chỗ.</h2>
+      <p class="sub">
+        Suy luận chạy ngay tại chỗ, nên telemetry production không bao giờ rời khỏi ranh giới của
+        khách hàng — đúng cái yêu cầu đã loại bỏ hầu hết phương án dùng mô hình đặt ở bên ngoài
+        trong các ngành chịu quản lý.
+      </p>
+    </div>
+    <dl class="stack reveal">
+      <div class="st"><dt>Control plane</dt><dd>Python, asyncio xuyên suốt, FastAPI làm cổng vào</dd></div>
+      <div class="st"><dt>Trục sự kiện</dt><dd>Kafka — tách riêng topic bằng chứng, hành động và phản hồi</dd></div>
+      <div class="st"><dt>Suy luận</dt><dd>LLM chạy tại chỗ, không gọi mô hình bên ngoài</dd></div>
+      <div class="st"><dt>Truy hồi</dt><dd>Tìm kiếm vector trên sự cố cũ và playbook</dd></div>
+      <div class="st"><dt>Lưu trữ</dt><dd>PostgreSQL cho cấu hình và sổ cái; Redis cho đường nóng</dd></div>
+      <div class="st"><dt>Đối tượng</dt><dd>Workload Kubernetes cùng các máy Linux có gắn agent</dd></div>
+      <div class="st"><dt>Agent biên</dt><dd>Bộ thu thập chỉ-đọc, làm cứng chống chèn lệnh và rò rỉ dữ liệu</dd></div>
+      <div class="st"><dt>Giao diện</dt><dd>Portal cho nhà cung cấp và cho khách hàng, HTTP API, thông báo qua chat</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section id="status" aria-labelledby="status-h">
+  <div class="wrap">
+    <div class="reveal">
+      <p class="eyebrow">Hiện trạng</p>
+      <h2 id="status-h">Một hệ thống chạy thật trong môi trường lab, đang tiến tới pilot production.</h2>
+      <p class="sub">
+        Chúng tôi chọn nói thẳng thay vì nói quá. Dưới đây là những gì đã được kiểm chứng bằng
+        cách chạy hệ thống, không phải những gì đang dự định.
+      </p>
+    </div>
+    <div class="status reveal">
+      <div><span class="badge ok">ĐANG CHẠY</span><span>Toàn bộ pipeline chẩn đoán vận hành liên tục trên một cluster Kubernetes sống và một đội máy chủ Linux có gắn agent.</span></div>
+      <div><span class="badge ok">ĐANG CHẠY</span><span>Control plane đa khách hàng với cấu hình riêng, cách ly và agent từ xa đã đăng ký.</span></div>
+      <div><span class="badge ok">ĐANG CHẠY</span><span>Sổ audit ký mã hoá, luồng phê duyệt bởi người, và portal cho nhà cung cấp lẫn khách hàng.</span></div>
+      <div><span class="badge ok">ĐANG CHẠY</span><span>Tự động khám phá topology hệ thống, tạo ra mô hình cập nhật liên tục cho từng môi trường khách hàng.</span></div>
+      <div><span class="badge next">TIẾP THEO</span><span>Triển khai trên cloud có quản lý — GKE cho control plane, Pub/Sub hoặc Kafka có quản lý cho trục sự kiện, Cloud SQL cho sổ cái, và suy luận tăng tốc cho khách hàng chấp nhận mô hình đặt ngoài.</span></div>
+      <div><span class="badge next">TIẾP THEO</span><span>Pilot cùng đối tác thiết kế, với những đơn vị vận hành workload Kubernetes chịu quản lý.</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="cta" aria-labelledby="cta-h">
+  <div class="wrap reveal">
+    <p class="eyebrow">Liên hệ</p>
+    <h2 id="cta-h">Đang trao đổi với các đội hạ tầng và đối tác thiết kế.</h2>
+    <p class="sub">
+      Nếu bạn vận hành Kubernetes hoặc một đội máy Linux dưới ràng buộc tuân thủ, và gánh nặng
+      trực sự cố đang là nút thắt, chúng tôi muốn nghe cách các bạn đang làm hiện nay.
+    </p>
+    <div class="btns">
+      <a class="btn btn-primary" href="mailto:danghien2907@gmail.com">Gửi email</a>
+      <a class="btn" href="https://github.com/hiendt2907" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span>Omni — nền tảng vận hành hạ tầng tự chủ. <a href="https://www.omnisre.xyz/vi/">omnisre.xyz</a></span>
+    <span>Xây dựng và vận hành bởi một nhóm kỹ sư độc lập. · <a href="/" hreflang="en" lang="en">English</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

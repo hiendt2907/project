@@ -1,16 +1,30 @@
 # Security headers cho Cloudflare Pages (www.omnisre.xyz).
 # Cú pháp: dòng path, rồi các header thụt lề 2 space.
 #
-# Landing page là HTML tĩnh 100%: không script ngoài, không CDN, không font ngoài,
-# không fetch. Nhờ vậy CSP siết được rất chặt mà không phá gì.
-# `style-src 'unsafe-inline'` là bắt buộc vì CSS nằm trong thẻ <style> nội tuyến.
+# Trang này công khai với toàn Internet, KHÔNG có Cloudflare Access ở trước —
+# khác hẳn app.omnisre.xyz. Vì vậy CSP siết tới mức chặt nhất mà nội dung cho phép.
+#
+# Điều kiện đã kiểm chứng để siết được như dưới đây (grep, không phải giả định):
+#   - 0 thẻ <script> trên cả hai trang
+#   - 0 thuộc tính style="" nội tuyến (CSS nằm hết ở /style.css cùng origin)
+#   - 0 tài nguyên từ host ngoài: không CDN, không font ngoài, không ảnh ngoài
+#
+# ⚠️ NẾU THÊM script, font ngoài, ảnh ngoài hay analytics, CSP dưới đây sẽ CHẶN IM
+# LẶNG. Đó là hành vi mong muốn — hãy sửa CSP một cách có ý thức, đừng nới rộng cho
+# tiện. Đặc biệt: KHÔNG thêm lại 'unsafe-inline' vào script-src.
 
 /*
-  Content-Security-Policy: default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'none'; frame-ancestors 'none'; base-uri 'none'; upgrade-insecure-requests
   Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
   Referrer-Policy: strict-origin-when-cross-origin
-  Permissions-Policy: camera=(), microphone=(), geolocation=(), interest-cohort=()
+  Permissions-Policy: accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=(), xr-spatial-tracking=(), interest-cohort=()
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Resource-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+
+# Stylesheet dùng chung cho cả trang EN và VI. Cache ngắn: tên file không có hash
+# nên cache dài sẽ khiến người dùng thấy CSS cũ với HTML mới sau khi deploy.
+/style.css
+  Cache-Control: public, max-age=600, must-revalidate
