@@ -155,6 +155,56 @@ override đã gỡ khỏi Deployment env — tier hiệu lực nay chỉ đến 
 `resolve_tier`. Precedence xác nhận: ConfigMap `omni-worker-configmap` (default an toàn) < Deployment
 `env:` override (đã dọn) < Redis cache (nguồn hiệu lực thật cho tier).
 
+### PUBLIC PLANE — app.omnisre.xyz (2026-07-29, đang sống trên Internet)
+
+Omni đã public thật qua Cloudflare Free, core vẫn chạy trên MacBook. Không VPS, không
+mở port router. `bash cloudflare/tunnel/verify.sh` → 17 PASS / 0 FAIL / 0 SKIP.
+
+```
+browser → Cloudflare Access (chỉ danghien2907@gmail.com, one-time PIN)
+        → Tunnel `omnisre` (LaunchAgent com.omnisre.cloudflared)
+        → Traefik 192.168.139.2:80  → Ingress `omnisre-public-console`
+             /auth, /api/provider/v1 → aoip-provider-portal-public
+             /dex                    → aoip-dex-public
+             /                       → aoip-provider-web-public
+```
+
+**INV_PUBLIC_PLANE_ISOLATED (vi phạm = bug).** Mặt public có auth plane RIÊNG. Lab
+`provider.ai-agent.local` / `aoip-dex` **KHÔNG được đổi một biến nào** — đặc biệt
+`AOIP_OIDC_PROVIDER_ISSUER` và `issuer` trong ConfigMap `aoip-dex-config`. Lý do:
+`verify_id_token` so `iss` bằng chuỗi tuyệt đối (`oidc.py:104`), đổi issuer là breaking
+cho lab. `verify.sh` nhóm A canh đúng bất biến này. Quyết định đầy đủ: ADR 0001.
+
+Frontend **cũng** phải tách, không chỉ backend: `aoip-provider-web` có
+`AOIP_BACKEND_URL` cứng trỏ backend lab và server component gọi qua đó kèm cookie
+(`ui/packages/api-client/src/index.ts:20`) — dùng chung sẽ khiến traffic public chui
+qua backend lab và **chạy im lặng** vì `portal:session:` chung Redis.
+`aoip-provider-web-public` dùng **cùng image**, chỉ khác một biến env.
+
+Đồng bộ code local → public:
+```bash
+make sync-public-ui | sync-public-backend | sync-public | sync-public-all
+```
+Bắt buộc dùng target này, KHÔNG `kubectl rollout restart` tay: `imagePullPolicy:
+IfNotPresent` + tag `:latest` ⇒ restart không build gì. Script build rồi so `imageID`
+mọi pod Running với image local. Lab và public dùng CHUNG tag image — mặc định chỉ
+restart public, `--with-lab` mới đụng lab.
+
+`api.omnisre.xyz` / `agent.omnisre.xyz` **CHƯA public, cố ý.** Mở là phase riêng; chặn
+kỹ thuật phải xử lý trước: `/auth` và `_require_api_key` chưa có rate limit tầng app.
+
+Không nằm trong git (mất là phải tạo lại tay): Secret `aoip-dex-public-config` +
+`aoip-provider-portal-public-secret`, role `platform_owner` seed thủ công trong Redis,
+credentials tunnel, LaunchAgent plist.
+
+⚠️ `client_secret` PHẢI sinh bằng `openssl rand -hex`, không phải `-base64`: `+` bị Dex
+URL-decode thành dấu cách (RFC 6749 §2.3.1) trong khi `httpx` gửi Basic thô → fail dù
+Secret giống hệt. Debug callback OIDC: đọc log lần gọi **ĐẦU TIÊN**; các lần sau luôn là
+400 "invalid or expired state" do state one-time, không phải nguyên nhân.
+
+Tài liệu: `docs/adr/0001-cloudflare-pages-tunnel-local-core.md` ·
+`docs/deployment/cloudflare-macbook.md` · `docs/runbooks/cloudflare-public-access.md`
+
 ### Retired compatibility artifacts
 `omni-analyst`, `omni-core`, `omni-executor`, `omni-prober`, `omni-worker` — manifest đã bị xóa khỏi
 git từ commit `915e509` (split-role consolidation) nhưng object Deployment (`replicas=0`) vẫn còn sót

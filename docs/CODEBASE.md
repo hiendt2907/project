@@ -373,6 +373,40 @@ Kafka action body builders: build_execute_mutate_body, build_action_feedback_bod
 
 ---
 
+## cloudflare/ — Mặt public Internet (2026-07-29)
+
+Đưa Omni ra Internet qua domain `omnisre.xyz` mà không thuê VPS và không mở port
+router. Core **không đổi** — Cloudflare chỉ làm edge (TLS, Access, Pages, Tunnel).
+
+| Đường dẫn | Vai trò |
+|---|---|
+| `cloudflare/pages/` | Landing page tĩnh → `www.omnisre.xyz` (Cloudflare Pages, không build step) |
+| `cloudflare/tunnel/` | `config.example.yml`, LaunchAgent template, `install/uninstall/verify` script |
+| `cloudflare/k8s/` | Template config chứa secret (bản đã điền bị `.gitignore` chặn) |
+
+Manifest đi theo convention sẵn có, không nằm trong `cloudflare/`:
+`k8s/deployments/aoip-dex-public.yaml` · `k8s/deployments/aoip-provider-portal-public.yaml`
+· `k8s/ingress/omnisre-public.yaml`.
+
+**Bất biến quan trọng — public plane tách hoàn toàn khỏi lab.** `app.omnisre.xyz`
+chạy Dex riêng (`aoip-dex-public`, issuer `https://app.omnisre.xyz/dex`), backend
+riêng và shell Next riêng. `provider.ai-agent.local` và `aoip-dex` **không được đổi
+một biến nào** — đặc biệt là `AOIP_OIDC_PROVIDER_ISSUER` và `issuer` của ConfigMap
+`aoip-dex-config`. `cloudflare/tunnel/verify.sh` nhóm A canh đúng bất biến này.
+
+Frontend phải tách chứ không dùng chung: `aoip-provider-web` có `AOIP_BACKEND_URL`
+cứng trỏ backend lab, và server component gọi backend qua biến đó kèm cookie chuyển
+tiếp — dùng chung sẽ khiến traffic công khai chui qua backend lab một cách im lặng.
+`aoip-provider-web-public` dùng **cùng image**, chỉ khác một biến env.
+
+`api.omnisre.xyz` và `agent.omnisre.xyz` **chưa public**, có chủ đích. Chặn kỹ thuật
+phải xử lý trước: `/auth` và `_require_api_key` chưa có rate limit ở tầng ứng dụng.
+
+Chi tiết: `docs/adr/0001-cloudflare-pages-tunnel-local-core.md` ·
+`docs/deployment/cloudflare-macbook.md` · `docs/runbooks/cloudflare-public-access.md`
+
+---
+
 ## smart-siem/ — Go Services
 
 ### smart-siem/omni/siem/brain-go/ — Event Correlator (⚠️ RETIRED 2026-07-22)
