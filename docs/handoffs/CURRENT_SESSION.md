@@ -1,114 +1,104 @@
 # Current Session Handoff
 
 ## Deliverable hiện tại
-Tiến hoá Omni thành Autonomous SRE đa tenant: 4 gap G1–G4 (RAG vector, learning loop, KPI
-key, capacity/report) + audit API/UI/portal + dọn dẹp repo. **Toàn bộ code đã xong, CHƯA COMMIT.**
+Commit + deploy toàn bộ công việc G1–G4 và 3 bản vá phân quyền đã tồn đọng trong working tree.
+**ĐÃ XONG** — 5 commit đã push, cluster đã verify bằng smoke test thật.
 
 ## Definition of Done
-- G1–G4 có module + loop + endpoint, test xanh.
-- Lỗ hổng phân quyền tìm được phải vá và verify trên cluster thật (403/200).
-- Repo sạch dead code/dead docs, test suite không giảm.
-- → **Đạt hết**, chỉ còn bước commit.
+- Commit sạch theo nhóm ngữ nghĩa, push lên `origin/main`. → ✅
+- Worker + gateway deploy và **verify code mới có mặt trong pod đang chạy**, không chỉ tin rollout. → ✅
+- Endpoint mới trả đúng trên cluster. → ✅
 
 ## Trạng thái hiện tại
-Working tree đầy đủ thay đổi, test 6736 passed / 0 fail. Gateway đã rebuild+redeploy và verify
-bằng curl. Chờ chỉ thị commit.
+`main` @ `cc66c4e`, đã push. Working tree chỉ còn 4 file untracked (cố ý, xem dưới).
+Test: **6737 passed / 0 fail**.
 
 ## Đã hoàn thành
 
-### G1–G4 (module mới, đều untracked)
-| Gap | Root cause thật (không phải suy đoán) | Fix |
-|---|---|---|
-| G1 RAG | `advisory_ingest.py` docstring nói dối — chưa từng ghi vector store. HLEN 1019 là **tín hiệu giả** | `src/training/advisory_sop_vector.py` backfill hash → HNSW, payload ép `auto_execute=False` |
-| G2 Learning | `omni:learn:promo:*` rỗng vì kill-switch false → 0 mutation → 0 VERIFIED_SUCCESS → promoter không bao giờ chạy. **"Omni không học được vì nó không hành động."** | `advisory_promoter.py` học từ operator ack (tín hiệu duy nhất có trong shadow) + `bump_playbook_graduation()` cho bảng vốn mồ côi |
-| G3 KPI | reader/writer lệch key → mọi lần đọc FP-rate thấy 0 mẫu → luôn đi nhánh fail-open | `kpi_outcome_key()` một nguồn sự thật; `gate.py` no-data → trả **1.0** (fail-closed) |
-| G4 Capacity/Report | không có mặt tiền | `pkg/reasoning/{capacity_advisor,sre_report}.py` (pure, no I/O) + `workers/capacity_loops.py` hourly + `gateway/routes/reports.py` |
+### 5 commit đã push
+| Commit | Nội dung |
+|---|---|
+| `fc796a9` | fix(gateway): vá 3 lỗ hổng phân quyền — `/autonomy` (10 endpoint), `/trace/purge`, CRAT cross-tenant |
+| `a50e2ca` | feat(sre): G1–G4 — RAG backfill, advisory promoter, KPI key contract, capacity/report |
+| `7f70319` | chore: dọn 20 file dead code/dead docs/route rỗng |
+| `529e576` | fix(gateway): `/reports/playbooks` 500 — datetime không serialize |
+| `cc66c4e` | fix(build): `deploy-gateway` không build image |
 
-`tier_readiness.py` thêm gate `graduated_playbooks` (default 0 = fail-closed).
+### Deploy + verify trên cluster thật
+- `omni-fullstack` redeploy. Verify bằng import thật trong pod: 5 module mới OK,
+  `capacity_report_loop` đã đăng ký (`omni_worker.py:1229`) và **đã chạy** —
+  log `event=capacity_report_published tenants=2`.
+- `omni-gateway` rebuild + redeploy. 3 endpoint `/reports/{sre,capacity,playbooks}`
+  trả **200** cho `staging-sim`; `/reports/sre?tenant_id=default` trả 404 **đúng thiết kế**
+  (chỉ `staging-sim` và `tenant-replay-01` có dữ liệu).
+- Báo cáo SRE sinh nội dung thật: 1490 fact cho `staging-sim`.
 
-### 3 lỗ hổng bảo mật — đã vá + verify trên cluster
-1. **`/autonomy` không phân quyền** — 21/27 endpoint thiếu. Đã **khai thác thật**: key
-   `staging-sim` (non-admin) tạo được API key cho tenant `default`. Trung thực về mức độ:
-   key sinh ra KHÔNG auth được (`_require_api_key` chỉ tra env keys + `agent_credential`),
-   nên chưa phải auth-bypass toàn phần — nhưng vẫn ghi bậy registry + đọc chéo control-plane.
-   Artifact pentest đã xoá khỏi PG. Vá: `_require_admin_ctx` cho 10 endpoint → 403/200 verify OK.
-2. **`POST /trace/purge`** xoá global, không đòi admin → gate `is_admin_ctx`, verify 403.
-3. **CRAT export/stats đọc chéo tenant** (dữ liệu SOX/PCI) → `_effective_tenant()`.
-   **Gotcha**: `resolve_scope` trả None cho CẢ `ctx is None` (lab) lẫn admin-không-override;
-   gộp 2 nghĩa làm hỏng 2 test lab. Phải tách: lab → tôn trọng tenant hỏi; admin → `"default"`.
-
-### Dọn dẹp repo — 20 file tracked + ~73MB rác
-`src/workers/adapters/` (4), `src/knowledge/enrich.py`, `src/prober/clinical.py`,
-`src/sre/watchdog.py`, `deployments/` root (6), 7 stub provider-portal, `SectionStub`;
-`htmlcov-gate/` 15M + `wiki/site/` 58M + `dist/` + `evidence/` (đã bổ sung `.gitignore`).
-Sửa thay vì xoá: `docs/CODEBASE.md` (overview còn mô tả split-role + brain-go như đang chạy),
-runbook `omni-analyst` → `omni-fullstack`, 5 comment `schema.sql` (pgvector đã gỡ).
+### 2 bug phát hiện lúc smoke test (test suite KHÔNG bắt được)
+1. **`/reports/playbooks` trả 500** — row `omni_admin.playbook_graduation` có cột
+   timestamp, `JSONResponse` không encode `datetime`. Fixture `_Repo` chỉ trả kiểu
+   nguyên thuỷ nên test luôn xanh. Đã sửa fixture dùng `datetime` thật + thêm test hồi quy;
+   xác nhận test có giá trị bằng cách gỡ fix → 2 test fail.
+2. **`make deploy-gateway` không build image** — chỉ `apply` + `rollout restart`, khác
+   `deploy-fullstack` vốn phụ thuộc `docker-worker`. Deploy "thành công" 2 lần mà code mới
+   không vào pod. Đã thêm dependency `docker-gateway`.
 
 ## Branch và commit
-`main` @ `da83c81` — **chưa có commit mới nào của phiên này**.
+`main` @ `cc66c4e`, đã push lên `origin`.
 
 ## Working tree
-30 modified · 20 deleted · 22 untracked. Không clean, cố ý.
-
-## Files chính đã thay đổi
-Mới: `src/training/advisory_sop_vector.py`, `src/services/learning_promoter/advisory_promoter.py`,
-`src/pkg/reasoning/{capacity_advisor,sre_report}.py`, `src/workers/capacity_loops.py`,
-`src/gateway/routes/reports.py`, `ui/apps/provider-portal/EXCLUDED_ROUTES.md`, 10 file test.
-Sửa: `gateway/routes/{autonomy,trace,compliance}.py`, `pkg/autonomy/gate.py`,
-`workers/{kpi_metrics,tier_readiness,tier_loops,omni_worker,settings}.py`,
-`services/{admin_config/repo,learning_promoter/promoter}.py`.
+4 file untracked, **cố ý chưa xử lý** — chờ quyết định của user:
+`fpt-loyalty-sre-compat-report.md`, `fpt_loyalty_topology.html`, `omni-sre-system-prompt.md`,
+`plans/omni-universal-sre-discovery-qwen3.6-27b-2026-07-28.md`.
+Ba file đầu ở root và mang tên khách hàng thật (`fpt-loyalty`) — cân nhắc kỹ trước khi
+đưa vào git.
 
 ## Quyết định đã chốt (KHÔNG thiết kế lại)
-- `advisory_sop_payload()` **luôn** `auto_execute=False` — vì `resolve_remediation_from_memory()`
-  (`handlers.py:663`) THỰC THI tool khi cờ này true.
-- Đã xoá `src/pkg/autonomy/tier_readiness.py` do tôi tạo — trùng và kém hơn
-  `src/workers/tier_readiness.py` có sẵn. Đừng tạo lại.
-- **KHÔNG xoá** (subagent đề xuất nhưng xác minh ngược lại):
-  `docs/handoffs/PHASE_0_6_PROGRESS.md` + `docs/reports/frontend-backend-logic-verification-2026-07-14.md`
-  (9 tham chiếu, gồm `src/pkg/contracts/identity.py:13` và ADR-006);
-  `src/aoip/capabilities/systemd_*.py` (feature `63b20c5` chưa đấu dây, không phải rác);
-  `smart-siem/` (git submodule); 18 file ontology `docs/architecture/`.
-- 7 stub provider bị xoá route nhưng **lý do loại trừ giữ nguyên văn** ở
-  `ui/apps/provider-portal/EXCLUDED_ROUTES.md` — đặc biệt `/policies` là rào AN TOÀN thật.
+- Giữ nguyên mọi quyết định trong handoff trước (advisory_sop_payload luôn
+  `auto_execute=False`; không tái tạo `src/pkg/autonomy/tier_readiness.py`; danh sách
+  "không xoá" đã xác minh ngược).
+- `/reports/*` serialize qua `jsonable_encoder`, không tự viết default encoder.
 
 ## Verification đã chạy
-- `.venv/bin/python -m pytest tests/ -q --ignore=tests/integration` → **6736 passed, 0 fail**
-  (chạy lại lúc chốt handoff, 161s).
-- AST parse toàn `src/` sạch; UI typecheck sạch.
-- curl trên cluster: 4 đường tấn công `/autonomy` → 403, admin → 200; `/trace/purge` → 403;
-  CRAT `?tenant_id=default` từ staging-sim → body trả `tenant_id: staging-sim`.
+- `pytest tests/ -q --ignore=tests/integration` → **6737 passed**, 160s.
+- `kubectl exec` import 5 module mới trong `omni-fullstack` → OK.
+- `grep -c jsonable_encoder /app/src/gateway/routes/reports.py` trong pod → 3 (code mới đã vào).
+- Smoke test 6 tổ hợp tenant × endpoint qua `curl` trong pod gateway.
+
+**Gotcha kiểm chứng**: kiểm tra route bằng cách re-import `gateway.api` trong process phụ
+qua `kubectl exec python -c` cho **âm tính giả** (`app.routes` rỗng dù route có thật).
+Nguồn sự thật là server đang chạy: `curl localhost:8000/openapi.json`.
+Gateway listen cổng **8000**, không phải 8080/8090.
 
 ## Deployment hiện tại
-`omni-gateway` đã rebuild+redeploy (`sha256:ad768b96e57c...`) kèm 3 bản vá bảo mật.
-`omni-fullstack` **chưa** redeploy với `capacity_loops` — loop mới chưa chạy trên cluster.
+`omni-fullstack` và `omni-gateway` đều chạy image chứa toàn bộ thay đổi của phiên này.
+Kill-switch `OMNI_AUTO_EXECUTE_ENABLED=false` không đổi.
 
 ## Blockers
 None.
 
 ## Next step chính xác
-Commit theo 3 nhóm (chờ user cho phép — chưa được chỉ thị):
-1. `fix(gateway): vá 3 lỗ hổng phân quyền — /autonomy, /trace/purge, CRAT cross-tenant`
-2. `feat(sre): G1-G4 — RAG backfill, advisory promoter, KPI key contract, capacity/report`
-3. `chore: dọn dead code/dead docs/route rỗng (20 file)`
+Không còn việc bắt buộc. Ba hướng mở, theo mức độ rủi ro:
 
-Sau commit: `make deploy-worker` để `capacity_report_loop` thật sự chạy.
+1. **`/autonomy/hitl/pending` và `/decide` chưa scope tenant** — phải vá TRƯỚC khi nối
+   tenant portal, nếu không tạo leak cross-tenant mới. Đây là việc rủi ro cao nhất còn lại.
+2. Tenant portal đi qua `src/aoip/console/app.py`, KHÔNG qua gateway → endpoint
+   reports/HITL phải thêm ở đó, chưa làm.
+3. `/approvals` khai báo `string[]` nhưng backend trả `list[dict]` → React crash runtime.
 
 ## Lệnh cần chạy lại
 ```bash
 .venv/bin/python -m pytest tests/ -q --ignore=tests/integration
-make deploy-worker deploy-gateway
+make deploy-worker deploy-gateway   # deploy-gateway nay đã tự build image
 ```
 
 ## Không được làm lại
-Audit portal/gateway (3 subagent đã chạy), khảo sát dead code (2 subagent), pentest `/autonomy`
-(đã khai thác + vá + dọn artifact), backfill RAG vector (đã chạy thật).
+Commit/push (xong), deploy worker+gateway (xong, đã verify trong pod), audit portal/gateway,
+khảo sát dead code, pentest `/autonomy`, backfill RAG vector.
 
-## Việc còn mở (không thuộc deliverable này)
-- `/autonomy/hitl/pending` + `/decide` **chưa scope tenant** — phải vá TRƯỚC khi nối tenant
-  portal, nếu không tạo leak cross-tenant mới.
-- Tenant portal đi qua `src/aoip/console/app.py`, KHÔNG qua gateway → endpoint reports/HITL
-  phải thêm ở đó, chưa làm.
-- `/approvals` khai báo `string[]` nhưng backend trả `list[dict]` → React crash runtime.
+## Ngoài phạm vi kỹ thuật (context phiên này)
+User hỏi về Google Startup Credit. Kết luận: **không đủ điều kiện** vì chưa có pháp nhân —
+chương trình yêu cầu công ty đã đăng ký. Landing page đã dựng ở `/Users/hiendang/omni-site/`
+(1 file HTML, chưa deploy) để dùng khi có pháp nhân. Không thuộc repo này.
 
 ## Tài liệu liên quan
 `plans/omni-evolve-to-senior-sre-2026-07-29.md` · `ui/apps/provider-portal/EXCLUDED_ROUTES.md` ·
