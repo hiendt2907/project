@@ -178,7 +178,7 @@ async def test_three_sigma_insufficient_samples_logs_debug_not_silent(caplog):
 
     # FAILS before fix (no log at all), PASSES after fix
     assert any(
-        "insufficient" in r.message.lower() or "samples" in r.message.lower()
+        "cold_start" in r.message.lower() or "insufficient" in r.message.lower() or "samples" in r.message.lower()
         for r in caplog.records
         if r.levelno == logging.DEBUG
     ), "Expected DEBUG log about insufficient samples, got none"

@@ -17,6 +17,7 @@ class TestBuildEnvelope:
         env = build_envelope(
             probe="test_probe",
             lane="SYS_RESOURCE",
+            domain="os_host",
             result="PASSED",
             extracted_fact={"cpu": 10.0},
         )
@@ -33,6 +34,7 @@ class TestBuildEnvelope:
         env = build_envelope(
             probe="p",
             lane="APP_HTTP",
+            domain="application",
             result="FAILED",
             extracted_fact={},
             trace_id="my-custom-trace",
@@ -43,13 +45,13 @@ class TestBuildEnvelope:
         from remote_agent.evidence import build_envelope
 
         long_raw = "x" * 5000
-        env = build_envelope(probe="p", lane="L", result="PASSED", extracted_fact={}, raw=long_raw)
+        env = build_envelope(probe="p", lane="L", domain="os_host", result="PASSED", extracted_fact={}, raw=long_raw)
         assert len(env["raw"]) == 4000
 
     def test_stream_tags_default(self):
         from remote_agent.evidence import build_envelope
 
-        env = build_envelope(probe="p", lane="SYS_HARD_FAIL", result="PASSED", extracted_fact={})
+        env = build_envelope(probe="p", lane="SYS_HARD_FAIL", domain="database", result="PASSED", extracted_fact={})
         assert "SYS_HARD_FAIL" in env["stream_tags"]
 
     def test_lane_hint_mirrors_lane(self):
@@ -57,16 +59,142 @@ class TestBuildEnvelope:
         # Omni re-derives the authoritative proof lane via resolve_proof_lane().
         from remote_agent.evidence import build_envelope
 
-        env = build_envelope(probe="p", lane="SYS_RESOURCE", result="PASSED", extracted_fact={})
+        env = build_envelope(probe="p", lane="SYS_RESOURCE", domain="os_host", result="PASSED", extracted_fact={})
         assert env["lane_hint"] == "SYS_RESOURCE"
         assert env["lane_authoritative"] is False
+
+    def test_domain_is_normalised_to_canonical(self):
+        from remote_agent.evidence import build_envelope
+
+        env = build_envelope(probe="p", lane="SYS_HARD_FAIL", domain="k8s", result="PASSED", extracted_fact={})
+        assert env["domain"] == "kubernetes"
+
+    def test_garbage_domain_raises(self):
+        # WRITE path: a bad domain must fail loudly. Silently storing `unknown`
+        # would skew every capability report built on it with no error surfacing.
+        from remote_agent.evidence import build_envelope
+
+        with pytest.raises(ValueError):
+            build_envelope(probe="p", lane="SYS_RESOURCE", domain="cpu_stuff", result="PASSED", extracted_fact={})
+
+    def test_proof_lane_value_is_not_a_valid_write_domain(self):
+        # `resource`/`state`/`app_log` are proof lanes (axis B), not domains.
+        # They must never sneak in through this write path.
+        from remote_agent.evidence import build_envelope
+
+        for proof_lane in ("resource", "state", "app_log"):
+            with pytest.raises(ValueError):
+                build_envelope(
+                    probe="p", lane="SYS_RESOURCE", domain=proof_lane,
+                    result="PASSED", extracted_fact={},
+                )
+
+
+class TestCollectorDomains:
+    """Each collector must claim its OWN domain — this is the information that
+    the single `SYS_HARD_FAIL` lane used to destroy (it carried database,
+    storage, service and kubernetes evidence under one label)."""
+
+    def test_discovery_probes_have_per_probe_domains(self):
+        import inspect
+
+        from remote_agent.collectors import discovery_evidence as mod
+
+        src = inspect.getsource(mod)
+        # No blanket domain: the five probes observe genuinely different things.
+        assert "domain=OS_HOST" in src       # process_list
+        assert "domain=NETWORK" in src       # port_scan / connection_scan
+        assert "domain=SERVICE" in src       # service_topology
+        assert "domain=UNKNOWN" in src       # doc_snapshot — honestly unclassified
+        assert src.count("domain=") == 5
+
+    def test_binary_state_collectors_keep_declaring_failure(self):
+        # Phase 5 removed the *threshold comparison* verdict only. A failed
+        # systemd unit / read-only mount / down replica is physical truth, so
+        # these collectors still emit result=FAILED and keep build_envelope's
+        # default signal_type=ANOMALY (they never pass signal_type at all).
+        import inspect
+
+        from remote_agent.collectors import database, services, storage
+
+        for mod in (storage, database, services):
+            src = inspect.getsource(mod)
+            assert 'result = "FAILED"' in src or 'result="FAILED"' in src, mod.__name__
+            assert "signal_type" not in src, mod.__name__
+
+
+class TestAgentEnvelopeDomainCompat:
+    """An agent on a customer host upgrades LATER than Omni. The read path must
+    keep understanding a payload that predates the domain rollout."""
+
+    @staticmethod
+    def _payload(**extra):
+        base = {
+            "tenant_id": "acme",
+            "agent_id": "11111111-1111-4111-8111-111111111111",
+            "source_type": "linux_host",
+            "target_id": "host:web-01",
+            "timestamp": "2026-07-30T00:00:00Z",
+            "trace_id": "ra-abcdef12",
+            "sequence_no": 1,
+            "evidence_type": "metrics",
+            "stream_tags": ["SYS_RESOURCE"],
+            "payload": {},
+        }
+        base.update(extra)
+        return base
+
+    def test_old_agent_without_domain_still_parses(self):
+        from gateway.schemas.agent_envelope import AgentEvidenceEnvelope
+
+        env = AgentEvidenceEnvelope(**self._payload(payload={"lane": "APP_HTTP"}))
+        assert env.domain == "application"
+
+    def test_domain_inferred_from_stream_tag_when_payload_has_no_lane(self):
+        from gateway.schemas.agent_envelope import AgentEvidenceEnvelope
+
+        env = AgentEvidenceEnvelope(**self._payload())
+        assert env.domain == "os_host"
+
+    def test_sys_hard_fail_infers_unknown_not_a_guess(self):
+        # SYS_HARD_FAIL carried database/storage/service/kubernetes evidence.
+        # Guessing one of them and then granting autonomy on it is worse than
+        # admitting the domain is unknown.
+        from gateway.schemas.agent_envelope import AgentEvidenceEnvelope
+
+        env = AgentEvidenceEnvelope(
+            **self._payload(stream_tags=["SYS_HARD_FAIL"], payload={"lane": "SYS_HARD_FAIL"})
+        )
+        assert env.domain == "unknown"
+
+    def test_new_agent_domain_in_payload_wins_over_lane(self):
+        from gateway.schemas.agent_envelope import AgentEvidenceEnvelope
+
+        env = AgentEvidenceEnvelope(
+            **self._payload(payload={"lane": "SYS_HARD_FAIL", "domain": "database"})
+        )
+        assert env.domain == "database"
+
+    def test_explicit_top_level_domain_is_normalised(self):
+        from gateway.schemas.agent_envelope import AgentEvidenceEnvelope
+
+        env = AgentEvidenceEnvelope(**self._payload(domain="k8s"))
+        assert env.domain == "kubernetes"
+
+    def test_garbage_domain_on_read_path_degrades_not_raises(self):
+        # READ path is deliberately forgiving: breaking ingest to punish a bad
+        # label would turn a wrong tag into a data-loss incident.
+        from gateway.schemas.agent_envelope import AgentEvidenceEnvelope
+
+        env = AgentEvidenceEnvelope(**self._payload(domain="nonsense-domain"))
+        assert env.domain == "os_host"  # falls back to the lane-derived value
 
 
 # ─── collectors/system.py ────────────────────────────────────────────────────
 
 class TestCollectSystemMetrics:
     @pytest.mark.asyncio
-    async def test_healthy_system_returns_passed(self):
+    async def test_healthy_system_is_observed_sample(self):
         fake_psutil = MagicMock()
         fake_psutil.cpu_percent.return_value = 20.0
         fake_mem = MagicMock()
@@ -86,11 +214,14 @@ class TestCollectSystemMetrics:
             result = await sys_mod.collect_system_metrics("test-host")
 
         assert result is not None
-        assert result["result"] == "PASSED"
+        # Phase 5: the agent never judges. It reports numbers; Omni decides.
+        assert result["result"] == "OBSERVED"
+        assert result["signal_type"] == "METRIC_SAMPLE"
+        assert result["domain"] == "os_host"
         assert result["extracted_fact"]["cpu_percent"] == 20.0
 
     @pytest.mark.asyncio
-    async def test_high_cpu_returns_failed(self):
+    async def test_high_cpu_is_still_only_a_sample(self):
         fake_psutil = MagicMock()
         fake_psutil.cpu_percent.return_value = 95.0
         fake_mem = MagicMock()
@@ -110,13 +241,19 @@ class TestCollectSystemMetrics:
             result = await sys_mod.collect_system_metrics("test-host")
 
         assert result is not None
-        assert result["result"] == "FAILED"
-        assert "CPU" in result["alert_hint"]
+        # cpu=95 blows past the 80 default fence, and the agent STILL does not
+        # call it an anomaly: a static number on the customer host cannot know
+        # this host's baseline. Only Omni may promote this to ANOMALY.
+        assert result["result"] == "OBSERVED"
+        assert result["signal_type"] == "METRIC_SAMPLE"
+        assert result["alert_rule"] == "RemoteSystemSample"
+        assert "CPU=95.0%" in result["alert_hint"]
 
     @pytest.mark.asyncio
-    async def test_thresholds_override_pushed_from_omni(self):
-        # cpu=60 is below the default 80 (→ PASSED) but above a pushed warn of 50
-        # (→ FAILED). Proves Omni-side thresholds tune the agent without redeploy.
+    async def test_pushed_thresholds_are_reported_not_applied(self):
+        # Pushed thresholds used to flip result to FAILED. Now they are only
+        # REPORTED back as `thresholds_seen` so Omni knows what fence the host
+        # was configured with — the verdict itself never changes on the agent.
         fake_psutil = MagicMock()
         fake_psutil.cpu_percent.return_value = 60.0
         fake_mem = MagicMock()
@@ -138,9 +275,13 @@ class TestCollectSystemMetrics:
                 "h", {"cpu_warn": 50.0, "mem_warn": 85.0, "disk_warn": 90.0}
             )
 
-        assert default_res["result"] == "PASSED"
-        assert tuned_res["result"] == "FAILED"
-        assert "CPU 60.0%>50.0%" in tuned_res["alert_hint"]
+        assert default_res["result"] == "OBSERVED"
+        assert tuned_res["result"] == "OBSERVED"
+        assert default_res["extracted_fact"]["thresholds_seen"]["cpu_warn"] == 80.0
+        assert tuned_res["extracted_fact"]["thresholds_seen"]["cpu_warn"] == 50.0
+        # Same numbers in, same neutral hint out — no ">" verdict language.
+        assert default_res["alert_hint"] == tuned_res["alert_hint"]
+        assert ">" not in tuned_res["alert_hint"]
 
     @pytest.mark.asyncio
     async def test_psutil_missing_returns_none(self):
@@ -150,7 +291,7 @@ class TestCollectSystemMetrics:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_high_mem_returns_failed(self):
+    async def test_high_mem_is_still_only_a_sample(self):
         fake_psutil = MagicMock()
         fake_psutil.cpu_percent.return_value = 10.0
         fake_mem = MagicMock()
@@ -170,11 +311,12 @@ class TestCollectSystemMetrics:
             result = await sys_mod.collect_system_metrics("mem-host")
 
         assert result is not None
-        assert result["result"] == "FAILED"
-        assert "MEM" in result["alert_hint"]
+        assert result["result"] == "OBSERVED"
+        assert result["signal_type"] == "METRIC_SAMPLE"
+        assert "MEM=90.0%" in result["alert_hint"]
 
     @pytest.mark.asyncio
-    async def test_high_disk_returns_failed(self):
+    async def test_high_disk_is_still_only_a_sample(self):
         fake_psutil = MagicMock()
         fake_psutil.cpu_percent.return_value = 10.0
         fake_mem = MagicMock()
@@ -194,8 +336,9 @@ class TestCollectSystemMetrics:
             result = await sys_mod.collect_system_metrics("disk-host")
 
         assert result is not None
-        assert result["result"] == "FAILED"
-        assert "DISK" in result["alert_hint"]
+        assert result["result"] == "OBSERVED"
+        assert result["signal_type"] == "METRIC_SAMPLE"
+        assert "DISK=95.0%" in result["alert_hint"]
 
     @pytest.mark.asyncio
     async def test_psutil_exception_returns_none(self):
@@ -769,6 +912,19 @@ class TestParseHaproxyPromMetrics:
 
 
 class TestCollectSystemdUnits:
+    @pytest.fixture(autouse=True)
+    def _clean_state_memory(self):
+        """Trí nhớ chu kỳ trước là biến MODULE — không reset sẽ lây nhiễm giữa test.
+
+        Bỏ fixture này thì thứ tự test quyết định kết quả: một test để lại tập unit
+        active, test sau thấy chúng "vừa dừng". Loại lỗi chỉ hiện khi chạy ngẫu nhiên.
+        """
+        from remote_agent.collectors import services as svc
+
+        svc._reset_service_state_memory()
+        yield
+        svc._reset_service_state_memory()
+
     @pytest.mark.asyncio
     async def test_all_services_ok(self):
         from remote_agent.collectors import services as svc
@@ -1471,8 +1627,8 @@ class TestRemoteHostBaseline:
         from anomaly.remote_host_baseline import update_remote_host_baseline
 
         r = FakeRedis(decode_responses=True)
-        # feed a stable baseline, then a spike
-        for v in (10.0, 11.0, 9.0, 10.0):
+        # feed >=8 mẫu lịch sử (gate cold-start _MIN_BASELINE 2026-07-31), rồi spike
+        for v in (10.0, 11.0, 9.0, 10.0, 10.5, 9.5, 10.0, 11.0, 9.0):
             await update_remote_host_baseline(
                 r, tenant_id="t1", host="h1", fact={"cpu_percent": v}
             )
@@ -1657,3 +1813,138 @@ class TestPkgOrigin:
             path = await pkg_origin.get_fragment_path("nonexistent.service")
 
         assert path == ""
+
+
+class TestUnitsThatStopped:
+    """Dịch vụ bị DỪNG SẠCH (`inactive`) là outage mà `--state=failed` không thấy.
+
+    Bối cảnh đo được trên 3 VM thật (2026-07-30): `systemctl stop nginx` để lại
+    `inactive`, KHÔNG phải `failed`, và `list-units --state=failed,activating` trả về
+    rỗng ⇒ dịch vụ tắt (do người, do OOM-killer, do deploy lỗi) không sinh bằng chứng nào.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state_memory(self):
+        from remote_agent.collectors import services as svc
+
+        svc._reset_service_state_memory()
+        yield
+        svc._reset_service_state_memory()
+
+    def _active(self, *units: str) -> str:
+        return "".join(f"{u} loaded active running desc\n" for u in units)
+
+    @pytest.mark.asyncio
+    async def test_first_cycle_reports_nothing(self):
+        """Chưa có trí nhớ ⇒ không kết luận. Thà bỏ sót một chu kỳ hơn báo nhầm hàng loạt."""
+        from remote_agent.collectors import services as svc
+
+        with patch.object(svc, "_run", AsyncMock(return_value=(self._active("nginx.service"), "", 0))):
+            stopped, skipped = await svc._collect_units_that_stopped()
+        assert stopped == [] and skipped == []
+
+    @pytest.mark.asyncio
+    async def test_detects_active_to_inactive_transition(self):
+        from remote_agent.collectors import services as svc
+
+        outs = [
+            (self._active("nginx.service", "cron.service"), "", 0),   # chu kỳ 1
+            (self._active("cron.service"), "", 0),                    # chu kỳ 2: nginx mất
+            ("Type=forking\nRemainAfterExit=no\n", "", 0),            # show nginx
+        ]
+        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+            assert await svc._collect_units_that_stopped() == ([], [])
+            stopped, skipped = await svc._collect_units_that_stopped()
+
+        assert stopped == ["nginx"]
+        assert skipped == []
+
+    @pytest.mark.asyncio
+    async def test_oneshot_exit_is_not_an_outage(self):
+        """`oneshot` biến mất khỏi danh sách active theo THIẾT KẾ, không phải sự cố."""
+        from remote_agent.collectors import services as svc
+
+        outs = [
+            (self._active("backup.service"), "", 0),
+            ("", "", 0),
+            ("Type=oneshot\nRemainAfterExit=no\n", "", 0),
+        ]
+        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+            await svc._collect_units_that_stopped()
+            stopped, skipped = await svc._collect_units_that_stopped()
+
+        assert stopped == []
+        assert skipped == ["backup"]
+
+    @pytest.mark.asyncio
+    async def test_oneshot_with_remain_after_exit_IS_an_outage(self):
+        """`RemainAfterExit=yes` nghĩa là nó PHẢI ở trạng thái active sau khi chạy."""
+        from remote_agent.collectors import services as svc
+
+        outs = [
+            (self._active("mount-helper.service"), "", 0),
+            ("", "", 0),
+            ("Type=oneshot\nRemainAfterExit=yes\n", "", 0),
+        ]
+        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+            await svc._collect_units_that_stopped()
+            stopped, skipped = await svc._collect_units_that_stopped()
+
+        assert stopped == ["mount-helper"]
+
+    @pytest.mark.asyncio
+    async def test_properties_read_by_key_not_position(self):
+        """`systemctl show --value` trả thuộc tính theo thứ tự CỦA SYSTEMD.
+
+        Đọc theo vị trí (`vals[0]`, `vals[1]`) là cùng lớp lỗi đã làm sai âm thầm ở chỗ
+        khác. Ở đây systemd trả RemainAfterExit TRƯỚC Type — đọc theo khoá vẫn phải đúng.
+        """
+        from remote_agent.collectors import services as svc
+
+        outs = [
+            (self._active("job.service"), "", 0),
+            ("", "", 0),
+            ("RemainAfterExit=no\nType=oneshot\n", "", 0),   # thứ tự ĐẢO
+        ]
+        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+            await svc._collect_units_that_stopped()
+            stopped, skipped = await svc._collect_units_that_stopped()
+
+        assert stopped == [] and skipped == ["job"]
+
+    @pytest.mark.asyncio
+    async def test_template_units_excluded(self):
+        """`getty@.service` không phải unit chạy được; `is-active` từng lỗi vì nó."""
+        from remote_agent.collectors import services as svc
+
+        outs = [
+            (self._active("getty@.service", "nginx.service"), "", 0),
+            (self._active("nginx.service"), "", 0),
+        ]
+        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+            await svc._collect_units_that_stopped()
+            stopped, _ = await svc._collect_units_that_stopped()
+        assert stopped == []
+
+    @pytest.mark.asyncio
+    async def test_stopped_unit_makes_envelope_failed_and_service_domain(self):
+        from remote_agent.collectors import services as svc
+
+        outs = [
+            ("", "", 0),                                    # list-units failed,activating
+            (self._active("nginx.service"), "", 0),         # active chu kỳ 1
+            ("", "", 0),                                    # list-units failed,activating
+            ("", "", 0),                                    # active chu kỳ 2: rỗng
+            ("Type=forking\nRemainAfterExit=no\n", "", 0),  # show nginx
+        ]
+        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+            first = await svc.collect_systemd_units("host1")
+            second = await svc.collect_systemd_units("host1")
+
+        assert first["result"] == "PASSED"
+        assert second["result"] == "FAILED"
+        assert second["alert_rule"] == "SystemdUnitsStopped"
+        assert second["domain"] == "service"
+        assert second["lane"] == "SYS_HARD_FAIL"
+        assert second["extracted_fact"]["stopped_units"] == ["nginx"]
+        assert second["extracted_fact"]["failed_units"] == []

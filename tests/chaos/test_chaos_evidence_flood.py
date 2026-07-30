@@ -103,9 +103,10 @@ async def test_sigma_gate_handles_zero_variance() -> None:
 
     # Now push the same value again — std=0, gate must not crash
     anomaly, z = await gate.observe("const_test", 42.0)
-    # With std < MIN_STDDEV, gate returns (False, None)
+    # Sàn σ tương đối 2026-07-31: giá trị y hệt baseline ⇒ z=0.0 (không lệch), không
+    # còn None mơ hồ. Điểm chốt: KHÔNG bất thường, và không chia-cho-0.
     assert anomaly is False
-    assert z is None
+    assert z in (None, 0.0)
 
 
 async def test_flood_100_envelopes_sigma_gate_blocks_normal() -> None:

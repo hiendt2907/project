@@ -339,7 +339,7 @@ async def test_three_sigma_gate_and_fingerprint() -> None:
     for _ in range(10):
         await gate.observe("cpu.test", 1.0)
     is_a, z = await gate.observe("cpu.test", 1.0)
-    assert is_a is False and z is None
+    assert is_a is False and z in (None, 0.0)
     is_spike, z_spike = await gate.observe("cpu.test", 600.0)
     assert is_spike is True and z_spike is not None and abs(z_spike) > 3.0
 

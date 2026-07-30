@@ -477,3 +477,251 @@ async def test_doc_upload_processes_when_pending_q_exists(redis):
     # Confidence should have increased
     score = await get_confidence_score(redis, tenant_id="t3", host="myhost")
     assert score >= 20
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: INV_KNOWLEDGE_NOT_ALERT nới có kiểm soát — Omni tự phán trên
+# METRIC_SAMPLE (thuần số) và nâng thành ANOMALY khi lệch.
+# ---------------------------------------------------------------------------
+
+class _CaptureKafka:
+    def __init__(self):
+        self.sent: list[tuple[str, dict, bytes | None]] = []
+
+    async def send_dict(self, topic, value, key=None):
+        self.sent.append((topic, value, key))
+
+    def envelopes(self, topic="omni-diagnostic-evidence"):
+        return [json.loads(v["data"]) for t, v, _ in self.sent if t == topic]
+
+
+def _metric_ev(tenant: str, host: str, **metrics):
+    return {
+        "signal_type": "METRIC_SAMPLE",
+        "tenant_id": tenant,
+        "namespace": host,
+        "lane": "SYS_RESOURCE",
+        "probe": "remote_system_metrics",
+        "trace_id": f"ra-{host}",
+        "extracted_fact": {"agent_id": f"agent-{host}", "hostname": host, **metrics},
+    }
+
+
+async def _metric_ctx(redis_client, confidence: int):
+    ctx = _ctx(redis_client)
+    ctx.kafka = _CaptureKafka()
+    ctx.settings = SimpleNamespace(kafka_topic_diagnostic_evidence="omni-diagnostic-evidence")
+    if confidence:
+        await add_confidence(redis_client, tenant_id="t1", host="h1", delta=confidence)
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_metric_sample_normal_emits_no_anomaly(redis):
+    """(a) Mẫu bình thường: KHÔNG có message nào vào omni-diagnostic-evidence."""
+    ctx = await _metric_ctx(redis, confidence=90)
+    from anomaly.remote_host_baseline import update_remote_host_baseline
+
+    for v in (10.0, 10.5, 10.2, 10.4, 10.1):
+        await update_remote_host_baseline(
+            redis, tenant_id="t1", host="h1", fact={"cpu_percent": v}
+        )
+
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", cpu_percent=10.3))
+
+    assert ctx.kafka.envelopes() == []
+
+
+@pytest.mark.asyncio
+async def test_metric_sample_static_guard_promotes_on_threshold(redis):
+    """(b) Confidence thấp + vượt ngưỡng tĩnh ⇒ ANOMALY decided_by=omni_static_guard."""
+    ctx = await _metric_ctx(redis, confidence=0)
+
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", cpu_percent=95.0))
+
+    envs = ctx.kafka.envelopes()
+    assert len(envs) == 1
+    env = envs[0]
+    assert env["signal_type"] == "ANOMALY"
+    assert env["decided_by"] == "omni_static_guard"
+    assert env["omni_decision"]["metric"] == "cpu_percent"
+    assert env["omni_decision"]["confidence_level"] == ConfidenceLevel.STATIC_GUARD.value
+    assert env["omni_decision"]["static_threshold"] == 80.0
+    assert env["domain"] == "os_host"
+    assert env["extracted_fact"]["omni_decision"]["promoted_from"] == "METRIC_SAMPLE"
+
+
+@pytest.mark.asyncio
+async def test_promoted_result_is_failed_so_stage4_diagnosis_loop_runs(redis):
+    """`result` PHẢI là đúng chuỗi "FAILED" — ở cả top-level và extracted_fact.
+
+    Đây là một liên kết ngầm giữa ba file: `assess_domain_severity` Priority 1 so
+    `extracted_fact.result == "FAILED"` để nâng urgency lên high/critical, và
+    `remote_agent_pipeline` Stage 4 chỉ chạy vòng chẩn đoán nhiều lượt khi urgency
+    đạt `_NOTIFY_TIERS`. Đổi chuỗi này thành thứ "trung thực hơn" (ví dụ "ANOMALY")
+    làm chính cảnh báo Omni vừa tự phán rơi xuống medium: không vòng chẩn đoán,
+    không Telegram, chết lặng — và không có lỗi nào bật ra.
+
+    Ai phán và bằng bằng chứng gì thì đọc `omni_decision`, không mã hoá vào `result`.
+    """
+    from pkg.reasoning.domain_signals import assess_domain_severity
+
+    ctx = await _metric_ctx(redis, confidence=0)
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", cpu_percent=95.0))
+
+    env = ctx.kafka.envelopes()[0]
+    assert env["result"] == "FAILED"
+    assert env["extracted_fact"]["result"] == "FAILED"
+
+    # Và khẳng định hệ quả thật, không chỉ chuỗi: severity phải đạt tier được thông báo.
+    severity = assess_domain_severity(
+        env["domain"], env.get("alert_hint", ""), env.get("raw", ""), env["extracted_fact"]
+    )
+    assert severity in ("critical", "high"), (
+        f"severity={severity} — Stage 4 se KHONG chay vong chan doan nhieu luot"
+    )
+
+    # Nguồn phán vẫn phải truy được, không bị `result` che mất.
+    assert env["omni_decision"]["decided_by"] == "omni_static_guard"
+
+
+@pytest.mark.asyncio
+async def test_metric_sample_autonomous_promotes_on_zscore(redis):
+    """(c) Confidence cao + z vượt 3σ (dưới ngưỡng tĩnh) ⇒ decided_by=omni_baseline."""
+    ctx = await _metric_ctx(redis, confidence=90)
+    from anomaly.remote_host_baseline import update_remote_host_baseline
+
+    # >=8 mẫu lịch sử để qua gate cold-start _MIN_BASELINE (2026-07-31: mẫu đang chấm
+    # KHÔNG còn nằm trong baseline nên z phản ánh độ lệch thật, không bị trần √(n-1)).
+    for v in [10.0, 10.2, 10.1, 10.3] * 4:
+        await update_remote_host_baseline(
+            redis, tenant_id="t1", host="h1", fact={"cpu_percent": v}
+        )
+
+    # 72%: trên sàn biên độ 60 và << ngưỡng tĩnh 80% nhưng lệch rất xa baseline ~10%.
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", cpu_percent=72.0))
+
+    envs = ctx.kafka.envelopes()
+    assert len(envs) == 1
+    env = envs[0]
+    assert env["decided_by"] == "omni_baseline"
+    assert env["omni_decision"]["z_score"] >= 3.0
+    assert env["omni_decision"]["confidence_level"] == ConfidenceLevel.AUTONOMOUS.value
+
+
+@pytest.mark.asyncio
+async def test_metric_sample_learning_records_zdev_without_promoting(redis):
+    """LEARNING: z lệch chỉ ghi sổ đối chiếu, KHÔNG nâng ANOMALY."""
+    ctx = await _metric_ctx(redis, confidence=30)
+    from anomaly.remote_host_baseline import update_remote_host_baseline
+
+    # >=8 mẫu lịch sử qua gate cold-start; 72% trên sàn biên độ 60 để z_breach có nghĩa.
+    for v in [10.0, 10.2, 10.1, 10.3] * 4:
+        await update_remote_host_baseline(
+            redis, tenant_id="t1", host="h1", fact={"cpu_percent": v}
+        )
+
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", cpu_percent=72.0))
+
+    assert ctx.kafka.envelopes() == []
+    entries = await redis.lrange("omni:knowledge:zdev:t1:h1", 0, -1)
+    assert len(entries) == 1
+    assert json.loads(entries[0])["metric"] == "cpu_percent"
+
+
+@pytest.mark.asyncio
+async def test_flat_host_small_spike_not_promoted_at_autonomous(redis):
+    """Chống báo giả 2026-07-31: host phẳng (σ nhỏ) làm z bung dù CPU chỉ ~5%.
+
+    Sàn biên độ 60% chặn: 5.2% dù z=8 vẫn KHÔNG nâng ANOMALY, kể cả AUTONOMOUS
+    (nơi hàng rào tĩnh trước đây bị tắt). Không sự cố tài nguyên nào ở 5% CPU.
+    """
+    ctx = await _metric_ctx(redis, confidence=90)
+    from anomaly.remote_host_baseline import update_remote_host_baseline
+
+    for v in [5.0, 5.05, 4.95, 5.0, 5.02, 4.98, 5.0, 5.01, 4.99, 5.0]:
+        await update_remote_host_baseline(
+            redis, tenant_id="t1", host="h1", fact={"cpu_percent": v}
+        )
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", cpu_percent=5.2))
+
+    assert ctx.kafka.envelopes() == []
+
+
+@pytest.mark.asyncio
+async def test_disk_full_still_alarms_at_autonomous_via_static(redis):
+    """Chống mù-đĩa 2026-07-31: đĩa tăng đơn điệu nên z phẳng (~1.7) khi bò lên 99%.
+
+    disk_percent bị loại khỏi z-score; hàng rào tĩnh là cận trên ở MỌI bậc, nên đĩa
+    99% ở AUTONOMOUS PHẢI báo qua static (trước đây use_static tắt ở AUTONOMOUS ⇒ mù).
+    """
+    ctx = await _metric_ctx(redis, confidence=90)
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", disk_percent=99.0))
+
+    envs = ctx.kafka.envelopes()
+    assert len(envs) == 1
+    assert envs[0]["decided_by"] == "omni_static_guard"
+
+
+@pytest.mark.asyncio
+async def test_metric_sample_promotion_deduped_within_ttl(redis):
+    """(d) Hai mẫu lệch liên tiếp trong 600s ⇒ chỉ MỘT ANOMALY."""
+    ctx = await _metric_ctx(redis, confidence=0)
+
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", cpu_percent=95.0))
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", cpu_percent=96.0))
+
+    assert len(ctx.kafka.envelopes()) == 1
+    assert await redis.ttl("omni:knowledge:promoted:t1:h1:cpu_percent") > 0
+
+
+@pytest.mark.asyncio
+async def test_metric_promotion_kafka_failure_releases_dedup_and_propagates(redis):
+    """Kafka lỗi ⇒ lỗi văng ra VÀ khoá dedup được nhả (không mất cảnh báo 10 phút)."""
+    ctx = await _metric_ctx(redis, confidence=0)
+    ctx.kafka = _RaisingKafka()
+
+    with pytest.raises(ConnectionError):
+        await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", cpu_percent=95.0))
+
+    assert await redis.get("omni:knowledge:promoted:t1:h1:cpu_percent") is None
+
+
+@pytest.mark.asyncio
+async def test_disk_anomaly_is_promoted_as_storage_not_os_host(redis) -> None:
+    """Sự cố ĐĨA phải mang `domain=storage`, dù envelope là `os_host`.
+
+    `remote_system_metrics` gộp CPU/RAM/đĩa vào MỘT envelope mang `domain=os_host`. Lấy
+    domain của envelope làm domain sự cố thì đĩa đầy bị gán `os_host` ⇒ Omni gọi bộ chẩn
+    đoán os_host (tải, tiến trình, dmesg) thay vì storage (df, du, lsblk, inode) ⇒ điều
+    tra sai chỗ rồi kết luận "không thấy gì". Đo được trên VM thật 2026-07-30.
+    """
+    ctx = await _metric_ctx(redis, confidence=0)
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", disk_percent=97.0))
+
+    envs = ctx.kafka.envelopes()
+    assert len(envs) == 1
+    env = envs[0]
+    assert env["omni_decision"]["metric"] == "disk_percent"
+    assert env["domain"] == "storage", (
+        f"domain={env['domain']} — su co dia phai la storage, khong phai domain envelope"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cpu_anomaly_stays_os_host(redis) -> None:
+    """Đối chứng: CPU vẫn là `os_host` — bản sửa không đổi phân loại đúng sẵn có."""
+    ctx = await _metric_ctx(redis, confidence=0)
+    await handle_knowledge_evidence(ctx, _metric_ev("t1", "h1", cpu_percent=95.0))
+    assert ctx.kafka.envelopes()[0]["domain"] == "os_host"
+
+
+def test_every_baseline_metric_has_a_domain() -> None:
+    """Thêm metric vào baseline mà quên xếp lĩnh vực ⇒ nó thừa hưởng domain envelope
+    trong im lặng. Fail ở đây để lỗi bật ra lúc thêm, không phải lúc có sự cố thật."""
+    from anomaly.remote_host_baseline import REMOTE_METRIC_DOMAIN, REMOTE_METRIC_SPECS
+    from pkg.domain.taxonomy import CANONICAL_DOMAINS
+
+    for fact_key, _z, _t in REMOTE_METRIC_SPECS:
+        assert fact_key in REMOTE_METRIC_DOMAIN, f"metric {fact_key} chua xep linh vuc"
+        assert REMOTE_METRIC_DOMAIN[fact_key] in CANONICAL_DOMAINS

@@ -31,6 +31,13 @@ DEFAULT_WINDOW = 100
 DEFAULT_TTL_SEC = 3600
 MIN_STDDEV = 1e-9
 DEFAULT_THRESHOLD = 3.0
+# Số mẫu LỊCH SỬ tối thiểu (không kể mẫu đang chấm) trước khi z-score có nghĩa. Trước
+# 2026-07-31 gate cold-start là hệ quả TÌNH CỜ của trần √(n-1); nay là điều kiện tường
+# minh — dưới ngưỡng này baseline chưa đủ để ước lượng σ đáng tin.
+_MIN_BASELINE = 8
+# Sàn độ lệch chuẩn tương đối = 1% giá trị trung bình. Chống cả σ=0 (baseline phẳng
+# tuyệt đối) lẫn σ cực nhỏ (host im lìm) làm z bung vì nhiễu vụn.
+_REL_STD_FLOOR = 0.01
 
 _SIGMA_CONFIG_KEY_FMT = "omni:sigma:config:{namespace}:{deployment}"
 _MAINT_KEY_FMT = "omni:maint:{namespace}:{deployment}"
@@ -88,16 +95,31 @@ class ThreeSigmaGate:
 
         raw = await self._r.lrange(key, 0, -1)
         samples = [float(x) for x in raw]
-        if len(samples) < 3:
-            logger.debug("3sigma: insufficient_data metric=%s samples=%d window=%d", metric_id, len(samples), window)
+        # Mẫu mới nhất (LINDEX 0) là mẫu ĐANG chấm. Tính mean/std trên phần LỊCH SỬ còn
+        # lại, KHÔNG gồm chính nó. Nếu gồm (lỗi cũ), z bị chặn cứng ở √(n-1) bất kể lệch
+        # bao nhiêu — n≤10 thì z không thể >3, và một sự cố giữ mức cao tự nhập vào
+        # baseline sau ~6 mẫu rồi hết "bất thường". Đã chứng minh bằng đại số 2026-07-31.
+        current = samples[0]
+        baseline = samples[1:]
+        if len(baseline) < _MIN_BASELINE:
+            logger.debug(
+                "3sigma: cold_start metric=%s baseline=%d need=%d",
+                metric_id, len(baseline), _MIN_BASELINE,
+            )
             return False, None
 
-        mean = statistics.fmean(samples)
-        std = statistics.pstdev(samples)
-        if std < MIN_STDDEV:
-            return False, None
+        mean = statistics.fmean(baseline)
+        std = statistics.pstdev(baseline)
+        # Sàn σ TƯƠNG ĐỐI (2026-07-31). Hai mục đích:
+        #  1. Baseline phẳng tuyệt đối (σ=0) không còn trả None câm — một thay đổi thật
+        #     vẫn phát hiện được (trước đây MIN_STDDEV=1e-9 chỉ chặn σ đúng bằng 0).
+        #  2. Baseline gần phẳng (σ cực nhỏ) không làm z bung vì nhiễu vụn — một host
+        #     im lìm không biến mọi dao động 0.1% thành "bất thường".
+        # Sàn = 1% của |mean|, tối thiểu MIN_STDDEV. Tầng remote còn chồng sàn BIÊN ĐỘ
+        # tuyệt đối (chỉ báo khi giá trị đủ cao) — hai lớp bổ sung nhau.
+        std = max(std, abs(mean) * _REL_STD_FLOOR, MIN_STDDEV)
 
-        z = (samples[0] - mean) / std  # newest is LINDEX 0
+        z = (current - mean) / std
         is_anomaly = abs(z) > threshold
         return is_anomaly, z
 

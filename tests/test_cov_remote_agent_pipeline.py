@@ -342,7 +342,7 @@ async def test_remote_baseline_enriches_zscore_after_window(ev_doc):
         patch("workers.remote_agent_pipeline.triage_cluster", return_value=triage),
         patch("workers.remote_agent_pipeline.write_lessons", new_callable=AsyncMock),
     ):
-        for v in (10.0, 11.0, 9.0, 10.0):
+        for v in (10.0, 11.0, 9.0, 10.0, 10.5, 9.5, 10.0, 11.0, 9.0):
             doc = {**base, "extracted_fact": {"agent_id": "agent-1", "cpu_percent": v}}
             await handle_remote_agent_evidence(ctx, doc, "trace-warm")
         spike = {**base, "extracted_fact": {"agent_id": "agent-1", "cpu_percent": 95.0}}

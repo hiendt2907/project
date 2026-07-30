@@ -251,6 +251,15 @@ _CONTENT_DOMAIN_KEYWORDS: list[tuple[list[str], str]] = [
       "heap space", "outofmemory", "gc pause"], DOMAIN_APPLICATION),
 ]
 
+# Hàng chót của cascade, theo lane TRỤC A — DEPRECATED, sẽ rỗng khi mọi collector
+# khai `domain`.
+#
+# ⚠️ Cố ý KHÁC `taxonomy.lane_to_domain`: ở đây `SYS_HARD_FAIL` → `os_host`, còn
+# `lane_to_domain` trả `unknown`. Không phải bất nhất mà là hai mục đích khác nhau:
+# đây là bước cuối của một cascade PHÂN LOẠI (đã thử probe/label/content, đoán
+# `os_host` cho một hard-fail là hợp lý để có nhãn hiển thị), còn `lane_to_domain` là
+# đường dữ liệu LỊCH SỬ mà kết quả có thể đi cấp quyền — ở đó thừa nhận `unknown`
+# an toàn hơn đoán. Đừng "hợp nhất cho gọn".
 _LANE_DEFAULT: dict[str, str] = {
     "SIEM_SECURITY": DOMAIN_SECURITY,
     "APP_HTTP": DOMAIN_APPLICATION,
@@ -282,15 +291,27 @@ def detect_domain(
     raw: str,
     lane: str,
     labels: dict[str, str] | None = None,
+    *,
+    domain_hint: str | None = None,
 ) -> str:
     """Return the most likely domain for this evidence item.
 
     Cascade:
+      0. ``domain_hint`` — domain do NGUỒN tự khai (collector/gateway). Thắng mọi
+         suy đoán: collector biết nó đang đo cái gì, cascade dưới đây chỉ đoán.
       1. Probe prefix  — highest signal, zero-ambiguity
       2. Alertname/label rules — Prometheus alertname substring matching
       3. Content keywords — free-text fallback
       4. Lane default  — last resort; returns DOMAIN_UNKNOWN when lane unknown
+
+    ``lane`` là lane TRỤC A (`envelope.lane`) và chỉ còn là hàng chót — không phải
+    `proof_lane` (trục B) hay lane semaphore (trục C). Xem `pkg.domain.taxonomy`.
     """
+    if domain_hint is not None:
+        declared = taxonomy.normalize_domain(domain_hint)
+        if declared != DOMAIN_UNKNOWN:
+            return declared
+
     probe_lower = probe.lower().strip()
 
     for prefixes, domain in _PROBE_DOMAIN_PREFIXES:
@@ -359,14 +380,30 @@ def assess_domain_severity(
     return "none"
 
 
+# Alias từ vựng metric: producer thật (`remote_agent/collectors/system.py`) phát
+# `cpu_percent`/`mem_percent`/`disk_percent`, còn bảng ngưỡng dưới đây viết `cpu_pct`/…
+# Hai bộ song song ⇒ lưới an toàn severity đọc `cpu_pct` LUÔN None, mọi nhánh là code
+# chết (đã trả giá 2026-07-31). `_num` nay thử mọi bí danh của cùng một đại lượng.
+_METRIC_ALIASES: dict[str, tuple[str, ...]] = {
+    "cpu_pct": ("cpu_pct", "cpu_percent"),
+    "mem_pct": ("mem_pct", "mem_percent"),
+    "disk_pct": ("disk_pct", "disk_percent"),
+    "disk_used_pct": ("disk_used_pct", "disk_percent"),
+}
+
+
 def _check_numeric_thresholds(domain: str, fact: dict[str, Any]) -> str | None:
     """Check extracted_fact numeric values against known thresholds."""
     def _num(key: str) -> float | None:
-        v = fact.get(key)
-        try:
-            return float(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
+        for k in _METRIC_ALIASES.get(key, (key,)):
+            v = fact.get(k)
+            if v is None:
+                continue
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+        return None
 
     if domain == DOMAIN_OS:
         cpu = _num("cpu_pct")
@@ -424,10 +461,11 @@ def _check_numeric_thresholds(domain: str, fact: dict[str, Any]) -> str | None:
 
 # Known baseline metric key sets per domain — presence alone signals this is a metrics probe
 _BASELINE_KEYS: dict[str, set[str]] = {
-    DOMAIN_OS: {"cpu_pct", "mem_pct", "disk_pct", "load_avg", "uptime",
+    DOMAIN_OS: {"cpu_pct", "cpu_percent", "mem_pct", "mem_percent", "disk_pct",
+                "disk_percent", "load_avg", "load_avg_1m", "uptime",
                 "swap_pct", "io_wait_pct", "mem_used_mb", "cpu_used_cores",
                 "memory_usage_bytes", "disk_read_bytes", "disk_write_bytes"},
-    DOMAIN_STORAGE: {"disk_used_pct", "inode_used_pct", "io_wait_pct",
+    DOMAIN_STORAGE: {"disk_used_pct", "disk_percent", "inode_used_pct", "io_wait_pct",
                      "read_throughput", "write_throughput", "disk_read_iops",
                      "disk_write_iops"},
     DOMAIN_NETWORK: {"latency_ms", "rtt_ms", "packet_loss_pct", "dns_resolve_ms",
