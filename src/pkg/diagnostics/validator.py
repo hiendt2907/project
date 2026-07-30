@@ -168,13 +168,22 @@ _AWK_LIKE: frozenset[str] = frozenset({"awk", "gawk", "mawk", "nawk", "busybox-a
 
 _AWK_SYSTEM = re.compile(r"\bsystem\s*\(", re.IGNORECASE)
 _AWK_ENVIRON = re.compile(r"\bENVIRON\s*\[")
-# Pipe tới lệnh ngoài: `print ... | "cmd"` hoặc `"cmd" | getline`.
-_AWK_PIPE = re.compile(r"\|\s*[\"']|[\"']\s*\|")
-# Ghi ra file: `> "path"` / `>> "path"`. Không khớp `>` so sánh (`if (a > b)`) vì đòi
-# ngay sau đó là dấu nháy mở — awk buộc phải có tên file dạng chuỗi hoặc biến.
-_AWK_WRITE = re.compile(r">>?\s*[\"']")
-# Đọc file trong script: `getline < "path"` / `getline var < "path"`.
-_AWK_GETLINE_READ = re.compile(r"getline[^<]*<\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+# NEO THEO TỪ KHOÁ, không theo dấu nháy. Bài học 2026-07-31: guard cũ đòi dấu nháy nằm
+# SÁT toán tử, nên `print x > f` / `c | getline` / `getline l < p` (đích là BIẾN) lọt hết
+# — PoC RCE quyền root đã xác nhận 3/3. awk là ngôn ngữ đầy đủ ⇒ không thể phân biệt "đọc"
+# với "ghi" bằng regex trên chuỗi; nên chặn theo hành vi neo vào print/printf/getline.
+#
+# Ghi file: `print|printf ... >` (kể cả `>>`, kể cả đích là biến). `[^;{}\n]` giới hạn
+# trong một câu lệnh nên `if(a>b)` (không có print) và pattern `$3>90{print}` (`>` TRƯỚC
+# print) KHÔNG bị bắt. Muốn lọc theo ngưỡng: dùng dạng pattern, không dùng redirect.
+_AWK_WRITE = re.compile(r"\b(?:print|printf)\b[^;{}\n]*>", re.IGNORECASE)
+# Đẩy ra lệnh ngoài: `print|printf ... |`. Đòi có print nên regex `/a|b/` không bị bắt.
+_AWK_OUTPUT_PIPE = re.compile(r"\b(?:print|printf)\b[^;{}\n]*\|", re.IGNORECASE)
+# getline từ lệnh (`cmd | getline`) hoặc từ file (`getline [var] < path`) — kể cả path là
+# biến. getline là cửa đọc/exec duy nhất còn lại; chặn cả hai chiều, không cần biết path.
+_AWK_GETLINE_CMD = re.compile(
+    r"\|[^;{}\n]*\bgetline\b|\bgetline\b[^;{}\n]*<", re.IGNORECASE
+)
 
 
 def _awk_script_indexes(args: list[str]) -> set[int]:
@@ -201,19 +210,23 @@ def _awk_script_indexes(args: list[str]) -> set[int]:
 
 
 def _awk_script_guard(script: str, spec: CommandSpec) -> tuple[bool, str]:
-    """Chặn bốn cửa awk có thể tác động ra ngoài. Cú pháp bình thường được đi qua."""
+    """Chặn mọi cửa awk tác động ra ngoài — kể cả khi đích redirect/getline là BIẾN.
+
+    ``spec`` giữ lại cho tương thích call site; không còn dùng vì getline nay bị chặn
+    thẳng (không cần kiểm path). Cú pháp đọc/lọc bình thường (so sánh, regex, print
+    trường) vẫn đi qua — xem chú thích các regex ở trên.
+    """
+    _ = spec
     if _AWK_SYSTEM.search(script):
         return False, "awk_system_call_blocked"
     if _AWK_ENVIRON.search(script):
         return False, "awk_environ_read_blocked"
-    if _AWK_PIPE.search(script):
-        return False, "awk_pipe_to_command_blocked"
     if _AWK_WRITE.search(script):
         return False, "awk_file_write_blocked"
-    for m in _AWK_GETLINE_READ.finditer(script):
-        ok, reason = is_path_readable(m.group(1), spec)
-        if not ok:
-            return False, f"awk_getline_{reason}"
+    if _AWK_OUTPUT_PIPE.search(script):
+        return False, "awk_pipe_to_command_blocked"
+    if _AWK_GETLINE_CMD.search(script):
+        return False, "awk_getline_blocked"
     return True, ""
 
 
