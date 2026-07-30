@@ -27,7 +27,11 @@ from workers.remote_advisor import analyze_cluster
 from workers.remote_diagnostic_archiver import write_lessons
 from workers.remote_triage import quick_urgency_no_rag, triage_cluster
 from workers.telegram_advisory_emitter import render_advisory_to_telegram
-from workers.remote_diagnosis_emitter import emit_diagnosis_to_telegram
+from workers.remote_diagnosis_emitter import (
+    diagnosis_has_real_finding,
+    emit_diagnosis_to_telegram,
+    has_placeholder_parroting,
+)
 from workers.pipeline_stages import mark_stage
 
 logger = logging.getLogger(__name__)
@@ -203,7 +207,14 @@ async def handle_remote_agent_evidence(
 
     # ── Stage 2: Cluster ──────────────────────────────────────────────────
     fp = fingerprint_evidence({"probe": probe, "result": result, "alert_hint": alert_hint, "raw": raw})
-    domain = detect_domain(probe, alert_hint, raw, lane, labels=labels)
+    # `domain_hint` = domain COLLECTOR TỰ KHAI (Phase 1). Bỏ nó đi là để suy đoán ghi
+    # đè nguồn: đã trả giá 2026-07-30 — `remote_log_errors` (collectors/logs.py khai
+    # `application`) bị cascade nội dung suy thành `kubernetes`, nên sự cố ứng dụng
+    # trên host khách bị gán sai lĩnh vực và gọi sai bộ chẩn đoán.
+    domain = detect_domain(
+        probe, alert_hint, raw, lane, labels=labels,
+        domain_hint=ev_doc.get("domain"),
+    )
 
     try:
         cluster = await upsert_cluster(ctx.redis, agent_id, fp, ev_doc, domain)
@@ -422,6 +433,24 @@ async def _run_diagnosis_and_notify(
         # before Telegram emit / action dispatch — applies to this lane too, not
         # only the K8s/advisory lane).
         _final = session.get("final") if isinstance(session, dict) else {}
+
+        # B1+B4 (2026-07-31): KHÔNG phát thẻ báo động đỏ khi chẩn đoán không có thực chất
+        # — LLM kết luận "hoạt động bình thường", hoặc nhại placeholder của prompt. Session
+        # ĐÃ lưu ở Redis (SCHEMA stage) nên UI /diagnostics vẫn xem được; chỉ chặn cái thẻ
+        # Telegram gây nhiễu (đo thật: user nhận 3 thẻ, 2 là rác loại này).
+        if has_placeholder_parroting(_final) or not diagnosis_has_real_finding(_final):
+            logger.info(
+                "[RAP] suppress alarm trace=%s reason=%s rc=%r",
+                trace,
+                "placeholder" if has_placeholder_parroting(_final) else "no_real_finding",
+                str((_final or {}).get("root_cause"))[:80],
+            )
+            await mark_stage(
+                ctx.redis, trace, "DISPATCH", "skip",
+                detail="no real finding — observed, not alarmed", lane=_lane,
+            )
+            return
+
         audit_payload = {
             "agent_id": agent_id,
             "probe": ev_doc.get("probe", ""),

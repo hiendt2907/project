@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
+from pkg.domain.taxonomy import UNKNOWN, lane_to_domain, normalize_domain
 from workers.handler_context import WorkerHandlerContext
 from workers.metrics_exporter import inc_telegram_timeout
 
@@ -43,8 +45,52 @@ def _e(text: Any) -> str:
     )
 
 
+_HEX_SEG_RE = re.compile(r"[0-9a-f]{6,}")
+
+# Nhại placeholder của prompt: LLM chép nguyên ví dụ few-shot (`<copy from input>`,
+# `<unit>`…). 9/9 advisory thật dính lỗi này (2026-07-31). Thẻ có placeholder là thẻ hỏng.
+_PLACEHOLDER_RE = re.compile(r"<[^>]{0,60}>|copy from input", re.IGNORECASE)
+# LLM kết luận KHÔNG có sự cố — không được phát thẻ báo động đỏ.
+_NO_ISSUE_RE = re.compile(
+    r"operating normally|within normal|no (immediate |real |apparent )?issue|"
+    r"no anomal|nothing (is )?wrong|system is (healthy|fine|ok)|"
+    r"bình thường|không (có )?(vấn đề|bất thường|sự cố)|hoạt động ổn",
+    re.IGNORECASE,
+)
+
+
+def has_placeholder_parroting(final: dict[str, Any]) -> bool:
+    """True nếu kết luận chứa placeholder chép từ prompt (thẻ hỏng, không đáng phát)."""
+    text = " ".join(str((final or {}).get(k, "")) for k in ("root_cause", "hypothesis"))
+    return bool(_PLACEHOLDER_RE.search(text))
+
+
+def diagnosis_has_real_finding(final: dict[str, Any]) -> bool:
+    """False khi LLM kết luận KHÔNG có sự cố ⇒ không phát thẻ báo động.
+
+    Bản ghi session vẫn được lưu ở Redis cho UI xem; chỉ chặn cái thẻ đỏ gây nhiễu.
+    """
+    if not final:
+        return False
+    rc = str(final.get("root_cause") or "").strip()
+    if not rc:
+        return False
+    if _NO_ISSUE_RE.search(rc):
+        return False
+    return True
+
+
 def _short_trace(trace_id: str) -> str:
-    return f"#{trace_id[-8:]}" if trace_id else "#?"
+    """Rút gọn TRACE bằng đoạn HEX đầu (hash), không phải 8 ký tự cuối.
+
+    2026-07-31: `trace_id[-8:]` với `ra-<hash>-cpu_percent` cho ra `#_percent` —
+    MỌI ca cùng metric trùng nhau, không truy vết được. Lấy hash để mỗi ca một mã
+    duy nhất và grep được ngược vào trace_id đầy đủ trong log.
+    """
+    if not trace_id:
+        return "#?"
+    m = _HEX_SEG_RE.search(trace_id.lower())
+    return f"#{m.group(0)[:8]}" if m else f"#{trace_id[-8:]}"
 
 
 def _truncate(text: str, n: int = 200) -> str:
@@ -161,12 +207,17 @@ def _render_section5_footer(session: dict[str, Any]) -> str:
     agent_id = session.get("agent_id", "")
     probe = session.get("probe", "")
     lane = session.get("lane", "")
+    # Domain canonical là nhãn lĩnh vực mới; lane trục A chỉ là fallback cho session
+    # cũ. Hiển thị MỘT nhãn, không hai — người đọc thẻ không cần biết lịch sử di trú.
+    scope = normalize_domain(session.get("domain")) or UNKNOWN
+    if scope == UNKNOWN:
+        scope = lane_to_domain(lane) if lane_to_domain(lane) != UNKNOWN else lane
     # <code> content is verbatim in HTML mode — underscores inside disk_usage /
     # SYS_HARD_FAIL no longer desync the parser as they did in Markdown V1.
     return (
         f"<b>TRACE:</b> <code>{_e(_short_trace(trace_id))}</code> | "
         f"agent=<code>{_e(agent_id[:32])}</code> | "
-        f"probe=<code>{_e(probe)}</code> | lane=<code>{_e(lane)}</code>"
+        f"probe=<code>{_e(probe)}</code> | lane=<code>{_e(scope)}</code>"
     )
 
 
