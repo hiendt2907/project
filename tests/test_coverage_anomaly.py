@@ -144,8 +144,9 @@ async def test_observe_returns_false_none_when_too_few_points(redis):
 @pytest.mark.asyncio
 async def test_observe_no_anomaly_on_stable_series(redis):
     gate = ThreeSigmaGate(redis, window_size=20, ttl_sec=60)
-    # Feed stable values — no anomaly
-    for v in [10.0, 10.1, 10.0, 9.9, 10.0, 10.1, 10.0, 10.0]:
+    # Feed >=9 stable values — qua gate cold-start _MIN_BASELINE=8 (2026-07-31), z tính
+    # được và loạt ổn định thì KHÔNG bất thường.
+    for v in [10.0, 10.1, 10.0, 9.9, 10.0, 10.1, 10.0, 10.0, 9.9, 10.1]:
         is_anomaly, z = await gate.observe("stable", v)
     assert is_anomaly is False
     assert z is not None

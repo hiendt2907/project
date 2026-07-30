@@ -40,6 +40,9 @@ def _make_ctx(redis=None, kafka=None) -> SimpleNamespace:
         settings=SimpleNamespace(
             kafka_topic_actions="omni-actions",
             kafka_topic_audit_chain="omni-audit-chain",
+            # Kill-switch producer 2026-07-31: các test này kiểm cơ chế emit (happy
+            # path), không phải cổng switch ⇒ bật auto-execute tường minh.
+            omni_auto_execute_enabled=True,
         ),
     )
 
