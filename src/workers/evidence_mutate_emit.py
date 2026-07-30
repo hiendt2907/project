@@ -212,6 +212,19 @@ async def emit_execute_mutate(
             trace,
         )
         return False
+    # KILL-SWITCH TẠI PRODUCER (2026-07-31). Đây là hàm DUY NHẤT ghi vào omni-actions.
+    # Trước đây switch chỉ chặn ở CONSUMER (kafka_actions_consumer) — nghĩa là khi
+    # OMNI_AUTO_EXECUTE_ENABLED=false hệ VẪN sản xuất EXECUTE_MUTATE vào topic và VẪN ghi
+    # CRAT MUTATION_ENQUEUED cho việc chưa được phép; nếu offset mất + switch bật thì
+    # executor đọc lại 7 ngày mutate. Chặn ngay tại nguồn: không tạo action, không audit
+    # enqueue. Fail-closed đúng nghĩa master kill-switch.
+    if not bool(getattr(ws, "omni_auto_execute_enabled", False)):
+        logger.info(
+            "event=execute_mutate_emit_blocked trace=%s tool=%s reason=auto_execute_disabled",
+            trace,
+            tool_name,
+        )
+        return False
     body = build_execute_mutate_body(
         trace,
         tool_name=tool_name,

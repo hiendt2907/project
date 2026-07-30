@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -167,6 +168,20 @@ async def kafka_actions_loop(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
                     or kafka_msg_id(msg.topic, msg.partition, msg.offset)
                 )
                 data = body.get("data")
+                # GUARD TUỔI (2026-07-31): chống replay hàng loạt khi offset mất +
+                # switch bật. auto_offset_reset="earliest" + không TTL action ⇒ mất
+                # __consumer_offsets là executor đọc lại toàn bộ mutate 7 ngày. Action
+                # quá cũ là tàn dư topic, KHÔNG phải quyết định mới ⇒ bỏ qua + commit.
+                max_age = float(getattr(ws, "omni_action_max_age_sec", 3600) or 3600)
+                msg_ts_ms = getattr(msg, "timestamp", None) or 0
+                msg_age = time.time() - (msg_ts_ms / 1000.0) if msg_ts_ms else 0.0
+                if msg_ts_ms and msg_age > max_age:
+                    logger.warning(
+                        "[%s] omni-actions skip STALE action age=%.0fs > max=%.0fs",
+                        trace, msg_age, max_age,
+                    )
+                    await consumer.commit()
+                    continue
                 tok = push_trace_id(trace)
                 try:
                     ctx.inbound_trace_id = trace

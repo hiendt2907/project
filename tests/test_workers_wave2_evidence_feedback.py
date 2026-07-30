@@ -152,7 +152,8 @@ async def test_emit_execute_mutate_early_exit_and_redis_merge(monkeypatch):
     assert ok is False
 
     kafka = AsyncMock()
-    ws = _ws()
+    # Kill-switch producer 2026-07-31: emit chỉ ghi omni-actions khi switch BẬT.
+    ws = _ws(omni_auto_execute_enabled=True)
     r_empty = _fakeredis()
     ctx2 = SimpleNamespace(settings=ws, kafka=kafka, redis=r_empty)
     ok2 = await eme.emit_execute_mutate(
