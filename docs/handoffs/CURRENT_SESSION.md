@@ -44,7 +44,23 @@ neo `$` cho đuôi, cộng hậu tố `_key` (OpenSSH đặt `ssh_host_rsa_key` 
 chẩn đoán, chặn thừa cũng là hỏng vì đẩy người vận hành đi tìm đường lách.
 `tests/test_diagnostic_catalog.py` **45 passed**.
 
-### 3 rủi ro còn lại — thuộc tầng GỌI, agent rewire phải xử lý
+### 3 rủi ro — ĐÃ KIỂM TỪNG CÁI (không tin báo cáo agent)
+| | trạng thái |
+|---|---|
+| `psql select` | ✅ giới hạn schema hệ thống — `pg_stat_activity` chạy, `customers` chặn |
+| `ip`/`route` slot thứ 2 | ✅ `ip route add`/`ip link set` chặn, `ip route` đọc được |
+| **`awk`** | ❌ **CHẾT** — `$` khớp `_SHELL_INJECTION_RE` nên `awk '{print $1}'` bị chặn. Đang quảng cáo một năng lực không chạy được. **CẦN USER QUYẾT** (xoá khỏi catalogue, hay hỗ trợ thật bằng parser script awk) |
+
+### 🔴 Lỗi LỚN tìm được khi kiểm 3 rủi ro trên — đã sửa `6a0b662`
+`-c`/`-e` là cờ câu lệnh DB nhưng cũng là cờ khác của rất nhiều lệnh. Validator bóc câu
+lệnh cho MỌI lệnh ⇒ token sau cờ bị chấm như SQL ⇒ **9/10 cách gọi đời thực bị chặn oan**,
+gồm `grep -c ERROR /var/log/syslog`. Toàn bộ mục tiêu "chạy được lệnh chẩn đoán" bị vô
+hiệu cho mọi lệnh có `-c`/`-e`.
+**Không lộ ở test tổng hợp**: lệnh vẫn có trong catalogue, đếm vẫn 99, mọi gate vẫn xanh.
+Chỉ lộ khi gọi ĐÚNG CÁCH NGƯỜI TA THẬT SỰ GỌI. Bài học: test catalogue phải dùng cách gọi
+đời thực, không phải input tối giản. 7012 passed.
+
+### Ghi chú cũ (đã giải quyết ở trên)
 1. **`psql` buộc có `select`** trong `statement_verbs`: chỉ số chẩn đoán Postgres nằm
    trong view (`pg_stat_activity`, `pg_locks`), không sau `SHOW`. Hàng rào phải là giới
    hạn schema `pg_catalog`/`pg_stat_*`/`information_schema`. MySQL KHÔNG có `select`.
