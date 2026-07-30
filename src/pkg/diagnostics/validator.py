@@ -149,6 +149,74 @@ def _looks_like_path(arg: str) -> bool:
     return not arg.startswith("-") and ("/" in arg)
 
 
+# ── awk: chặn GHI, không chặn cú pháp ─────────────────────────────────────────
+#
+# Yêu cầu của chủ hệ thống: awk được chạy, chỉ cấm khi nó THẬT SỰ sửa đổi dữ liệu
+# khách. Nên ở đây không liệt kê trắng cú pháp awk (bất khả thi — awk là ngôn ngữ đầy
+# đủ) mà chặn đúng bốn cửa duy nhất awk có thể tác động ra ngoài tiến trình của nó:
+#
+#   1. `system("...")`      → chạy lệnh khác, vượt hoàn toàn khỏi catalogue
+#   2. `| "cmd"`            → nối pipe tới shell (cả `print |` và `cmd | getline`)
+#   3. `> "file"` / `>>`    → ghi file, đây mới đúng là "sửa đổi dữ liệu"
+#   4. `getline < "file"`   → đọc file bên trong script, vòng qua kiểm phạm vi đường
+#                             dẫn ở tầng đối số; nên phải kiểm lại chính path đó
+#
+# `ENVIRON[...]` cũng bị chặn: nó đọc biến môi trường của tiến trình agent, trong đó
+# có OMNI_AGENT_API_KEY. Không phải "sửa dữ liệu khách" theo nghĩa hẹp, nhưng rò khoá
+# của chính agent thì hậu quả nặng hơn — cùng lý do `ps` bị chặn cờ dump env.
+_AWK_LIKE: frozenset[str] = frozenset({"awk", "gawk", "mawk", "nawk", "busybox-awk"})
+
+_AWK_SYSTEM = re.compile(r"\bsystem\s*\(", re.IGNORECASE)
+_AWK_ENVIRON = re.compile(r"\bENVIRON\s*\[")
+# Pipe tới lệnh ngoài: `print ... | "cmd"` hoặc `"cmd" | getline`.
+_AWK_PIPE = re.compile(r"\|\s*[\"']|[\"']\s*\|")
+# Ghi ra file: `> "path"` / `>> "path"`. Không khớp `>` so sánh (`if (a > b)`) vì đòi
+# ngay sau đó là dấu nháy mở — awk buộc phải có tên file dạng chuỗi hoặc biến.
+_AWK_WRITE = re.compile(r">>?\s*[\"']")
+# Đọc file trong script: `getline < "path"` / `getline var < "path"`.
+_AWK_GETLINE_READ = re.compile(r"getline[^<]*<\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+
+
+def _awk_script_indexes(args: list[str]) -> set[int]:
+    """Index các đối số là SCRIPT awk (không phải cờ, không phải tên file dữ liệu).
+
+    awk nhận script ở positional đầu tiên, hoặc sau `-f` (file script — chặn ở
+    `deny_flags`), hoặc sau `-v` là gán biến (không phải script). Đối số sau script là
+    danh sách file dữ liệu, vẫn phải qua kiểm phạm vi như bình thường.
+    """
+    idx: set[int] = set()
+    skip_next = False
+    for i, a in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if a in ("-v", "--assign", "-f", "--file", "-F", "--field-separator"):
+            skip_next = True
+            continue
+        if a.startswith("-") and a != "-":
+            continue
+        idx.add(i)          # positional đầu tiên = script
+        break
+    return idx
+
+
+def _awk_script_guard(script: str, spec: CommandSpec) -> tuple[bool, str]:
+    """Chặn bốn cửa awk có thể tác động ra ngoài. Cú pháp bình thường được đi qua."""
+    if _AWK_SYSTEM.search(script):
+        return False, "awk_system_call_blocked"
+    if _AWK_ENVIRON.search(script):
+        return False, "awk_environ_read_blocked"
+    if _AWK_PIPE.search(script):
+        return False, "awk_pipe_to_command_blocked"
+    if _AWK_WRITE.search(script):
+        return False, "awk_file_write_blocked"
+    for m in _AWK_GETLINE_READ.finditer(script):
+        ok, reason = is_path_readable(m.group(1), spec)
+        if not ok:
+            return False, f"awk_getline_{reason}"
+    return True, ""
+
+
 def _statement_args(args: list[str]) -> tuple[list[str], set[int]]:
     """Trả về (các câu lệnh DB, index các arg là câu lệnh đó).
 
@@ -311,8 +379,24 @@ def validate_command(
     else:
         stmts, stmt_idx = [], set()
 
-    # Metachar: bỏ qua arg là câu lệnh DB (SQL hợp lệ có `;`/`>`), phần còn lại kiểm hết.
-    scanned = " ".join([base] + [a for i, a in enumerate(argv) if i not in stmt_idx])
+    # awk: script của nó là một NGÔN NGỮ, không phải chuỗi đối số shell. Hầu như mọi
+    # chương trình awk đời thực đều có `$1`/`$NF`, mà `$` nằm trong regex metachar —
+    # nên quét cả dòng làm `awk '{print $1}'` chết, tức awk có trong catalogue nhưng
+    # không chạy được bao giờ. Miễn quét metachar cho ĐÚNG đối số script, rồi kiểm
+    # script bằng luật riêng của awk (`_awk_script_guard`): chỉ chặn thứ THẬT SỰ ghi
+    # ra ngoài hoặc chạy lệnh khác, không chặn cú pháp bình thường.
+    awk_idx: set[int] = set()
+    if base in _AWK_LIKE:
+        awk_idx = _awk_script_indexes(argv)
+        for i in sorted(awk_idx):
+            ok, reason = _awk_script_guard(argv[i], spec)
+            if not ok:
+                return False, reason
+
+    # Metachar: bỏ qua arg là câu lệnh DB (SQL hợp lệ có `;`/`>`) và script awk;
+    # phần còn lại kiểm hết.
+    exempt = stmt_idx | awk_idx
+    scanned = " ".join([base] + [a for i, a in enumerate(argv) if i not in exempt])
     if _SHELL_INJECTION_RE.search(scanned):
         return False, f"shell_injection_detected in: {scanned[:80]}"
 
@@ -363,8 +447,13 @@ def validate_command(
 
     if spec.reads_content:
         # INV_DIAG_SCOPE_BOUNDED: đọc được, nhưng chỉ trong phạm vi đã khai.
+        #
+        # Miễn cả script awk, không chỉ câu lệnh DB: pattern awk dùng dấu `/` làm dấu
+        # phân cách (`/ERROR/{c++}`) nên `_looks_like_path` tưởng nó là đường dẫn rồi
+        # từ chối với lý do `path_out_of_scope` — vô nghĩa với người đọc. Các đối số
+        # FILE DỮ LIỆU của awk vẫn bị kiểm bình thường vì `exempt` chỉ chứa index script.
         for i, arg in enumerate(argv):
-            if i in stmt_idx or not _looks_like_path(arg):
+            if i in exempt or not _looks_like_path(arg):
                 continue
             ok, reason = is_path_readable(arg, spec)
             if not ok:

