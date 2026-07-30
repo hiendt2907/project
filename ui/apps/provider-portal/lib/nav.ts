@@ -36,6 +36,7 @@ export const PROVIDER_NAV: NavItem[] = [
   { label: "Khách hàng", href: "/tenants", implemented: true },
   { label: "Gói dịch vụ", href: "/licenses", implemented: true },
   { label: "Xử lý sự cố (Pipeline)", href: "/pipeline", implemented: true },
+  { label: "Chẩn đoán & Test", href: "/diagnostics", implemented: true },
   { label: "Số liệu 24h", href: "/kpi", implemented: true },
   { label: "Agents tại khách hàng", href: "/agents", implemented: true },
   { label: "Hiểu biết hệ thống", href: "/understanding", implemented: true },
