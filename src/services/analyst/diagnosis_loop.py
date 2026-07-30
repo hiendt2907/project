@@ -526,6 +526,7 @@ def _parse_llm_response(raw_text: str) -> dict[str, Any]:
 def _build_initial_context(
     vm_profile: dict[str, Any],
     ev_doc: dict[str, Any],
+    knowledge_text: str = "",
 ) -> str:
     """Build the FIRST user message: VM profile + initial evidence.
 
@@ -581,6 +582,15 @@ def _build_initial_context(
         f"{metrics_block}\n"
         f"Raw facts JSON: {json.dumps(extracted, ensure_ascii=False)[:600]}\n"
     )
+
+    # KIẾN THỨC LIÊN QUAN (D3, 2026-07-31): SOP + kinh nghiệm quá khứ từ RAG. Trước đây
+    # prompt KHÔNG có RAG — LLM chẩn lại từ số 0 mỗi lần, kể cả sự cố đã gặp. Đây là tham
+    # khảo, KHÔNG phải sự thật tuyệt đối: bằng chứng thực tế (facts/log/lệnh) vẫn thắng.
+    if knowledge_text.strip():
+        parts.append(
+            "[KIẾN THỨC LIÊN QUAN — SOP & kinh nghiệm trước đó, tham khảo có phê phán]\n"
+            f"{knowledge_text.strip()}"
+        )
 
     parts.append(
         f"\nAnalyze the evidence above. If you have enough to conclude, set "
@@ -690,6 +700,7 @@ async def run_diagnosis_loop(
     trace_id: str,
     model: str = "qwen2.5-coder:7b",
     num_ctx: int = 8192,
+    knowledge_text: str = "",
 ) -> dict[str, Any]:
     """Run multi-turn diagnosis loop. Returns FinalDiagnosis dict.
 
@@ -719,7 +730,7 @@ async def run_diagnosis_loop(
     # re-requesting the same command across turns (rule 'do NOT re-request').
     executed_signatures: set[tuple[str, tuple[str, ...]]] = set()
 
-    initial_context = _build_initial_context(vm_profile, ev_doc)
+    initial_context = _build_initial_context(vm_profile, ev_doc, knowledge_text)
     if not agent_online:
         initial_context += (
             "\n\n[COMMAND EXECUTION UNAVAILABLE]\n"

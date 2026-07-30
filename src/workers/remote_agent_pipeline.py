@@ -412,8 +412,26 @@ async def _run_diagnosis_and_notify(
     INVARIANT INV_DIAG_STORED: session must be stored in Redis before emit.
     """
     from services.analyst.diagnosis_loop import run_diagnosis_loop
+    from workers.archivist import recall_knowledge_context
+
     _lane = str(ev_doc.get("lane") or "")
     tenant_id = str(ev_doc.get("tenant_id") or ev_doc.get("tenant") or "default")
+
+    # D3 (2026-07-31): nạp kiến thức RAG (SOP + kinh nghiệm) để NHÉT vào prompt chẩn
+    # đoán. Trước đây prompt không có RAG ⇒ LLM chẩn lại từ 0 mỗi lần. Best-effort:
+    # lỗi RAG không được chặn đường chẩn đoán.
+    knowledge_text = ""
+    try:
+        _query = (
+            f"domain={ev_doc.get('domain','')} probe={ev_doc.get('probe','')} "
+            f"{str(ev_doc.get('alert_hint') or '')}"
+        )
+        knowledge_text = await recall_knowledge_context(
+            ctx, query_text=_query, tenant_id=tenant_id,
+        )
+    except Exception as _kerr:
+        logger.debug("[RAP] knowledge_ctx err trace=%s err=%r", trace, _kerr)
+
     try:
         session = await run_diagnosis_loop(
             redis=ctx.redis,
@@ -423,6 +441,7 @@ async def _run_diagnosis_and_notify(
             trace_id=trace,
             model=model,
             num_ctx=num_ctx,
+            knowledge_text=knowledge_text,
         )
         _turns = getattr(session, "total_turns", None)
         if _turns is None and isinstance(session, dict):

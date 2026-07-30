@@ -12,10 +12,11 @@ import logging
 import os
 import re
 import tempfile
+from types import SimpleNamespace
 from datetime import UTC, datetime
 from typing import Any
 
-from rag.pgvector_store import COLLECTION_ACTION_EXPERIENCE
+from rag.pgvector_store import COLLECTION_ACTION_EXPERIENCE, COLLECTION_SOP
 from rag.redis_vector_store import DEFAULT_TENANT_ID
 
 logger = logging.getLogger(__name__)
@@ -151,22 +152,45 @@ async def recall_playbook_advisory(
         return None
 
     embed_model = str(getattr(ws, "embed_model", "nomic-embed-text") or "nomic-embed-text")
-    try:
-        result = await vs.similarity_search(
-            query_text[:3000],
-            COLLECTION_ACTION_EXPERIENCE,
-            llm=llm,
-            embed_model=embed_model,
-            limit=_RECALL_TOP_K,
-            score_threshold=_RECALL_SCORE_THRESHOLD,
-            tenant_id=tenant_id,
-        )
-    except Exception as e:
-        logger.debug("event=archivist_recall_skip trace=%s err=%s", trace, e)
-        return None
 
-    if not result.points:
+    async def _search(collection: str, tid: str) -> Any:
+        try:
+            return await vs.similarity_search(
+                query_text[:3000],
+                collection,
+                llm=llm,
+                embed_model=embed_model,
+                limit=_RECALL_TOP_K,
+                score_threshold=_RECALL_SCORE_THRESHOLD,
+                tenant_id=tid,
+            )
+        except Exception as e:
+            logger.debug(
+                "event=archivist_recall_skip trace=%s coll=%s tenant=%s err=%s",
+                trace, collection, tid, e,
+            )
+            return None
+
+    # D1+D2 (2026-07-31): tra NHIỀU nguồn, không chỉ action_experience của đúng tenant.
+    #  - Cô lập tenant khiến index của khách LUÔN rỗng (kinh nghiệm chỉ nạp vào `default`)
+    #    ⇒ RAG không bao giờ hit. Fallback về `default` khi index tenant không có gì.
+    #  - Kho SOP (itops_sop_ledger, ~1093 mục) chưa từng được remote path tra — thêm vào.
+    # SOP/experience là tri thức của CHÍNH Omni (không phải dữ liệu khách) ⇒ chia sẻ an
+    # toàn qua các tenant; INV_DATA_RESIDENCY không bị đụng.
+    sources: list[tuple[str, str]] = [(COLLECTION_ACTION_EXPERIENCE, tenant_id)]
+    if tenant_id != DEFAULT_TENANT_ID:
+        sources.append((COLLECTION_ACTION_EXPERIENCE, DEFAULT_TENANT_ID))
+    sources.append((COLLECTION_SOP, DEFAULT_TENANT_ID))
+
+    all_points: list[Any] = []
+    for _coll, _tid in sources:
+        _res = await _search(_coll, _tid)
+        if _res is not None and getattr(_res, "points", None):
+            all_points.extend(_res.points)
+
+    if not all_points:
         return None
+    result = SimpleNamespace(points=all_points)
 
     # S2.4: load negative recall set and apply score decay.
     redis = getattr(ctx, "redis", None)
@@ -283,6 +307,65 @@ async def recall_playbook_advisory(
         top_arg_keys=top_keys,
         top_point_id=top_point_id,
     )
+
+
+async def recall_knowledge_context(
+    ctx: Any,
+    *,
+    query_text: str,
+    tenant_id: str = DEFAULT_TENANT_ID,
+    max_items: int = 3,
+    max_chars: int = 900,
+) -> str:
+    """Digest tri thức liên quan để NHÉT vào prompt chẩn đoán (D3, 2026-07-31).
+
+    Khác `recall_playbook_advisory` (cổng ĐỊNH TUYẾN, ngưỡng 0.75): hàm này lấy vài
+    mẩu SOP/kinh nghiệm gần nhất BẤT KỂ ngưỡng, chỉ để LLM có kiến thức tham khảo khi
+    chẩn đoán — trước đây prompt hoàn toàn không có RAG nên LLM chẩn lại từ số 0 mỗi lần.
+    Chỉ trả metadata/text_content (không giá trị bí mật). Rỗng ⇒ trả "".
+    """
+    vs = getattr(ctx, "vector_store", None)
+    llm = getattr(ctx, "llm", None)
+    ws = getattr(ctx, "settings", None)
+    if vs is None or llm is None or ws is None or not query_text.strip():
+        return ""
+    embed_model = str(getattr(ws, "embed_model", "nomic-embed-text") or "nomic-embed-text")
+
+    sources: list[tuple[str, str]] = [(COLLECTION_ACTION_EXPERIENCE, tenant_id)]
+    if tenant_id != DEFAULT_TENANT_ID:
+        sources.append((COLLECTION_ACTION_EXPERIENCE, DEFAULT_TENANT_ID))
+    sources.append((COLLECTION_SOP, DEFAULT_TENANT_ID))
+
+    seen: set[str] = set()
+    lines: list[str] = []
+    for coll, tid in sources:
+        try:
+            res = await vs.similarity_search(
+                query_text[:3000], coll, llm=llm, embed_model=embed_model,
+                limit=max_items, score_threshold=0.0, tenant_id=tid,
+            )
+        except Exception as e:
+            logger.debug("event=knowledge_ctx_skip coll=%s err=%s", coll, e)
+            continue
+        for pt in (getattr(res, "points", None) or []):
+            payload = getattr(pt, "payload", None) or {}
+            text = str(
+                payload.get("text_content") or payload.get("text")
+                or payload.get("summary") or ""
+            ).strip().replace("\n", " ")
+            if not text or text[:80] in seen:
+                continue
+            seen.add(text[:80])
+            score = round(float(getattr(pt, "score", 0) or 0), 2)
+            lines.append(f"- (score={score}) {text[:220]}")
+            if len(lines) >= max_items:
+                break
+        if len(lines) >= max_items:
+            break
+
+    if not lines:
+        return ""
+    return "\n".join(lines)[:max_chars]
 
 
 def build_strong_recall_prefix(recall: RecallResult) -> str:
