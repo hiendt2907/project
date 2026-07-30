@@ -299,7 +299,17 @@ def validate_command(
     if spec is None:
         return False, f"command_not_whitelisted: {base}"
 
-    stmts, stmt_idx = _statement_args(argv)
+    # CHỈ bóc câu lệnh cho client DB. `-c`/`-e` là cờ câu lệnh của psql/redis-cli,
+    # nhưng cũng là cờ hoàn toàn khác của hàng loạt lệnh khác: `grep -c` (đếm),
+    # `grep -e` (mẫu), `ps -e` (mọi tiến trình), `tail -c` (số byte), `du -c` (tổng),
+    # `journalctl -e` (nhảy cuối), `sar -e` (giờ kết thúc). Bóc cho mọi lệnh thì token
+    # sau cờ bị đem đi chấm như một câu SQL, và vì lệnh đó không có `statement_verbs`
+    # nên MỌI giá trị đều trượt — đo thực tế: 9/10 cách gọi đời thực bị chặn oan, trong
+    # đó có `grep -c ERROR` là một trong những lệnh chẩn đoán hay dùng nhất.
+    if spec.statement_verbs:
+        stmts, stmt_idx = _statement_args(argv)
+    else:
+        stmts, stmt_idx = [], set()
 
     # Metachar: bỏ qua arg là câu lệnh DB (SQL hợp lệ có `;`/`>`), phần còn lại kiểm hết.
     scanned = " ".join([base] + [a for i, a in enumerate(argv) if i not in stmt_idx])

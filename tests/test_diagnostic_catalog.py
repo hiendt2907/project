@@ -267,3 +267,48 @@ def test_hostname_is_not_resolved_dns_rebinding() -> None:
     một trường hợp dùng hợp lệ, nhưng đây là chỗ nên bảo thủ.
     """
     assert is_local_target("localhost.attacker.com")[0] is False
+
+
+# ---------------------------------------------------------------------------
+# Cờ câu lệnh DB không được đem áp cho lệnh KHÔNG phải DB
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cmd,args", [
+    ("grep", ["-c", "ERROR", "/var/log/syslog"]),      # -c = đếm, không phải --command
+    ("grep", ["-e", "ERROR", "/var/log/syslog"]),      # -e = mẫu
+    ("ps", ["-e", "-o", "pid,comm"]),                  # -e = mọi tiến trình
+    ("journalctl", ["-e", "-u", "nginx"]),             # -e = nhảy cuối
+    ("tail", ["-c", "4096", "/var/log/syslog"]),       # -c = số byte
+    ("du", ["-c", "-h", "/var/log"]),                  # -c = in tổng
+    ("wc", ["-c", "/var/log/syslog"]),
+    ("sar", ["-e", "10:00:00"]),                       # -e = giờ kết thúc
+])
+def test_statement_flags_not_applied_to_non_db_commands(cmd: str, args: list[str]) -> None:
+    """`-c`/`-e` chỉ là cờ câu lệnh với client DB, không phải với mọi lệnh.
+
+    Bóc câu lệnh cho MỌI lệnh khiến token sau cờ bị chấm như một câu SQL; lệnh không
+    có `statement_verbs` thì mọi giá trị đều trượt. Đo thực tế lúc phát hiện: **9/10**
+    cách gọi đời thực bị chặn oan, trong đó có `grep -c ERROR` — một trong những lệnh
+    chẩn đoán hay dùng nhất. Kiểu hỏng này không lộ ra ở test tổng hợp vì lệnh vẫn
+    "có trong catalogue"; nó chỉ lộ khi gọi đúng cách người ta thật sự gọi.
+    """
+    from pkg.diagnostics.validator import validate_command
+
+    ok, reason = validate_command(cmd, args)
+    assert ok is True, f"{cmd} {' '.join(args)} bi chan oan: {reason}"
+
+
+@pytest.mark.parametrize("cmd,args,why", [
+    ("psql", ["-c", "SELECT * FROM customers"], "select_outside_system_schema"),
+    ("psql", ["-c", "DROP TABLE t"], "statement_verb_not_allowed"),
+    ("mysql", ["-e", "SELECT * FROM orders"], "select_outside_system_schema"),
+    ("mysql", ["-e", "SHOW STATUS; DROP TABLE t"], "statement_multiple_not_allowed"),
+    ("redis-cli", ["GET", "session:abc"], "statement_verb_not_allowed"),
+])
+def test_db_statements_still_strict_after_scoping_fix(cmd: str, args: list[str], why: str) -> None:
+    """Sửa chỗ trên KHÔNG được làm lỏng đường DB — đó mới là chỗ có dữ liệu khách."""
+    from pkg.diagnostics.validator import validate_command
+
+    ok, reason = validate_command(cmd, args)
+    assert ok is False, f"{cmd} {' '.join(args)} phai bi chan"
+    assert why in reason
