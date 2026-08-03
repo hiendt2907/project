@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from kubernetes_asyncio import client, config
+from kubernetes_asyncio import client
 from kubernetes_asyncio.client import ApiException, CustomObjectsApi
 
+from pkg.k8s_config import load_k8s_config as _load_k8s_config
 from workers.lab_shell import _audit_lab_shell
 from workers.telegram_ctx import effective_telegram_chat_id, should_send_telegram_chart
 from visualization.chart_bytes import pod_cpu_memory_bar_png_bytes, pod_cpu_memory_usage_absolute_png_bytes
@@ -256,13 +257,6 @@ async def execute_rollout_restart_from_pending(_ctx: Any, data: dict[str, Any]) 
             )
     setattr(_ctx, "k8s_mutated", True)
     return await execute_rollout_restart(ns_s, dep_s)
-
-
-async def _load_k8s_config() -> None:
-    try:
-        config.load_incluster_config()
-    except config.ConfigException:
-        await config.load_kube_config()
 
 
 def _format_pod_list(resp: Any, namespace: str) -> str:

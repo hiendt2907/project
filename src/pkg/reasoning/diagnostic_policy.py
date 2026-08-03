@@ -117,7 +117,7 @@ def _discovery_alias_flat_names() -> frozenset[str]:
 def discovery_satisfying_tool_names() -> frozenset[str]:
     """Union of DISCOVERY_TOOL_ALIASES registry ids, K8s readonly allowlist, and observability readonly tools."""
     try:
-        from workers.autonomous_execute import READONLY_TOOL_ALLOWLIST
+        from pkg.risk_taxonomy import READONLY_TOOL_ALLOWLIST
     except Exception:
         READONLY_TOOL_ALLOWLIST = frozenset()  # type: ignore[misc,assignment]
     return frozenset(READONLY_TOOL_ALLOWLIST) | OBSERVABILITY_READONLY_DISCOVERY_TOOL_NAMES | _discovery_alias_flat_names()
@@ -246,7 +246,7 @@ def evaluate_diagnostic_invariants(
     ns = str(ag.get("namespace") or "").strip()
     if ns and (tn.startswith("k8s_") or tn == "kubectl_cluster"):
         try:
-            from workers.env_mode import namespace_allowed
+            from pkg.env_mode import namespace_allowed
         except Exception:
             namespace_allowed = None  # type: ignore[assignment]
         if namespace_allowed is not None and not namespace_allowed(ws, ns):
@@ -260,7 +260,7 @@ def evaluate_diagnostic_invariants(
 
     if bool(getattr(ws, "omni_discovery_mandatory", False)):
         try:
-            from workers.autonomous_execute import MUTATE_TOOL_ALLOWLIST
+            from pkg.risk_taxonomy import MUTATE_TOOL_ALLOWLIST
         except Exception:
             MUTATE_TOOL_ALLOWLIST = frozenset()  # type: ignore[misc,assignment]
         if tn in MUTATE_TOOL_ALLOWLIST:

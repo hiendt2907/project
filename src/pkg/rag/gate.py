@@ -172,7 +172,7 @@ def _format_hits(
     max_words: int,
     max_block_chars: int,
 ) -> tuple[str, list[str]]:
-    from workers.llm_prompts_en import truncate_plain_text_to_max_words
+    from pkg.reasoning.llm_prompts_en import truncate_plain_text_to_max_words
 
     lines: list[str] = []
     chunk_ids: list[str] = []

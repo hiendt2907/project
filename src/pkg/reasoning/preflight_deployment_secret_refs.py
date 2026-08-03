@@ -78,7 +78,7 @@ async def merge_preflight_deployment_secret_refs(
     read Deployment once and append a synthetic probe with structured secret refs.
     """
     from pkg.reasoning.deterministic_mutate_from_evidence import _evidence_suggests_credential_failure
-    from workers.evidence_mutate_emit import rollout_args_from_evidence_batch
+    from pkg.reasoning.rollout_eligibility import rollout_args_from_evidence_batch
 
     if any(str(b.get("probe") or "") == PROBE_PREFLIGHT for b in batch):
         return batch
@@ -99,7 +99,7 @@ async def merge_preflight_deployment_secret_refs(
     try:
         from kubernetes_asyncio import client
 
-        from workers.k8s_tools import _load_k8s_config
+        from pkg.k8s_config import load_k8s_config as _load_k8s_config
 
         await _load_k8s_config()
         apps = client.AppsV1Api()
