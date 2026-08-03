@@ -123,12 +123,49 @@ class TestBuildDispatchAdvisory:
         assert advisory["unit"] == "systemd-journald.service"
 
 
+class _StubRedis:
+    """Just enough surface for the bridge's pending-command bookkeeping."""
+
+    def __init__(self) -> None:
+        self.kv: dict = {}
+        self.zsets: dict = {}
+
+    async def zadd(self, key, mapping):
+        self.zsets.setdefault(key, {}).update(mapping)
+
+    async def set(self, key, value, ex=None, **kw):
+        self.kv[key] = value
+
+
+class _StubKafka:
+    async def send_dict(self, topic, msg, key=None):
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _permit_unattended_dispatch(monkeypatch):
+    """These tests predate the blast-radius allowlist and the CRAT precondition
+    added 2026-08-02. They exercise advisory shaping and gateway wiring, so grant
+    the allowlist for the agent ids they use and stub the ledger; the gate and
+    ledger behaviours themselves are covered in test_remote_auto_execute_loop.py.
+    """
+    monkeypatch.setenv(
+        "OMNI_LAB_AUTO_EXECUTE_AGENTS", "staging-sim_cust-app,a-1,agent-1",
+    )
+
+    async def _write(**kwargs):
+        return {"block_hash": "stub"}
+
+    monkeypatch.setattr("services.audit_ledger.chain_writer.write_audit_block", _write)
+
+
 class TestDispatchIfEligible:
     async def test_skips_when_no_suggested_recovery(self):
         result = await dispatch_if_eligible(
             settings=SimpleNamespace(), http_client=AsyncMock(),
             final={"root_cause": "x", "confidence": 0.9},
             agent_id="a-1", tenant_id="t-1", trace_id="tr-1",
+            redis=_StubRedis(), kafka=_StubKafka(),
         )
         assert result == {"dispatched": False, "reason": "no_suggested_recovery",
                           "command_id": None, "state": None}
@@ -139,6 +176,7 @@ class TestDispatchIfEligible:
         result = await dispatch_if_eligible(
             settings=SimpleNamespace(), http_client=AsyncMock(),
             final=final, agent_id="a-1", tenant_id="t-1", trace_id="tr-1",
+            redis=_StubRedis(), kafka=_StubKafka(),
         )
         assert result["dispatched"] is False
         assert result["reason"] == "confidence_below_threshold"
@@ -149,6 +187,7 @@ class TestDispatchIfEligible:
         result = await dispatch_if_eligible(
             settings=SimpleNamespace(omni_gateway_api_key=""), http_client=AsyncMock(),
             final=final, agent_id="a-1", tenant_id="t-1", trace_id="tr-1",
+            redis=_StubRedis(), kafka=_StubKafka(),
         )
         assert result["dispatched"] is False
         assert result["reason"] == "gateway_api_key_not_configured"
@@ -173,6 +212,7 @@ class TestDispatchIfEligible:
         result = await dispatch_if_eligible(
             settings=settings, http_client=client, final=final,
             agent_id="staging-sim_cust-app", tenant_id="staging-sim", trace_id="tr-real-1",
+            redis=_StubRedis(), kafka=_StubKafka(),
         )
 
         assert result["dispatched"] is True
@@ -208,6 +248,7 @@ class TestDispatchIfEligible:
         result = await dispatch_if_eligible(
             settings=settings, http_client=client, final=final,
             agent_id="staging-sim_cust-app", tenant_id="staging-sim", trace_id="tr-real-2",
+            redis=_StubRedis(), kafka=_StubKafka(),
         )
 
         assert result["dispatched"] is True
@@ -237,6 +278,7 @@ class TestDispatchIfEligible:
         result = await dispatch_if_eligible(
             settings=settings, http_client=client, final=final,
             agent_id="staging-sim_cust-app", tenant_id="staging-sim", trace_id="tr-real-3",
+            redis=_StubRedis(), kafka=_StubKafka(),
         )
 
         assert result["dispatched"] is True
@@ -261,6 +303,7 @@ class TestDispatchIfEligible:
         result = await dispatch_if_eligible(
             settings=settings, http_client=client, final=final,
             agent_id="a-1", tenant_id="t-1", trace_id="tr-1",
+            redis=_StubRedis(), kafka=_StubKafka(),
         )
         assert result["dispatched"] is False
         assert result["http_status"] == 423

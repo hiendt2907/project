@@ -55,14 +55,21 @@ async def _run(ctx, ev_doc, session, trace="trace-ar-1"):
 
 
 class TestAutoRecoveryDispatchWiring:
-    async def test_no_suggested_recovery_skips_silently_no_stage_row(self):
+    # 2026-08-02: hợp đồng đổi từ "KHÔNG ghi dòng nào" sang "ghi `skip` KÈM LÝ DO".
+    # Ý định gốc giữ nguyên — đây không phải `fail`, không được bóp méo tỉ lệ lỗi.
+    # Cái đổi là quan sát được: 808/809 trace trước đây không ghi lấy một dòng, nên
+    # "vì sao ca này không tự khắc phục" là câu không trả lời được từ sổ.
+
+    async def test_no_suggested_recovery_records_skip_with_reason(self):
         ctx = _ctx()
         ev_doc = {"probe": "x", "lane": "SYS_HARD_FAIL", "tenant_id": "acme"}
         await _run(ctx, ev_doc, _session(suggested_recovery=None))
         stages = await ctx.redis.hgetall("omni:trace:stages:trace-ar-1")
-        assert "AUTO_RECOVERY" not in stages
+        row = json.loads(stages["AUTO_RECOVERY"])
+        assert row["status"] == "skip"
+        assert "no_suggested_recovery" in row["detail"]
 
-    async def test_eligible_but_no_gateway_key_skips_silently(self):
+    async def test_eligible_but_no_gateway_key_records_skip_not_fail(self):
         """omni_gateway_api_key unset is the deployed default (fail-closed) —
         must not be reported as a failure stage, it's expected-off."""
         ctx = _ctx(omni_gateway_api_key="")
@@ -70,7 +77,25 @@ class TestAutoRecoveryDispatchWiring:
         suggested = {"capability": "systemd.restart_unit", "unit": "payment-api.service"}
         await _run(ctx, ev_doc, _session(suggested_recovery=suggested))
         stages = await ctx.redis.hgetall("omni:trace:stages:trace-ar-1")
-        assert "AUTO_RECOVERY" not in stages
+        row = json.loads(stages["AUTO_RECOVERY"])
+        assert row["status"] == "skip"
+        assert "gateway_api_key_not_configured" in row["detail"]
+
+    async def test_agent_not_in_lab_allowlist_is_skip_not_fail(self):
+        """Agent ngoài allowlist là CẤU HÌNH có chủ đích, không phải sự cố —
+        ghi `fail` ở đây là bơm nhiễu vào sổ cho mọi chẩn đoán của agent đó."""
+        ctx = _ctx(omni_gateway_api_key="test-key")
+        ev_doc = {"probe": "x", "lane": "SYS_HARD_FAIL", "tenant_id": "acme"}
+        suggested = {"capability": "systemd.restart_unit", "unit": "payment-api.service"}
+        fake = {"dispatched": False, "reason": "agent_not_in_lab_allowlist",
+                "command_id": None, "state": None}
+        with patch("workers.auto_recovery_bridge.dispatch_if_eligible",
+                   new=AsyncMock(return_value=fake)):
+            await _run(ctx, ev_doc, _session(suggested_recovery=suggested))
+        stages = await ctx.redis.hgetall("omni:trace:stages:trace-ar-1")
+        row = json.loads(stages["AUTO_RECOVERY"])
+        assert row["status"] == "skip"
+        assert "agent_not_in_lab_allowlist" in row["detail"]
 
     async def test_eligible_dispatch_records_ok_stage(self):
         ctx = _ctx(omni_gateway_api_key="test-key")
@@ -119,3 +144,23 @@ class TestAutoRecoveryDispatchWiring:
         assert json.loads(stages["CRAT"])["status"] == "ok"
         assert json.loads(stages["DISPATCH"])["status"] == "ok"
         assert json.loads(stages["AUTO_RECOVERY"])["status"] == "fail"
+
+
+class TestBridgeReceivesLedgerHandles:
+    """`dispatch_if_eligible` ghi CRAT TRƯỚC khi phát lệnh và đăng ký lệnh vào
+    work-list. Thiếu `redis`/`kafka` ở call site thì nó luôn trả
+    `audit_ledger_unavailable` — fail-closed nên an toàn, nhưng cả đường tự
+    khắc phục nằm im mà không có gì báo. Test bám CALL SITE, không bám hàm."""
+
+    async def test_call_site_passes_redis_and_kafka(self):
+        ctx = _ctx(omni_gateway_api_key="test-key")
+        ev_doc = {"probe": "x", "lane": "SYS_HARD_FAIL", "tenant_id": "acme"}
+        suggested = {"capability": "systemd.restart_unit", "unit": "payment-api.service"}
+        spy = AsyncMock(return_value={"dispatched": True, "reason": "dispatched",
+                                      "command_id": "c1", "state": "QUEUED"})
+        with patch("workers.auto_recovery_bridge.dispatch_if_eligible", new=spy):
+            await _run(ctx, ev_doc, _session(suggested_recovery=suggested))
+
+        kwargs = spy.await_args.kwargs
+        assert kwargs["redis"] is ctx.redis
+        assert kwargs["kafka"] is ctx.kafka

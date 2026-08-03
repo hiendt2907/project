@@ -83,7 +83,7 @@ async def handle_knowledge_evidence(ctx: WorkerHandlerContext, ev_doc: dict[str,
     hostname = str(ev_doc.get("namespace") or ev_doc.get("extracted_fact", {}).get("hostname") or agent_id)
 
     if signal_type == "METRIC_SAMPLE":
-        await _handle_metric_sample(ctx, ev_doc, tenant_id, hostname)
+        await _handle_metric_sample(ctx, ev_doc, tenant_id, hostname, agent_id)
     elif signal_type == "LOG_SAMPLE":
         await _handle_log_sample(ctx, ev_doc, agent_id)
     elif signal_type == "DISCOVERY":
@@ -101,6 +101,7 @@ async def _handle_metric_sample(
     ev_doc: dict[str, Any],
     tenant_id: str,
     hostname: str,
+    agent_id: str,
 ) -> None:
     """METRIC_SAMPLE → update 3σ baseline + add confidence + Omni tự phán có lệch không.
 
@@ -141,7 +142,7 @@ async def _handle_metric_sample(
     # Không bọc try/except nuốt lỗi: một lỗi Kafka/Redis thật ở bước nâng cấp phải văng
     # ra tới kafka_knowledge_evidence_loop để đi qua retry+poison-ack sẵn có, thay vì
     # làm một cảnh báo thật biến mất không dấu vết.
-    await _decide_and_promote(ctx, ev_doc, tenant_id, hostname, fact, zscores)
+    await _decide_and_promote(ctx, ev_doc, tenant_id, hostname, agent_id, fact, zscores)
 
 
 def _decide_metric_deviation(
@@ -224,10 +225,16 @@ async def _decide_and_promote(
     ev_doc: dict[str, Any],
     tenant_id: str,
     hostname: str,
+    agent_id: str,
     fact: dict[str, Any],
     zscores: dict[str, float],
 ) -> None:
-    """Quyết định lệch/không rồi nâng cấp ANOMALY nếu lệch. Thuần số, không LLM."""
+    """Quyết định lệch/không rồi nâng cấp ANOMALY nếu lệch. Thuần số, không LLM
+    ở BƯỚC QUYẾT ĐỊNH này — nhưng trước khi nâng một deviation lên toàn bộ vòng
+    chẩn đoán (RAG+LLM, tốn nhất), thử phản xạ nhanh: đã có cách sửa đã biết +
+    đã kiểm chứng cho đúng host này chưa (xem `_try_known_fix_reflex`)? Đây là
+    điểm nối tương đương `proactive_observer.py` cho host không có Prometheus —
+    trigger là chính deviation này, không phải PromQL threshold cross."""
     score = await get_confidence_score(ctx.redis, tenant_id=tenant_id, host=hostname)
     level = score_to_level(score)
     thresholds = await resolve_agent_thresholds(ctx.redis, tenant_id)
@@ -245,7 +252,73 @@ async def _decide_and_promote(
         return
 
     for dev in deviations:
+        if await _try_known_fix_reflex(ctx, tenant_id, hostname, agent_id, dev):
+            continue
         await _promote_to_anomaly(ctx, ev_doc, tenant_id, hostname, fact, zscores, dev, score, level)
+
+
+async def _try_known_fix_reflex(
+    ctx: WorkerHandlerContext,
+    tenant_id: str,
+    hostname: str,
+    agent_id: str,
+    dev: dict[str, Any],
+) -> bool:
+    """True nếu một cách sửa đã biết + đã kiểm chứng vừa được PHÁT LỆNH cho
+    deviation này (kết quả thật đến sau, qua `remote_command_outcome_loop`) —
+    caller khi đó bỏ qua nâng cấp ANOMALY cho riêng deviation này.
+
+    Đòi hỏi discovery snapshot của agent CÓ THẬT — không snapshot nghĩa là
+    chưa biết host này chạy service gì, đi thẳng đường đầy đủ (an toàn hơn là
+    liều thực thi trên một host chưa biết gì về nó).
+    """
+    from execution.memory_normalize import canonical_symptom_text
+    from remote_agent.discovery import load_discovery_snapshot
+    from workers.remote_known_fix import try_remote_known_fix
+
+    try:
+        snapshot = await load_discovery_snapshot(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
+    except Exception as exc:
+        logger.warning(
+            "knowledge_pipeline: discovery snapshot load fail host=%s agent=%s err=%s",
+            hostname, agent_id, exc,
+        )
+        return False
+    if not snapshot:
+        return False
+
+    known = {str(s.get("name")) for s in snapshot.get("services", []) if s.get("name")}
+    if not known:
+        return False
+    # `systemd.restart_unit` nhận unit bare (`extract_suggested_recovery` tự
+    # thêm hậu tố `.service`) nhưng ta không chắc quy ước của MỌI bản ghi cũ
+    # trong action_experience — chấp nhận cả hai dạng thay vì đoán một chiều.
+    host_scope = frozenset(known) | frozenset(f"{n}.service" for n in known)
+
+    query = canonical_symptom_text(
+        f"{dev['metric']} deviation on host {hostname}: value={dev['value']}",
+        strip_pods=False,
+    )
+    import uuid
+
+    trace_id = f"kf-{uuid.uuid4().hex[:12]}"
+    threshold = float(getattr(ctx.settings, "action_experience_score_threshold", 0.55))
+    result = await try_remote_known_fix(
+        ctx,
+        query_text=query,
+        score_threshold=threshold,
+        host_scope=host_scope,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+    )
+    if result.get("resolved"):
+        logger.info(
+            "knowledge_pipeline: known_fix reflex dispatched tenant=%s host=%s metric=%s "
+            "command_id=%s trace=%s",
+            tenant_id, hostname, dev["metric"], result.get("command_id"), trace_id,
+        )
+    return bool(result.get("resolved"))
 
 
 async def _record_z_observation(

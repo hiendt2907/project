@@ -20,6 +20,10 @@ from observability.normalize import (
     infer_error_hint_from_promql,
     redact,
 )
+from pkg.reasoning.known_fix_resolver import (
+    embedding_from_response as _embedding_from_response,
+    resolve_known_fix,
+)
 from rag.pgvector_store import COLLECTION_ACTION_EXPERIENCE, EMBED_DIM, PointStruct
 from workers.handlers import WorkerHandlerContext, resolve_remediation_from_memory
 from workers.request_trace import pop_trace_id, push_trace_id
@@ -40,9 +44,7 @@ from workers.metrics_exporter import (
     set_learning_unique_patterns,
 )
 from workers.sdk_service_tools import _prometheus_get_json
-from workers.tool_observation import prepare_tool_return_for_llm
-from workers.tool_registry import get_tool_registry
-from workers.tools import TOOL_REGISTRY, ToolCallPayload
+from workers.tools import ToolCallPayload
 from workers.proactive_guardrails import (
     PROACTIVE_MUTATE_TOOLS,
     extract_resource_ref,
@@ -189,16 +191,6 @@ def _allow_learning_upsert(tool: str, output: str, verified: bool) -> bool:
     return True
 
 
-def _embedding_from_response(resp: dict[str, Any]) -> list[float]:
-    if "embedding" in resp:
-        emb = resp["embedding"]
-        return list(emb) if not isinstance(emb, list) else emb
-    embs = resp.get("embeddings")
-    if isinstance(embs, list) and embs:
-        return list(embs[0])
-    return []
-
-
 async def _save_proactive_learning_record(
     ctx: WorkerHandlerContext,
     *,
@@ -263,48 +255,30 @@ async def _resolve_from_action_experience(
     query_text: str,
     score_threshold: float,
     pattern_key: str = "",
+    host_scope: frozenset[str] | None = None,
 ) -> tuple[bool, str | None, str | None, dict[str, Any]]:
-    """Try learned action_experience before LLM fallback."""
+    """Try learned action_experience before LLM fallback.
+
+    Thực thi thẳng thay caller — không phải một gợi ý, một quyết định mutate
+    thật. Vì vậy phải qua `resolve_known_fix()` (guard placeholder + phạm vi
+    host) thay vì tự thực thi ứng viên top-1 chỉ dựa trên điểm giống nhau —
+    xem docstring `pkg.reasoning.known_fix_resolver` cho sự cố production đã
+    xảy ra khi thiếu guard này (dispatch `k8s_rollout_restart` với
+    `deployment='<valid_deployment>'`).
+
+    `host_scope`: tập tên tài nguyên CÓ THẬT trên mục tiêu hiện tại (ví dụ từ
+    discovery snapshot của agent) — None nếu caller chưa có cách liệt kê
+    (proactive cluster hiện chưa có cluster-inventory context).
+    """
     if await _is_negative_pattern(ctx, pattern_key):
         return False, None, None, {}
-    try:
-        strip_pods = bool(getattr(ctx.settings, "memory_canonical_strip_pods", True))
-        q = canonical_symptom_text((query_text or "").strip()[:4000], strip_pods=strip_pods)
-        emb = await ctx.llm.embed(
-            model=ctx.settings.embed_model,
-            input=q[:4000],
-        )
-        vec = _embedding_from_response(emb)
-        if len(vec) != EMBED_DIM:
-            vec = (vec + [0.0] * EMBED_DIM)[:EMBED_DIM]
-        resp = await ctx.vector_store.query_points(
-            collection_name=COLLECTION_ACTION_EXPERIENCE,
-            query=vec,
-            limit=3,
-            score_threshold=score_threshold,
-            with_payload=True,
-        )
-        if resp.points:
-            top_score = float(resp.points[0].score or 0.0)
-            logger.info(json.dumps({"event": "rag_search", "similarity_score": round(top_score, 4)}))
-        for pt in resp.points or []:
-            pl = dict(pt.payload or {})
-            if str(pl.get("exec_outcome") or "").lower() != "success":
-                continue
-            if not bool(pl.get("auto_execute", True)):
-                continue
-            tool_name = str(pl.get("tool") or "")
-            args = pl.get("args") if isinstance(pl.get("args"), dict) else {}
-            if not tool_name or tool_name not in TOOL_REGISTRY:
-                continue
-            fn = TOOL_REGISTRY[tool_name]
-            out = await fn(ctx, args)
-            if not get_tool_registry().has(tool_name):
-                out = prepare_tool_return_for_llm(ctx, out)
-            return True, str(out), tool_name, {"score": float(pt.score or 0.0), "args": args}
-    except Exception as e:
-        logger.debug("action_experience proactive resolve skip: %s", e)
-    return False, None, None, {}
+    result = await resolve_known_fix(
+        ctx,
+        query_text=query_text,
+        score_threshold=score_threshold,
+        host_scope=host_scope,
+    )
+    return result.ok, result.output, result.tool, result.meta
 
 
 async def _parse_fallback_tool_call(ctx: WorkerHandlerContext, user_prompt: str) -> tuple[ToolCallPayload | None, float, str]:
