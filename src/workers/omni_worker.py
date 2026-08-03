@@ -1271,10 +1271,18 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
             tasks.append(asyncio.create_task(kafka_proactive_incidents_loop(ctx, stop), name="kafka_proactive_incidents"))
         tasks.append(asyncio.create_task(_temporal_prediction_loop(ctx, stop), name="temporal_prediction"))
         tasks.append(asyncio.create_task(_sigma_calibration_loop(ctx, stop), name="sigma_calibration"))
-    if role in ("full", "onboarding"):
-        # Onboarding pipeline (agent/plans/PLAN_onboarding_ops_agent.md step-3). role=full is the
-        # canonical lab deployment (single omni-fullstack pod) and must also consume discovery
-        # evidence — otherwise onboarding accumulation silently never runs in production (Slice O1 audit).
+    if role == "onboarding":
+        # Onboarding pipeline (agent/plans/PLAN_onboarding_ops_agent.md step-3). Previously also
+        # wired for role=full ("must also consume discovery evidence — otherwise onboarding
+        # accumulation silently never runs in production") from when no dedicated onboarding
+        # deployment existed. A dedicated `omni-onboarding` Deployment (role=onboarding) now runs
+        # permanently alongside `omni-fullstack` (see CLAUDE.md "Declared target topology") — with
+        # role=full ALSO joining the same fixed consumer_group_onboarding group, two independent
+        # group members compete over a single-partition topic, causing a rebalance every time either
+        # pod restarts or a slow fold_and_persist() call misses a heartbeat. Confirmed live 2026-08-03:
+        # omni-onboarding crash-looped (exit 137, 15 restarts/3h27m) while both pods logged the same
+        # "Heartbeat failed ... rebalancing" cycle for group omni-onboarding-discovery. role=full no
+        # longer joins this group — the dedicated deployment is the sole owner.
         tasks.append(asyncio.create_task(kafka_discovery_evidence_loop(ctx, stop), name="kafka_discovery_evidence_loop"))
     return tasks
 
