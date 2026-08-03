@@ -48,44 +48,6 @@ def test_agents_list_mock_redis():
         assert r.json()["count"] >= 1
 
 
-def test_autonomy_policy_flow_mock_redis():
-    from gateway.routes.autonomy import router
-    from pkg.autonomy.policy import PolicyRule, AutonomyLevel
-
-    redis = MagicMock()
-    redis.get = AsyncMock(return_value=None)
-    redis.set = AsyncMock()
-    redis.lpush = AsyncMock()
-    redis.ltrim = AsyncMock()
-    redis.lrange = AsyncMock(return_value=[])
-
-    app = FastAPI()
-    app.include_router(router)
-    app.state.redis = redis
-
-    with TestClient(app) as client:
-        r = client.get("/autonomy/policy")
-        assert r.status_code == 200
-        assert "policy" in r.json()
-
-        rule = PolicyRule(
-            lane="APP_HTTP",
-            severity="high",
-            action_type="restart_pod",
-            level=AutonomyLevel.ALERT_ONLY,
-            reason="test",
-        )
-        r2 = client.post("/autonomy/policy/rule", json=rule.model_dump())
-        assert r2.status_code == 200
-
-        redis.lrange = AsyncMock(return_value=[])
-        r3 = client.get("/autonomy/policy/history?limit=5")
-        assert r3.status_code == 200
-
-        r4 = client.post("/autonomy/policy/reset")
-        assert r4.status_code == 200
-
-
 def test_siem_overview_mock_redis():
     from gateway.routes.siem import router
 
@@ -366,17 +328,13 @@ async def test_playbook_store_get_and_search():
     assert len(all_pb) >= 1
 
 
-def test_autonomy_transform_and_policy_match():
-    from pkg.autonomy.policy import _rule_matches, PolicyRule, AutonomyLevel
+def test_autonomy_transform():
     from pkg.autonomy.transform import clamp_evidence_text, llm_evidence_char_budget
 
     assert llm_evidence_char_budget() > 512
     long = "x" * 10_000
     clipped = clamp_evidence_text(long, max_chars=200)
     assert len(clipped) < len(long)
-
-    rule = PolicyRule(lane="*", severity="*", action_type="*", level=AutonomyLevel.HITL)
-    assert _rule_matches(rule, "X", "Y", "Z")
 
 
 def test_diagnostic_mapping_load():

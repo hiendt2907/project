@@ -8,6 +8,7 @@ os.environ.setdefault("OMNI_REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("OMNI_OLLAMA_BASE_URL", "http://localhost:11434")
 os.environ.setdefault("OMNI_ENV_MODE", "dev")
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -543,3 +544,72 @@ async def test_publish_action_feedback_with_mutate_args():
         exit_code=0, mutate_args={"namespace": "multi-agent", "replicas": 3}
     )
     kafka.send_dict.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# WS2 Decision Transparency Layer — CRAT DECISION_RENDERED (task #3)
+# ---------------------------------------------------------------------------
+
+def _make_ctx_with_redis(settings=None, kafka=None):
+    import fakeredis.aioredis
+
+    ctx = _make_ctx(settings=settings, kafka=kafka)
+    ctx.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_decision_rendered_written_on_deny():
+    from workers.autonomous_execute import run_execute_mutate_tool
+    from pkg.reasoning.reason_codes import ERR_GOV_UNAUTHORIZED_MUTATION
+
+    kafka = AsyncMock()
+    kafka.send_dict = AsyncMock()
+    ctx = _make_ctx_with_redis(
+        settings=_make_settings(force_nsenter=True, unrestricted=False), kafka=kafka,
+    )
+    out, code = await run_execute_mutate_tool(
+        ctx, tool_name="k8s_rollout_restart", args={}, trace_id="trace-deny",
+    )
+    assert ERR_GOV_UNAUTHORIZED_MUTATION in out
+    assert code == 1
+
+    blocks = await ctx.redis.lrange("audit_chain:blocks", 0, -1)
+    assert blocks, "DECISION_RENDERED must be written even when denied"
+    block = json.loads(blocks[-1])
+    assert block["event_type"] == "DECISION_RENDERED"
+    assert block["payload"]["tool_name"] == "k8s_rollout_restart"
+    assert block["payload"]["allow"] is False
+    assert block["payload"]["reason_code"] == ERR_GOV_UNAUTHORIZED_MUTATION
+    await ctx.redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_decision_rendered_written_on_allow():
+    from workers.autonomous_execute import run_execute_mutate_tool
+    from workers.tools import TOOL_REGISTRY
+
+    kafka = AsyncMock()
+    kafka.send_dict = AsyncMock()
+    ctx = _make_ctx_with_redis(
+        settings=_make_settings(force_nsenter=True, unrestricted=False), kafka=kafka,
+    )
+    mock_fn = AsyncMock(return_value="kubectl cluster output")
+    TOOL_REGISTRY["kubectl_cluster"] = mock_fn
+    try:
+        out, code = await run_execute_mutate_tool(
+            ctx, tool_name="kubectl_cluster",
+            args={"namespace": "multi-agent"}, trace_id="trace-allow",
+        )
+    finally:
+        del TOOL_REGISTRY["kubectl_cluster"]
+    assert out == "kubectl cluster output"
+    assert code == 0
+
+    blocks = await ctx.redis.lrange("audit_chain:blocks", 0, -1)
+    assert blocks, "DECISION_RENDERED must be written on allow too"
+    block = json.loads(blocks[-1])
+    assert block["event_type"] == "DECISION_RENDERED"
+    assert block["payload"]["allow"] is True
+    assert block["payload"]["reason_code"] is None
+    await ctx.redis.aclose()

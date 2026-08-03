@@ -18,3 +18,8 @@ CRAT_EVENT_PLAYBOOK_PROOF_FAILED = "PLAYBOOK_PROOF_OF_FAULT_FAILED"
 CRAT_EVENT_PLAYBOOK_GRADUATED = "PLAYBOOK_GRADUATED"
 CRAT_EVENT_PLAYBOOK_DEMOTED = "PLAYBOOK_DEMOTED"
 CRAT_EVENT_CIRCUIT_BREAKER_TRIPPED = "CIRCUIT_BREAKER_TRIPPED"
+# WS2 Decision Transparency Layer — 1 nơi trả lời "tại sao Omni quyết định X"
+# cho mỗi lần EXECUTE_MUTATE đi qua run_execute_mutate_tool (governance + blast
+# radius + kết quả cuối). Best-effort, KHÔNG fail-closed (đây là bản ghi giải
+# thích SAU khi quyết định đã xảy ra, không phải cổng chặn).
+CRAT_EVENT_DECISION_RENDERED = "DECISION_RENDERED"

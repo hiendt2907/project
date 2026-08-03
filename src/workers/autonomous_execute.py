@@ -20,6 +20,8 @@ from pkg.risk_taxonomy import (
     MUTATE_TOOL_REGISTRY_NAME,
     READONLY_TOOL_ALLOWLIST,
 )
+from services.audit_ledger.crat_event_types import CRAT_EVENT_DECISION_RENDERED
+from services.audit_ledger.signer import AuditLedgerError
 from workers.k8s_tools import deployment_evidence_snapshot, execute_rollout_restart_from_pending
 from workers.rollback_executor import capture_pre_mutate_snapshot, snapshot_required
 from workers.tools import TOOL_REGISTRY
@@ -27,6 +29,7 @@ from workers.tools import TOOL_REGISTRY
 logger = logging.getLogger(__name__)
 
 _FEEDBACK_TRUNC = 6000
+_REASON_CODE_MARKER = "reason_code="
 
 
 def _trunc_feedback_text(s: str, max_len: int = _FEEDBACK_TRUNC) -> str:
@@ -72,7 +75,73 @@ def _normalize_mutate_args_for_registry(reg_name: str, raw_args: dict[str, Any] 
     return args
 
 
+def _reason_code_from_output(output: str) -> str | None:
+    """Extract reason_code=XXX from a [DIAGNOSIS] deny message, if present."""
+    idx = output.find(_REASON_CODE_MARKER)
+    if idx < 0:
+        return None
+    rest = output[idx + len(_REASON_CODE_MARKER):]
+    return rest.split()[0].strip() if rest.strip() else None
+
+
+async def _emit_decision_rendered(
+    ctx: Any, *, trace_id: str, tool_name: str, args: dict[str, Any], output: str, exit_code: int,
+) -> None:
+    """WS2 Decision Transparency Layer — 1 CRAT record per EXECUTE_MUTATE decision,
+    explaining ALLOW vs DENY (and why) after run_execute_mutate_tool has already
+    decided. Best-effort: a write failure here must not undo a decision already
+    made (unlike MUTATION_ENQUEUED, which fail-closes because it gates dispatch).
+    """
+    redis = getattr(ctx, "redis", None)
+    kafka = getattr(ctx, "kafka", None)
+    settings = getattr(ctx, "settings", None)
+    if redis is None:
+        return
+    reason_code = _reason_code_from_output(output)
+    audit_topic = getattr(settings, "kafka_topic_audit_chain", "omni-audit-chain")
+    try:
+        from services.audit_ledger.chain_writer import write_audit_block
+
+        await write_audit_block(
+            event_type=CRAT_EVENT_DECISION_RENDERED,
+            trace_id=trace_id,
+            payload={
+                "tool_name": tool_name,
+                "allow": reason_code is None,
+                "reason_code": reason_code,
+                "exit_code": exit_code,
+            },
+            redis=redis,
+            kafka=kafka,
+            kafka_topic=audit_topic,
+        )
+    except AuditLedgerError as exc:
+        logger.warning(
+            "event=decision_rendered_audit_skip trace=%s tool=%s err=%s",
+            trace_id, tool_name, exc,
+        )
+
+
 async def run_execute_mutate_tool(
+    ctx: Any,
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    trace_id: str,
+) -> tuple[str, int]:
+    """Returns (combined_output, exit_code). Wraps _run_execute_mutate_tool_impl
+    with 1 CRAT DECISION_RENDERED record (WS2 Decision Transparency Layer)."""
+    output, exit_code = await _run_execute_mutate_tool_impl(
+        ctx, tool_name=tool_name, args=args, trace_id=trace_id,
+    )
+    await _emit_decision_rendered(
+        ctx, trace_id=trace_id, tool_name=tool_name, args=args or {},
+        output=output, exit_code=exit_code,
+    )
+    return output, exit_code
+
+
+async def _run_execute_mutate_tool_impl(
     ctx: Any,
     *,
     tool_name: str,

@@ -7,77 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from pkg.autonomy import llm_contract, policy
+from pkg.autonomy import llm_contract
 from pkg.autonomy.llm_contract import HighLevelRemediationPlan, RemediationContext
 from pkg.reasoning import preflight_deployment_secret_refs as preflight
 from pkg.reasoning import two_channel_sdk
-
-
-class _FakeRedis:
-    def __init__(self) -> None:
-        self.kv: dict[str, str] = {}
-        self.lists: dict[str, list[str]] = {}
-
-    async def get(self, key: str) -> str | None:
-        return self.kv.get(key)
-
-    async def set(self, key: str, value: str) -> None:
-        self.kv[key] = value
-
-    async def lpush(self, key: str, value: str) -> None:
-        self.lists.setdefault(key, []).insert(0, value)
-
-    async def ltrim(self, key: str, start: int, end: int) -> None:
-        lst = self.lists.get(key, [])
-        self.lists[key] = lst[start : end + 1] if end >= 0 else lst[start:]
-
-    async def lrange(self, key: str, start: int, end: int) -> list[str]:
-        lst = self.lists.get(key, [])
-        return lst[start : end + 1] if end >= 0 else lst[start:]
-
-
-@pytest.mark.asyncio
-async def test_autonomy_policy_store_roundtrip() -> None:
-    r = _FakeRedis()
-    store = policy.AutonomyPolicyStore()
-    rules = await store.get_policy(r)
-    assert rules and rules[0].lane == "*"
-
-    new_rule = policy.PolicyRule(
-        lane="SYS_RESOURCE",
-        severity="high",
-        action_type="restart_pod",
-        level=policy.AutonomyLevel.HITL,
-        reason="test",
-    )
-    await store.set_rule(r, new_rule)
-    loaded = await store.get_policy(r)
-    assert loaded[0].lane == "SYS_RESOURCE"
-
-    hist = await store.get_history(r, limit=5)
-    assert hist and hist[0].get("action") == "set_rule"
-
-    await store.reset_to_defaults(r)
-    final = await store.get_policy(r)
-    assert any(x.action_type == "*" for x in final)
-
-
-@pytest.mark.parametrize(
-    "rules,lane,sev,act,expect_action",
-    [
-        (list(policy.AutonomyPolicyStore.DEFAULT_POLICY), "SIEM_SECURITY", "critical", "x", "HITL"),
-        (list(policy.AutonomyPolicyStore.DEFAULT_POLICY), "X", "low", "restart_pod", "FULL_AUTO"),
-    ],
-)
-def test_find_matching_rule(
-    rules: list[policy.PolicyRule],
-    lane: str,
-    sev: str,
-    act: str,
-    expect_action: str,
-) -> None:
-    m = policy.find_matching_rule(rules, lane, sev, act)
-    assert m is not None and m.level.value == expect_action
 
 
 @pytest.mark.parametrize(

@@ -53,9 +53,10 @@ def kpi_outcome_key(tenant_id: str, outcome: str) -> str:
     """Nguồn DUY NHẤT dựng key outcome — writer và reader bắt buộc dùng chung.
 
     Trước đây `KPIStore` ghi `omni:kpi:z:{tenant}:accepted` còn
-    `promoter._get_fp_rate`/`pkg.autonomy.gate` đọc `omni:kpi:z:accepted`; Redis lab
-    tồn tại song song cả 2 dạng. Mọi phép đọc FP-rate vì thế luôn thấy 0 mẫu và gate
-    chất lượng im lặng cho qua. Đừng nối chuỗi key thủ công ở bất kỳ đâu khác.
+    `promoter._get_fp_rate`/`pkg.autonomy.gate` (xoá ở WS2, code chết) đọc
+    `omni:kpi:z:accepted`; Redis lab tồn tại song song cả 2 dạng. Mọi phép đọc
+    FP-rate vì thế luôn thấy 0 mẫu và gate chất lượng im lặng cho qua. Đừng nối
+    chuỗi key thủ công ở bất kỳ đâu khác.
     """
     return f"omni:kpi:z:{tenant_id}:{outcome}"
 

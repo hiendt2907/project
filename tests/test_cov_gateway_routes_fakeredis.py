@@ -16,12 +16,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from gateway.routes.agents import router as agents_router
-from gateway.routes.autonomy import router as autonomy_router
 from gateway.routes.compliance import router as compliance_router
 from gateway.routes.kpi import router as kpi_router
 from gateway.routes.playbooks import router as playbooks_router
 from gateway.routes.siem import router as siem_router
-from pkg.autonomy.policy import AutonomyLevel, PolicyRule
 
 
 @contextmanager
@@ -206,32 +204,6 @@ def test_cov_gateway_siem_redis_get_error_503():
     app.include_router(siem_router)
     with _client_for(app) as client:
         assert client.get("/siem/overview").status_code == 503
-
-
-def test_cov_gateway_autonomy_policy_flow():
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        app.state.redis = r
-        yield
-        await r.aclose()
-
-    app = FastAPI(lifespan=lifespan)
-    app.include_router(autonomy_router)
-    with _client_for(app) as client:
-        assert client.get("/autonomy/policy").status_code == 200
-        rule = PolicyRule(
-            lane="APP_HTTP",
-            severity="high",
-            action_type="restart_pod",
-            level=AutonomyLevel.ALERT_ONLY,
-            reason="cov",
-        )
-        assert client.post("/autonomy/policy/rule", json=rule.model_dump()).status_code == 200
-        assert client.get("/autonomy/policy/history?limit=3").status_code == 200
-        r4 = client.post("/autonomy/policy/reset")
-        assert r4.status_code == 200
-        assert r4.json()["status"] == "reset"
 
 
 def test_cov_gateway_compliance_export_and_stats():

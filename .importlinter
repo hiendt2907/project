@@ -20,9 +20,8 @@ forbidden_modules =
 # contract would otherwise catch; kept as an explicit, reviewed exception
 # instead of silently narrowing source_modules/forbidden_modules.
 ignore_imports =
-    # gate.py is dead code (0 production call sites) slated for deletion in
-    # WS2 — fixing its import is wasted work, see task #2/#3 description.
-    pkg.autonomy.gate -> workers.kpi_metrics
+    # (pkg.autonomy.gate -> workers.kpi_metrics entry removed WS2 — gate.py
+    # itself deleted as dead code, see #3 commit. Nothing left to ignore.)
     # Deliberate soft/optional dependency, already documented in this file's
     # own docstring: pkg/observability/ must import-clean for the gateway
     # image (no workers/), so these 3 call sites wrap the workers-only

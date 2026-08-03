@@ -88,47 +88,6 @@ def test_coerce_evidence_dict_without_domain_still_works() -> None:
     assert taxonomy.lane_to_domain(out["lane"]) == taxonomy.OS_HOST
 
 
-# ── autonomy policy: rule khai domain vẫn khớp sự cố mang lane, và ngược lại ─
-
-
-class TestPolicyScopeBridge:
-    def test_legacy_lane_rule_matches_domain_incident(self) -> None:
-        """Rule HITL cho security critical đã nằm trong Redis dưới dạng lane cũ.
-
-        Nếu nó thôi khớp khi caller gửi `security`, hệ thống mất cổng HITL mà không
-        báo lỗi — đúng loại hỏng mà cả kế hoạch này phải tránh.
-        """
-        from pkg.autonomy.policy import AutonomyLevel, AutonomyPolicyStore, find_matching_rule
-
-        rules = AutonomyPolicyStore.DEFAULT_POLICY
-        matched = find_matching_rule(rules, taxonomy.SECURITY, "critical", "block_ip")
-        assert matched is not None
-        assert matched.level == AutonomyLevel.HITL
-
-    def test_domain_rule_matches_legacy_lane_incident(self) -> None:
-        from pkg.autonomy.policy import AutonomyLevel, PolicyRule, find_matching_rule
-
-        rule = PolicyRule(lane=taxonomy.SECURITY, severity="critical", action_type="*",
-                          level=AutonomyLevel.HITL)
-        assert find_matching_rule([rule], "SIEM_SECURITY", "critical", "block_ip") is rule
-
-    def test_two_unrecognised_scopes_do_not_match(self) -> None:
-        """Hai nhãn rác cùng ra `unknown` — không được vì thế mà khớp nhau."""
-        from pkg.autonomy.policy import AutonomyLevel, PolicyRule, find_matching_rule
-
-        rule = PolicyRule(lane="GARBAGE_A", severity="*", action_type="*",
-                          level=AutonomyLevel.HITL)
-        assert find_matching_rule([rule], "GARBAGE_B", "critical", "*") is None
-
-    def test_proof_lane_does_not_match_a_domain_rule(self) -> None:
-        """`resource` là proof_lane (trục B). Nó không được khớp domain `os_host`."""
-        from pkg.autonomy.policy import AutonomyLevel, PolicyRule, find_matching_rule
-
-        rule = PolicyRule(lane=taxonomy.OS_HOST, severity="*", action_type="*",
-                          level=AutonomyLevel.HITL)
-        assert find_matching_rule([rule], "resource", "critical", "*") is None
-
-
 # ── playbook trigger: khai domain hay lane đều khớp được ────────────────────
 
 

@@ -1,8 +1,8 @@
 """G2 — writer và reader KPI phải dùng CÙNG một hình dạng key.
 
 Bug thật tìm được 2026-07-29: `KPIStore` GHI vào `omni:kpi:z:{tenant}:accepted`
-(per-tenant) trong khi `promoter._get_fp_rate` và `pkg.autonomy.gate` ĐỌC
-`omni:kpi:z:accepted` (không tenant). Redis lab có cả 2 dạng key cùng lúc —
+(per-tenant) trong khi `promoter._get_fp_rate` và `pkg.autonomy.gate` (xoá ở
+WS2, code chết) ĐỌC `omni:kpi:z:accepted` (không tenant). Redis lab có cả 2 dạng key cùng lúc —
 split-brain. Hệ quả: mọi phép đọc FP-rate luôn thấy 0 mẫu → gate chất lượng
 im lặng cho qua mọi thứ.
 
