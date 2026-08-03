@@ -1,0 +1,94 @@
+# omni-postgres backup — daily pg_dump (custom format) to a dedicated PVC,
+# separate from the omni-postgres data PVC (different failure domain — a lost
+# data volume must not also lose the backups). Task #13.
+#
+# Restore: scripts/restore_omni_postgres.sh (dry-run by default).
+# Retention: keep the last 14 daily dumps (simple find+delete in the job).
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: omni-postgres-backup-data
+  namespace: multi-agent
+  labels:
+    app: omni-postgres-backup
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: omni-postgres-backup
+  namespace: multi-agent
+  labels:
+    app: omni-postgres-backup
+spec:
+  schedule: "0 2 * * *"  # 02:00 daily
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: omni-postgres-backup
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pg-dump
+              image: postgres:18
+              env:
+                - name: PGHOST
+                  value: omni-postgres.multi-agent.svc.cluster.local
+                - name: PGPORT
+                  value: "5432"
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: omni-pg-secret
+                      key: POSTGRES_USER
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: omni-pg-secret
+                      key: POSTGRES_PASSWORD
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: omni-pg-secret
+                      key: POSTGRES_DB
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  mkdir -p /backup
+                  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+                  out="/backup/omnidb-${ts}.dump"
+                  echo "pg_dump -> ${out}"
+                  pg_dump -Fc -f "${out}" "${PGDATABASE}"
+                  echo "done: $(du -h "${out}" | cut -f1)"
+                  # Retention: keep the 14 most recent dumps.
+                  cd /backup
+                  ls -1t omnidb-*.dump 2>/dev/null | tail -n +15 | xargs -r rm -f --
+                  echo "retained: $(ls -1 omnidb-*.dump 2>/dev/null | wc -l) dump(s)"
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: 64Mi
+                limits:
+                  cpu: "500m"
+                  memory: 256Mi
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: omni-postgres-backup-data
