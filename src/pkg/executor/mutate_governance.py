@@ -9,7 +9,7 @@ import re
 from enum import StrEnum
 from typing import Any
 
-from workers.env_mode import is_prod_mode, namespace_allowed
+from pkg.env_mode import is_prod_mode, namespace_allowed
 
 _K8S_DNS_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 

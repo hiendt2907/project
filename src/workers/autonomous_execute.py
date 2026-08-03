@@ -13,6 +13,13 @@ from pkg.executor.mutate_governance import (
 )
 from pkg.executor.blast_radius import BLAST_SCORED_TOOLS as _BLAST_SCORED_TOOLS
 from pkg.reasoning.reason_codes import ERR_GOV_UNAUTHORIZED_MUTATION
+from pkg.risk_taxonomy import (
+    K8S_SDK_MUTATING_TOOL_NAMES,
+    K8S_SDK_READONLY_TOOL_NAMES,
+    MUTATE_TOOL_ALLOWLIST,
+    MUTATE_TOOL_REGISTRY_NAME,
+    READONLY_TOOL_ALLOWLIST,
+)
 from workers.k8s_tools import deployment_evidence_snapshot, execute_rollout_restart_from_pending
 from workers.rollback_executor import capture_pre_mutate_snapshot, snapshot_required
 from workers.tools import TOOL_REGISTRY
@@ -29,59 +36,13 @@ def _trunc_feedback_text(s: str, max_len: int = _FEEDBACK_TRUNC) -> str:
     return s[:max_len] + "\n[...truncated]"
 
 
-# Tên gọi LLM / prompt khác tên đăng ký @register_tool (typed registry).
-MUTATE_TOOL_REGISTRY_NAME: dict[str, str] = {
-    "k8s_patch_deployment": "k8s_patch_resource",
-    "k8s_scale_resource": "k8s_scale_deployment",
-}
-
-# Mutate-only: these tools are allowed in EXECUTE_MUTATE.
-K8S_SDK_MUTATING_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "k8s_rollout_restart",
-        "k8s_scale_deployment",
-        "k8s_patch_resource",
-        "k8s_patch_configmap",
-        "k8s_patch_secret",
-        "k8s_create_or_patch_configmap",
-        "k8s_apply_rbac_least_privilege",
-        "k8s_delete_pod",
-        "kubectl_cluster",
-    }
-)
-
-# Read/query taxonomy is kept for routing + explainability; these are blocked in EXECUTE_MUTATE.
-K8S_SDK_READONLY_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "k8s_describe_resource",
-        "k8s_tail_logs",
-        "k8s_get_logs",
-        "k8s_get_events",
-        "k8s_list_resources",
-        "k8s_check_endpoints",
-        "k8s_get_deployment_state",
-        "k8s_list_workload_pods",
-        "k8s_get_pod_secret_refs",
-        "k8s_get_secret_keys",
-        "k8s_verify_rollout",
-        "k8s_list_nodes",
-        "k8s_node_conditions",
-        "k8s_list_services",
-        "k8s_list_ingress",
-        "list_namespace_pods",
-        "namespace_pods_top",
-        "list_all_pods_sdk",
-        "resolve_pod_identity",
-        "resolve_deployment_identity",
-        "inspect_pod_deep",
-        "inspect_pod_details",
-        "k8s_list_pods",
-    }
-)
-
-# Introspection / filter: tên được phép + alias.
-MUTATE_TOOL_ALLOWLIST: frozenset[str] = K8S_SDK_MUTATING_TOOL_NAMES | frozenset(MUTATE_TOOL_REGISTRY_NAME.keys())
-READONLY_TOOL_ALLOWLIST: frozenset[str] = K8S_SDK_READONLY_TOOL_NAMES
+__all__ = [
+    "K8S_SDK_MUTATING_TOOL_NAMES",
+    "K8S_SDK_READONLY_TOOL_NAMES",
+    "MUTATE_TOOL_ALLOWLIST",
+    "MUTATE_TOOL_REGISTRY_NAME",
+    "READONLY_TOOL_ALLOWLIST",
+]
 
 
 def _normalize_mutate_args_for_registry(reg_name: str, raw_args: dict[str, Any] | None) -> dict[str, Any]:

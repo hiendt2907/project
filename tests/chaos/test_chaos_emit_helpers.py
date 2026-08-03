@@ -22,8 +22,8 @@ from workers.evidence_mutate_emit import (
     _siem_hitl_required,
     _siem_alert_labels,
     _symptom_group_from_batch,
-    _deployment_name_from_alert_labels,
 )
+from pkg.reasoning.rollout_eligibility import _deployment_name_from_alert_labels
 
 
 # ── rollout_args_from_evidence_batch ──────────────────────────────────────────

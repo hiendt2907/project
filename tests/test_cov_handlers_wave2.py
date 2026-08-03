@@ -538,7 +538,7 @@ class TestHandleInboundPayloadImplAdvanced:
     async def test_write_pending_exception_returns_error(self):
         """execute_write_pending_from_redis raises → returns error message."""
         from workers.handlers import _handle_inbound_payload_impl
-        from pkg.executor import redis_key_write_pending
+        from workers.k8s_tools import redis_key_write_pending
 
         redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         chat_id = 12345
@@ -558,7 +558,7 @@ class TestHandleInboundPayloadImplAdvanced:
     async def test_rollout_pending_exception_returns_error(self):
         """execute_rollout_restart_from_pending raises → returns error message."""
         from workers.handlers import _handle_inbound_payload_impl
-        from pkg.executor import redis_key_rollout_pending
+        from workers.k8s_tools import redis_key_rollout_pending
 
         redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
         chat_id = 99999

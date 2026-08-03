@@ -55,7 +55,7 @@ async def calibrate_sigma_for_workload(
 
     try:
         from metrics.prometheus_dataframe import fetch_range_dataframe
-        from workers.sdk_service_tools import _duration_to_vm_window
+        from pkg.observability.prometheus_window import duration_to_vm_window as _duration_to_vm_window
         start, step = _duration_to_vm_window(f"{lookback_hours}h")
         df = await fetch_range_dataframe(ctx, promql=promql, start=start, end="now", step=step)
     except Exception as e:

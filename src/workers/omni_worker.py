@@ -18,7 +18,7 @@ from init.deep_scout_autonomous import run_deep_scout_autonomous
 from ingest.telegram import TelegramBotSettings, TelegramClient, summarize_message_update
 from llm.factory import build_llm_client
 from rag.error_ledger import ErrorLedger
-from rag.redis_vector_store import RedisVectorStore
+from rag.redis_vector_store import RedisVectorStore, set_rag_empty_result_hook
 from rag.semantic_cache import SemanticCache
 from services.playbook.store import PlaybookStore
 from workers.autonomous_decider import autonomous_decider_loop
@@ -45,6 +45,7 @@ from workers.request_trace import (
 )
 from workers.metrics_exporter import (
     inc_dlq_published,
+    inc_rag_empty_result,
     observability_metrics_loop,
     set_kafka_consumer_lag,
     set_last_scout_timestamp,
@@ -1109,6 +1110,7 @@ async def build_context() -> WorkerHandlerContext:
         timeout_s=float(ws.llm_chat_timeout_sec),
     )
     vector_store = RedisVectorStore(r)
+    set_rag_empty_result_hook(inc_rag_empty_result)
     ledger = ErrorLedger(r)
     sem = LLMSemaphore(
         r,

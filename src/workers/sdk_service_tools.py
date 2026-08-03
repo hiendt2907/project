@@ -21,6 +21,7 @@ from anomaly.forecast import (
 )
 from anomaly.prophet_forecast import forecast_backend_used, horizons_to_periods, step_to_pandas_freq
 from metrics.prometheus_dataframe import fetch_range_dataframe
+from pkg.observability.prometheus_window import duration_to_vm_window as _duration_to_vm_window
 from rag.pgvector_store import COLLECTION_ERRORS, COLLECTION_SOP
 from visualization.chart_bytes import (
     line_chart_history_forecast_ci_png_bytes,
@@ -885,17 +886,6 @@ async def tool_forecast_memory_risk_vm(ctx: Any, args: dict[str, Any]) -> str:
         kind=("usage" if kind == "usage" else "available"),
     )
     return json.dumps(out, ensure_ascii=False, indent=2)
-
-
-def _duration_to_vm_window(duration: str) -> tuple[str, str]:
-    """duration '1h'|'24h'|'30m' → (start, step)."""
-    d = duration.strip().lower()
-    if d.endswith("h") and len(d) > 1 and d[:-1].replace(".", "").isdigit():
-        step = "30s" if float(d[:-1]) <= 6 else "5m"
-        return f"now-{d}", step
-    if d.endswith("m") and len(d) > 1 and d[:-1].isdigit():
-        return f"now-{d}", "15s"
-    return "now-1h", "30s"
 
 
 async def tool_query_prometheus_metrics(ctx: Any, args: dict[str, Any]) -> str:

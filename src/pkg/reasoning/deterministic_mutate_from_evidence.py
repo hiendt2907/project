@@ -15,8 +15,11 @@ import re
 from typing import Any
 
 from pkg.reasoning.incident_matrix_profile import alertname_from_batch
-from workers.autonomous_execute import MUTATE_TOOL_ALLOWLIST
-from workers.evidence_mutate_emit import rollout_args_from_evidence_batch, workload_fault_incident_rollout_eligible
+from pkg.reasoning.rollout_eligibility import (
+    rollout_args_from_evidence_batch,
+    workload_fault_incident_rollout_eligible,
+)
+from pkg.risk_taxonomy import MUTATE_TOOL_ALLOWLIST
 
 
 _RE_BROKEN_SPEC = re.compile(
@@ -116,7 +119,7 @@ def probe_driven_mutate_tools_for_settings(ws: Any | None) -> frozenset[str]:
 
 def default_remediation_namespace(ws: Any | None) -> str:
     if ws is not None:
-        from workers.env_mode import parse_allowed_namespaces
+        from pkg.env_mode import parse_allowed_namespaces
 
         allowed = parse_allowed_namespaces(ws)
         if allowed:

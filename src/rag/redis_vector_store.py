@@ -29,11 +29,16 @@ logger = logging.getLogger(__name__)
 
 from rag.rag_freshness import stamp_freshness
 
-try:
-    from workers.metrics_exporter import inc_rag_empty_result as _inc_rag_empty
-except ImportError:
-    def _inc_rag_empty(collection: str, search_type: str) -> None:  # type: ignore[misc]
-        pass
+def _inc_rag_empty(collection: str, search_type: str) -> None:
+    """No-op until the process wires in a real metric — see set_rag_empty_result_hook()."""
+
+
+def set_rag_empty_result_hook(fn) -> None:
+    """Dependency-injection point: workers/ wires its metrics counter in at startup
+    (see build_context() in omni_worker.py) instead of rag/ importing workers/ directly
+    (rag/ must not import workers/ — INV dependency direction)."""
+    global _inc_rag_empty
+    _inc_rag_empty = fn
 
 # nomic-embed-text (Ollama) = 768 dims
 EMBED_DIM = 768

@@ -43,9 +43,9 @@ from execution.experience import (
     record_routing_exhausted_no_data,
     record_routing_from_success,
 )
-from pkg.executor import (
+from pkg.executor import execute_write_pending_from_redis
+from workers.k8s_tools import (
     execute_rollout_restart_from_pending,
-    execute_write_pending_from_redis,
     redis_key_rollout_pending,
     redis_key_write_pending,
 )

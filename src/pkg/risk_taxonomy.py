@@ -143,6 +143,64 @@ def risk_class_of(tool_name: str, *, override: str | None = None) -> str:
     return HIGH  # fail-closed cho tool chưa phân loại
 
 
+# Tên gọi LLM/prompt khác tên đăng ký @register_tool (typed registry). Dùng bởi
+# EXECUTE_MUTATE (workers/autonomous_execute.py) và deterministic mutate path
+# (pkg/reasoning/deterministic_mutate_from_evidence.py) — dữ liệu tĩnh, không phụ
+# thuộc gì khác trong autonomous_execute.py nên đặt ở đây thay vì workers/ (WS1).
+MUTATE_TOOL_REGISTRY_NAME: Final[dict[str, str]] = {
+    "k8s_patch_deployment": "k8s_patch_resource",
+    "k8s_scale_resource": "k8s_scale_deployment",
+}
+
+# Mutate-only: các tool được phép trong EXECUTE_MUTATE.
+K8S_SDK_MUTATING_TOOL_NAMES: Final = frozenset(
+    {
+        "k8s_rollout_restart",
+        "k8s_scale_deployment",
+        "k8s_patch_resource",
+        "k8s_patch_configmap",
+        "k8s_patch_secret",
+        "k8s_create_or_patch_configmap",
+        "k8s_apply_rbac_least_privilege",
+        "k8s_delete_pod",
+        "kubectl_cluster",
+    }
+)
+
+# Giữ cho routing/explainability; các tool này bị chặn trong EXECUTE_MUTATE.
+K8S_SDK_READONLY_TOOL_NAMES: Final = frozenset(
+    {
+        "k8s_describe_resource",
+        "k8s_tail_logs",
+        "k8s_get_logs",
+        "k8s_get_events",
+        "k8s_list_resources",
+        "k8s_check_endpoints",
+        "k8s_get_deployment_state",
+        "k8s_list_workload_pods",
+        "k8s_get_pod_secret_refs",
+        "k8s_get_secret_keys",
+        "k8s_verify_rollout",
+        "k8s_list_nodes",
+        "k8s_node_conditions",
+        "k8s_list_services",
+        "k8s_list_ingress",
+        "list_namespace_pods",
+        "namespace_pods_top",
+        "list_all_pods_sdk",
+        "resolve_pod_identity",
+        "resolve_deployment_identity",
+        "inspect_pod_deep",
+        "inspect_pod_details",
+        "k8s_list_pods",
+    }
+)
+
+# Introspection/filter: tên được phép + alias.
+MUTATE_TOOL_ALLOWLIST: Final = K8S_SDK_MUTATING_TOOL_NAMES | frozenset(MUTATE_TOOL_REGISTRY_NAME.keys())
+READONLY_TOOL_ALLOWLIST: Final = K8S_SDK_READONLY_TOOL_NAMES
+
+
 def rank(risk_class: str) -> int:
     """Thứ hạng (READONLY=0 … HIGH=3). Lạ → HIGH-rank."""
     return _ORDER.get(risk_class, _ORDER[HIGH])

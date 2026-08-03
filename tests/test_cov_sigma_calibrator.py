@@ -28,7 +28,7 @@ def _patch_imports(df):
     """Patch the lazy imports inside calibrate_sigma_for_workload."""
     return (
         patch("metrics.prometheus_dataframe.fetch_range_dataframe", new=AsyncMock(return_value=df)),
-        patch("workers.sdk_service_tools._duration_to_vm_window", return_value=("1h", "5m")),
+        patch("pkg.observability.prometheus_window.duration_to_vm_window", return_value=("1h", "5m")),
     )
 
 

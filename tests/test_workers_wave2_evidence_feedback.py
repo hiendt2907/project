@@ -80,10 +80,11 @@ def test_verify_probe_ids_from_batch_and_symptom():
 
 def test_deployment_name_and_rollout_args():
     from workers import evidence_mutate_emit as eme
+    from pkg.reasoning.rollout_eligibility import _deployment_name_from_alert_labels
 
-    assert eme._deployment_name_from_alert_labels({"deployment": " d1 "}) == "d1"
-    assert eme._deployment_name_from_alert_labels({"workload": "w1"}) == "w1"
-    assert eme._deployment_name_from_alert_labels({}) == ""
+    assert _deployment_name_from_alert_labels({"deployment": " d1 "}) == "d1"
+    assert _deployment_name_from_alert_labels({"workload": "w1"}) == "w1"
+    assert _deployment_name_from_alert_labels({}) == ""
 
     batch_bad = [{"canonical_query_snippet": "not-json"}]
     assert eme.rollout_args_from_evidence_batch(batch_bad) is None
