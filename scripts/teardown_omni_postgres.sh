@@ -1,14 +1,25 @@
 #!/usr/bin/env bash
-# Teardown Omni-side Postgres cluster + PGPool after RAG migration to Redis Stack.
+# Teardown Omni-side Postgres cluster + PGPool. Written when RAG lived on this
+# cluster and had migrated to Redis Stack — that justification is STALE. The
+# same cluster (cluster.postgresql.cnpg.io/omni-postgres) is now the
+# source-of-truth for the omni_admin schema (agent_credential, tenant config,
+# autonomy tier, 14+ migrations) — see OMNI_ADMIN_PG_DSN in omni-fullstack/
+# omni-gateway. Deleting it deletes that data too. Guarded below: refuses to
+# proceed if omni_admin looks live unless --force-data-loss is also passed.
 # IDEMPOTENT — safe to re-run. Does NOT touch smart-siem/** Postgres (kept intentionally).
 #
 # Usage:
-#   ./scripts/teardown_omni_postgres.sh          # dry-run (prints what would be deleted)
-#   ./scripts/teardown_omni_postgres.sh --apply  # actually delete
+#   ./scripts/teardown_omni_postgres.sh                             # dry-run
+#   ./scripts/teardown_omni_postgres.sh --apply                     # apply, aborts if omni_admin is live
+#   ./scripts/teardown_omni_postgres.sh --apply --force-data-loss    # apply even if omni_admin is live
 set -euo pipefail
 
 APPLY="${1:-}"
+FORCE="${2:-}"
 NS="multi-agent"
+PG_POD="${PG_POD:-omni-postgres-0}"
+PG_USER="${PG_USER:-omni}"
+PG_DB="${PG_DB:-omnidb}"
 
 run() {
   if [[ "$APPLY" == "--apply" ]]; then
@@ -27,6 +38,31 @@ if ! kubectl cluster-info >/dev/null 2>&1; then
   echo "ERROR: kubectl cannot reach cluster. Aborting." >&2
   exit 1
 fi
+
+# --- Guard: refuse to delete a cluster that still serves omni_admin ---------
+echo "--- 0. Checking whether omni_admin is live on this cluster ---"
+if kubectl -n "$NS" get pod "$PG_POD" >/dev/null 2>&1; then
+  admin_check="$(kubectl -n "$NS" exec -i "$PG_POD" -- \
+    psql -U "$PG_USER" -d "$PG_DB" -tAc \
+    "SELECT to_regclass('omni_admin.agent_credential') IS NOT NULL;" 2>/dev/null || echo "")"
+  if [[ "$admin_check" == "t" && "$APPLY" == "--apply" && "$FORCE" != "--force-data-loss" ]]; then
+    echo "ERROR: omni_admin.agent_credential exists on ${PG_POD} — this cluster is the" >&2
+    echo "       source-of-truth for Admin config (tenant registry, agent credentials," >&2
+    echo "       autonomy tier), NOT leftover RAG storage. Deleting it now would delete" >&2
+    echo "       that data. If you really mean to tear down this cluster, re-run with:" >&2
+    echo "         ./scripts/teardown_omni_postgres.sh --apply --force-data-loss" >&2
+    echo "       Aborting without changing anything." >&2
+    exit 1
+  fi
+  if [[ "$admin_check" == "t" ]]; then
+    echo "WARNING: omni_admin.agent_credential exists — --apply without --force-data-loss will abort."
+  else
+    echo "omni_admin.agent_credential not found (or pod unreachable) — no live admin data detected."
+  fi
+else
+  echo "${PG_POD} not found in ns=${NS} — nothing to check, nothing to guard against."
+fi
+echo
 
 # 1. Stop workloads that might still have stale connections.
 echo "--- 1. Scaling down legacy consumers ---"

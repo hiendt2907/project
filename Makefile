@@ -408,11 +408,16 @@ siem-deploy-workers:
 
 # Playbooks now stored in Redis Stack (HNSW index). Legacy Postgres schema removed.
 
-# Teardown Omni Postgres cluster (RAG already migrated to Redis Stack).
+# Teardown Omni Postgres cluster. Guarded: aborts if omni_admin schema (Admin
+# config source-of-truth) is live unless FORCE_DATA_LOSS=1 is also passed.
 # Dry-run by default; pass APPLY=1 to actually delete.
 teardown-omni-postgres:
 	@if [ "$(APPLY)" = "1" ]; then \
-		./scripts/teardown_omni_postgres.sh --apply; \
+		if [ "$(FORCE_DATA_LOSS)" = "1" ]; then \
+			./scripts/teardown_omni_postgres.sh --apply --force-data-loss; \
+		else \
+			./scripts/teardown_omni_postgres.sh --apply; \
+		fi; \
 	else \
 		./scripts/teardown_omni_postgres.sh; \
 	fi
