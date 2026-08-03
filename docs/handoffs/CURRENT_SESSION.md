@@ -1,6 +1,107 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-03 (Đ20 — IMPLEMENTATION MODE: TOÀN BỘ tập BUILD NOW (9 hạng mục) đã xong + commit + push. GA-readiness theo roadmap đã khoá đạt được.) · **Branch:** `main` · **HEAD:** `103a25e` (14 commit mới từ `8cf91cb`, tất cả đã push)
+**Cập nhật:** 2026-08-04 (Đ22 — Review toàn bộ BUILD NOW bằng code-reviewer agent, tìm+fix 1 bug HIGH thật, tạo 3 task follow-up MEDIUM/LOW. Đã deploy live + verify.) · **Branch:** `main` · **HEAD:** `bbebf3d` (đã push)
+
+## 🎯 Đ22 — Review BUILD NOW (theo yêu cầu "dừng lại, review trước" của user), tìm 1 bug HIGH thật
+
+Sau Đ21 (deploy sống 9/9 BUILD NOW), hỏi user có tiếp tục post-GA (WS4/WS6/WS7) hay dừng review —
+user chọn **dừng lại, review toàn bộ trước**. Dùng `code-reviewer` agent rà diff thật
+`d1c415f..103a25e` (53 file, 9 hạng mục), có bối cảnh đầy đủ từng task, yêu cầu verify bằng
+grep/test thật chứ không suy đoán.
+
+**Kết quả: 0 CRITICAL, 1 HIGH (đã tự verify + fix ngay), 3 MEDIUM (đã tạo task follow-up, không
+tự sửa — đúng scope discipline).**
+
+### HIGH đã fix — `bbebf3d`
+
+Circuit breaker mới của `#21` khiến `K8sBlastReader()` raise sau 3 lỗi K8s API liên tiếp. Call
+site cũ ở `src/workers/autonomous_execute.py` (nay là `_run_execute_mutate_tool_impl`, dòng
+~180-185) chỉ gọi `assess_blast_radius()` khi `_reader is not None` — khi circuit mở, TOÀN BỘ
+blast-radius check (kể cả nhánh fail-closed có sẵn cho `reader=None` trên tool phá huỷ, đã có từ
+trước ở `blast_radius.py:263-270`) bị bỏ qua im lặng. Hệ quả: đúng lúc K8s API bất ổn — chính kịch
+bản `#21` muốn phòng — mutate phá huỷ (`k8s_scale_deployment`, `kubectl_cluster`, `k8s_delete_pod`)
+vẫn được cho qua, làm giảm hiệu lực thực tế của `#21`.
+
+Fix 1 dòng: luôn gọi `assess_blast_radius(_reader, ...)` kể cả khi `_reader=None`. Thêm test
+regression `test_run_mutate_blast_radius_reader_unavailable_fails_closed` (mock `K8sBlastReader`
+raise, xác nhận tool bị hard-block thay vì lọt qua — `mock_fn.assert_not_called()`). Full suite
+7316 passed. Deploy sống `make deploy-fullstack`, verify bằng `inspect.getsource()` trong pod thật
+xác nhận code mới đã chạy.
+
+### 3 task follow-up mới tạo (không tự sửa, đúng discipline "log không fix ngoài scope")
+
+- **`#24` MEDIUM** — `teardown_omni_postgres.sh` guard (`#12`) fail-open im lặng nếu lệnh `psql`
+  kiểm tra `omni_admin.agent_credential` lỗi vì lý do KHÁC "bảng rỗng" (sai env, auth lỗi, pod
+  restart) — cần phân biệt 3 trạng thái t/f/lỗi-không-xác-định, abort ở trạng thái thứ 3.
+- **`#25` MEDIUM** — `src/aoip/agent/trace.py` (Trace Spine) bị audit `#15` bỏ sót: 4 key
+  (`trace:tl:*`, `trace:index:*`, `trace:pending_approval:*`, `trace:seq:*`) không có
+  `expire()`/`ltrim()` nào — cùng nhóm rủi ro unbounded-growth với `#22`/`#23` dưới
+  `volatile-lru` mới.
+- **`#26` LOW** — `restore_omni_postgres.sh`/`teardown_omni_postgres.sh` nội suy `TARGET_DB`/
+  `DUMP_FILE` thẳng vào lệnh SQL/shell không qua validate allowlist — defense-in-depth cho script
+  có quyền DROP DATABASE, rủi ro khai thác thấp (đã cần cluster-admin sẵn) nhưng nên có.
+
+### Đã verify KHÔNG có vấn đề (agent kiểm tra kỹ, không phải lướt qua)
+
+`#14` resolve_tier, WS1/WS0 move-symbol-to-pkg (shim đúng, 0 caller sót — grep toàn repo), WS5
+Capability Registry (hành vi giống hệt if/else cũ cho mọi role), `rag/redis_vector_store.py` DI
+hook, WS2 xoá `gate.py`/`policy.py`/4 endpoint (0 caller Python sót; caller HTTP duy nhất còn lại
+là `ui/` root đã RETIRED, không deploy), CRAT `DECISION_RENDERED` (exception luôn bị
+`AuditLedgerError` bọc, không lọt), backup/restore CronJob (#13, tên Secret nhất quán, retention
+logic đúng).
+
+### Trạng thái sau Đ22
+
+Review BUILD NOW đã xong theo đúng yêu cầu. Vẫn còn treo (chưa hỏi lại):
+- WS5 scope (di chuyển vật lý ~1100 dòng thân loop hay không) — quyết định CTO, KHÔNG tự làm.
+- Thứ tự ưu tiên `#24`/`#25`/`#26` cùng `#22`/`#23` cũ.
+- Có tiếp tục nhóm post-GA (`WS4`/`WS6`/`WS7`/`WS9`) không, và nếu có thì bắt đầu từ đâu — tài
+  liệu ghi rõ thứ tự linh hoạt theo tín hiệu khách hàng thật, không tự chọn thay CTO được.
+
+## 🎯 Đ21 — Deploy live BUILD NOW code lên cluster (đóng Open Decision #1 của Đ20)
+
+User: "Tiếp tục làm theo plan đã chốt. Nhớ bật lại orbstack." OrbStack đã Stopped khi phiên bắt
+đầu (máy chắc đã tắt/reboot) — `orb start` xong, K8s API sẵn sàng sau ~3s.
+
+**`omni-fullstack` restart đầu tiên bị crash 1 lần** — `redis.exceptions.TimeoutError` ở
+`connect_redis`/`wait_until_ready` vì Redis pod chưa kịp sẵn sàng ngay sau khi toàn cụm K8s vừa
+lên. Đây là race đã biết (cùng lớp với race Kafka ở gateway ghi trong CLAUDE.md DEPLOYMENT
+STATE) — tự phục hồi ở lần restart kế, không phải bug.
+
+**Phát hiện: cả 3 pod (`omni-fullstack`, `omni-gateway`, `omni-onboarding`) đang chạy image CŨ**
+— verify bằng cách exec vào pod kiểm tra symbol thật: `_CAPABILITY_REGISTRY` (WS5) và
+`CRAT_EVENT_DECISION_RENDERED` (WS2) đều KHÔNG có trong `omni-fullstack` cũ; `gateway.routes.
+autonomy.AutonomyPolicyStore` (đã xoá ở WS2) VẪN còn trong `omni-gateway` cũ. Xác nhận đúng ghi
+chú "chưa deploy" ở Đ20.
+
+**Đã deploy + verify sống cả 3:**
+- `make deploy-fullstack` → rebuild `multi-agent-system:latest` → rollout restart → pod mới
+  `1/1 Running`. Verify: `hasattr(w, '_CAPABILITY_REGISTRY')`=True, `CRAT_EVENT_DECISION_RENDERED`
+  import OK, `pkg.autonomy.gate` → `ModuleNotFoundError` (đã xoá đúng), `K8S_API_TIMEOUT_SEC`=10.0.
+- `make deploy-gateway` → rebuild `omni-gateway:latest` → rollout restart → pod mới `1/1 Running`.
+  Verify: `hasattr(gateway.routes.autonomy, 'AutonomyPolicyStore')`=False (đã xoá đúng);
+  `/healthz`+`/readyz` cả hai `{"status":"ok"}` (redis+postgres đều `ok`).
+- `omni-onboarding` dùng CHUNG image tag `multi-agent-system:latest` nhưng KHÔNG có target
+  deploy riêng — `kubectl rollout restart` tay đủ vì image local đã build lại. Verify:
+  `_CAPABILITY_REGISTRY`=True trên pod mới.
+
+**Full test suite re-run sau deploy: 7315 passed, 0 failed** (11 deselected — integration, như
+mọi lần). Không có regression từ việc bật lại cluster.
+
+### Trạng thái sau Đ21
+
+Open Decision #1 (Đ20) — "chưa deploy lên cluster" — **ĐÃ ĐÓNG**. 3 Open Decision còn lại từ Đ20
+vẫn treo, cần user quyết định trước khi đi tiếp:
+2. WS5 scope: chỉ tách dispatch, chưa di chuyển vật lý ~1100 dòng thân loop — có cần milestone
+   riêng để làm tiếp theo đúng "~200 dòng" của Implementation Plan gốc không?
+3. `#22`/`#23` (unbounded-growth risk phát sinh từ đổi Redis policy `#15`) — làm ngay hay để sau?
+4. Có tiếp tục nhóm post-GA (`WS4` Ed25519 signing → `WS6` Execution/Knowledge Plane split →
+   `WS7` System Twin→blast-radius → `WS9` Remote Agent SDK) hay dừng ở đây để review toàn bộ
+   BUILD NOW như đã hẹn?
+
+Chưa nhận được câu trả lời cụ thể cho 4 điểm trên — tin nhắn "tiếp tục làm theo plan đã chốt" chỉ
+xác nhận hướng chung (đi tiếp), không chọn cụ thể giữa 4 điểm. Cần hỏi lại trước khi bắt đầu bất
+kỳ hạng mục post-GA nào (mỗi hạng mục là scope lớn, đúng luật Scope Freeze không tự suy diễn).
 
 ## 🎯 Đ20 — IMPLEMENTATION MODE — TOÀN BỘ BUILD NOW xong (9/9), đã commit+push
 
