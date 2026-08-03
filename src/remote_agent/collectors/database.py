@@ -1,8 +1,10 @@
 """Remote agent collector — database health (MySQL, ProxySQL).
 
 Probes:
-  mysql_health       → DOMAIN_DATABASE  lane=SYS_HARD_FAIL
-  proxysql_stats     → DOMAIN_DATABASE  lane=SYS_RESOURCE
+  mysql_health       → domain=database  (lane=SYS_HARD_FAIL, deprecated)
+  proxysql_stats     → domain=database  (lane=SYS_RESOURCE, deprecated)
+
+Binary state (server down, replica not running) — verdict stays here.
 
 All commands are read-only; no mutations.
 Uses asyncio.create_subprocess_exec — no blocking subprocess.run().
@@ -16,6 +18,7 @@ import os
 from typing import Any
 
 from remote_agent import exec_guard
+from pkg.domain.taxonomy import DATABASE
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -96,6 +99,7 @@ async def collect_mysql_health(
         return build_envelope(
             probe="mysql_health",
             lane="SYS_HARD_FAIL",
+            domain=DATABASE,
             result="FAILED",
             extracted_fact={
                 "result": "FAILED",
@@ -155,6 +159,7 @@ async def collect_mysql_health(
     return build_envelope(
         probe="mysql_health",
         lane="SYS_HARD_FAIL" if anomalies else "SYS_RESOURCE",
+        domain=DATABASE,
         result=result,
         extracted_fact=fact,
         alert_rule="MySQLAnomaly" if anomalies else "MySQLHealthy",
@@ -197,6 +202,7 @@ async def collect_proxysql_stats(
         return build_envelope(
             probe="proxysql_stats",
             lane="SYS_HARD_FAIL",
+            domain=DATABASE,
             result="FAILED",
             extracted_fact={
                 "result": "FAILED",
@@ -238,6 +244,7 @@ async def collect_proxysql_stats(
     return build_envelope(
         probe="proxysql_stats",
         lane="SYS_HARD_FAIL" if anomalies else "SYS_RESOURCE",
+        domain=DATABASE,
         result=result,
         extracted_fact=fact,
         alert_rule="ProxySQLAnomaly" if anomalies else "ProxySQLHealthy",

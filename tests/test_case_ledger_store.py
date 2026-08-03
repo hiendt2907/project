@@ -28,6 +28,8 @@ class FakeConn:
         self.rows = rows
         self.sql_log: list[str] = []
         self.tx_depth = 0
+        # Cột của migration 0014. Đặt False để mô phỏng DB chưa di trú.
+        self.has_domain_column = True
 
     @asynccontextmanager
     async def transaction(self):
@@ -124,10 +126,21 @@ class FakeConn:
         sql = self._norm(sql)
         self.sql_log.append(sql)
         if sql.startswith("SELECT * FROM omni_admin.case_ledger WHERE tenant_id"):
-            tenant_id, pattern_key, limit = args
+            tenant_id, pattern_key = args[0], args[1]
+            limit = args[2] if len(args) > 2 else 1
+            dual = "pattern_key_domain=$2" in sql
+            # DB chưa apply migration 0014 → asyncpg ném UndefinedColumnError. Fake
+            # phải mô phỏng đúng chuyện đó, không thì nhánh lùi không bao giờ chạy.
+            if dual and not self.has_domain_column:
+                raise RuntimeError(
+                    'column "pattern_key_domain" of relation "case_ledger" does not exist'
+                )
             same = [
                 dict(r) for r in self.rows.values()
-                if r["tenant_id"] == tenant_id and r["pattern_key"] == pattern_key
+                if r["tenant_id"] == tenant_id and (
+                    r["pattern_key"] == pattern_key
+                    or (dual and r.get("pattern_key_domain") == pattern_key)
+                )
             ]
             same.sort(key=lambda r: r["opened_at"], reverse=True)
             return same[:limit]

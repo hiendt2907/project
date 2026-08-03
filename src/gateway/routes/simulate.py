@@ -26,6 +26,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from pkg.domain.taxonomy import lane_to_domain
 from pkg.observability.pipeline_stages import mark_stage
 
 log = logging.getLogger(__name__)
@@ -148,9 +149,13 @@ def _build_prometheus_alert(
 
 
 def _base_envelope(trace_id: str, lane_label: str, probe: str, now_ts: str) -> dict[str, Any]:
+    # `domain` là trục sự thật mới; `lane` giữ lại vì simulator phải bơm payload
+    # GIỐNG HỆT đường vào production, và production còn agent bản cũ chỉ gửi lane.
+    # Simulator mà đi trước fleet thì nó không còn mô phỏng thật.
     return {
         "trace_id": trace_id,
         "probe": probe,
+        "domain": lane_to_domain(lane_label),
         "lane": lane_label,
         "stream_tags": [lane_label],
         "namespace": "multi-agent",
@@ -298,6 +303,7 @@ def _build_remote_agent_envelopes(
             # incident (no stale cached cluster/representative, no spurious RAG self-hit).
             "raw": f"{raw}\n# sim-run {trace_id}",
             "symptom_group": f"remote_{lane}",
+            "domain": lane_to_domain(lane_label),
             "lane": lane_label,
             "stream_tags": [lane_label],
             "namespace": hostname,

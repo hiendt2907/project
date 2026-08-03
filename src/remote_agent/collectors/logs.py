@@ -9,6 +9,7 @@ import re
 from collections import Counter
 from typing import Any
 
+from pkg.domain.taxonomy import APPLICATION
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,7 @@ async def collect_log_errors(log_paths: list[str], hostname: str) -> list[dict[s
     env = build_envelope(
         probe="remote_log_errors",
         lane="APP_HTTP",
+        domain=APPLICATION,
         result=result,
         extracted_fact={
             "files_scanned": len(expanded),
@@ -175,6 +177,7 @@ async def collect_api_access(log_paths: list[str], hostname: str) -> dict[str, A
     return build_envelope(
         probe="api_access",
         lane="APP_HTTP",
+        domain=APPLICATION,
         result="PASSED",
         extracted_fact={"discovery_data": {"api_interactions": interactions[:_ACCESS_MAX_RECORDS], "files_scanned": scanned}},
         alert_rule="RemoteApiAccessObserved",

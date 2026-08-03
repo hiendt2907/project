@@ -5,6 +5,8 @@ import { fetchGatewaySection, type GatewaySectionResult } from "@/lib/gateway";
 export interface RecentTrace {
   trace_id: string;
   lane: string;
+  /** Lĩnh vực kỹ thuật (9 domain). Thiếu ở dữ liệu cũ — khi đó suy từ `lane`. */
+  domain?: string;
   current_stage: string;
   verdict: string;
   started_at: number;
@@ -23,6 +25,8 @@ export interface TracePipeline {
   found: boolean;
   trace_id: string;
   lane: string;
+  /** Lĩnh vực kỹ thuật (9 domain). Thiếu ở dữ liệu cũ — khi đó suy từ `lane`. */
+  domain?: string;
   started_at: number;
   updated_at: number;
   verdict: string;
@@ -55,6 +59,27 @@ export const STAGE_VI: Record<string, { name: string; explain: string }> = {
   AUTO_RECOVERY: { name: "Tự động khắc phục", explain: "AI tự đề xuất khắc phục và gửi lệnh qua kênh đã được phê duyệt (cấp bậc tự động + ngưỡng tin cậy)." },
 };
 
+// 9 lĩnh vực kỹ thuật (domain) — trục phân loại sự cố hiện hành, thay cho 4 "lane"
+// cũ. Vì sao đổi: lane là thuộc tính của một CẢNH BÁO, và 4 lane không diễn đạt được
+// mạng/đĩa/cơ sở dữ liệu/phần cứng — nên sự cố thuộc các lĩnh vực đó không gọi được
+// đúng bộ chẩn đoán. Nguồn sự thật: `src/pkg/domain/taxonomy.py`.
+export const DOMAIN_VI: Record<string, string> = {
+  os_host: "Máy chủ / hệ điều hành (CPU, RAM, tải)",
+  kubernetes: "Kubernetes (pod, container, cụm)",
+  network: "Mạng (kết nối, cổng, định tuyến)",
+  storage: "Lưu trữ (đĩa, phân vùng, inode)",
+  database: "Cơ sở dữ liệu (MySQL, Postgres, Redis)",
+  service: "Dịch vụ hệ thống (systemd, tiến trình nền)",
+  application: "Ứng dụng (lỗi 5xx, quá tải, log lỗi)",
+  security: "An ninh — dấu hiệu tấn công",
+  hardware: "Phần cứng (nhiệt độ, ổ đĩa, quạt)",
+  // `unknown` KHÔNG bị ẩn: dữ liệu lịch sử mang lane `SYS_HARD_FAIL` gánh tới bốn
+  // lĩnh vực nên không suy ra được một lĩnh vực cụ thể. Ẩn đi là làm hụt số thật.
+  unknown: "Chưa phân loại được lĩnh vực",
+};
+
+// Lane trục A — giữ để đọc dữ liệu LỊCH SỬ và agent chưa nâng cấp. Không dùng cho
+// dữ liệu mới. `SYS_HARD_FAIL` cố ý không map sang một lĩnh vực cụ thể.
 export const LANE_VI: Record<string, string> = {
   SYS_RESOURCE: "Tài nguyên máy chủ (CPU/RAM bất thường)",
   SYS_HARD_FAIL: "Hỏng hóc hệ điều hành / dịch vụ",
@@ -62,12 +87,24 @@ export const LANE_VI: Record<string, string> = {
   SIEM_SECURITY: "An ninh — dấu hiệu tấn công",
 };
 
+/** Nhãn tiếng Việt cho một lĩnh vực HOẶC một lane cũ — nhận cả hai từ vựng. */
+export function scopeVI(scope: string): string {
+  if (!scope) return "Không rõ lĩnh vực";
+  return DOMAIN_VI[scope] ?? DOMAIN_VI[scope.toLowerCase()] ?? LANE_VI[scope] ?? scope;
+}
+
 // Tín hiệu KHÔNG phải sự cố (INV_KNOWLEDGE_NOT_ALERT): discovery/knowledge chỉ chạm
 // đúng 1 bước EVIDENCE rồi rẽ vào knowledge pipeline — KHÔNG BAO GIỜ đi 12 bước chẩn
 // đoán. Hiển thị chúng như sự cố "đang xử lý" là sai bản chất (đã gây hiểu nhầm
-// "đứng hàng loạt" — 2026-07-13). Chỉ 4 lane trong LANE_VI mới là pipeline chẩn đoán.
+// "đứng hàng loạt" — 2026-07-13). Chỉ lĩnh vực chẩn đoán (hoặc lane cũ) mới đi pipeline.
+//
+// Nhận cả hai từ vựng vì hai thế hệ dữ liệu cùng tồn tại. `unknown` KHÔNG được coi là
+// tín hiệu học hỏi: một sự cố lịch sử `SYS_HARD_FAIL` chuẩn hoá thành `unknown` vẫn là
+// sự cố thật — xếp nó sang nhóm "học hỏi" là làm biến mất sự cố khỏi danh sách.
 export function isDiagnosticLane(lane: string): boolean {
-  return lane in LANE_VI;
+  if (!lane) return false;
+  const s = lane.toLowerCase();
+  return lane in LANE_VI || s in DOMAIN_VI;
 }
 
 export const LEARNING_LANE_VI: Record<string, string> = {

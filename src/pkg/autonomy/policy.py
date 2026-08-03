@@ -13,6 +13,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
+from pkg.domain.taxonomy import UNKNOWN, lane_to_domain, normalize_domain
+
 logger = logging.getLogger(__name__)
 
 _POLICY_KEY = "omni:autonomy:policy"
@@ -28,7 +30,14 @@ class AutonomyLevel(str, Enum):
 
 
 class PolicyRule(BaseModel):
-    lane: str         # "SYS_RESOURCE" | "SYS_HARD_FAIL" | "APP_HTTP" | "SIEM_SECURITY" | "*"
+    # Lĩnh vực áp dụng. Nhận CẢ HAI từ vựng: domain canonical (`security`,
+    # `database`, ... — nên dùng cho rule mới) và lane trục A cũ (`SIEM_SECURITY`,
+    # ...). Xem `_scope_matches`: một rule khai `security` vẫn khớp một sự cố còn
+    # mang `SIEM_SECURITY`, và ngược lại. `"*"` = mọi lĩnh vực.
+    #
+    # Không đổi TÊN field: giá trị của nó nằm trong Redis (`omni:autonomy:policy`) và
+    # trong history đã ghi — đổi tên là làm policy đang chạy im lặng không parse được.
+    lane: str
     severity: str     # "critical" | "high" | "medium" | "low" | "*"
     action_type: str  # "restart_pod" | "scale_replicas" | "block_ip" | "*"
     level: AutonomyLevel
@@ -37,9 +46,35 @@ class PolicyRule(BaseModel):
     updated_by: Optional[str] = None
 
 
+def _as_domain(value: str) -> str:
+    """Domain canonical của một giá trị scope, dù nó là domain hay lane trục A."""
+    d = normalize_domain(value)
+    return d if d != UNKNOWN else lane_to_domain(value)
+
+
+def _scope_matches(rule_scope: str, incoming: str) -> bool:
+    """Khớp scope của rule với sự cố, bắc cầu qua hai từ vựng domain ↔ lane trục A.
+
+    Vì sao cần bắc cầu: rule nằm trong Redis do người vận hành đã ghi (lane cũ), còn
+    caller dần chuyển sang gửi domain. So chuỗi thô sẽ làm rule `SIEM_SECURITY` lặng
+    lẽ KHÔNG khớp sự cố `security` nữa — và rule đó là cái buộc HITL cho security
+    critical. Fail hở, không có lỗi nào bật ra.
+
+    Hai giá trị không nhận ra (`unknown`) KHÔNG khớp nhau: nếu không thì mọi nhãn rác
+    sẽ khớp mọi nhãn rác khác.
+    """
+    if rule_scope == "*" or rule_scope == incoming:
+        return True
+    rd = _as_domain(rule_scope)
+    return rd != UNKNOWN and rd == _as_domain(incoming)
+
+
 def _rule_matches(rule: PolicyRule, lane: str, severity: str, action_type: str) -> bool:
-    """Return True when the rule is applicable to the given (lane, severity, action_type) triple."""
-    lane_ok = rule.lane == "*" or rule.lane == lane
+    """Return True when the rule is applicable to the given (lane, severity, action_type) triple.
+
+    ``lane`` nhận domain canonical HOẶC lane trục A — xem `_scope_matches`.
+    """
+    lane_ok = _scope_matches(rule.lane, lane)
     sev_ok = rule.severity == "*" or rule.severity == severity
     act_ok = rule.action_type == "*" or rule.action_type == action_type
     return lane_ok and sev_ok and act_ok

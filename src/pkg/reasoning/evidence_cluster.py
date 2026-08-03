@@ -16,6 +16,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+from pkg.domain.taxonomy import UNKNOWN, lane_to_domain, normalize_domain
+
 # Redis TTLs
 _WINDOW_TTL_S = 300        # 5-min per-agent cluster window
 _SEEN_TTL_S = 7 * 86400    # 7-day cross-agent pattern memory
@@ -31,16 +33,33 @@ STORM_THRESHOLD = 20
 class LogCluster:
     fingerprint: str
     probe: str
-    domain: str                   # from domain_signals.detect_domain()
+    domain: str                   # canonical (pkg.domain.taxonomy); do caller quyết
     representative: dict[str, Any]  # richest evidence item in cluster
     count: int                    # occurrences in current window
     first_seen: float             # unix epoch of first item
     last_seen: float
     results: Counter              # {"FAILED":5,"PASSED":2,...}
     agent_ids: set[str]           # all agents that sent this pattern
+    # DEPRECATED (lane trục A). Giữ để đọc lại state Redis cũ và để thẻ Telegram
+    # không mất nhãn giữa hai phiên bản. `domain` ở trên là nguồn sự thật.
     lane: str
     is_new: bool                  # True if never seen before (cross-agent, 7 days)
     is_storm: bool = False        # True if count > STORM_THRESHOLD
+
+
+def resolve_item_domain(item: dict[str, Any], hint: str | None = None) -> str:
+    """Domain canonical của một evidence item — thứ tự: hint > item.domain > lane.
+
+    Ba nguồn vì ba thế hệ dữ liệu cùng tồn tại: caller đã phân loại được (hint),
+    agent bản mới tự khai (`item["domain"]`), và envelope cũ chỉ có lane trục A.
+    Lane là nguồn CUỐI vì `SYS_HARD_FAIL` gánh bốn domain — suy từ nó là mất thông
+    tin (xem `lane_to_domain`).
+    """
+    for candidate in (hint, item.get("domain")):
+        d = normalize_domain(candidate if candidate is None else str(candidate))
+        if d != UNKNOWN:
+            return d
+    return lane_to_domain(str(item.get("lane") or ""))
 
 
 async def upsert_cluster(
@@ -58,6 +77,7 @@ async def upsert_cluster(
     """
     now = time.time()
     probe = item.get("probe", "unknown")
+    domain = resolve_item_domain(item, domain)
     lane = item.get("lane", "SYS_RESOURCE")
     result = item.get("result", "PASSED")
 

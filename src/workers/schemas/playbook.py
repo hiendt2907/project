@@ -14,9 +14,27 @@ from __future__ import annotations
 
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from pkg.domain.taxonomy import CANONICAL_DOMAINS, normalize_domain
+from pkg.domain.taxonomy import (
+    CANONICAL_DOMAINS,
+    LANE_TO_DOMAIN,
+    UNKNOWN,
+    normalize_domain,
+)
+
+# domain → các lane trục A từng mang domain đó. Suy từ `LANE_TO_DOMAIN` chứ không khai
+# tay: một bảng chép tay thứ hai là chỗ lệch tiếp theo.
+#
+# `SYS_HARD_FAIL` và `ONBOARDING_DISCOVERY` KHÔNG xuất hiện ở đây vì chúng map sang
+# `unknown` — không domain nào "sở hữu" chúng. Hệ quả có chủ đích: một trigger khai
+# `domains=["storage"]` sẽ KHÔNG khớp một sự cố còn mang lane `SYS_HARD_FAIL`. Muốn
+# khớp thì khai thẳng `lanes=["SYS_HARD_FAIL"]` — tức phải nói ra là mình đang dựa vào
+# một nhãn đã mất thông tin.
+_DOMAIN_TO_LANES: dict[str, tuple[str, ...]] = {}
+for _lane, _dom in LANE_TO_DOMAIN.items():
+    if _dom != UNKNOWN:
+        _DOMAIN_TO_LANES[_dom] = _DOMAIN_TO_LANES.get(_dom, ()) + (_lane.upper(),)
 
 # Từ vựng domain là của `pkg.domain.taxonomy`, KHÔNG phải của module này. Liệt kê lại ở
 # đây chính là gốc của việc lệch từ vựng ('k8s' vs 'kubernetes', 'os' vs 'os_host').
@@ -81,10 +99,50 @@ class PlaybookStepSpec(BaseModel):
 class TriggerMatch(BaseModel):
     """Điều kiện match playbook với alert/advisory (deterministic, chạy trước LLM)."""
 
-    lanes: list[str] = Field(default_factory=list)  # SYS_RESOURCE|SYS_HARD_FAIL|APP_HTTP|SIEM_SECURITY
+    # Cách MỚI để khai phạm vi: domain canonical (`pkg.domain.taxonomy`).
+    domains: list[str] = Field(default_factory=list)
+    # DEPRECATED (lane trục A): SYS_RESOURCE|SYS_HARD_FAIL|APP_HTTP|SIEM_SECURITY.
+    # Sau validate, field này chứa HỢP của cả hai từ vựng — xem `_expand_scope`.
+    lanes: list[str] = Field(default_factory=list)
     # regex-free: keyword chứa-trong (lowercase) trên alertname/reason/root_cause.
     fault_keywords: list[str] = Field(default_factory=list)
     severity_filter: str = ""  # "" = mọi severity
+
+    @model_validator(mode="after")
+    def _expand_scope(self) -> TriggerMatch:
+        """Nhồi cả hai từ vựng vào ``lanes`` để matcher khớp bất kể caller gửi gì.
+
+        Vì sao nhồi thay vì sửa matcher: PlaybookSpec đã lưu trong Redis (`pbspec:*`)
+        và caller chuyển sang gửi domain KHÔNG cùng lúc. Nếu matcher chỉ so một từ
+        vựng thì trong cả cửa sổ chuyển tiếp, playbook đúng lặng lẽ không được chọn —
+        Omni mất năng lực khắc phục mà không có lỗi nào bật ra.
+
+        Không xoá giá trị người vận hành đã khai, chỉ THÊM dạng tương đương. Nhãn lạ
+        giữ nguyên (matcher tự không khớp) — không ném lỗi ở đây vì đây là đường ĐỌC
+        spec cũ.
+        """
+        scope: list[str] = []
+
+        def _add(value: str) -> None:
+            if value and value not in scope:
+                scope.append(value)
+
+        for token in [*self.lanes, *self.domains]:
+            raw = (token or "").strip()
+            if not raw:
+                continue
+            _add(raw.upper())
+            dom = normalize_domain(raw)
+            if dom == UNKNOWN:
+                dom = LANE_TO_DOMAIN.get(raw.lower().replace("-", "_"), UNKNOWN)
+            if dom == UNKNOWN:
+                continue
+            _add(dom.upper())
+            for lane in _DOMAIN_TO_LANES.get(dom, ()):
+                _add(lane)
+
+        object.__setattr__(self, "lanes", scope)
+        return self
 
 
 class PlaybookSpec(BaseModel):

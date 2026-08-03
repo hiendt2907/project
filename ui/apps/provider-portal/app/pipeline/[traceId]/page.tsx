@@ -4,7 +4,7 @@ import { PageIntro } from "@/components/PageIntro";
 import {
   fetchTracePipeline,
   isDiagnosticLane,
-  LANE_VI,
+  scopeVI,
   learningLaneVI,
   STAGE_VI,
   stageStatusVI,
@@ -77,7 +77,7 @@ export default async function TraceDetailPage({
         <>
           <Card>
             <KeyVal label="Mã lượt xử lý">{result.data.trace_id}</KeyVal>
-            <KeyVal label="Loại vấn đề">{LANE_VI[result.data.lane] ?? result.data.lane ?? "—"}</KeyVal>
+            <KeyVal label="Lĩnh vực">{scopeVI(result.data.domain ?? result.data.lane ?? "")}</KeyVal>
             <KeyVal label="Bắt đầu">{timeVI(result.data.started_at)}</KeyVal>
             <KeyVal label="Cập nhật gần nhất">{timeVI(result.data.updated_at)}</KeyVal>
             <KeyVal label="Kết luận">{result.data.verdict || "đang xử lý"}</KeyVal>

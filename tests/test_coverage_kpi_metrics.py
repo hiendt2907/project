@@ -59,9 +59,10 @@ async def test_record_false_positive(store, redis):
 
 @pytest.mark.asyncio
 async def test_record_detected_stores_score(store, redis):
+    """Khoá KPI nhóm theo DOMAIN, không theo lane trục A (đổi 2026-07-30)."""
     ts = time.time()
     await store.record_detected("trace-d01", "SYS_RESOURCE", ts)
-    count = await redis.zcount("omni:kpi:detected:default:SYS_RESOURCE", "-inf", "+inf")
+    count = await redis.zcount("omni:kpi:detected:default:os_host", "-inf", "+inf")
     assert count == 1
 
 
@@ -69,8 +70,32 @@ async def test_record_detected_stores_score(store, redis):
 async def test_record_resolved_stores_score(store, redis):
     ts = time.time()
     await store.record_resolved("trace-r01", "APP_HTTP", ts)
-    count = await redis.zcount("omni:kpi:resolved:default:APP_HTTP", "-inf", "+inf")
+    count = await redis.zcount("omni:kpi:resolved:default:application", "-inf", "+inf")
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_record_accepts_both_lane_vocabularies(store, redis):
+    """Trường `lane` của feedback mang trục A ở nơi này, trục B ở nơi khác.
+
+    Chuẩn hoá phải nhận cả hai, nếu không một nửa số liệu KPI rơi vào `unknown` mà
+    không ai thấy.
+    """
+    ts = time.time()
+    await store.record_detected("trace-a", "SIEM_SECURITY", ts)   # trục A
+    await store.record_detected("trace-b", "siem", ts)            # trục B / alias
+    count = await redis.zcount("omni:kpi:detected:default:security", "-inf", "+inf")
+    assert count == 2
+
+
+@pytest.mark.asyncio
+async def test_sys_hard_fail_lands_in_unknown_not_guessed(store, redis):
+    """SYS_HARD_FAIL gánh 4 domain — `unknown` là câu trả lời trung thực."""
+    ts = time.time()
+    await store.record_detected("trace-hf", "SYS_HARD_FAIL", ts)
+    assert await redis.zcount("omni:kpi:detected:default:unknown", "-inf", "+inf") == 1
+    for guessed in ("database", "storage", "service", "kubernetes"):
+        assert await redis.zcount(f"omni:kpi:detected:default:{guessed}", "-inf", "+inf") == 0
 
 
 # ── KPIStore.get_summary ──────────────────────────────────────────────────────

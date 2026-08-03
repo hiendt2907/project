@@ -4,7 +4,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from pkg.domain.taxonomy import lane_to_domain, normalize_domain
 
 
 class SourceType(str, Enum):
@@ -60,3 +62,33 @@ class AgentEvidenceEnvelope(BaseModel):
     evidence_type: EvidenceType
     stream_tags: list[StreamTag] = Field(min_length=1, max_length=4)
     payload: dict[str, Any]
+    domain: str = Field(
+        default="",
+        description=(
+            "Canonical domain (pkg.domain.taxonomy). Optional on the wire: agents "
+            "older than the domain rollout do not send it, so it is inferred here."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _resolve_domain(self) -> "AgentEvidenceEnvelope":
+        """Fill/normalise ``domain`` — READ path, so never raise.
+
+        Precedence: explicit ``domain`` > ``payload["domain"]`` (collector wrote it
+        inside the evidence envelope) > inferred from the deprecated lane axis.
+        Old agents keep working; they just land on the lane-derived value, which is
+        ``unknown`` for ``SYS_HARD_FAIL`` because that lane carried four different
+        real domains and guessing one would be worse than admitting we don't know.
+        """
+        candidates = (self.domain, str(self.payload.get("domain") or ""))
+        for c in candidates:
+            d = normalize_domain(c)
+            if d != "unknown":
+                object.__setattr__(self, "domain", d)
+                return self
+
+        lane = str(self.payload.get("lane") or "") or (
+            self.stream_tags[0].value if self.stream_tags else ""
+        )
+        object.__setattr__(self, "domain", lane_to_domain(lane))
+        return self

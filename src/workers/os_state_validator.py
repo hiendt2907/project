@@ -7,8 +7,12 @@ Returns a contrast string when probe result=PASSED contradicts an alert that
 classified the batch as SYS_HARD_FAIL (alert is suspect / stale).
 Returns None when probe confirms failure (real incident) or data is insufficient.
 
-Handler registration: use @register_os_probe("probe_name"). Unknown probes are
-logged at DEBUG level and skipped — they never fall through to LLM silently.
+Handler registration: use @register_os_probe("probe_name", domain=...). Unknown probes
+are logged at DEBUG level and skipped — they never fall through to LLM silently.
+
+``domain`` là domain canonical của `pkg.domain.taxonomy`, KHÔNG phải lane trục A. Nhờ
+nó, `compare_alert_claim_to_os_state(..., domain=...)` kiểm probe cùng lĩnh vực với sự
+cố TRƯỚC — bằng chứng cùng lĩnh vực là bằng chứng mạnh hơn.
 """
 
 from __future__ import annotations
@@ -17,6 +21,8 @@ import json
 import logging
 from collections.abc import Callable
 from typing import Any
+
+from pkg.domain import taxonomy
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +33,34 @@ logger = logging.getLogger(__name__)
 
 _OS_PROBE_HANDLERS: dict[str, Callable[[dict[str, Any], dict[str, Any]], str | None]] = {}
 
+# probe_name → domain canonical. Song song với `_OS_PROBE_HANDLERS`, không thay nó:
+# handler trả lời "đọc bằng chứng này thế nào", còn map này trả lời "bằng chứng này
+# thuộc lĩnh vực nào" — dùng để xếp thứ tự kiểm theo domain của sự cố thay vì theo
+# thứ tự dict ngẫu nhiên của batch.
+_OS_PROBE_DOMAINS: dict[str, str] = {}
 
-def register_os_probe(*probe_names: str) -> Callable:
+
+def register_os_probe(*probe_names: str, domain: str = taxonomy.OS_HOST) -> Callable:
+    """Đăng ký handler cho một/nhiều probe.
+
+    ``domain`` mặc định `os_host` cho tương thích ngược, nhưng MỌI handler trong file
+    này đều khai tường minh — mặc định chỉ tồn tại để một handler mới không làm vỡ
+    import trước khi ai đó kịp phân loại nó.
+    """
+    d = taxonomy.require_domain(domain)
+
     def decorator(fn: Callable) -> Callable:
         for name in probe_names:
             _OS_PROBE_HANDLERS[name] = fn
+            _OS_PROBE_DOMAINS[name] = d
         return fn
     return decorator
+
+
+def os_probes_for_domain(domain: str) -> tuple[str, ...]:
+    """Tên probe OS-layer thuộc ``domain`` (sort — thứ tự phải xác định)."""
+    d = taxonomy.normalize_domain(domain)
+    return tuple(sorted(p for p, pd in _OS_PROBE_DOMAINS.items() if pd == d))
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +109,7 @@ def _alert_ctx_summary(alert_ctx: dict[str, Any]) -> str:
 # D0 — SystemD / OS Services
 # ---------------------------------------------------------------------------
 
-@register_os_probe("systemd_units")
+@register_os_probe("systemd_units", domain=taxonomy.SERVICE)
 def _check_systemd_units(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -103,7 +130,7 @@ def _check_systemd_units(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str |
 # D1 — Process Health
 # ---------------------------------------------------------------------------
 
-@register_os_probe("cron_jobs")
+@register_os_probe("cron_jobs", domain=taxonomy.SERVICE)
 def _check_cron_jobs(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -122,7 +149,7 @@ def _check_cron_jobs(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | Non
     )
 
 
-@register_os_probe("zombie_processes")
+@register_os_probe("zombie_processes", domain=taxonomy.OS_HOST)
 def _check_zombie_processes(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -142,7 +169,7 @@ def _check_zombie_processes(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> st
     )
 
 
-@register_os_probe("oom_events")
+@register_os_probe("oom_events", domain=taxonomy.OS_HOST)
 def _check_oom_events(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -165,7 +192,7 @@ def _check_oom_events(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | No
 # D2 — Storage
 # ---------------------------------------------------------------------------
 
-@register_os_probe("disk_usage")
+@register_os_probe("disk_usage", domain=taxonomy.STORAGE)
 def _check_disk(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -184,7 +211,7 @@ def _check_disk(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     )
 
 
-@register_os_probe("storage_nfs")
+@register_os_probe("storage_nfs", domain=taxonomy.STORAGE)
 def _check_nfs(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -204,7 +231,7 @@ def _check_nfs(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     )
 
 
-@register_os_probe("raid_mdadm")
+@register_os_probe("raid_mdadm", domain=taxonomy.STORAGE)
 def _check_raid_mdadm(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -222,7 +249,7 @@ def _check_raid_mdadm(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | No
     )
 
 
-@register_os_probe("lvm_volumes")
+@register_os_probe("lvm_volumes", domain=taxonomy.STORAGE)
 def _check_lvm_volumes(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -240,7 +267,7 @@ def _check_lvm_volumes(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | N
     )
 
 
-@register_os_probe("swap_usage")
+@register_os_probe("swap_usage", domain=taxonomy.OS_HOST)
 def _check_swap_usage(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -264,7 +291,7 @@ def _check_swap_usage(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | No
 # D3 — Network
 # ---------------------------------------------------------------------------
 
-@register_os_probe("network_interfaces")
+@register_os_probe("network_interfaces", domain=taxonomy.NETWORK)
 def _check_network_interfaces(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -283,7 +310,7 @@ def _check_network_interfaces(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> 
     )
 
 
-@register_os_probe("dns_resolution")
+@register_os_probe("dns_resolution", domain=taxonomy.NETWORK)
 def _check_dns_resolution(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -302,7 +329,7 @@ def _check_dns_resolution(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str 
     )
 
 
-@register_os_probe("tcp_connections")
+@register_os_probe("tcp_connections", domain=taxonomy.NETWORK)
 def _check_tcp_connections(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -325,7 +352,7 @@ def _check_tcp_connections(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str
 # D4 — Database
 # ---------------------------------------------------------------------------
 
-@register_os_probe("mysql_health")
+@register_os_probe("mysql_health", domain=taxonomy.DATABASE)
 def _check_mysql(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -345,7 +372,7 @@ def _check_mysql(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     )
 
 
-@register_os_probe("proxysql_health")
+@register_os_probe("proxysql_health", domain=taxonomy.DATABASE)
 def _check_proxysql(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -365,7 +392,7 @@ def _check_proxysql(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None
     )
 
 
-@register_os_probe("postgresql_health")
+@register_os_probe("postgresql_health", domain=taxonomy.DATABASE)
 def _check_postgresql(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -384,7 +411,7 @@ def _check_postgresql(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | No
     )
 
 
-@register_os_probe("redis_os_health")
+@register_os_probe("redis_os_health", domain=taxonomy.DATABASE)
 def _check_redis_os(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -403,7 +430,7 @@ def _check_redis_os(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None
     )
 
 
-@register_os_probe("mongodb_health")
+@register_os_probe("mongodb_health", domain=taxonomy.DATABASE)
 def _check_mongodb(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -426,7 +453,7 @@ def _check_mongodb(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
 # D5 — Proxy / Load Balancer
 # ---------------------------------------------------------------------------
 
-@register_os_probe("service_haproxy", "service_haproxy_prom")
+@register_os_probe("service_haproxy", "service_haproxy_prom", domain=taxonomy.SERVICE)
 def _check_haproxy(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     probe_key = ev.get("probe", "service_haproxy")
     if _probe_result(ev) != "PASSED":
@@ -446,7 +473,7 @@ def _check_haproxy(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     )
 
 
-@register_os_probe("service_nginx")
+@register_os_probe("service_nginx", domain=taxonomy.SERVICE)
 def _check_nginx(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -465,7 +492,7 @@ def _check_nginx(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     )
 
 
-@register_os_probe("service_keepalived")
+@register_os_probe("service_keepalived", domain=taxonomy.SERVICE)
 def _check_keepalived(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -488,7 +515,7 @@ def _check_keepalived(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | No
 # D6 — Hardware
 # ---------------------------------------------------------------------------
 
-@register_os_probe("kernel_errors")
+@register_os_probe("kernel_errors", domain=taxonomy.OS_HOST)
 def _check_kernel_errors(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -507,7 +534,7 @@ def _check_kernel_errors(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str |
     )
 
 
-@register_os_probe("memory_hw_errors")
+@register_os_probe("memory_hw_errors", domain=taxonomy.HARDWARE)
 def _check_memory_hw_errors(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -530,7 +557,7 @@ def _check_memory_hw_errors(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> st
 # D7 — Container Runtime
 # ---------------------------------------------------------------------------
 
-@register_os_probe("docker_daemon")
+@register_os_probe("docker_daemon", domain=taxonomy.KUBERNETES)
 def _check_docker_daemon(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -549,7 +576,7 @@ def _check_docker_daemon(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str |
     )
 
 
-@register_os_probe("containerd_state")
+@register_os_probe("containerd_state", domain=taxonomy.KUBERNETES)
 def _check_containerd(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | None:
     if _probe_result(ev) != "PASSED":
         return None
@@ -572,11 +599,35 @@ def _check_containerd(ev: dict[str, Any], alert_ctx: dict[str, Any]) -> str | No
 # Public API
 # ---------------------------------------------------------------------------
 
+def _probe_order(
+    evidence_by_probe: dict[str, dict[str, Any]],
+    domain: str,
+) -> list[str]:
+    """Thứ tự kiểm: probe CÙNG domain với sự cố trước, phần còn lại giữ nguyên thứ tự.
+
+    Không LỌC BỎ probe khác domain: một sự cố `database` vẫn có thể được giải thích
+    bởi `disk_usage`, và bỏ qua bằng chứng đó là tự bịt mắt. Chỉ đổi thứ tự — hàm này
+    trả contrast ĐẦU TIÊN tìm được, nên thứ tự chính là mức ưu tiên.
+    """
+    names = [p for p in evidence_by_probe if p]
+    d = taxonomy.normalize_domain(domain)
+    if d == taxonomy.UNKNOWN:
+        return names
+    same = [p for p in names if _OS_PROBE_DOMAINS.get(p) == d]
+    return same + [p for p in names if p not in set(same)]
+
+
 def compare_alert_claim_to_os_state(
     evidence_by_probe: dict[str, dict[str, Any]],
     alert_ctx: dict[str, Any] | None = None,
+    *,
+    domain: str | None = None,
+    lane: str | None = None,
 ) -> str | None:
     """Run OS-layer probe checks against the alert claim.
+
+    ``domain`` (canonical) hoặc ``lane`` trục A — chỉ dùng để XẾP THỨ TỰ kiểm, không
+    lọc. Cả hai để trống ⇒ hành vi y như trước.
 
     Returns a contrast string when at least one OS probe reports PASSED (healthy)
     while the batch was classified SYS_HARD_FAIL — alert is suspect.
@@ -595,9 +646,12 @@ def compare_alert_claim_to_os_state(
         if pn and pn in _OS_PROBE_HANDLERS
     )
 
-    for probe_name, ev in evidence_by_probe.items():
-        if not probe_name:
-            continue
+    resolved_domain = taxonomy.normalize_domain(domain)
+    if resolved_domain == taxonomy.UNKNOWN:
+        resolved_domain = taxonomy.lane_to_domain(lane)
+
+    for probe_name in _probe_order(evidence_by_probe, resolved_domain):
+        ev = evidence_by_probe[probe_name]
         handler = _OS_PROBE_HANDLERS.get(probe_name)
         if handler is None:
             logger.info("os_state_validator: unregistered probe=%s (add handler)", probe_name)

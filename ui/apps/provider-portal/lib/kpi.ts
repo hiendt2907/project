@@ -20,6 +20,10 @@ export interface KpiSummary {
 
 export interface KpiTrend {
   window_seconds: number;
+  /** Nhóm theo 9 lĩnh vực canonical — trục hiện hành. */
+  domains?: Record<string, { detected: number; resolved: number }>;
+  /** Alias tương thích ngược: gateway trả CÙNG object với `domains`. Giữ optional
+   *  để bản gateway cũ (khoá là lane) vẫn render được. */
   lanes: Record<string, { detected: number; resolved: number }>;
 }
 

@@ -1,8 +1,12 @@
 """Remote agent collector — storage health (disk partitions, NFS mounts).
 
 Probes:
-  disk_usage      → DOMAIN_STORAGE  lane=SYS_RESOURCE / SYS_HARD_FAIL
-  storage_nfs     → DOMAIN_STORAGE  lane=SYS_HARD_FAIL
+  disk_usage      → domain=storage  (lane=SYS_RESOURCE / SYS_HARD_FAIL, deprecated)
+  storage_nfs     → domain=storage  (lane=SYS_HARD_FAIL, deprecated)
+
+These probes read BINARY STATE (partition critical, mount read-only), not a
+number against a tunable fence, so they keep declaring failure themselves —
+that is physical truth, not a threshold opinion.
 
 All commands are read-only; no mutations.
 Uses asyncio.create_subprocess_exec — no blocking subprocess.run().
@@ -15,6 +19,7 @@ import logging
 from typing import Any
 
 from remote_agent import exec_guard
+from pkg.domain.taxonomy import STORAGE
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -156,6 +161,7 @@ async def collect_disk_usage(hostname: str) -> dict[str, Any] | None:
     return build_envelope(
         probe="disk_usage",
         lane="SYS_HARD_FAIL" if anomalies else "SYS_RESOURCE",
+        domain=STORAGE,
         result=result,
         extracted_fact=fact,
         alert_rule="DiskCritical" if critical_partitions else ("DiskWarning" if warn_partitions else "DiskHealthy"),
@@ -228,6 +234,7 @@ async def collect_nfs_health(hostname: str) -> dict[str, Any] | None:
     return build_envelope(
         probe="storage_nfs",
         lane="SYS_HARD_FAIL" if anomalies else "SYS_RESOURCE",
+        domain=STORAGE,
         result=result,
         extracted_fact=fact,
         alert_rule="NFSStaleMount" if stale_mounts else ("NFSIOError" if io_error_mounts else "NFSHealthy"),

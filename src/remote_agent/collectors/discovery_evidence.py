@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pkg.domain.taxonomy import NETWORK, OS_HOST, SERVICE, UNKNOWN
 from remote_agent import exec_guard
 from remote_agent.evidence import build_envelope
 
@@ -63,6 +64,8 @@ async def collect_process_list(hostname: str) -> dict[str, Any] | None:
     return build_envelope(
         probe="process_list",
         lane="SYS_RESOURCE",
+        # Running processes = state of the OS host itself.
+        domain=OS_HOST,
         result="PASSED",
         extracted_fact={"discovery_data": {"processes": processes}},
         symptom_group="onboarding_discovery",
@@ -98,6 +101,8 @@ async def collect_port_scan(hostname: str) -> dict[str, Any] | None:
     return build_envelope(
         probe="port_scan",
         lane="SYS_RESOURCE",
+        # Listening sockets = the host's network surface.
+        domain=NETWORK,
         result="PASSED",
         extracted_fact={"discovery_data": {"listening_ports": ports[:50]}},
         symptom_group="onboarding_discovery",
@@ -143,6 +148,8 @@ async def collect_service_topology(hostname: str) -> dict[str, Any] | None:
     return build_envelope(
         probe="service_topology",
         lane="SYS_RESOURCE",
+        # systemd units = the SERVICE inventory.
+        domain=SERVICE,
         result="PASSED",
         extracted_fact={"discovery_data": {"services": services[:200]}},
         symptom_group="onboarding_discovery",
@@ -191,6 +198,8 @@ async def collect_connection_scan(hostname: str) -> dict[str, Any] | None:
     return build_envelope(
         probe="connection_scan",
         lane="SYS_RESOURCE",
+        # Established peers = network topology.
+        domain=NETWORK,
         result="PASSED",
         extracted_fact={"discovery_data": {"connections": connections[:100]}},
         symptom_group="onboarding_discovery",
@@ -241,6 +250,10 @@ async def collect_doc_snapshot(hostname: str, search_dirs: list[str]) -> dict[st
     return build_envelope(
         probe="doc_snapshot",
         lane="SYS_RESOURCE",
+        # README/OpenAPI hashes belong to no technical domain — UNKNOWN is
+        # honest; guessing `application` would inflate the capability matrix
+        # for a domain this probe proves nothing about.
+        domain=UNKNOWN,
         result="PASSED",
         extracted_fact={"discovery_data": {"documents": found[:20]}},
         symptom_group="onboarding_discovery",

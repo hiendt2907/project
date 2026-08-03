@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from pkg.domain.taxonomy import SECURITY
+
 
 # Maps FinGuard severity to Omni-canonical severity.
 _SEVERITY_MAP = {
@@ -92,6 +94,9 @@ class SIEMEvidenceAdapter:
             "alert_hint": alert_hint,
             "symptom_group": category,
             "canonical_query_snippet": canonical_snippet,
+            # Domain canonical là nguồn sự thật; `lane` giữ lại cho consumer chưa
+            # nâng cấp và cho `stream_tags` (parse-coupled với thẻ Telegram).
+            "domain": SECURITY,
             "lane": "SIEM_SECURITY",
             "stream_tags": ["SIEM_SECURITY"],
             "extracted_fact": {
@@ -125,6 +130,10 @@ class SIEMEvidenceAdapter:
                 "alert_hint": f"Network context: affected_ip={affected_ip}. {raw_log[:400]}",
                 "symptom_group": category,
                 "canonical_query_snippet": canonical_snippet,
+                # Cố ý `security`, KHÔNG `network`: đây là ngữ cảnh mạng CỦA MỘT
+                # sự cố an ninh, cùng trace_id với envelope trên. Tách nó sang
+                # domain `network` sẽ xé một sự cố thành hai lĩnh vực.
+                "domain": SECURITY,
                 "lane": "SIEM_SECURITY",
                 "stream_tags": ["SIEM_SECURITY"],
                 "extracted_fact": {

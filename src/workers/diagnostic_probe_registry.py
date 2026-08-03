@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from kubernetes_asyncio import client
 
 import httpx
+
+from pkg.domain import taxonomy
 
 from workers.diagnostic_evidence import ProbeRunRaw
 from workers.diagnostic_k8s_clinical import (
@@ -437,9 +441,158 @@ PROBE_REGISTRY: dict[str, ProbeFn] = {
     # P7.2.B — L2 Network (kubernetes_asyncio, read-only)
     "k8s_service_endpoints_ready": probe_k8s_service_endpoints_ready,
     "k8s_networkpolicy_audit": probe_k8s_networkpolicy_audit,
-    # APP_HTTP lane — Loki-based access-log surge detection
+    # domain `application` — Loki-based access-log surge detection
     "loki_access_log_surge": probe_loki_access_log_surge,
 }
+
+
+# ---------------------------------------------------------------------------
+# Chọn chẩn đoán theo DOMAIN (thay cho lane trục A)
+# ---------------------------------------------------------------------------
+# Vì sao đây là lợi ích thật của việc bỏ lane: 4 lane cũ chỉ mở cửa cho os/app/siem.
+# Năm domain — network, storage, database, hardware, service — không có cách nào để
+# một sự cố "gọi đúng bộ chẩn đoán của nó", dù catalogue
+# `config/diagnostic_commands.yaml` đã khai lệnh cho cả 9 domain.
+#
+# Có HAI nguồn chẩn đoán, cố ý tách rời:
+#   - `PROBE_DOMAINS`: probe TRONG cluster (K8s/Prometheus/Loki SDK) — chạy bởi worker.
+#   - catalogue lệnh: chạy TRÊN HOST khách qua remote agent, read-only.
+# Một domain có cửa vào nếu có ít nhất một trong hai. Không gộp hai nguồn thành một
+# danh sách phẳng: đường thực thi, biên quyền và cách fail của chúng khác nhau.
+
+PROBE_DOMAINS: dict[str, str] = {
+    # — kubernetes —
+    "k8s_list_pods_namespace": taxonomy.KUBERNETES,
+    "k8s_clinical_pod_status": taxonomy.KUBERNETES,
+    "k8s_clinical_pod_metrics": taxonomy.KUBERNETES,
+    "k8s_clinical_pod_log_tail": taxonomy.KUBERNETES,
+    "k8s_clinical_pod_log_previous": taxonomy.KUBERNETES,
+    "k8s_clinical_pod_events": taxonomy.KUBERNETES,
+    "k8s_events_probe": taxonomy.KUBERNETES,
+    "k8s_resource_quota_probe": taxonomy.KUBERNETES,
+    "prom_pod_cpu_cores": taxonomy.KUBERNETES,
+    "prom_pod_memory_wss": taxonomy.KUBERNETES,
+    # — security —
+    "rbac_drift": taxonomy.SECURITY,
+    "configmap_security_drift": taxonomy.SECURITY,
+    # — os_host —
+    "node_cpu_saturation": taxonomy.OS_HOST,
+    "node_memory_pressure": taxonomy.OS_HOST,
+    # — storage —
+    "node_disk_pressure": taxonomy.STORAGE,
+    "node_disk_io_saturation": taxonomy.STORAGE,
+    # — network —
+    "k8s_service_endpoints_ready": taxonomy.NETWORK,
+    "k8s_networkpolicy_audit": taxonomy.NETWORK,
+    # — application —
+    "loki_access_log_surge": taxonomy.APPLICATION,
+}
+
+# ---------------------------------------------------------------------------
+# Probe tự kiểm — hạ tầng CỦA OMNI, KHÔNG phải của khách
+# ---------------------------------------------------------------------------
+# Ba probe này kiểm Redis/Kafka mà bản thân Omni chạy trên đó. Trước 2026-07-30 chúng
+# được gắn `service`, và điều đó làm **ma trận năng lực domain `service` trông rộng
+# hơn thực tế đối với khách hàng**: người đọc báo cáo thấy "Omni có 3 probe service"
+# rồi tưởng đó là năng lực chẩn đoán hệ thống của họ, trong khi cả ba chỉ trả lời
+# "daemon của Omni còn sống không".
+#
+# Không gắn `unknown` (không canonical, và cũng không thật: ta biết rõ chúng là gì) —
+# vấn đề là chúng không thuộc trục domain của KHÁCH. Nên tách thành một nhóm riêng,
+# vẫn khai báo tường minh để bất biến fail-closed dưới đây còn hiệu lực.
+SELF_PROBES: frozenset[str] = frozenset({
+    "redis_ping",
+    "kafka_alerts_topic",
+    "redis_stream_len_inbound",
+})
+
+# Fail-closed lúc import: thêm probe mà quên phân loại thì nó vô hình với mọi đường
+# chọn theo domain — im lặng mất năng lực chẩn đoán, đúng loại lỗi không ai phát hiện
+# được từ log. Mỗi probe phải nằm ở ĐÚNG MỘT nhóm: domain của khách, hoặc tự kiểm.
+_classified = set(PROBE_DOMAINS) | SELF_PROBES
+_missing_domain = set(PROBE_REGISTRY) - _classified
+_orphan_domain = _classified - set(PROBE_REGISTRY)
+_both = set(PROBE_DOMAINS) & SELF_PROBES
+if _missing_domain or _orphan_domain or _both:  # pragma: no cover — invariant
+    raise RuntimeError(
+        f"phan loai probe lech PROBE_REGISTRY: thieu={sorted(_missing_domain)} "
+        f"thua={sorted(_orphan_domain)} trung_hai_nhom={sorted(_both)}"
+    )
+_bad_domain = {p: d for p, d in PROBE_DOMAINS.items() if d not in taxonomy.CANONICAL_DOMAINS}
+if _bad_domain:  # pragma: no cover — invariant
+    raise RuntimeError(f"PROBE_DOMAINS co domain khong canonical: {_bad_domain}")
+
+
+@dataclass(frozen=True, slots=True)
+class DomainDiagnostics:
+    """Bộ chẩn đoán khả dụng cho một domain, tách theo nơi chạy."""
+
+    domain: str
+    probes: tuple[str, ...]      # probe_id chạy trong cluster (PROBE_REGISTRY)
+    commands: tuple[str, ...]    # tên lệnh read-only chạy trên host khách
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.probes and not self.commands
+
+
+def resolve_domain(domain: str | None = None, lane: str | None = None) -> str:
+    """Domain canonical từ envelope: `domain` trước, `lane` trục A chỉ là fallback.
+
+    Fallback tồn tại cho dữ liệu lịch sử và agent chưa nâng cấp. `SYS_HARD_FAIL` trả
+    `unknown` (xem `taxonomy.lane_to_domain`) — đúng, vì lane đó gánh bốn domain.
+    """
+    d = taxonomy.normalize_domain(domain)
+    if d != taxonomy.UNKNOWN:
+        return d
+    return taxonomy.lane_to_domain(lane)
+
+
+def probes_for_domain(domain: str) -> tuple[str, ...]:
+    """probe_id trong cluster thuộc ``domain`` (đã sort — thứ tự phải xác định)."""
+    d = taxonomy.normalize_domain(domain)
+    return tuple(sorted(p for p, pd in PROBE_DOMAINS.items() if pd == d))
+
+
+@lru_cache(maxsize=1)
+def _catalog() -> Any:
+    """Catalogue lệnh, nạp một lần. Lỗi nạp KHÔNG được làm chết worker: probe trong
+    cluster vẫn dùng được, nên hạ mức xuống 'không có lệnh host' thay vì sập.
+    """
+    try:
+        from pkg.diagnostics.command_catalog import load_catalog
+
+        return load_catalog()
+    except Exception as exc:  # pragma: no cover — chỉ khi catalogue lỗi/thiếu file
+        logger.error("diagnostic catalogue khong nap duoc: %r — chi con probe in-cluster", exc)
+        return None
+
+
+def commands_for_domain(domain: str) -> tuple[str, ...]:
+    """Tên lệnh read-only của ``domain`` trong catalogue (chạy trên host khách)."""
+    cat = _catalog()
+    if cat is None:
+        return ()
+    d = taxonomy.normalize_domain(domain)
+    if d == taxonomy.UNKNOWN:
+        return ()
+    return tuple(sorted(spec.command for spec in cat.by_domain(d)))
+
+
+def select_diagnostics(domain: str | None = None, lane: str | None = None) -> DomainDiagnostics:
+    """Cửa vào duy nhất: "sự cố thuộc domain này thì Omni chẩn đoán bằng gì".
+
+    Nhận cả `domain` (đường mới) và `lane` trục A (đường cũ) để một caller chưa
+    chuyển vẫn hoạt động. `unknown` trả bộ RỖNG — không đoán bừa một bộ chẩn đoán,
+    vì chạy sai bộ probe rồi kết luận "không thấy gì" là bằng chứng giả.
+    """
+    d = resolve_domain(domain, lane)
+    return DomainDiagnostics(domain=d, probes=probes_for_domain(d), commands=commands_for_domain(d))
+
+
+def domain_coverage() -> dict[str, DomainDiagnostics]:
+    """Ma trận 9 domain → bộ chẩn đoán. Dùng để trả lời "domain nào chưa có cửa vào"."""
+    return {d: select_diagnostics(domain=d) for d in taxonomy.CANONICAL_DOMAINS}
 
 
 async def run_probe(probe_id: str, ctx: WorkerHandlerContext, ev: AnomalyEvent) -> ProbeRunRaw:

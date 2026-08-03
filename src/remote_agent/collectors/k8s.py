@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from pkg.domain.taxonomy import KUBERNETES
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ async def collect_k8s_status(namespace: str, hostname: str) -> list[dict[str, An
         env = build_envelope(
             probe="remote_k8s_pod_status",
             lane="SYS_HARD_FAIL",
+            domain=KUBERNETES,
             result=result,
             extracted_fact={
                 "total_pods": total,

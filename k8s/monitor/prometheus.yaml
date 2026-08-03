@@ -602,8 +602,14 @@ data:
       - name: omni.kpi
         interval: 60s
         rules:
+          # `and omni_kpi_advisory_total > 0` là BẮT BUỘC, không phải tinh chỉnh.
+          # prometheus_client khởi tạo Gauge bằng 0.0 và xuất ngay, nên "chưa ai phán lần
+          # nào" và "0% chấp nhận" ra cùng con số. Thiếu vế này, alert fire vĩnh viễn từ
+          # giây worker khởi động — đo 2026-08-02: ~340 incident meta_self/ngày, chiếm gần
+          # trọn phần pipeline còn hoạt động. Đừng gỡ khi thấy alert "im" — im là đúng khi
+          # chưa có mẫu nào.
           - alert: OmniAdvisoryAcceptanceRateLow
-            expr: omni_kpi_advisory_acceptance_rate < 0.5
+            expr: omni_kpi_advisory_acceptance_rate < 0.5 and omni_kpi_advisory_total > 0
             for: 30m
             labels:
               severity: warning
@@ -612,7 +618,7 @@ data:
               summary: "Advisory acceptance rate below 50% in last 24h"
               description: "Acceptance rate={{ $value | humanizePercentage }}."
           - alert: OmniFalsePositiveRateHigh
-            expr: omni_kpi_false_positive_rate > 0.3
+            expr: omni_kpi_false_positive_rate > 0.3 and omni_kpi_advisory_total > 0
             for: 30m
             labels:
               severity: warning
@@ -620,6 +626,20 @@ data:
             annotations:
               summary: "False positive rate exceeds 30%"
               description: "False positive rate={{ $value | humanizePercentage }}."
+          # "Chưa biết" phải là một tín hiệu THẤY ĐƯỢC, không phải sự im lặng. Không có
+          # luật này thì fp_rate=0.0 (mặc định Gauge) trông y hệt "không có dương tính giả
+          # nào" trên mọi dashboard — fail-open bằng mắt.
+          - alert: OmniKpiNoSamples
+            expr: omni_kpi_advisory_total == 0
+            for: 6h
+            labels:
+              severity: info
+              team: omni-sre
+            annotations:
+              summary: "KPI chưa có mẫu nào trong 24h — mọi tỉ lệ đang là CHƯA BIẾT"
+              description: >-
+                tenant={{ $labels.tenant }}. Không ai phán quyết advisory nào.
+                Mọi chỉ số chất lượng hiển thị 0.0 là do thiếu dữ liệu, không phải do kém.
           - alert: OmniMTTDHigh
             expr: histogram_quantile(0.95, rate(omni_kpi_mttd_seconds_bucket[1h])) > 300
             for: 15m
@@ -728,7 +748,7 @@ data:
               summary: "MTTR SLO breach — {{ $labels.lane }}"
               description: "P95 MTTR is {{ $value | humanizeDuration }} (SLO: 15m for auto-remediation)"
           - alert: OmniFalsePositiveRateTooHigh
-            expr: omni:slo:false_positive_rate > 0.10
+            expr: omni:slo:false_positive_rate > 0.10 and omni_kpi_advisory_total > 0
             for: 15m
             labels:
               severity: warning
@@ -736,8 +756,9 @@ data:
             annotations:
               summary: "False positive rate exceeded 10% threshold"
               description: "Current FP rate: {{ $value | humanizePercentage }}"
+          # Xem chú thích ở nhóm omni.kpi: thiếu vế `total > 0` là báo động giả vĩnh viễn.
           - alert: OmniAdvisoryAcceptanceLow
-            expr: omni:slo:advisory_acceptance_rate < 0.85
+            expr: omni:slo:advisory_acceptance_rate < 0.85 and omni_kpi_advisory_total > 0
             for: 15m
             labels:
               severity: warning

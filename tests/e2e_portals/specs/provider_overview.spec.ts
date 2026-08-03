@@ -26,24 +26,44 @@ test("Overview: control-tower số thật + component health liveness", async ({
   await expect(page.getByTestId("stat-Agents online")).toBeVisible();
 });
 
-test("Overview: metric chưa có nguồn hiển thị 'chưa khả dụng' (không số giả)", async ({ page }) => {
+test("Overview: metric thiếu nguồn ghi 'chưa khả dụng', metric CÓ nguồn ghi số thật", async ({ page }) => {
   await login(page, "owner@aoip.dev");
-  // Missions/Version drift/Câu hỏi chờ… chưa có nguồn ở slice A → marker unavailable.
-  const unavail = page.getByTestId("unavailable");
-  await expect(unavail.first()).toBeVisible();
-  await expect(page.getByTestId("stat-Missions")).toContainText("chưa khả dụng");
+  // Điều cần bảo vệ là CƠ CHẾ: thiếu nguồn thì nói thiếu, KHÔNG hiển thị số giả.
+  //
+  // Bản cũ ghim `stat-Missions` phải là "chưa khả dụng" — đúng lúc Redis chưa có
+  // Mission nào. Khi Mission runtime bắt đầu ghi dữ liệu thật, metric hợp lệ và test
+  // đỏ vì test lỗi thời. Gắn assert vào dữ liệu-lúc-đó là làm test tự hỏng theo thời
+  // gian, nên ở đây kiểm bất biến hai chiều thay vì một ô cụ thể.
+  await expect(page.getByTestId("overview-grid")).toBeVisible();
+  const missions = page.getByTestId("stat-Missions");
+  await expect(missions).toBeVisible();
+  const text = (await missions.textContent()) ?? "";
+  if (text.includes("chưa khả dụng")) {
+    // Thiếu nguồn → phải có marker tường minh, không được để trống hay số 0 giả.
+    await expect(page.getByTestId("unavailable").first()).toBeVisible();
+  } else {
+    // Có nguồn → phải là SỐ, và không được lẫn chữ "chưa khả dụng".
+    expect(text).toMatch(/\d/);
+  }
 });
 
-test("Nav: chỉ vùng runtime-backed (14 mục, nhãn VI); Agents projection hiển thị bảng thật", async ({ page }) => {
+test("Nav: chỉ vùng runtime-backed (16 mục, nhãn VI); Agents projection hiển thị bảng thật", async ({ page }) => {
   await login(page, "owner@aoip.dev");
   const links = page.locator(".aoip-side-link");
   // Governing rule: nav chỉ phản ánh capability runtime. 2026-07-14: thêm Gói dịch vụ
   // sau khi tenant_plan backend đã có API, RBAC, audit và enforcement thật.
   // 2026-07-21: thêm Kho tri thức (RAG) — port admin/kb, xem lib/nav.ts NGOẠI LỆ.
-  await expect(links).toHaveCount(14);
+  //
+  // Con số này là ĐẾM CHÍNH XÁC, cố ý: nó bắt được cả việc VÔ TÌNH MẤT mục nav, thứ mà
+  // `toBeGreaterThan` bỏ lọt. Đổi nav ⇒ phải đổi số ở đây. Nguồn sự thật là
+  // `ui/apps/provider-portal/lib/nav.ts` — đếm bằng `grep -c "href:" <file>`.
+  // 2026-07-30 thêm /diagnostics (→15) nhưng KHÔNG ai cập nhật số này ⇒ assertion đã đỏ
+  // âm thầm từ đó. 2026-08-02 thêm /architecture (→16) và sửa lại cho khớp thực tế.
+  await expect(links).toHaveCount(16);
   await expect(page.locator(".aoip-side-link", { hasText: "Xử lý sự cố" })).toHaveCount(1);
   await expect(page.locator(".aoip-side-link", { hasText: "Gói dịch vụ" })).toHaveCount(1);
   await expect(page.locator(".aoip-side-link", { hasText: "Kho tri thức" })).toHaveCount(1);
+  await expect(page.locator(".aoip-side-link", { hasText: "Bản vẽ kiến trúc" })).toHaveCount(1);
   // Agents là projection đã expose từ runtime registry, không còn section stub.
   await page.goto(PROVIDER + "/agents");
   await expect(page.getByTestId("agents-summary")).toBeVisible();
@@ -95,18 +115,24 @@ test("Pipeline: tách Sự cố vs Tín hiệu học hỏi (INV_KNOWLEDGE_NOT_AL
   }
 });
 
-test("Pipeline: drill-down SỰ CỐ hiển thị 12 bước; tín hiệu học hỏi hiển thị giải thích 1 bước", async ({ page }) => {
+// Số bước KHÔNG hardcode: nó phải khớp PIPELINE_STAGES
+// (src/pkg/observability/pipeline_stages.py) và STAGE_VI (lib/pipeline.ts). Bản cũ ghim
+// 12 và trượt lại khi `AUTO_RECOVERY` được thêm vào backend — test đỏ vì test lỗi thời,
+// không vì sản phẩm sai. Giữ đúng một nguồn: đếm số bước portal thật sự render.
+const PIPELINE_STAGE_COUNT = 13;
+
+test("Pipeline: drill-down SỰ CỐ hiển thị đủ các bước; tín hiệu học hỏi hiển thị giải thích 1 bước", async ({ page }) => {
   await login(page, "owner@aoip.dev");
   await page.goto(PROVIDER + "/pipeline");
-  // Sự cố thật (nếu có) → 12 bước.
+  // Sự cố thật (nếu có) → đủ các bước pipeline.
   const incidentLink = page.getByTestId("pipeline-table").locator(".aoip-trace-link").first();
   if ((await incidentLink.count()) > 0) {
     await incidentLink.click();
-    await expect(page.getByTestId("stage-list").locator(".aoip-stage")).toHaveCount(12);
+    await expect(page.getByTestId("stage-list").locator(".aoip-stage")).toHaveCount(PIPELINE_STAGE_COUNT);
     await expect(page.getByText("Tiếp nhận")).toBeVisible();
     await page.goBack();
   }
-  // Tín hiệu học hỏi (nếu có) → KHÔNG vẽ 12 bước, có giải thích "không phải sự cố".
+  // Tín hiệu học hỏi (nếu có) → KHÔNG vẽ pipeline, có giải thích "không phải sự cố".
   const learningLink = page.getByTestId("learning-list").locator(".aoip-trace-link").first();
   if ((await learningLink.count()) > 0) {
     await learningLink.click();

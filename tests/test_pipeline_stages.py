@@ -237,3 +237,40 @@ class TestTracePurgeRoute:
             resp = await c.post("/trace/purge")
         assert resp.status_code == 200
         assert resp.json()["keys_deleted"] == 0
+
+
+# ── Chống drift giữa backend, nhãn portal, và E2E ────────────────────────────
+
+
+class TestStageCountConsistencyAcrossLayers:
+    """Ba nơi cùng phải biết số bước pipeline — lệch một nơi là drift âm thầm.
+
+    Đã trả giá 2026-07-30: `AUTO_RECOVERY` được thêm vào `PIPELINE_STAGES` (13 bước)
+    nhưng `STAGE_VI` của portal và `provider_overview.spec.ts` vẫn ở 12. E2E đỏ, và
+    thoạt trông giống lỗi sản phẩm chứ không phải test lỗi thời — mất thời gian truy.
+    Test đơn vị này đỏ TRƯỚC E2E (giây thay vì phút) và chỉ đúng chỗ cần sửa.
+    """
+
+    def _read(self, rel: str) -> str:
+        from pathlib import Path
+
+        return (Path(__file__).resolve().parents[1] / rel).read_text(encoding="utf-8")
+
+    def test_portal_stage_labels_cover_every_backend_stage(self) -> None:
+        src = self._read("ui/apps/provider-portal/lib/pipeline.ts")
+        block = src.split("export const STAGE_VI", 1)[1].split("};", 1)[0]
+        missing = [s for s in PIPELINE_STAGES if f"{s}:" not in block]
+        assert not missing, (
+            f"STAGE_VI (portal) thieu nhan cho: {missing} — "
+            f"nguoi dung se thay ma stage tho thay vi tieng Viet"
+        )
+
+    def test_e2e_stage_count_matches_backend(self) -> None:
+        src = self._read("tests/e2e_portals/specs/provider_overview.spec.ts")
+        marker = "const PIPELINE_STAGE_COUNT = "
+        assert marker in src, "spec E2E khong con hang so PIPELINE_STAGE_COUNT"
+        got = int(src.split(marker, 1)[1].split(";", 1)[0].strip())
+        assert got == len(PIPELINE_STAGES), (
+            f"E2E ky vong {got} buoc, backend co {len(PIPELINE_STAGES)} — "
+            f"cap nhat PIPELINE_STAGE_COUNT trong provider_overview.spec.ts"
+        )

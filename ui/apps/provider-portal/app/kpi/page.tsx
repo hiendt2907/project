@@ -1,7 +1,7 @@
 import { Card, MetricStat } from "@aoip/ui-kit";
 import { PageIntro } from "@/components/PageIntro";
 import { fetchKpiSummary, fetchKpiTrend, percentVI } from "@/lib/kpi";
-import { LANE_VI } from "@/lib/pipeline";
+import { scopeVI } from "@/lib/pipeline";
 
 export default async function KpiPage() {
   const [summary, trend] = await Promise.all([fetchKpiSummary(), fetchKpiTrend()]);
@@ -55,12 +55,12 @@ export default async function KpiPage() {
 
       {trend.data && (
         <Card>
-          <div className="aoip-k">Phát hiện & xử lý theo loại vấn đề (24h)</div>
+          <div className="aoip-k">Phát hiện & xử lý theo lĩnh vực (24h)</div>
           <div className="aoip-grid" data-testid="kpi-trend">
-            {Object.entries(trend.data.lanes).map(([lane, v]) => (
+            {Object.entries(trend.data.domains ?? trend.data.lanes).map(([scope, v]) => (
               <MetricStat
-                key={lane}
-                label={LANE_VI[lane] ?? lane}
+                key={scope}
+                label={scopeVI(scope)}
                 value={`${v.detected} phát hiện · ${v.resolved} đã xử lý`}
               />
             ))}

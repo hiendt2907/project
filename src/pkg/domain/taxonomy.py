@@ -88,6 +88,60 @@ _ALIASES: Final[dict[str, str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# "lane" — BA trục khác nhau cùng tên. Chỉ MỘT trục map sang domain.
+# ---------------------------------------------------------------------------
+# Khảo sát: `plans/lane-to-domain-and-omni-decides-2026-07-30.md` §0.
+#
+#   A. `envelope.lane`  SYS_RESOURCE | SYS_HARD_FAIL | APP_HTTP | SIEM_SECURITY
+#      | ONBOARDING_DISCOVERY — collector đoán lĩnh vực kỹ thuật. Trục NÀY map sang
+#      domain, và đang được bỏ dần (build_envelope đã tự khai nó là hint
+#      "lane_authoritative: False").
+#
+#   B. `proof_lane`  resource | state | app_log  (`VALID_PROOF_LANES` ở
+#      `pkg/reasoning/incident_matrix_profile.py`) — trả lời "loại BẰNG CHỨNG VẬT LÝ
+#      nào là đủ để mở cổng", không phải "thuộc lĩnh vực gì". Nó lái
+#      `ERR_REA_NO_PHYSICAL_PROOF`, sigma bypass, và `LANE_BADGE` của thẻ Telegram
+#      (parse-coupled).
+#
+#   C. `proactive` | `reactive` (`llm_semaphore`, `metrics_exporter`) — pool đồng thời
+#      LLM. Không liên quan gì đến lĩnh vực kỹ thuật.
+#
+# ⛔ KHÔNG thêm alias cho `state`, `resource`, `app_log`, `proactive`, `reactive`.
+#    Thêm vào là hoà tan trục B/C vào trục domain: một `proof_lane` sẽ lặng lẽ trở
+#    thành một domain hợp lệ, và cổng chống-bịa mất căn cứ mà không có lỗi nào bật ra.
+#
+# ⚠️ `siem` LÀ alias domain (→ security) và ĐỒNG THỜI là một giá trị lane trục A
+#    (`SIEM_SECURITY`) — nhưng KHÔNG nằm trong `VALID_PROOF_LANES`, nên không có xung
+#    đột với trục B. Đừng "sửa cho đối xứng" bằng cách thêm `siem` vào proof lane.
+
+LANE_TO_DOMAIN: Final[dict[str, str]] = {
+    "sys_resource": OS_HOST,
+    "app_http": APPLICATION,
+    "siem_security": SECURITY,
+    # SYS_HARD_FAIL KHÔNG map 1-1: nó đang gánh cả database (collectors/database.py),
+    # storage (storage.py), service (services.py) và kubernetes (k8s.py). Domain thật
+    # phải lấy từ COLLECTOR NÀO PHÁT RA, không suy từ giá trị lane.
+    "sys_hard_fail": UNKNOWN,
+    # ONBOARDING_DISCOVERY là một PHA của vòng đời, không phải lĩnh vực kỹ thuật.
+    "onboarding_discovery": UNKNOWN,
+}
+
+
+def lane_to_domain(lane: str | None) -> str:
+    """Suy domain từ `envelope.lane` (trục A) — CHỈ dùng cho dữ liệu LỊCH SỬ.
+
+    Với evidence mới, domain phải do collector khai trực tiếp: `SYS_HARD_FAIL` gánh
+    bốn domain khác nhau nên suy từ lane là mất thông tin. Hàm này trả ``unknown``
+    cho những lane đó thay vì đoán — đoán sai domain rồi dùng để cấp quyền còn tệ hơn
+    thừa nhận là chưa biết.
+    """
+    v = (lane or "").strip().lower().replace("-", "_")
+    if not v:
+        return UNKNOWN
+    return LANE_TO_DOMAIN.get(v, UNKNOWN)
+
+
 def normalize_domain(value: str | None) -> str:
     """Đưa bất kỳ tên domain nào về canonical. Không nhận ra ⇒ ``unknown``.
 
@@ -167,6 +221,7 @@ __all__ = [
     "DATABASE",
     "HARDWARE",
     "KUBERNETES",
+    "LANE_TO_DOMAIN",
     "NETWORK",
     "OS_HOST",
     "SECURITY",
@@ -177,6 +232,7 @@ __all__ = [
     "TRACK_PLAYBOOK",
     "UNKNOWN",
     "is_canonical",
+    "lane_to_domain",
     "normalize_domain",
     "require_domain",
     "split_legacy_graduation_domain",

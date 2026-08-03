@@ -4,7 +4,7 @@ import { PageIntro } from "@/components/PageIntro";
 import {
   fetchRecentTraces,
   isDiagnosticLane,
-  LANE_VI,
+  scopeVI,
   learningLaneVI,
   STAGE_VI,
   type RecentTrace,
@@ -66,7 +66,7 @@ export default async function PipelinePage() {
               {incidents.map((t) => (
                 <tr key={t.trace_id}>
                   <td>{timeVI(t.updated_at)}</td>
-                  <td>{LANE_VI[t.lane] ?? t.lane}</td>
+                  <td>{scopeVI(t.domain ?? t.lane)}</td>
                   <td>{STAGE_VI[t.current_stage]?.name ?? t.current_stage ?? "—"}</td>
                   <td>{t.verdict || "đang xử lý"}</td>
                   <td>

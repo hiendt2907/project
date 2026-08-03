@@ -61,33 +61,45 @@ class TestKpiSummary:
 
 class TestKpiTrend:
     @pytest.mark.asyncio
-    async def test_returns_all_lanes(self):
+    async def test_returns_all_domains(self):
+        """Trend nhóm theo 9 domain canonical + `unknown` (đổi 2026-07-30)."""
         redis = FakeRedis(decode_responses=True)
         app = _make_app(redis)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/kpi/trend?window=1h")
 
         body = resp.json()
-        assert "SYS_RESOURCE" in body["lanes"]
-        assert "SIEM_SECURITY" in body["lanes"]
+        for d in ("os_host", "application", "security", "network", "storage",
+                  "database", "service", "kubernetes", "hardware", "unknown"):
+            assert d in body["domains"], f"thieu domain {d}"
         assert body["window_seconds"] == 3600
 
     @pytest.mark.asyncio
-    async def test_lane_counts_from_redis(self):
+    async def test_lanes_key_is_backward_compat_alias(self):
+        """UI/E2E cu doc `lanes` — phai tra ve cung du lieu voi `domains`."""
+        redis = FakeRedis(decode_responses=True)
+        app = _make_app(redis)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/kpi/trend?window=1h")
+        body = resp.json()
+        assert body["lanes"] == body["domains"]
+
+    @pytest.mark.asyncio
+    async def test_domain_counts_from_redis(self):
         redis = FakeRedis(decode_responses=True)
         now = time.time()
         for i in range(5):
-            await redis.zadd("omni:kpi:detected:default:SYS_RESOURCE", {f"d{i}": now - i * 60})
+            await redis.zadd("omni:kpi:detected:default:os_host", {f"d{i}": now - i * 60})
         for i in range(3):
-            await redis.zadd("omni:kpi:resolved:default:SYS_RESOURCE", {f"r{i}": now - i * 60})
+            await redis.zadd("omni:kpi:resolved:default:os_host", {f"r{i}": now - i * 60})
 
         app = _make_app(redis)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/kpi/trend?window=6h")
 
-        lane = resp.json()["lanes"]["SYS_RESOURCE"]
-        assert lane["detected"] == 5
-        assert lane["resolved"] == 3
+        bucket = resp.json()["domains"]["os_host"]
+        assert bucket["detected"] == 5
+        assert bucket["resolved"] == 3
 
     @pytest.mark.asyncio
     async def test_trend_exception_path_returns_zeros(self):
@@ -96,14 +108,14 @@ class TestKpiTrend:
         redis = FakeRedis(decode_responses=True)
         app = _make_app(redis)
 
-        # Patch zcount to raise on SIEM_SECURITY lane only
+        # Patch zcount to raise on the security domain only
         original_zcount = redis.zcount
         call_count = 0
 
         async def patched_zcount(key, *args, **kwargs):
             nonlocal call_count
             call_count += 1
-            if "SIEM_SECURITY" in key:
+            if ":security" in key:
                 raise RuntimeError("simulated redis error")
             return await original_zcount(key, *args, **kwargs)
 
@@ -112,9 +124,9 @@ class TestKpiTrend:
                 resp = await c.get("/kpi/trend?window=1h")
 
         body = resp.json()
-        # SIEM_SECURITY should fall back to 0 not raise
-        assert body["lanes"]["SIEM_SECURITY"]["detected"] == 0
-        assert body["lanes"]["SIEM_SECURITY"]["resolved"] == 0
+        # security domain should fall back to 0 not raise
+        assert body["domains"]["security"]["detected"] == 0
+        assert body["domains"]["security"]["resolved"] == 0
 
 
 # ── /kpi/clusters ─────────────────────────────────────────────────────────────

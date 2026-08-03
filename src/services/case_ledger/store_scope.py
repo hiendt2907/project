@@ -49,18 +49,60 @@ class ScopeStore:
 
     def __init__(self, pool: Any) -> None:
         self._pool = pool
+        # Nhớ MỘT LẦN rằng DB chưa có cột của migration 0014, để không ném/bắt
+        # exception ở mọi lượt đọc quyền trên một DB chưa di trú.
+        self._legacy_column_missing = False
 
     # ── scope_grant ──────────────────────────────────────────────────────────
 
     async def get_grant(self, *, tenant_id: str, pattern_key: str) -> dict[str, Any] | None:
+        """Quyền đã cấp cho một pattern — tra CẢ khoá mới VÀ khoá lịch sử.
+
+        Cửa sổ chuyển tiếp lane→domain (migration 0014): khoá của grant là
+        ``sha256("lane|alertname")`` cũ hoặc ``sha256("domain|alertname")`` mới, tuỳ
+        hàng đã di trú được hay chưa. Tra một khoá thôi thì một grant khách ĐÃ duyệt
+        lặng lẽ không khớp nữa — không exception, không log, Omni chỉ mất quyền và
+        quay lại xin. Cửa sổ này đóng ở Phase 4, khi cột ``pattern_key_legacy`` bị bỏ.
+
+        ``ORDER BY (pattern_key=$2) DESC``: khớp khoá MỚI luôn thắng khoá lịch sử,
+        để hàng đã di trú là hàng có hiệu lực khi cả hai cùng trỏ về một pattern.
+        """
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM omni_admin.scope_grant "
-                "WHERE tenant_id=$1 AND pattern_key=$2",
-                tenant_id,
-                pattern_key,
-            )
+            if self._legacy_column_missing:
+                return await self._get_grant_exact(conn, tenant_id, pattern_key)
+            try:
+                row = await conn.fetchrow(
+                    "SELECT * FROM omni_admin.scope_grant "
+                    "WHERE tenant_id=$1 AND (pattern_key=$2 OR pattern_key_legacy=$2) "
+                    "ORDER BY (pattern_key=$2) DESC LIMIT 1",
+                    tenant_id,
+                    pattern_key,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # DB chưa apply 0014 (pod cũ, hoặc migration đang chạy dở). Lùi về
+                # hành vi cũ thay vì làm chết đường đọc quyền: mất cột là chuyện
+                # triển khai, không phải lý do để Omni ngừng biết mình có quyền gì.
+                if "pattern_key_legacy" not in str(exc):
+                    raise
+                self._legacy_column_missing = True
+                logger.warning(
+                    "scope_grant: chua co cot pattern_key_legacy (migration 0014 chua apply) "
+                    "— tra theo khoa moi thoi"
+                )
+                return await self._get_grant_exact(conn, tenant_id, pattern_key)
             return dict(row) if row else None
+
+    @staticmethod
+    async def _get_grant_exact(
+        conn: Any, tenant_id: str, pattern_key: str
+    ) -> dict[str, Any] | None:
+        row = await conn.fetchrow(
+            "SELECT * FROM omni_admin.scope_grant "
+            "WHERE tenant_id=$1 AND pattern_key=$2",
+            tenant_id,
+            pattern_key,
+        )
+        return dict(row) if row else None
 
     async def list_grants(self, *, tenant_id: str) -> list[dict[str, Any]]:
         async with self._pool.acquire() as conn:

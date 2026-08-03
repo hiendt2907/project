@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from pkg.domain.taxonomy import APPLICATION
 from remote_agent.evidence import build_envelope
 
 try:
@@ -108,6 +109,7 @@ async def collect_api_contracts(hostname: str, search_dirs: list[str]) -> dict[s
     return build_envelope(
         probe="api_contract",
         lane="APP_HTTP",
+        domain=APPLICATION,
         result="PASSED",
         extracted_fact={"discovery_data": {"api_contracts": contracts[:20]}},
         alert_rule="RemoteApiContractObserved",

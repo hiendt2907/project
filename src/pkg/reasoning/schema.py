@@ -17,7 +17,14 @@ class DiagnosticEvidenceDict(TypedDict, total=False):
     trace_id: str
     symptom_group: str
     layer: str
-    lane: str          # diagnostic lane: SYS_RESOURCE / SYS_HARD_FAIL / APP_LOG / APP_HTTP / SIEM_SECURITY
+    # Lĩnh vực kỹ thuật canonical (`pkg.domain.taxonomy`, 9 giá trị). Đây là trường
+    # ĐANG THAY `lane`. Envelope của agent bản cũ không có nó — đường đọc phải
+    # `normalize_domain(ev.get("domain")) or lane_to_domain(ev.get("lane"))`.
+    domain: str
+    # DEPRECATED (lane trục A): SYS_RESOURCE / SYS_HARD_FAIL / APP_HTTP / SIEM_SECURITY /
+    # ONBOARDING_DISCOVERY. Giữ lại để đọc dữ liệu lịch sử + payload agent chưa nâng cấp;
+    # KHÔNG phải `proof_lane` (trục B) và cũng không phải lane semaphore (trục C).
+    lane: str
     probe: str
     result: str
     extracted_fact: str
@@ -117,6 +124,10 @@ def coerce_evidence_dict(obj: Any) -> DiagnosticEvidenceDict:
         "trace_id",
         "symptom_group",
         "layer",
+        # `domain` phải nằm ở đây, không chỉ trong TypedDict: hàm này là cửa hẹp mà
+        # MỌI evidence đi qua trước khi vào reasoning. Thiếu nó thì domain do gateway
+        # ghi bị rơi im lặng và cả pipeline lại rơi về suy từ lane.
+        "domain",
         "lane",        # Bug fix: lane was missing — caused empty lane badge in Telegram
         "namespace",
         "probe",

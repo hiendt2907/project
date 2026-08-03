@@ -94,16 +94,28 @@ class FakeConn:
             return row
         if sql.startswith("SELECT * FROM omni_admin.case_ledger WHERE case_id"):
             return self.rows.get(args[0])
-        if sql.startswith("SELECT * FROM omni_admin.case_ledger WHERE tenant_id"):
-            tenant, pattern = args
-            hits = [
-                r for r in self.rows.values()
-                if r["tenant_id"] == tenant and r["pattern_key"] == pattern
-            ]
-            hits.sort(key=lambda r: r["opened_at"], reverse=True)
-            return hits[0] if hits else None
         if "pg_advisory_xact_lock" in sql:
             return "OK"  # khoá chống race occurrence_no — fake chỉ cần nuốt
+        raise AssertionError(f"SQL khong duoc fake: {sql[:60]}")
+
+    async def fetch(self, sql: str, *args):
+        """Đường đọc theo pattern khớp CẢ hai khoá (cửa sổ chuyển tiếp lane→domain,
+        migration 0014). Fake bám theo vế WHERE thật để nếu vế thứ hai bị bỏ mất thì
+        test dual-key ở `tests/test_case_ledger_dual_key.py` phải đỏ."""
+        sql = " ".join(sql.split())
+        if sql.startswith("SELECT * FROM omni_admin.case_ledger WHERE tenant_id"):
+            tenant, pattern = args[0], args[1]
+            limit = args[2] if len(args) > 2 else 1
+            dual = "pattern_key_domain=$2" in sql
+            hits = [
+                r for r in self.rows.values()
+                if r["tenant_id"] == tenant and (
+                    r["pattern_key"] == pattern
+                    or (dual and r.get("pattern_key_domain") == pattern)
+                )
+            ]
+            hits.sort(key=lambda r: r["opened_at"], reverse=True)
+            return hits[:limit]
         raise AssertionError(f"SQL khong duoc fake: {sql[:60]}")
 
 

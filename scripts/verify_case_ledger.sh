@@ -196,6 +196,95 @@ else
     bad "Omni né hết ca khó vẫn ĐỦ ĐIỀU KIỆN xin quyền — cơ chế chống bùa số hỏng"
 fi
 
+# ── E. Di trú lane→domain (migration 0014) ───────────────────────────────────
+# GATE QUAN TRỌNG NHẤT CỦA CẢ PHASE 3. `pattern_key` là khoá của `scope_grant` —
+# quyền khách hàng ĐÃ DUYỆT cho Omni theo từng loại việc — và nó nhúng giá trị lane
+# (sha256("lane|alertname")). Đổi lane sang domain mà không di trú khoá thì mọi grant
+# NGỪNG KHỚP: không exception, không log, Omni chỉ đơn giản mất quyền và quay lại xin.
+# Nếu con số dưới đây giảm, có khách vừa mất quyền — và không ai được biết.
+group 'E. Di trú lane→domain: không được mất một grant nào'
+
+if [[ "$(psql_q "SELECT to_regclass('omni_admin.scope_grant_premigration_0014') IS NOT NULL;")" == "t" ]]; then
+    ok 'ảnh chụp scope_grant trước migration tồn tại (mẫu số để đối chiếu)'
+
+    # Mọi khoá TRƯỚC migration phải còn tra được SAU migration, qua đúng đường mà
+    # `ScopeStore.get_grant` dùng: khoá mới HOẶC khoá lịch sử.
+    before="$(psql_q "SELECT count(*) FROM omni_admin.scope_grant_premigration_0014;")"
+    after="$(psql_q "SELECT count(*) FROM omni_admin.scope_grant_premigration_0014 s
+                     WHERE EXISTS (SELECT 1 FROM omni_admin.scope_grant g
+                                    WHERE g.tenant_id = s.tenant_id
+                                      AND (g.pattern_key = s.pattern_key
+                                        OR g.pattern_key_legacy = s.pattern_key));")"
+    if [[ -n "$before" && "$before" == "$after" ]]; then
+        ok "grant khớp được TRƯỚC=${before} SAU=${after} — không khách nào mất quyền"
+    else
+        bad "MẤT QUYỀN ÂM THẦM: trước=${before} sau=${after} — xem rollback trong docs/runbooks/lane-to-domain-migration.md"
+    fi
+
+    # Không có grant nào bị nhân bản khi viết lại khoá: một pattern = một quyền.
+    dupes="$(psql_q "SELECT count(*) FROM (
+                       SELECT s.tenant_id, s.pattern_key
+                         FROM omni_admin.scope_grant_premigration_0014 s
+                         JOIN omni_admin.scope_grant g
+                           ON g.tenant_id = s.tenant_id
+                          AND (g.pattern_key = s.pattern_key
+                            OR g.pattern_key_legacy = s.pattern_key)
+                        GROUP BY 1,2 HAVING count(*) > 1) x;")"
+    if [[ "$dupes" == "0" ]]; then
+        ok 'không grant nào bị nhân đôi khi viết lại khoá'
+    else
+        bad "có ${dupes} pattern khớp NHIỀU grant — quyền hiệu lực không xác định"
+    fi
+else
+    bad 'chưa apply migration 0014 — không có mẫu số để chứng minh không mất grant'
+fi
+
+# Bản đồ lane→domain trong DB phải khớp `pkg.domain.taxonomy.LANE_TO_DOMAIN`.
+# Hai bản, lệch nhau là khoá SQL sinh không bao giờ khớp khoá Python sinh lúc chạy.
+if [[ "$(psql_q "SELECT to_regprocedure('omni_admin.lane_to_domain(text)') IS NOT NULL;")" == "t" ]]; then
+    map_db="$(psql_q "SELECT string_agg(l||'='||omni_admin.lane_to_domain(l), ',' ORDER BY l)
+                      FROM (VALUES ('sys_resource'),('sys_hard_fail'),('app_http'),
+                                   ('siem_security'),('onboarding_discovery')) v(l);")"
+    map_py="$(.venv/bin/python -c "
+import sys; sys.path.insert(0,'src')
+from pkg.domain.taxonomy import LANE_TO_DOMAIN
+print(','.join(f'{k}={v}' for k,v in sorted(LANE_TO_DOMAIN.items())))" 2>&1)"
+    if [[ "$map_db" == "$map_py" ]]; then
+        ok "bản đồ lane→domain trong DB khớp taxonomy Python (${map_py})"
+    else
+        bad "LỆCH bản đồ: DB='${map_db}' Python='${map_py}'"
+    fi
+
+    # Hash SQL phải khớp từng ký tự với `advisory_pattern_key()`.
+    h_db="$(psql_q "SELECT omni_admin.advisory_pattern_key('os_host','KubePodCrashLooping');")"
+    h_py="$(.venv/bin/python -c "
+import sys; sys.path.insert(0,'src')
+from services.learning_promoter.advisory_promoter import advisory_pattern_key
+print(advisory_pattern_key({'lane':'os_host','alertname':'KubePodCrashLooping'}))" 2>&1)"
+    if [[ -n "$h_db" && "$h_db" == "$h_py" ]]; then
+        ok "advisory_pattern_key SQL == Python (${h_db})"
+    else
+        bad "hash LỆCH: SQL='${h_db}' Python='${h_py}' — khoá mới sẽ không bao giờ khớp"
+    fi
+else
+    bad 'thiếu hàm omni_admin.lane_to_domain(text) — migration 0014 chưa apply'
+fi
+
+# Đường tra hai khoá phải THẬT SỰ hoạt động, không chỉ có cột. Dựng một grant đã
+# di trú (pattern_key = khoá mới, pattern_key_legacy = khoá cũ) rồi tra bằng khoá cũ.
+psql_q "INSERT INTO omni_admin.scope_grant
+        (tenant_id,pattern_key,pattern_key_legacy,granted_scope,granted_by)
+        VALUES ('${PREFIX}','pk-new','pk-old','HITL_REQUIRED','verify')
+        ON CONFLICT (tenant_id,pattern_key) DO NOTHING;" >/dev/null
+hit="$(psql_q "SELECT granted_scope FROM omni_admin.scope_grant
+               WHERE tenant_id='${PREFIX}' AND (pattern_key='pk-old' OR pattern_key_legacy='pk-old')
+               ORDER BY (pattern_key='pk-old') DESC LIMIT 1;")"
+if [[ "$hit" == "HITL_REQUIRED" ]]; then
+    ok 'tra bằng khoá LỊCH SỬ vẫn ra quyền đã cấp (cửa sổ chuyển tiếp còn mở)'
+else
+    bad "tra khoá lịch sử KHÔNG ra quyền (nhận '${hit}') — grant cũ đã mất khớp"
+fi
+
 # ── Tổng kết ─────────────────────────────────────────────────────────────────
 printf '\n\033[1m%d PASS / %d FAIL\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

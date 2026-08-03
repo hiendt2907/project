@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from pkg.domain import taxonomy
 from rag.redis_vector_store import COLLECTION_OS_HARD_FAIL_DIAGNOSTIC
 from workers.os_state_validator import (
     _OS_PROBE_HANDLERS,
@@ -20,6 +21,7 @@ from workers.os_state_validator import (
     _parse_ef,
     _probe_result,
     _sanitize_probe_ev,
+    os_probes_for_domain,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,6 +99,31 @@ def _format_terminal_contrast(pair: dict[str, Any], alert_ctx: dict[str, Any]) -
     return " ".join(parts)
 
 
+def _same_domain_substitute(
+    suggested: str,
+    by_probe: dict[str, dict[str, Any]],
+    domain: str,
+    used: set[str],
+) -> str | None:
+    """Probe thay thế CÙNG DOMAIN, đã có bằng chứng trong batch, chưa dùng.
+
+    Vì sao cần: RAG đề xuất theo tên probe đã học được. Tên probe của agent thay đổi
+    theo phiên bản bundle (`disk_usage` vs `storage_disk`), nên một lệch tên nhỏ làm
+    vòng lặp CHẾT ngay vòng đầu và cả sự cố rơi thẳng xuống LLM không bằng chứng.
+    Thay bằng một probe cùng lĩnh vực là hạ cấp có kiểm soát; đổi sang probe khác
+    lĩnh vực thì không — nó trả lời một câu hỏi khác.
+
+    ``domain`` rỗng/`unknown` ⇒ không thay thế (hành vi cũ: dừng).
+    """
+    d = taxonomy.normalize_domain(domain)
+    if d == taxonomy.UNKNOWN:
+        return None
+    for candidate in os_probes_for_domain(d):
+        if candidate != suggested and candidate not in used and candidate in by_probe:
+            return candidate
+    return None
+
+
 async def run_os_diagnostic_loop(
     ctx: Any,
     batch: list[dict[str, Any]],
@@ -105,6 +132,8 @@ async def run_os_diagnostic_loop(
     trace: Any,
     *,
     max_iterations: int = 8,
+    domain: str | None = None,
+    lane: str | None = None,
 ) -> str | None:
     """Run the iterative OS diagnostic loop.
 
@@ -129,6 +158,12 @@ async def run_os_diagnostic_loop(
 
     embed_model = getattr(ws, "embed_model", "nomic-embed-text:latest")
     context_stack: list[tuple[str, str | None]] = []
+    # Domain của sự cố: `domain` (đường mới) trước, lane trục A chỉ là fallback cho
+    # envelope cũ. `unknown` ⇒ mọi nhánh domain bên dưới tự tắt.
+    incident_domain = taxonomy.normalize_domain(domain)
+    if incident_domain == taxonomy.UNKNOWN:
+        incident_domain = taxonomy.lane_to_domain(lane)
+    used_probes: set[str] = set()
 
     if not alert_ctx.get("alertname"):
         logger.warning("os_diagnostic_loop: empty alert_ctx, RAG recall degraded trace=%s", trace)
@@ -183,10 +218,21 @@ async def run_os_diagnostic_loop(
 
         ev = by_probe.get(probe_name)
         if ev is None:
-            logger.info("os_diagnostic_loop: probe=%s not in evidence, stopping iter=%d trace=%s",
-                        probe_name, iteration, trace)
-            break
+            substitute = _same_domain_substitute(
+                probe_name, by_probe, incident_domain, used_probes
+            )
+            if substitute is None:
+                logger.info("os_diagnostic_loop: probe=%s not in evidence, stopping iter=%d trace=%s",
+                            probe_name, iteration, trace)
+                break
+            logger.info(
+                "os_diagnostic_loop: probe=%s absent, substituting same-domain probe=%s "
+                "domain=%s iter=%d trace=%s",
+                probe_name, substitute, incident_domain, iteration, trace,
+            )
+            probe_name, ev = substitute, by_probe[substitute]
 
+        used_probes.add(probe_name)
         handler = _OS_PROBE_HANDLERS.get(probe_name)
         finding = _run_handler_or_generic(handler, ev, alert_ctx)
 

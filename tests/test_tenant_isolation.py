@@ -170,32 +170,32 @@ class TestKpiTenantIsolation:
         redis = FakeRedis(decode_responses=True)
         now = time.time()
         for i in range(5):
-            await redis.zadd("omni:kpi:detected:tenantA:SYS_RESOURCE", {f"d{i}": now - i * 60})
+            await redis.zadd("omni:kpi:detected:tenantA:os_host", {f"d{i}": now - i * 60})
         for i in range(8):
-            await redis.zadd("omni:kpi:detected:tenantB:SYS_RESOURCE", {f"x{i}": now - i * 60})
+            await redis.zadd("omni:kpi:detected:tenantB:os_host", {f"x{i}": now - i * 60})
 
         ctx = TenantContext(tenant_id="tenantA", is_admin=False)
         app = _kpi_app(redis, ctx)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/kpi/trend?window=1h")
 
-        assert resp.json()["lanes"]["SYS_RESOURCE"]["detected"] == 5
+        assert resp.json()["domains"]["os_host"]["detected"] == 5
 
     @pytest.mark.asyncio
     async def test_trend_admin_aggregates(self):
         redis = FakeRedis(decode_responses=True)
         now = time.time()
         for i in range(5):
-            await redis.zadd("omni:kpi:detected:tenantA:SYS_RESOURCE", {f"d{i}": now - i * 60})
+            await redis.zadd("omni:kpi:detected:tenantA:os_host", {f"d{i}": now - i * 60})
         for i in range(8):
-            await redis.zadd("omni:kpi:detected:tenantB:SYS_RESOURCE", {f"x{i}": now - i * 60})
+            await redis.zadd("omni:kpi:detected:tenantB:os_host", {f"x{i}": now - i * 60})
 
         ctx = TenantContext(tenant_id="admin", is_admin=True)
         app = _kpi_app(redis, ctx)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/kpi/trend?window=1h")
 
-        assert resp.json()["lanes"]["SYS_RESOURCE"]["detected"] == 13
+        assert resp.json()["domains"]["os_host"]["detected"] == 13
 
 
 # ── SIEM isolation ────────────────────────────────────────────────────────────

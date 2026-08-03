@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from gateway.tenant_context import get_tenant_ctx, resolve_scope
+from pkg.domain.taxonomy import CANONICAL_DOMAINS, UNKNOWN
 
 router = APIRouter(prefix="/kpi", tags=["kpi"])
 
@@ -74,25 +75,31 @@ async def _fetch_kpi_summary(redis: Any, tenant_id: str | None) -> dict:
 async def _fetch_kpi_trend(redis: Any, tenant_id: str | None, window_seconds: int) -> dict:
     now = time.time()
     since = now - window_seconds
-    lanes = ["SYS_RESOURCE", "SYS_HARD_FAIL", "APP_HTTP", "SIEM_SECURITY"]
-    trend: dict[str, Any] = {"window_seconds": window_seconds, "lanes": {}}
+    # Nhóm theo 9 domain canonical thay vì 4 lane. `unknown` được giữ trong danh sách
+    # vì dữ liệu lịch sử `SYS_HARD_FAIL` cố ý đổ về đó (nó gánh 4 domain, suy ra một
+    # domain cụ thể là đoán bừa) — bỏ `unknown` khỏi báo cáo là làm hụt số thật.
+    domains = [*CANONICAL_DOMAINS, UNKNOWN]
+    trend: dict[str, Any] = {"window_seconds": window_seconds, "domains": {}}
 
-    for lane in lanes:
+    for domain in domains:
         try:
             if tenant_id is not None:
-                detected = int(await redis.zcount(f"omni:kpi:detected:{tenant_id}:{lane}", since, "+inf") or 0)
-                resolved = int(await redis.zcount(f"omni:kpi:resolved:{tenant_id}:{lane}", since, "+inf") or 0)
+                detected = int(await redis.zcount(f"omni:kpi:detected:{tenant_id}:{domain}", since, "+inf") or 0)
+                resolved = int(await redis.zcount(f"omni:kpi:resolved:{tenant_id}:{domain}", since, "+inf") or 0)
             else:
                 detected = 0
-                async for key in redis.scan_iter(f"omni:kpi:detected:*:{lane}", count=100):
+                async for key in redis.scan_iter(f"omni:kpi:detected:*:{domain}", count=100):
                     detected += int(await redis.zcount(key, since, "+inf") or 0)
                 resolved = 0
-                async for key in redis.scan_iter(f"omni:kpi:resolved:*:{lane}", count=100):
+                async for key in redis.scan_iter(f"omni:kpi:resolved:*:{domain}", count=100):
                     resolved += int(await redis.zcount(key, since, "+inf") or 0)
         except Exception:
             detected, resolved = 0, 0
-        trend["lanes"][lane] = {"detected": int(detected), "resolved": int(resolved)}
+        trend["domains"][domain] = {"detected": int(detected), "resolved": int(resolved)}
 
+    # `lanes`: alias tương thích ngược cho UI/E2E chưa đổi sang `domains`. Cùng một
+    # object, không phải bản sao — giữ hai khoá đồng bộ mà không nhân đôi vòng quét.
+    trend["lanes"] = trend["domains"]
     return trend
 
 

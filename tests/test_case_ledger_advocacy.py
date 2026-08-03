@@ -53,15 +53,29 @@ class FakeConn:
             seen = {c["pattern_key"] for c in self.db.cases if c["tenant_id"] == args[0]}
             return [{"pattern_key": p} for p in sorted(seen)]
 
-        if "FROM omni_admin.case_ledger" in s and "WHERE tenant_id=$1 AND pattern_key=$2" in s:
+        # Cửa sổ chuyển tiếp lane→domain (migration 0014): đường đọc khớp CẢ
+        # `pattern_key` VÀ `pattern_key_domain`. Fake bám theo vế WHERE thật để nếu
+        # ai đó bỏ mất vế thứ hai thì test dual-key phải đỏ.
+        if "FROM omni_admin.case_ledger" in s and "pattern_key=$2" in s:
+            dual = "pattern_key_domain=$2" in s
             return [
                 c for c in self.db.cases
-                if c["tenant_id"] == args[0] and c["pattern_key"] == args[1]
+                if c["tenant_id"] == args[0] and (
+                    c["pattern_key"] == args[1]
+                    or (dual and c.get("pattern_key_domain") == args[1])
+                )
             ]
 
         # ── scope_grant ──
         if s.startswith("SELECT * FROM omni_admin.scope_grant") and "pattern_key=$2" in s:
+            dual = "pattern_key_legacy=$2" in s
             g = self.db.grants.get((args[0], args[1]))
+            if g is None and dual:
+                g = next(
+                    (x for k, x in sorted(self.db.grants.items())
+                     if k[0] == args[0] and x.get("pattern_key_legacy") == args[1]),
+                    None,
+                )
             return [dict(g)] if g else []
         if s.startswith("SELECT * FROM omni_admin.scope_grant"):
             return [dict(g) for k, g in sorted(self.db.grants.items()) if k[0] == args[0]]

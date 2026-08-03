@@ -27,6 +27,9 @@ class CaseLedgerStore:
 
     def __init__(self, pool: Any) -> None:
         self._pool = pool
+        # Nhớ MỘT LẦN rằng DB chưa có cột của migration 0014, để không ném/bắt
+        # exception ở mọi lượt đọc trên một DB chưa di trú.
+        self._domain_column_missing = False
 
     async def open_case(
         self,
@@ -65,6 +68,11 @@ class CaseLedgerStore:
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))", f"{tenant_id}:{pattern_key}"
                 )
+                # CỐ Ý tra một khoá duy nhất ở đây, khác với đường ĐỌC bên dưới:
+                # occurrence_no bị canh bởi ux_case_ledger_occurrence(tenant,
+                # pattern_key, occurrence_no). Nếu bộ đếm lấy từ một khoá khác thì
+                # nó có thể trả về số đã dùng cho khoá này ⇒ INSERT vỡ ràng buộc.
+                # Trí nhớ liên-taxonomy do đường đọc (`last_case_for_pattern`) lo.
                 prior = await conn.fetchrow(
                     "SELECT case_id, occurrence_no FROM omni_admin.case_ledger "
                     "WHERE tenant_id=$1 AND pattern_key=$2 "
@@ -178,14 +186,44 @@ class CaseLedgerStore:
     async def list_cases_for_pattern(
         self, *, tenant_id: str, pattern_key: str, limit: int = 500
     ) -> list[dict[str, Any]]:
+        """Mọi ca của một pattern — tra CẢ khoá đóng băng VÀ khoá suy từ domain.
+
+        Cửa sổ chuyển tiếp lane→domain (migration 0014). ``pattern_key`` của sổ ca
+        KHÔNG bị nắn (trigger 0012 cấm, và nắn nó là đường bùa số), nên ca lịch sử
+        vẫn nằm dưới khoá cũ trong khi đường gọi mới hỏi bằng khoá domain. Tra một
+        khoá thôi thì hồ sơ năng lực rỗng đi một cách âm thầm — và hồ sơ rỗng nghĩa
+        là Omni mất mọi bằng chứng để giữ quyền đã được cấp.
+        """
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
+            rows = await self._fetch_dual(
+                conn,
                 "SELECT * FROM omni_admin.case_ledger "
-                "WHERE tenant_id=$1 AND pattern_key=$2 "
+                "WHERE tenant_id=$1 AND ({match}) "
                 "ORDER BY opened_at DESC LIMIT $3",
                 tenant_id, pattern_key, limit,
             )
             return [dict(r) for r in rows]
+
+    async def _fetch_dual(self, conn: Any, sql_tpl: str, *args: Any) -> list[Any]:
+        """Chạy ``sql_tpl`` với vế khớp hai khoá; lùi về một khoá nếu DB chưa di trú.
+
+        DB chưa apply 0014 (pod cũ, hoặc migration đang chạy dở) là chuyện triển
+        khai — không phải lý do để đường đọc bằng chứng chết.
+        """
+        if not self._domain_column_missing:
+            try:
+                return list(await conn.fetch(
+                    sql_tpl.format(match="pattern_key=$2 OR pattern_key_domain=$2"), *args
+                ))
+            except Exception as exc:  # noqa: BLE001
+                if "pattern_key_domain" not in str(exc):
+                    raise
+                self._domain_column_missing = True
+                logger.warning(
+                    "case_ledger: chua co cot pattern_key_domain (migration 0014 chua "
+                    "apply) — tra mot khoa"
+                )
+        return list(await conn.fetch(sql_tpl.format(match="pattern_key=$2"), *args))
 
     async def list_patterns(self, *, tenant_id: str) -> list[str]:
         async with self._pool.acquire() as conn:
@@ -199,15 +237,20 @@ class CaseLedgerStore:
     async def last_case_for_pattern(
         self, *, tenant_id: str, pattern_key: str
     ) -> dict[str, Any] | None:
-        """Ca gần nhất cùng pattern — nguồn cho câu 'đây là lần thứ N, tôi đã báo…'."""
+        """Ca gần nhất cùng pattern — nguồn cho câu 'đây là lần thứ N, tôi đã báo…'.
+
+        Cũng tra hai khoá (xem ``list_cases_for_pattern``): nếu không, ngay sau khi
+        đổi taxonomy Omni sẽ nói "đây là lần đầu" về một sự cố nó đã báo năm lần.
+        """
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
+            rows = await self._fetch_dual(
+                conn,
                 "SELECT * FROM omni_admin.case_ledger "
-                "WHERE tenant_id=$1 AND pattern_key=$2 "
+                "WHERE tenant_id=$1 AND ({match}) "
                 "ORDER BY opened_at DESC LIMIT 1",
                 tenant_id, pattern_key,
             )
-            return dict(row) if row else None
+            return dict(rows[0]) if rows else None
 
     async def verdict_history(self, case_id: str) -> list[dict[str, Any]]:
         async with self._pool.acquire() as conn:

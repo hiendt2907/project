@@ -27,6 +27,28 @@ OUTCOME_REJECTED = "rejected"
 OUTCOME_FALSE_POSITIVE = "false_positive"
 
 
+def kpi_domain_from_lane_field(value: str | None) -> str:
+    """Chuẩn hoá trường ``lane`` của message feedback thành một domain canonical.
+
+    Trường này KHÔNG có một từ vựng duy nhất: tuỳ nơi phát, nó mang lane trục A
+    (``SYS_RESOURCE``) hoặc proof_lane trục B (``resource``, ``state``, ``siem``) —
+    xem cảnh báo ba trục trong ``pkg/domain/taxonomy.py``. Nhóm KPI theo domain nên
+    phải nhận cả hai thay vì đoán một trục rồi ném phần còn lại vào ``unknown``.
+
+    Thứ tự thử có chủ đích: trục A trước (khớp chính xác, và ``sys_hard_fail`` ở đó
+    cố ý trả ``unknown``), rồi mới tới alias domain.
+    """
+    from pkg.domain.taxonomy import UNKNOWN, lane_to_domain, normalize_domain
+
+    raw = (value or "").strip()
+    if not raw:
+        return UNKNOWN
+    d = lane_to_domain(raw)
+    if d != UNKNOWN:
+        return d
+    return normalize_domain(raw)
+
+
 def kpi_outcome_key(tenant_id: str, outcome: str) -> str:
     """Nguồn DUY NHẤT dựng key outcome — writer và reader bắt buộc dùng chung.
 
@@ -91,39 +113,62 @@ class KPIStore:
         )
 
     async def record_detected(self, trace_id: str, lane: str, ts: float, tenant_id: str = "default") -> None:
-        key = f"omni:kpi:detected:{tenant_id}:{lane}"
+        """Ghi mốc phát hiện. ``lane`` được chuẩn hoá thành domain trước khi làm khoá.
+
+        Chuẩn hoá NGAY TẠI ĐÂY (không ở caller) để mọi đường gọi cũ — kể cả đường
+        truyền lane trục A — cùng đổ vào một khoá duy nhất. Nếu chuẩn hoá ở caller,
+        một caller bị bỏ sót sẽ âm thầm tạo khoá song song và làm KPI hụt số.
+        """
+        key = f"omni:kpi:detected:{tenant_id}:{kpi_domain_from_lane_field(lane)}"
         await self._redis.zadd(key, {trace_id: ts})
         cutoff = ts - _WINDOW_SECONDS
         await self._redis.zremrangebyscore(key, "-inf", cutoff)
         await self._redis.expire(key, int(_WINDOW_SECONDS * 2))
 
     async def record_resolved(self, trace_id: str, lane: str, ts: float, tenant_id: str = "default") -> None:
-        key = f"omni:kpi:resolved:{tenant_id}:{lane}"
+        """Ghi mốc khắc phục. Xem ``record_detected`` về lý do chuẩn hoá tại đây."""
+        key = f"omni:kpi:resolved:{tenant_id}:{kpi_domain_from_lane_field(lane)}"
         await self._redis.zadd(key, {trace_id: ts})
         cutoff = ts - _WINDOW_SECONDS
         await self._redis.zremrangebyscore(key, "-inf", cutoff)
         await self._redis.expire(key, int(_WINDOW_SECONDS * 2))
 
-    async def get_summary(self) -> dict:
-        """Aggregate summary across all tenants (used for Prometheus metrics)."""
-        now = time.time()
-        since = now - _WINDOW_SECONDS
-        accepted = 0
-        rejected = 0
-        false_pos = 0
-        async for key in self._redis.scan_iter("omni:kpi:z:*:accepted", count=100):
-            accepted += int(await self._redis.zcount(key, since, "+inf") or 0)
-        async for key in self._redis.scan_iter("omni:kpi:z:*:rejected", count=100):
-            rejected += int(await self._redis.zcount(key, since, "+inf") or 0)
-        async for key in self._redis.scan_iter("omni:kpi:z:*:false_positive", count=100):
-            false_pos += int(await self._redis.zcount(key, since, "+inf") or 0)
+    async def get_summary(self, tenant_id: str | None = None) -> dict:
+        """Tổng hợp outcome trong cửa sổ trượt.
+
+        ``tenant_id=None`` giữ hành vi cũ (gộp mọi tenant) cho các caller chỉ cần một
+        con số tổng. Đường Prometheus PHẢI truyền ``tenant_id``: một tỉ lệ toàn cục làm
+        dữ liệu khách A lái cảnh báo của khách B, ngược với INV_NAMESPACE_ISOLATION và
+        ngược với chính ``read_outcome_rates`` vốn per-tenant.
+
+        ``acceptance_rate``/``false_positive_rate`` là ``None`` khi mẫu số bằng 0 —
+        cùng bất biến với ``read_outcome_rates``: "chưa biết" KHÔNG được rơi xuống 0.0.
+        Caller nào xuất ra Gauge phải xuất kèm ``total_advisory`` để phía đọc phân biệt
+        được hai trạng thái đó (Gauge không mang được ``None``).
+        """
+        since = time.time() - _WINDOW_SECONDS
+
+        async def _count(outcome: str) -> int:
+            if tenant_id is not None:
+                key = kpi_outcome_key(tenant_id, outcome)
+                return int(await self._redis.zcount(key, since, "+inf") or 0)
+            n = 0
+            async for key in self._redis.scan_iter(f"omni:kpi:z:*:{outcome}", count=100):
+                n += int(await self._redis.zcount(key, since, "+inf") or 0)
+            return n
+
+        accepted = await _count(OUTCOME_ACCEPTED)
+        rejected = await _count(OUTCOME_REJECTED)
+        false_pos = await _count(OUTCOME_FALSE_POSITIVE)
         total_advisory = accepted + rejected
         total_executed = accepted
         return {
             "window_seconds": _WINDOW_SECONDS,
+            "tenant_id": tenant_id,
             "accepted": accepted,
             "rejected": rejected,
             "false_positive": false_pos,
+            "total_advisory": total_advisory,
             "acceptance_rate": round(accepted / total_advisory, 4) if total_advisory else None,
             "false_positive_rate": round(false_pos / total_executed, 4) if total_executed else None,
         }
@@ -163,11 +208,15 @@ async def _handle_feedback(store: KPIStore, fields: dict, redis: Any = None) -> 
         await store.record_false_positive(trace_id, tenant_id)
         me.inc_kpi_incident(lane, "false_positive")
 
-    summary = await store.get_summary()
+    # Per-tenant: gauge toàn cục cũ trộn mọi khách vào một tỉ lệ.
+    summary = await store.get_summary(tenant_id=tenant_id)
+    # Mẫu số xuất TRƯỚC và LUÔN xuất — kể cả bằng 0. Đây là thứ duy nhất cho phía đọc
+    # phân biệt "0% chấp nhận" với "chưa ai phán lần nào"; alert rule bám vào nó.
+    me.set_kpi_advisory_total(summary["total_advisory"], tenant=tenant_id)
     if summary["acceptance_rate"] is not None:
-        me.set_kpi_advisory_acceptance_rate(summary["acceptance_rate"])
+        me.set_kpi_advisory_acceptance_rate(summary["acceptance_rate"], tenant=tenant_id)
     if summary["false_positive_rate"] is not None:
-        me.set_kpi_false_positive_rate(summary["false_positive_rate"])
+        me.set_kpi_false_positive_rate(summary["false_positive_rate"], tenant=tenant_id)
 
 
 async def run_kpi_collector(
