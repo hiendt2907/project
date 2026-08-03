@@ -256,7 +256,7 @@ issuer lab vì issuer lab chưa từng bị đổi.
 | Secret | Cách xoay |
 |---|---|
 | Dex client secret | Tạo lại cả hai Secret (1.1 + 1.2) → `rollout restart` cả hai deploy |
-| Mật khẩu console | Sinh hash mới → `kubectl create secret --dry-run=client -o yaml \| kubectl apply -f -` → restart Dex public |
+| Mật khẩu console | `bash scripts/rotate_dex_public_password.sh` — tự đọc mật khẩu bằng `read -s` (không vào argv/history), sinh bcrypt, chỉ thay dòng `hash:`, chặn nếu diff chạm `clientSecret`/`issuer`, rồi restart + xác minh hash **trong pod** và issuer discovery |
 | Credentials tunnel | `cloudflared tunnel delete omnisre` → tạo lại → cập nhật config → chạy lại install |
 | `OMNI_GATEWAY_API_KEY` | Ngoài phạm vi — dùng chung với lab |
 
