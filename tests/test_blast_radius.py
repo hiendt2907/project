@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from pkg.executor.blast_radius import assess_blast_radius
@@ -119,3 +121,86 @@ class TestFailClosed:
     async def test_no_reader_allows_rollout_restart(self):
         v = await assess_blast_radius(None, tool="k8s_rollout_restart", args={"name": "web"})
         assert v.allow
+
+
+# ── K8sBlastReader — timeout + circuit breaker (task #21) ────────────────────
+# A fresh K8sBlastReader is constructed per mutate attempt (autonomous_execute.py),
+# so the breaker lives at module scope (`blast_radius._circuit`) shared across
+# instances within the process — reset it before/after each test here.
+class TestK8sApiCircuitBreaker:
+    @pytest.fixture(autouse=True)
+    def _reset_circuit(self):
+        from pkg.executor import blast_radius as br
+
+        br._circuit = br._K8sApiCircuitBreaker()
+        yield
+        br._circuit = br._K8sApiCircuitBreaker()
+
+    def test_allows_calls_when_closed(self):
+        from pkg.executor.blast_radius import _K8sApiCircuitBreaker
+
+        cb = _K8sApiCircuitBreaker()
+        assert cb.allow() is True
+
+    def test_opens_after_threshold_consecutive_failures(self):
+        from pkg.executor.blast_radius import _CIRCUIT_FAILURE_THRESHOLD, _K8sApiCircuitBreaker
+
+        cb = _K8sApiCircuitBreaker()
+        for _ in range(_CIRCUIT_FAILURE_THRESHOLD - 1):
+            cb.record_failure()
+            assert cb.allow() is True  # not yet at threshold
+        cb.record_failure()
+        assert cb.allow() is False
+
+    def test_success_resets_failure_count(self):
+        from pkg.executor.blast_radius import _CIRCUIT_FAILURE_THRESHOLD, _K8sApiCircuitBreaker
+
+        cb = _K8sApiCircuitBreaker()
+        for _ in range(_CIRCUIT_FAILURE_THRESHOLD - 1):
+            cb.record_failure()
+        cb.record_success()
+        cb.record_failure()
+        assert cb.allow() is True  # counter reset by the success, back to 1/threshold
+
+    def test_half_open_after_cooldown(self, monkeypatch):
+        from pkg.executor.blast_radius import _CIRCUIT_FAILURE_THRESHOLD, _K8sApiCircuitBreaker
+
+        cb = _K8sApiCircuitBreaker()
+        t = [1000.0]
+        monkeypatch.setattr("pkg.executor.blast_radius.time.monotonic", lambda: t[0])
+        for _ in range(_CIRCUIT_FAILURE_THRESHOLD):
+            cb.record_failure()
+        assert cb.allow() is False
+        t[0] += 60.0  # past _CIRCUIT_COOLDOWN_SEC
+        assert cb.allow() is True
+
+    def test_reader_init_raises_when_circuit_open(self):
+        from pkg.executor import blast_radius as br
+
+        for _ in range(br._CIRCUIT_FAILURE_THRESHOLD):
+            br._circuit.record_failure()
+        with pytest.raises(RuntimeError, match="circuit breaker open"):
+            br.K8sBlastReader()
+
+    async def test_call_with_timeout_records_failure_and_reraises(self, monkeypatch):
+        from pkg.executor import blast_radius as br
+
+        monkeypatch.setattr(br, "K8S_API_TIMEOUT_SEC", 0.05)
+
+        async def _hang() -> None:
+            await asyncio.sleep(1)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await br.K8sBlastReader._call_with_timeout(_hang())
+        assert br._circuit._consecutive_failures == 1
+
+    async def test_call_with_timeout_records_success(self):
+        from pkg.executor.blast_radius import K8sBlastReader, _circuit
+
+        async def _ok() -> str:
+            return "value"
+
+        _circuit._consecutive_failures = 2
+        result = await K8sBlastReader._call_with_timeout(_ok())
+        assert result == "value"
+        assert _circuit._consecutive_failures == 0

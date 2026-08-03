@@ -19,7 +19,9 @@ A mutate is HARD-BLOCKED (→ HITL) when, regardless of a green dry-run, it woul
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -28,6 +30,13 @@ logger = logging.getLogger(__name__)
 # Default thresholds (overridable via settings at the call site).
 DEFAULT_MAX_PODS = 10
 DEFAULT_CAPACITY_DROP_PCT = 20.0
+
+# K8sBlastReader had no explicit timeout — a slow/hung K8s API server could
+# head-of-line-block the single-partition mutate-consumer loop indefinitely
+# (task #21, HIGH PRIORITY, docs/architecture/OMNI_V2_FINAL_EXECUTION_GATE.md).
+K8S_API_TIMEOUT_SEC = 10.0
+_CIRCUIT_FAILURE_THRESHOLD = 3
+_CIRCUIT_COOLDOWN_SEC = 30.0
 
 # Workload kinds whose deletion cascades to child pods via the GC.
 _CASCADING_WORKLOAD_KINDS = frozenset(
@@ -82,12 +91,53 @@ BLAST_SCORED_TOOLS = frozenset(
 )
 
 
+class _K8sApiCircuitBreaker:
+    """Process-wide breaker shared by every K8sBlastReader instance.
+
+    K8sBlastReader is constructed fresh per mutate attempt (see
+    workers/autonomous_execute.py — a new reader per EXECUTE_MUTATE call), so
+    per-instance failure counters would never observe repeated failures
+    across separate mutate attempts. This lives at module scope instead so a
+    degraded K8s API server trips the breaker after a few consecutive
+    timeouts and stops being hammered by every subsequent mutate attempt
+    during the cooldown window, instead of each one paying the full timeout.
+    """
+
+    def __init__(self) -> None:
+        self._consecutive_failures = 0
+        self._opened_at: float | None = None
+
+    def allow(self) -> bool:
+        if self._opened_at is None:
+            return True
+        if (time.monotonic() - self._opened_at) >= _CIRCUIT_COOLDOWN_SEC:
+            return True  # half-open: let one probe through
+        return False
+
+    def record_success(self) -> None:
+        self._consecutive_failures = 0
+        self._opened_at = None
+
+    def record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= _CIRCUIT_FAILURE_THRESHOLD:
+            self._opened_at = time.monotonic()
+
+
+_circuit = _K8sApiCircuitBreaker()
+
+
 class K8sBlastReader:
     """Live read-only ClusterReader backed by kubernetes-asyncio. Never mutates."""
 
     def __init__(self) -> None:
         from kubernetes_asyncio import client  # lazy: keep import off unit-test path
 
+        if not _circuit.allow():
+            raise RuntimeError(
+                "K8s API circuit breaker open (blast-radius reader) — "
+                f"cooling down {_CIRCUIT_COOLDOWN_SEC:.0f}s after repeated timeouts"
+            )
         self._core = client.CoreV1Api()
         self._apps = client.AppsV1Api()
 
@@ -97,20 +147,33 @@ class K8sBlastReader:
             return None
         return ",".join(f"{k}={v}" for k, v in sorted(match_labels.items()))
 
+    @staticmethod
+    async def _call_with_timeout(coro: Any) -> Any:
+        """Bound every real K8s API call; feed the shared circuit breaker."""
+        try:
+            result = await asyncio.wait_for(coro, timeout=K8S_API_TIMEOUT_SEC)
+        except Exception:
+            _circuit.record_failure()
+            raise
+        _circuit.record_success()
+        return result
+
     async def list_pod_names(self, namespace: str, label_selector: str | None = None) -> list[str]:
-        plist = await self._core.list_namespaced_pod(namespace, label_selector=label_selector)
+        plist = await self._call_with_timeout(
+            self._core.list_namespaced_pod(namespace, label_selector=label_selector)
+        )
         return [p.metadata.name for p in (plist.items or []) if p.metadata and p.metadata.name]
 
     async def _workload_obj(self, namespace: str, kind: str, name: str) -> Any | None:
         try:
             if kind == "Deployment":
-                return await self._apps.read_namespaced_deployment(name, namespace)
+                return await self._call_with_timeout(self._apps.read_namespaced_deployment(name, namespace))
             if kind == "StatefulSet":
-                return await self._apps.read_namespaced_stateful_set(name, namespace)
+                return await self._call_with_timeout(self._apps.read_namespaced_stateful_set(name, namespace))
             if kind == "DaemonSet":
-                return await self._apps.read_namespaced_daemon_set(name, namespace)
+                return await self._call_with_timeout(self._apps.read_namespaced_daemon_set(name, namespace))
             if kind == "ReplicaSet":
-                return await self._apps.read_namespaced_replica_set(name, namespace)
+                return await self._call_with_timeout(self._apps.read_namespaced_replica_set(name, namespace))
         except Exception:
             return None
         return None
