@@ -1,8 +1,8 @@
 """Remote agent collector — services health (HAProxy, systemd units).
 
 Probes:
-  service_haproxy        → DOMAIN_SERVICES  lane=SYS_HARD_FAIL / SYS_RESOURCE
-  service_systemd_units  → DOMAIN_SERVICES  lane=SYS_HARD_FAIL if any unit
+  service_haproxy        → domain=service  (lane deprecated: SYS_HARD_FAIL / SYS_RESOURCE)
+  service_systemd_units  → domain=service. lane=SYS_HARD_FAIL if any unit
                             failed/activating, else SYS_RESOURCE. Which failed
                             units are the customer's own app (vs a base OS
                             package) is determined per-unit via the real
@@ -21,6 +21,7 @@ from typing import Any
 
 from remote_agent import pkg_origin
 from remote_agent import exec_guard
+from pkg.domain.taxonomy import SERVICE
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,7 @@ def _parse_haproxy_csv(csv_text: str, hostname: str) -> dict[str, Any]:
     return build_envelope(
         probe="service_haproxy",
         lane="SYS_HARD_FAIL" if down_backends else "SYS_RESOURCE",
+        domain=SERVICE,
         result=result,
         extracted_fact=fact,
         alert_rule="HAProxyBackendDown" if down_backends else "HAProxyHealthy",
@@ -157,6 +159,7 @@ def _parse_haproxy_prom_metrics(prom_text: str, hostname: str) -> dict[str, Any]
     return build_envelope(
         probe="service_haproxy",
         lane="SYS_HARD_FAIL" if down_backends else "SYS_RESOURCE",
+        domain=SERVICE,
         result=result,
         extracted_fact=fact,
         alert_rule="HAProxyBackendDown" if down_backends else "HAProxyHealthy",
@@ -164,6 +167,93 @@ def _parse_haproxy_prom_metrics(prom_text: str, hostname: str) -> dict[str, Any]
         symptom_group="service_state",
         namespace=hostname,
     )
+
+
+# Trí nhớ một chu kỳ: unit đang `active` ở lần thu trước. Cần thiết vì "đáng ra phải
+# chạy" KHÔNG suy được từ metadata systemd — xem docstring dưới.
+_prev_active_units: set[str] | None = None
+
+
+def _reset_service_state_memory() -> None:
+    """Chỉ dùng cho test — xoá trí nhớ chu kỳ trước."""
+    global _prev_active_units
+    _prev_active_units = None
+
+
+async def _collect_units_that_stopped() -> tuple[list[str], list[str]]:
+    """Unit vừa CHUYỂN từ đang chạy sang dừng — outage mà `--state=failed` không thấy.
+
+    Vì sao cần: ``systemctl stop nginx`` để lại trạng thái **``inactive``**, không phải
+    ``failed``. Nên một dịch vụ bị dừng — do người, do OOM-killer, do deploy lỗi — là sự
+    cố thật nhưng KHÔNG sinh bằng chứng nào. Đã kiểm trực tiếp trên 3 VM (2026-07-30):
+    nginx/mariadb/payment-api đều `inactive`, còn `list-units --state=failed,activating`
+    trả về **rỗng**.
+
+    Vì sao dùng CHUYỂN TRẠNG THÁI thay vì "enabled nhưng inactive": đã thử cách đó trên
+    VM thật và nó báo **15 unit**, gần hết là nhiễu —
+    ``systemd-pcrlock-*``/``systemd-timesyncd`` (`ConditionResult=no`: systemd nói không
+    áp dụng cho máy này) và ``dmesg`` (`Type=idle`, chạy lúc boot rồi thoát theo thiết kế).
+    Lọc ``ConditionResult`` loại được nhóm đầu, nhưng KHÔNG có thuộc tính systemd nào
+    phân biệt "daemon thường trú" với "chạy một lần" một cách tổng quát — ``dmesg`` trông
+    y như một daemon đã bị dừng.
+
+    "Đang chạy ở chu kỳ trước, giờ không chạy" thì không cần suy đoán gì: nó là sự thật
+    quan sát được. Đánh đổi có chủ đích: chu kỳ ĐẦU sau khi agent khởi động không báo gì
+    (chưa có trí nhớ) — thà bỏ sót một chu kỳ hơn là bơm 15 báo nhầm mỗi chu kỳ, vì báo
+    nhầm dày sẽ dạy người vận hành bỏ qua cảnh báo.
+
+    Trả ``(stopped, skipped_oneshot)``.
+    """
+    global _prev_active_units
+
+    out_act, err, rc = await _run([
+        "systemctl", "list-units", "--type=service",
+        "--state=active", "--no-legend", "--no-pager", "--plain",
+    ], timeout=20.0)
+    if rc != 0:
+        logger.warning("[collector.services] list-units active unavailable: %s", err[:200])
+        return [], []
+
+    # Loại unit TEMPLATE (`getty@.service`): không phải một unit chạy được.
+    now_active = {
+        p[0] for p in (line.split() for line in out_act.splitlines())
+        if p and "@." not in p[0]
+    }
+
+    prev = _prev_active_units
+    _prev_active_units = now_active
+    if prev is None:
+        return [], []  # chu kỳ đầu: chưa có gì để so
+
+    # Phép TRỪ trên tập — không giả định thứ tự đầu ra của bất kỳ lệnh nào. Ghép theo vị
+    # trí (`zip` với đầu ra `systemctl is-active <nhiều unit>`) từng làm sai âm thầm:
+    # một unit bị bỏ dòng là cả danh sách lệch một bậc, và ta gán trạng thái unit này cho
+    # unit khác. Đã trả giá 2026-07-30 — `nginx` bị dừng nhưng công cụ báo `dmesg`.
+    gone = prev - now_active
+    if not gone:
+        return [], []
+
+    stopped: list[str] = []
+    skipped_oneshot: list[str] = []
+    for unit_full in sorted(gone):
+        # Đọc theo KHOÁ, không theo vị trí: `--value` trả thuộc tính theo thứ tự của
+        # systemd chứ không theo thứ tự `-p` được truyền, nên đọc vals[0]/vals[1] là
+        # cùng một lớp lỗi ghép-theo-vị-trí.
+        out_p, _, rc_p = await _run(
+            ["systemctl", "show", "-p", "Type", "-p", "RemainAfterExit", unit_full],
+            timeout=5.0,
+        )
+        props = dict(
+            line.split("=", 1) for line in out_p.splitlines() if "=" in line
+        ) if rc_p == 0 else {}
+        # `oneshot` thoát sau khi xong là ĐÚNG — nó biến mất khỏi danh sách active theo
+        # thiết kế, không phải outage.
+        if props.get("Type") == "oneshot" and props.get("RemainAfterExit") != "yes":
+            skipped_oneshot.append(unit_full.removesuffix(".service"))
+            continue
+        stopped.append(unit_full.removesuffix(".service"))
+
+    return stopped, skipped_oneshot
 
 
 async def collect_systemd_units(hostname: str) -> dict[str, Any] | None:
@@ -212,11 +302,18 @@ async def collect_systemd_units(hostname: str) -> dict[str, Any] | None:
         if not origin.startswith("package:"):
             custom_failed.append(unit)
 
-    result = "FAILED" if failed else "PASSED"
+    stopped, skipped_oneshot = await _collect_units_that_stopped()
+
+    # `enabled` + `inactive` cũng là FAILED: người vận hành đã tuyên bố unit phải chạy.
+    result = "FAILED" if (failed or stopped) else "PASSED"
     fact: dict[str, Any] = {
         "result": result,
         "failed_units": failed,
         "failed_count": len(failed),
+        # Dịch vụ VỪA chuyển từ đang chạy sang dừng — xem `_collect_units_that_stopped`.
+        "stopped_units": stopped,
+        "stopped_count": len(stopped),
+        "skipped_oneshot_units": skipped_oneshot,
         # Kept for backward compat with downstream consumers that check
         # truthiness (os_state_validator.py) — now means "failed units not
         # owned by a distro package", i.e. very likely the customer's own
@@ -225,18 +322,29 @@ async def collect_systemd_units(hostname: str) -> dict[str, Any] | None:
         "failed_units_origin": origin_by_unit,
         "ignored_disabled_units": ignored_disabled,
     }
-    hint = (
-        f"[{hostname}] systemd: {len(failed)} units failed/activating"
-        + (f" CUSTOM_APP: {custom_failed}" if custom_failed else "")
-        if failed else f"[{hostname}] systemd: all monitored services OK"
-    )
+    if failed or stopped:
+        parts = []
+        if failed:
+            parts.append(f"{len(failed)} units failed/activating")
+            if custom_failed:
+                parts.append(f"CUSTOM_APP: {custom_failed}")
+        if stopped:
+            parts.append(f"{len(stopped)} dich vu VUA DUNG (dang chay -> khong chay): {stopped[:5]}")
+        hint = f"[{hostname}] systemd: " + " · ".join(parts)
+    else:
+        hint = f"[{hostname}] systemd: all monitored services OK"
 
     return build_envelope(
         probe="service_systemd_units",
-        lane="SYS_HARD_FAIL" if failed else "SYS_RESOURCE",
+        lane="SYS_HARD_FAIL" if (failed or stopped) else "SYS_RESOURCE",
+        domain=SERVICE,
         result=result,
         extracted_fact=fact,
-        alert_rule="SystemdUnitsFailed" if failed else "SystemdHealthy",
+        alert_rule=(
+            "SystemdUnitsFailed" if failed
+            else "SystemdUnitsStopped" if stopped
+            else "SystemdHealthy"
+        ),
         alert_hint=hint,
         symptom_group="service_state",
         namespace=hostname,

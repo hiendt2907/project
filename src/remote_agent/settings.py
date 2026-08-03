@@ -56,6 +56,13 @@ class AgentSettings:
         self.proxysql_admin_pass = os.getenv("OMNI_AGENT_PROXYSQL_ADMIN_PASS", "")
         self.services_enabled = os.getenv("OMNI_AGENT_SERVICES_ENABLED", "false").lower() not in ("false", "0", "no")
         self.storage_enabled = os.getenv("OMNI_AGENT_STORAGE_ENABLED", "false").lower() not in ("false", "0", "no")
+        # Mạng bật MẶC ĐỊNH, khác `services`/`storage` (mặc định tắt): nó không cần
+        # discovery để biết bật hay không — mọi host đều có cổng lắng nghe, và chỉ đọc
+        # `ss -lntu`. Trước collector này, domain `network` có 18 lệnh chẩn đoán nhưng
+        # KHÔNG detector nào phát cảnh báo (đo được trên VM 2026-07-30).
+        self.network_enabled = os.getenv("OMNI_AGENT_NETWORK_ENABLED", "true").lower() not in (
+            "false", "0", "no",
+        )
         self.tenant_id = os.getenv("OMNI_AGENT_TENANT_ID", "default")
         # Onboarding discovery is a core agent responsibility: new installs must
         # discover by default so Omni can build a System Twin. Operators may
