@@ -1,0 +1,520 @@
+/* Scoped to /architecture. Xây trên token @aoip/ui-kit (--content-*, --color-*,
+   --space-*) — KHÔNG khai bảng màu riêng, để trang này không trôi khỏi phần còn lại
+   của portal khi token đổi. Chỉ khối sơ đồ Mermaid dùng nền tối: mermaid render theme
+   "dark", đặt trên giấy sáng sẽ mất tương phản (cùng cách .aoip-diagram đang làm ở
+   trang /understanding). */
+
+.arch {
+  --arch-plate: #0e1319;
+  --arch-plate-line: #232d3a;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+/* ── Thanh chuyển bản vẽ ────────────────────────────────────────────────────*/
+.arch-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--content-line);
+  border-radius: 12px;
+  background: var(--content-surface-2);
+}
+
+.arch-tab {
+  flex: 1 1 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--content-muted);
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.arch-tab:hover { background: var(--content-surface); color: var(--content-text); }
+.arch-tab:active { transform: translateY(1px); }
+.arch-tab:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+
+.arch-tab[aria-selected="true"] {
+  background: var(--content-surface);
+  border-color: var(--content-line-strong);
+  color: var(--content-text);
+  box-shadow: 0 4px 12px rgba(44, 50, 44, 0.07);
+}
+
+.arch-tab-n {
+  font: 650 var(--text-2xs) / 1 var(--font-mono);
+  letter-spacing: 0.1em;
+  color: var(--accent-ink);
+}
+
+.arch-tab-l { font: 650 var(--text-base) / 1.25 var(--font-sans); letter-spacing: -0.01em; }
+.arch-tab-d { font-size: var(--text-xs); line-height: 1.4; color: var(--content-muted); }
+
+/* ── Khối chung ─────────────────────────────────────────────────────────────*/
+.arch-panel { display: flex; flex-direction: column; gap: var(--space-6); }
+
+.arch-sec { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.arch-sec-head { display: flex; flex-direction: column; gap: 0.3rem; max-width: 72ch; }
+
+.arch-eyebrow {
+  font: 650 var(--text-2xs) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}
+
+.arch-h2 {
+  margin: 0;
+  font: 650 clamp(1.25rem, 2.2vw, 1.7rem) / 1.15 var(--font-sans);
+  letter-spacing: -0.03em;
+  color: var(--content-text);
+  text-wrap: balance;
+}
+
+.arch-h3 { margin: 0; font: 650 var(--text-md) / 1.3 var(--font-sans); color: var(--content-text); }
+
+.arch-p { margin: 0; color: var(--content-muted); font-size: var(--text-base); line-height: 1.65; }
+.arch-p strong { color: var(--content-text); font-weight: 650; }
+.arch-p em { color: var(--content-text); font-style: italic; }
+
+.arch-prose { display: flex; flex-direction: column; gap: 0.7rem; max-width: 72ch; }
+
+.arch code,
+.arch-code {
+  font-family: var(--font-mono);
+  font-size: 0.87em;
+  background: var(--content-surface-2);
+  border-radius: var(--radius-sm);
+  padding: 0.1em 0.36em;
+  color: var(--content-text);
+  word-break: break-word;
+}
+
+.arch-note {
+  border: 1px solid var(--content-line);
+  border-left: 3px solid var(--color-warn);
+  border-radius: 0 10px 10px 0;
+  background: var(--content-surface);
+  padding: 0.85rem 1rem;
+  color: var(--content-muted);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  max-width: 80ch;
+}
+
+.arch-note strong { color: var(--content-text); }
+.arch-note.alarm { border-left-color: var(--color-critical); }
+.arch-note.calm { border-left-color: var(--accent-ink); }
+
+.arch-note-t {
+  display: block;
+  margin-bottom: 0.35rem;
+  font: 650 var(--text-base) / 1.3 var(--font-sans);
+  color: var(--content-text);
+}
+
+/* ── Bản vẽ kỹ thuật: plate ─────────────────────────────────────────────────*/
+.arch-plate {
+  border: 1px solid var(--content-line);
+  border-radius: 14px;
+  background: var(--content-surface);
+  box-shadow: 0 5px 16px rgba(44, 50, 44, 0.045);
+  overflow: hidden;
+}
+
+.arch-plate-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.95rem 1.15rem;
+  border-bottom: 1px solid var(--content-line);
+  background: var(--content-surface-2);
+}
+
+.arch-plate-n {
+  font: 650 var(--text-lg) / 1 var(--font-mono);
+  color: var(--content-line-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.arch-plate-titles { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.arch-plate-q { color: var(--content-muted); font-size: var(--text-sm); font-style: italic; }
+
+.arch-plate-body { padding: 1.15rem; display: flex; flex-direction: column; gap: var(--space-4); }
+
+/* Nền tối cho SVG mermaid (theme dark). Cuộn ngang bên trong, không đẩy body. */
+.arch-canvas {
+  overflow-x: auto;
+  border: 1px solid var(--arch-plate-line);
+  border-radius: var(--radius-md);
+  background: var(--arch-plate);
+  padding: var(--space-4) var(--space-3);
+}
+
+.arch-canvas svg { max-width: none; height: auto; }
+
+.arch-src summary {
+  cursor: pointer;
+  color: var(--accent-ink);
+  font: 650 var(--text-xs) / 1.4 var(--font-sans);
+  user-select: none;
+}
+
+.arch-src summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 3px; }
+.arch-src[open] summary { margin-bottom: var(--space-3); }
+
+.arch-toc { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.arch-toc a {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--content-line);
+  border-radius: var(--radius-pill);
+  background: var(--content-surface);
+  color: var(--content-text);
+  font-size: var(--text-xs);
+  text-decoration: none;
+  transition: border-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.arch-toc a:hover { border-color: var(--accent-ink); color: var(--accent-ink); }
+.arch-toc a span { font-family: var(--font-mono); color: var(--content-muted); }
+
+/* ── Lưới thẻ chung ─────────────────────────────────────────────────────────*/
+.arch-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--space-3);
+}
+
+.arch-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 1rem 1.05rem;
+  border: 1px solid var(--content-line);
+  border-radius: 11px;
+  background: var(--content-surface);
+  box-shadow: 0 4px 12px rgba(44, 50, 44, 0.035);
+}
+
+.arch-card-n {
+  font: 700 var(--text-2xs) / 1 var(--font-mono);
+  letter-spacing: 0.1em;
+  color: var(--accent-ink);
+}
+
+.arch-card-foot {
+  margin-top: 0.15rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.5;
+  color: var(--content-muted);
+}
+
+/* ── "Ai ở đâu" ─────────────────────────────────────────────────────────────*/
+.arch-places { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: var(--space-3); }
+
+.arch-place {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--content-line);
+  border-radius: 12px;
+  background: var(--content-surface);
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(44, 50, 44, 0.035);
+}
+
+.arch-place-cap {
+  padding: 0.75rem 1.05rem;
+  border-bottom: 1px solid var(--content-line);
+  background: var(--content-surface-2);
+}
+
+.arch-place-cap small { display: block; color: var(--content-muted); font-size: var(--text-xs); }
+
+.arch-place ul { list-style: none; margin: 0; padding: 0.85rem 1.05rem 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+
+.arch-place li {
+  display: grid;
+  grid-template-columns: 0.6rem 1fr;
+  gap: 0.6rem;
+  align-items: baseline;
+  color: var(--content-muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.arch-place li b { color: var(--content-text); font-weight: 650; }
+
+.arch-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; translate: 0 -0.08rem; }
+.arch-dot.on { background: var(--color-ok); }
+.arch-dot.off { background: var(--content-line-strong); }
+.arch-dot.q { background: var(--color-warn); }
+
+/* ── Dòng thời gian dọc (chặng + cổng chặn) ─────────────────────────────────*/
+.arch-track { display: flex; flex-direction: column; }
+
+.arch-beat {
+  position: relative;
+  display: grid;
+  grid-template-columns: 2.4rem 1fr;
+  gap: 0.9rem;
+  padding-bottom: 1.25rem;
+}
+
+.arch-beat:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 1.15rem;
+  top: 2.2rem;
+  bottom: 0;
+  width: 1px;
+  background: var(--content-line);
+}
+
+.arch-pin {
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  border: 1px solid var(--content-line-strong);
+  border-radius: 50%;
+  background: var(--content-surface);
+  font: 700 var(--text-xs) / 1 var(--font-mono);
+  color: var(--content-muted);
+}
+
+.arch-beat.gate .arch-pin {
+  border-color: var(--color-warn);
+  background: var(--color-warn-dim);
+  color: var(--color-warn);
+}
+
+.arch-beat-body { display: flex; flex-direction: column; gap: 0.35rem; padding-top: 0.2rem; }
+
+.arch-gatenote {
+  border-left: 2px solid var(--color-warn);
+  border-radius: 0 6px 6px 0;
+  background: var(--color-warn-dim);
+  padding: 0.45rem 0.7rem;
+  color: var(--content-text);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.arch-gatenote strong { color: var(--color-warn); }
+
+/* ── Cổng xếp tầng (câu hỏi 1) ──────────────────────────────────────────────*/
+.arch-gates { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.arch-gate {
+  display: grid;
+  grid-template-columns: 2.7rem 1fr;
+  border: 1px solid var(--content-line);
+  border-radius: 11px;
+  background: var(--content-surface);
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(44, 50, 44, 0.035);
+}
+
+.arch-gate-i {
+  display: grid;
+  place-items: center;
+  border-right: 1px solid var(--content-line);
+  background: var(--content-surface-2);
+  font: 700 var(--text-sm) / 1 var(--font-mono);
+  color: var(--accent-ink);
+}
+
+.arch-gate-in { padding: 0.9rem 1.05rem; display: flex; flex-direction: column; gap: 0.45rem; min-width: 0; }
+
+.arch-cond {
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--arch-plate);
+  border: 1px solid var(--arch-plate-line);
+  padding: 0.55rem 0.75rem;
+  color: #cbd8e4;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.65;
+  white-space: pre;
+}
+
+.arch-drop,
+.arch-meas {
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.arch-drop { color: var(--color-critical); }
+.arch-drop::before { content: "↓"; opacity: 0.7; }
+.arch-meas { color: var(--accent-ink); }
+.arch-meas::before { content: "◆"; font-size: 0.6em; translate: 0 -0.2em; }
+.arch-meas.dead { color: var(--color-critical); }
+
+/* ── Bậc confidence ─────────────────────────────────────────────────────────*/
+.arch-bands { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.5rem; }
+
+.arch-band {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--content-line);
+  border-radius: 9px;
+  background: var(--content-surface-2);
+}
+
+.arch-band.live { border-color: var(--color-ok-line); background: var(--color-ok-dim); }
+.arch-band-r { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--content-muted); }
+.arch-band-n { font: 700 var(--text-xs) / 1.2 var(--font-mono); letter-spacing: 0.03em; color: var(--content-text); }
+.arch-band.live .arch-band-n { color: var(--color-ok); }
+.arch-band-d { font-size: var(--text-xs); line-height: 1.45; color: var(--content-muted); }
+.arch-band-now { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--color-ok); }
+
+/* ── Phễu 818 trace ─────────────────────────────────────────────────────────*/
+.arch-funnel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 1.15rem;
+  border: 1px solid var(--content-line);
+  border-radius: 12px;
+  background: var(--content-surface);
+  box-shadow: 0 4px 12px rgba(44, 50, 44, 0.035);
+}
+
+.arch-fr { display: grid; grid-template-columns: 8.5rem 1fr 5rem; gap: 0.65rem; align-items: center; }
+.arch-fr-l { font-family: var(--font-mono); font-size: var(--text-2xs); letter-spacing: 0.04em; color: var(--content-muted); }
+.arch-fr-track { height: 1.15rem; border-radius: 4px; background: var(--content-surface-2); overflow: hidden; }
+.arch-fr-bar { height: 100%; min-width: 3px; border-radius: 4px; background: var(--accent-ink); }
+.arch-fr-bar.none { background: transparent; border: 1px dashed var(--content-line-strong); box-sizing: border-box; }
+
+.arch-fr-v {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--content-text);
+}
+
+.arch-fr-v small { color: var(--content-muted); }
+.arch-fr.total { margin-top: 0.4rem; padding-top: 0.55rem; border-top: 1px solid var(--content-line); }
+
+/* ── Hai đường học ──────────────────────────────────────────────────────────*/
+.arch-paths { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: var(--space-3); }
+
+.arch-path {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--content-line);
+  border-radius: 12px;
+  background: var(--content-surface);
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(44, 50, 44, 0.035);
+}
+
+.arch-path-cap { padding: 0.75rem 1.05rem; border-bottom: 1px solid var(--content-line); }
+.arch-path.dead .arch-path-cap { background: var(--color-critical-dim); }
+.arch-path.live .arch-path-cap { background: var(--color-ok-dim); }
+.arch-path.dead .arch-path-cap .arch-h3 { color: var(--color-critical); }
+.arch-path.live .arch-path-cap .arch-h3 { color: var(--color-ok); }
+.arch-path-cap small { display: block; color: var(--content-muted); font-size: var(--text-xs); }
+.arch-path-in { padding: 0.95rem 1.05rem; display: flex; flex-direction: column; gap: 0.55rem; }
+
+/* ── Máy trạng thái tốt nghiệp ──────────────────────────────────────────────*/
+.arch-fsm { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+
+.arch-st {
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--content-line);
+  border-radius: 6px;
+  background: var(--content-surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--content-text);
+  white-space: nowrap;
+}
+
+.arch-st.hit { border-color: var(--color-ok-line); background: var(--color-ok-dim); color: var(--color-ok); font-weight: 700; }
+.arch-st.never { border-style: dashed; color: var(--content-muted); }
+.arch-arr { color: var(--content-muted); font-size: var(--text-xs); }
+
+/* ── Thống kê ───────────────────────────────────────────────────────────────*/
+.arch-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr)); gap: 0.6rem; }
+
+.arch-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--content-line);
+  border-radius: 11px;
+  background: var(--content-surface);
+  box-shadow: 0 4px 12px rgba(44, 50, 44, 0.035);
+}
+
+.arch-stat-k { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--content-muted); }
+.arch-stat-v { font: 650 var(--text-2xl) / 1.05 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--content-text); }
+.arch-stat-v.ok { color: var(--accent-ink); }
+.arch-stat-v.warn { color: var(--color-warn); }
+.arch-stat-v.stop { color: var(--color-critical); }
+.arch-stat-m { font-size: var(--text-xs); line-height: 1.45; color: var(--content-muted); }
+
+/* ── Chuỗi A/B trong callout ────────────────────────────────────────────────*/
+.arch-chain { display: flex; flex-direction: column; gap: 0.3rem; }
+.arch-chain > div { display: grid; grid-template-columns: 1.3rem 1fr; gap: 0.5rem; align-items: baseline; }
+.arch-chain-k { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--color-warn); }
+
+/* ── Nhãn mức độ trong bảng drift ───────────────────────────────────────────*/
+.arch-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--content-line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--content-surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+  color: var(--content-muted);
+}
+
+.arch-tag.q { border-color: var(--color-warn-line); background: var(--color-warn-dim); color: var(--color-warn); }
+.arch-tag.k { border-color: var(--color-ok-line); background: var(--color-ok-dim); color: var(--color-ok); }
+
+.arch-foot {
+  border-top: 1px solid var(--content-line);
+  padding-top: var(--space-4);
+  max-width: 72ch;
+  color: var(--content-muted);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+@media (max-width: 640px) {
+  .arch-fr { grid-template-columns: 6.5rem 1fr 4.2rem; }
+  .arch-tab { flex-basis: 100%; }
+}

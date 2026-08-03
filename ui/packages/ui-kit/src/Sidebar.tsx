@@ -48,7 +48,7 @@ export function Sidebar({ items }: { items: NavItem[] }) {
 
 function iconFor(href: string): string {
   const icons: Record<string, string> = {
-    "/": "⌂", "/tenants": "▦", "/pipeline": "⌁", "/kpi": "▥",
+    "/": "⌂", "/architecture": "⊞", "/tenants": "▦", "/pipeline": "⌁", "/kpi": "▥",
     "/agents": "◉", "/understanding": "◇", "/incidents": "△",
     "/operations": "!", "/human-inbox": "□", "/kb": "✎", "/settings": "⚙", "/audit": "≡",
   };

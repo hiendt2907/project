@@ -31,8 +31,15 @@ import type { NavItem } from "@aoip/shared-types";
 // tenant_id — không phải khe hở tenant-isolation như admin/flags, mà là thiết kế cluster-global
 // có chủ đích. Session-gated giống /autonomy/mutation (bất kỳ phiên provider nào đã đăng nhập);
 // gateway chưa có RBAC permission riêng cho route này — nếu cần siết thêm, gate ở gateway trước.
+// NGOẠI LỆ (2026-08-02, Bản vẽ kiến trúc): mục DUY NHẤT không phải read-projection từ
+// runtime. Nội dung là ẢNH CHỤP tĩnh (app/architecture/diagrams.ts) đo ngày 2026-08-02 —
+// nó KHÔNG tự đổi khi cluster đổi. Không vi phạm GOVERNING RULE ở trên vì rule đó chặn
+// việc bịa PRODUCT STATE ở frontend (billing/CRM/policy-editor); đây là tài liệu vận hành,
+// read-only, và mỗi con số đi kèm lệnh đã dùng để đo nên kiểm chứng lại được. Muốn số mới:
+// đo lại rồi sửa diagrams.ts.
 export const PROVIDER_NAV: NavItem[] = [
   { label: "Tổng quan", href: "/", implemented: true },
+  { label: "Bản vẽ kiến trúc", href: "/architecture", implemented: true },
   { label: "Khách hàng", href: "/tenants", implemented: true },
   { label: "Gói dịch vụ", href: "/licenses", implemented: true },
   { label: "Xử lý sự cố (Pipeline)", href: "/pipeline", implemented: true },
