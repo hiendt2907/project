@@ -8,6 +8,7 @@ phải làm startup THẤT BẠI (raise), KHÔNG bao giờ tự động rơi v�
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Awaitable, Callable
@@ -16,6 +17,10 @@ from aoip import audit
 from aoip.agent.operations import build_recovery_executor
 from aoip.recovery import RecoveryGate
 from aoip.transport import LocalTransport, SSHTransport
+
+logger = logging.getLogger(__name__)
+
+_ENV_ALLOW_SELF_RESTART = "AOIP_ALLOW_SELF_RESTART"
 
 MODE_OBSERVE_ONLY = "observe_only"
 MODE_MUTATION_ENABLED = "mutation_enabled"
@@ -54,6 +59,46 @@ def _require(env: dict, key: str) -> str:
     return value
 
 
+def self_unit_names(env: dict) -> frozenset[str]:
+    """Systemd unit(s) that ARE this agent — never a legal mutation target.
+
+    Derived from config, not hardcoded to one string, because the unit has been
+    renamed once already (``omni-remote-agent.service`` -> ``aoip-agent.service``)
+    and a stale hardcoded name is a silent hole. ``OMNI_AGENT_SYSTEMD_SERVICE`` is
+    the key run.env already carries; ``AOIP_AGENT_SERVICE_NAME`` is the key
+    ``capabilities.systemd_restart.SystemdRestartPolicy`` reads. Both are honoured
+    plus the two historical names, so the guard holds under either convention.
+    """
+    names: set[str] = {"aoip-agent.service", "omni-remote-agent.service"}
+    for key in ("AOIP_AGENT_SERVICE_NAME", "OMNI_AGENT_SYSTEMD_SERVICE"):
+        raw = env.get(key, "").strip()
+        if raw:
+            names.add(raw if raw.endswith(".service") else f"{raw}.service")
+    return frozenset(names)
+
+
+def _strip_self_units(units: frozenset[str], env: dict) -> frozenset[str]:
+    """Remove the agent's own unit from an allowlist unless EXPLICITLY unlocked.
+
+    Why this exists as code and not as an operator convention: the live daemon's
+    executor (``operations.build_recovery_executor`` -> ``recovery._gate_checks``
+    -> ``target_allowlisted``) checks ONLY ``RecoveryGate.allowed_targets``. It
+    never consults ``AOIP_ALLOW_SELF_RESTART`` — that flag is read exclusively by
+    ``capabilities.systemd_restart.SystemdRestartPolicy``, which this path does
+    not call. So before this guard, the single thing standing between Omni and
+    "restart the agent that is executing this command" was a human remembering
+    not to type it into ``AOIP_ALLOWED_SYSTEMD_UNITS``.
+
+    Self-restart is an observability-loss loop, not a normal recovery: the agent
+    dies mid-execution -> telemetry stops -> Omni sees the host go dark -> orders
+    another restart. Removing the target here (rather than raising) keeps the
+    rest of a mixed allowlist working, and is logged loudly by the caller.
+    """
+    if env.get(_ENV_ALLOW_SELF_RESTART, "false").strip().lower() == "true":
+        return units
+    return frozenset(units - self_unit_names(env))
+
+
 def _build_gate(env: dict) -> RecoveryGate:
     modes = _require(env, "AOIP_GATE_ALLOWED_FAILURE_MODES")
     substrates = _require(env, "AOIP_GATE_ALLOWED_SUBSTRATES")
@@ -70,12 +115,20 @@ def _build_gate(env: dict) -> RecoveryGate:
     # Required (not _require-optional) so MUTATION_ENABLED can't silently
     # start with an unrestricted target gate.
     allowed_units = _require(env, "AOIP_ALLOWED_SYSTEMD_UNITS")
+    requested = frozenset(u.strip() for u in allowed_units.split(",") if u.strip())
+    targets = _strip_self_units(requested, env)
+    if targets != requested:
+        logger.warning(
+            "event=self_restart_target_stripped removed=%s reason=agent_own_unit "
+            "(set %s=true to override — creates an observability-loss loop)",
+            sorted(requested - targets), _ENV_ALLOW_SELF_RESTART,
+        )
     return RecoveryGate(
         allowed_failure_modes=frozenset(m.strip() for m in modes.split(",") if m.strip()),
         allowed_substrates=frozenset(s.strip() for s in substrates.split(",") if s.strip()),
         max_risk=max_risk, scope_prefix=scope_prefix,
         min_diagnosis_confidence=min_conf, max_diagnosis_age_s=max_age_s,
-        allowed_targets=frozenset(u.strip() for u in allowed_units.split(",") if u.strip()))
+        allowed_targets=targets)
 
 
 def _build_transport(env: dict):
