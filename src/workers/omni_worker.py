@@ -1247,6 +1247,15 @@ def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> 
                 kafka_siem_correlation_loop(ctx, stop), name="kafka_siem_correlation_loop",
             ))
         tasks.append(asyncio.create_task(kafka_knowledge_evidence_loop(ctx, stop), name="kafka_knowledge_evidence_loop"))
+        # Closes the remote-host recovery loop: durable command terminal outcome ->
+        # EXECUTOR/FEEDBACK stages + CRAT + omni-action-feedback. Without it a VM
+        # mutation executes and verifies but the trace still reads "stopped at
+        # DISPATCH" (0/809 traces had ever reached EXECUTOR before 2026-08-02).
+        from workers.remote_command_outcome_loop import remote_command_outcome_loop
+
+        tasks.append(asyncio.create_task(
+            remote_command_outcome_loop(ctx, stop), name="remote_command_outcome",
+        ))
     if role in ("full", "core"):
         tasks.extend(
             [
