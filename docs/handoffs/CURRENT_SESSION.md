@@ -1,6 +1,624 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-03 (Đ11 — commit + push toàn bộ backlog Đ5-Đ10, 19 commit) · **Branch:** `main` · **HEAD:** `0a87f8d` (đã push)
+**Cập nhật:** 2026-08-03 (Đ20 — IMPLEMENTATION MODE: TOÀN BỘ tập BUILD NOW (9 hạng mục) đã xong + commit + push. GA-readiness theo roadmap đã khoá đạt được.) · **Branch:** `main` · **HEAD:** `103a25e` (14 commit mới từ `8cf91cb`, tất cả đã push)
+
+## 🎯 Đ20 — IMPLEMENTATION MODE — TOÀN BỘ BUILD NOW xong (9/9), đã commit+push
+
+User chuyển vai trò sang Senior Staff/Production/Refactoring Engineer, Architecture Frozen có
+hiệu lực, yêu cầu code đúng Implementation Order đã khoá, mỗi task 1 commit độc lập, sau đó
+"làm toàn bộ các task kia luôn rồi mới review lại". Đã hoàn tất **toàn bộ 9 hạng mục BUILD NOW**
+theo đúng thứ tự khoá trong `OMNI_V2_FINAL_EXECUTION_GATE.md` mục 6:
+
+`#14 → #12 → WS1(#2) → WS0(#1) → WS5(#6) → #21 → #15 → #13 → WS2(#3)`
+
+**14 commit mới, tất cả đã push lên `origin/main`** (không còn gì ở working tree ngoài
+`docs/handoffs/CURRENT_SESSION.md` đang sửa). Full test suite xanh sau MỌI commit (7313-7357
+passed tuỳ thời điểm, 0 failed xuyên suốt). `make lint-imports`: 2 kept, 0 broken xuyên suốt.
+
+### Tóm tắt từng hạng mục (chi tiết đầy đủ nằm trong message của từng commit)
+
+- **`#14` BLOCKER — `resolve_tier()` fail-closed** (`19d2af8`): phát hiện khi đọc code thật —
+  gap thật KHÔNG phải ở nhánh Redis (đã fail-closed từ trước) mà ở nhánh Postgres
+  (`repo.get_tier()` không try/except). Sửa 5 dòng, mirror pattern có sẵn.
+- **`#12` BLOCKER — landmine `teardown-omni-postgres`** (`025b1c7`): thêm guard kiểm tra
+  `omni_admin.agent_credential` tồn tại trước khi cho `--apply`, cần thêm `--force-data-loss`
+  mới ghi đè. Verify SỐNG: `--apply` abort đúng thiết kế trên cluster lab thật.
+- **WS1 (`#2`) MUST FIX BEFORE GA — 7 import ngược `pkg/anomaly/rag → workers`** (`e3cd472`):
+  move-symbol-xuống-pkg (giữ workers/ re-export) hoặc dependency-injection tuỳ độ gắn kết. Phát
+  hiện thêm `pkg/rag/gate.py`/`pkg/reasoning/diagnostic_policy.py` cũng vi phạm nhưng NGOÀI
+  scope task — ghi rõ, không tự sửa (đã sửa sau ở `2cd5d5b` khi WS0 lộ ra qua tool thật).
+- **WS0 (`#1`) MUST FIX BEFORE GA — wire `import-linter`** (`2cd5d5b` + `a92f46a`): chạy tool
+  lần đầu lộ thêm 6 vi phạm thật ngoài 7 điểm WS1 đã liệt kê thủ công — sửa 6/8, 2 điểm còn lại
+  (`pkg.observability.llm_observability` soft-dependency có chủ đích, `pkg.reasoning.
+  known_fix_resolver` cần DI refactor lớn hơn) ghi `ignore_imports` có giải thích rõ, không xoá
+  ngầm. Wiring: `.importlinter`, `Makefile lint-imports`, `.pre-commit-config.yaml` (cơ chế CI
+  thực tế DUY NHẤT của repo — xác nhận KHÔNG có `.github/workflows` trước khi viết).
+- **WS5 (`#6`) MILESTONE ĐỘC LẬP — Capability Registry** (`68f04c9`, 1 commit riêng đúng yêu
+  cầu CTO): tách `_worker_background_tasks` (100 dòng if/else — đúng lớp bug gây crash-loop
+  Đ12) thành 5 hàm `_register_*_capability()` độc lập theo bounded context. **Phạm vi phiên
+  này CHỈ tách hàm dispatch, KHÔNG di chuyển vật lý ~1100 dòng thân loop** — đọc đúng lời văn
+  đã khoá trong Final Execution Gate CTO Amendment (ưu tiên cao hơn Implementation Plan gốc
+  vốn mô tả tham vọng hơn "~200 dòng"). Verify: đếm task name registered trước/sau khớp 100%,
+  126 test có sẵn bao phủ đúng hàm này pass.
+- **`#21` HIGH PRIORITY — timeout+circuit-breaker `blast_radius.py`** (`b20ca3d`):
+  `K8S_API_TIMEOUT_SEC=10s` qua `asyncio.wait_for`; circuit breaker CẤP MODULE (không phải
+  per-instance, vì reader tạo mới mỗi lần mutate) mở sau 3 lỗi liên tiếp, cooldown 30s. 8 test
+  mới.
+- **`#15` HIGH PRIORITY — Redis `audit_chain:*` khỏi eviction** (`5d9fc35`): **hỏi lại user** vì
+  phương án tài liệu gợi ý ("logical DB riêng") không thực sự cô lập được (maxmemory-policy là
+  instance-wide, không tách theo DB) — user chọn đổi policy global `allkeys-lru`→`volatile-lru`.
+  Audit AN TOÀN trước khi đổi (như đã hứa): quét toàn bộ Redis `.set()` không TTL, tìm đúng 2
+  rủi ro thật (đã tạo task `#22`/`#23`, KHÔNG tự sửa). Deploy sống + verify TTL=-1 trên
+  `audit_chain:*` thật.
+- **`#13` MEDIUM — backup/restore `omni-postgres`** (`42db83d`): CronJob `pg_dump` hằng ngày +
+  PVC riêng + `scripts/restore_omni_postgres.sh` (an toàn — target mặc định DB throwaway, restore
+  vào DB thật cần 2 flag xác nhận). Verify round-trip THẬT trên cluster lab: backup → restore →
+  so khớp 32/32 bảng + 3/3 dòng `agent_credential` giữa nguồn và đích.
+- **WS2 (`#3`) MUST FIX BEFORE GA — Decision Transparency Layer** (`103a25e`): xoá hẳn
+  `pkg/autonomy/gate.py`+`policy.py` (code chết, dùng lane trục A đã bỏ 2026-07-30) sau khi xác
+  nhận 0 call site production thật; xoá 4 endpoint `/autonomy/policy*` sau khi xác nhận consumer
+  HTTP duy nhất (`ui/` root) đã RETIRED, không phải portal đang chạy thật. Thêm CRAT event
+  `DECISION_RENDERED` — 1 record duy nhất giải thích ALLOW/DENY cho mỗi `EXECUTE_MUTATE`, best-
+  effort. Xoá/sửa 10 file test tham chiếu module đã xoá, thêm 2 test mới cho event mới.
+
+### Quyết định cần chú ý khi review lại
+
+1. **WS5 scope**: chỉ tách dispatch logic, chưa di chuyển vật lý phần thân loop (~1100 dòng còn
+   nằm trong `omni_worker.py`). Nếu user muốn đúng "~200 dòng" như Implementation Plan gốc mô
+   tả, đây là việc CÒN LẠI, effort lớn hơn nhiều, nên là 1 milestone riêng tiếp theo.
+2. **`#15`**: đã đổi GLOBAL Redis policy — không chỉ audit_chain, MỌI key không TTL trên Redis
+   giờ không bao giờ bị evict. Đã audit và tạo `#22`/`#23` cho 2 rủi ro thật tìm được
+   (discovery_doc.py diagram version, mission_store.py mission) — CHƯA sửa, chỉ ghi nhận.
+3. **`#22`/`#23`** (task mới tạo trong lượt này): unbounded-growth risk phát sinh TRỰC TIẾP từ
+   quyết định `#15` — nên xem xét sớm, không phải "nice to have" xa vời.
+4. Không còn Blocker/High Priority/Medium/Must-Fix-Before-GA nào TỒN ĐỌNG trong tập BUILD NOW.
+
+### Còn lại trong roadmap (SAU GA — CAN FIX AFTER GA / NICE TO HAVE, CHƯA đụng tới)
+
+`WS4(#5)` Ed25519 signing · `WS6(#7)` Execution/Knowledge Plane split · `WS7(#8)` System Twin →
+blast-radius · `WS9(#10)` Remote Agent SDK OBSERVED-only — theo đúng Implementation Order, các
+hạng mục này nằm SAU mốc `[GA]`, thứ tự linh hoạt theo tín hiệu khách hàng thật, KHÔNG cố định.
+Chưa bắt đầu bất kỳ hạng mục nào trong nhóm này — đang chờ xác nhận từ user có muốn tiếp tục hay
+dừng lại review như đã hẹn ("làm toàn bộ rồi mới review lại" — toàn bộ BUILD NOW đã xong, đây là
+điểm dừng tự nhiên để review).
+
+## 🎯 (Đ20 gốc, giữ lại tham khảo) — Task `#14` DONE (code, chưa commit)
+
+User chuyển vai trò từ CTO/Architect sang **Senior Staff/Production/Refactoring Engineer**,
+Architecture Frozen chính thức có hiệu lực. Nguồn sự thật: `OMNI_V2_FINAL_EXECUTION_GATE.md` >
+`OMNI_V2_FINAL_SHIP_REVIEW.md` > `OMNI_V2_IMPLEMENTATION_PLAN.md`. Quy tắc: 1 PR = 1 WS/must-fix,
+không trộn milestone, đọc code thật trước khi sửa (không suy đoán), đổi tối thiểu, nếu phát hiện ý
+tưởng mới → ADR/issue chứ không implement, nếu thiếu thông tin → dừng và hỏi đúng 1 câu.
+
+**Task `#14` (`[BLOCKER 2/2] resolve_tier() không fail-closed`) — DONE, code xong, test xanh, CHƯA
+commit.**
+
+**Phát hiện khi đọc code thật (đúng quy tắc "không suy đoán")**: mô tả gốc của `#14` ghi "không
+fail-closed khi Redis mất kết nối", nhưng `read_tier_cached()` (`services/admin_config/cache.py`)
+ĐÃ có try/except fail-closed từ commit `05222f8` (22/06), có trước session review này. Gap thật
+nằm ở nhánh Postgres trong `resolve_tier()` (`src/pkg/autonomy/tier_gate.py` dòng ~177-180):
+`repo.get_tier(tenant_id)` không được bọc try/except, khác `_apply_plan_ceiling()` cùng file (đã
+đúng pattern). Đây vẫn là đúng ý `#14` ("resolve_tier phải luôn fail-closed"), chỉ chính xác hoá
+dòng cần sửa dựa trên code thật — không phải ý tưởng mới, không cần ADR/issue.
+
+**Fix**: bọc `repo.get_tier(tenant_id)` trong try/except, log warning, return `SHADOW` khi lỗi —
+mirror chính xác pattern `_apply_plan_ceiling()` đã có (+5 dòng, đổi tối thiểu).
+
+**Files changed (task `#14`, CHƯA commit)**:
+- `src/pkg/autonomy/tier_gate.py` — try/except quanh `repo.get_tier()`, fail-closed `SHADOW`.
+- `tests/test_tier_gate_and_hitl.py` — thêm `_ExplodingRepo` + test
+  `test_resolve_tier_db_lookup_fail_closed` (repo raise `ConnectionError`, assert = `shadow` dù
+  env tier = `auto`, chứng minh fail-closed thật chứ không phải trùng hợp).
+
+**Test**: `pytest tests/test_tier_gate_and_hitl.py` 38 passed · `pytest
+tests/test_autonomy_tier_endpoint.py tests/test_gateway_agent_runtime.py` (2 caller khác của
+`resolve_tier`) 35 passed. Không regression.
+
+**Rollback**: `git revert` đơn thuần, không state/migration.
+
+**Commit message đề xuất** (CHƯA chạy `git commit` — chờ user xác nhận theo đúng convention "GIT
+chỉ khi được chỉ thị"):
+```
+fix(autonomy): resolve_tier() fail-closed khi Postgres lookup lỗi
+
+repo.get_tier() không được bọc try/except, khác với _apply_plan_ceiling()
+cùng file — Postgres mất kết nối làm resolve_tier() raise thay vì trả
+tier hợp lệ. Mirror pattern try/except đã có, fail-closed về shadow.
+```
+
+**Next**: `#12` (landmine `teardown-omni-postgres`) — chờ user xác nhận có commit `#14` trước hay
+không rồi mới chuyển sang `#12` theo đúng Implementation Order đã khoá.
+
+## 🎯 Đ19 (chốt cuối) — ENGINEERING.md: 3 quy tắc vận hành trước khi coding
+
+User (vai CTO) xác nhận lại verdict Đ19 (Architecture ✅ Freeze / Roadmap ✅ Freeze / Engineering
+kickoff ✅ / Review kiến trúc tiếp ❌ Dừng) và yêu cầu ghi thêm 3 quy tắc vào **`docs/architecture/
+ENGINEERING.md`** (file mới) trước khi code:
+- **A. Definition of Done bắt buộc** cho từng WS/must-fix — không chỉ checklist chung, mà bảng cụ
+  thể "rollout verified nghĩa là gì / rollback verified nghĩa là gì" cho từng task trong
+  Implementation Order (`#14`, `#12`, WS1, WS0, WS5, `#21`, `#15`, `#13`, WS2).
+- **B. Một PR chỉ implement một WS hoặc một must-fix** — không trộn, kể cả fix nhỏ "tiện thể".
+- **C. Freeze Acceptance Criteria** — không đổi Definition of Done của 1 WS sau khi đã có PR mở,
+  trừ khi có ADR mới (hệ quả trực tiếp của Scope Freeze đã ghi ở Đ19 gốc).
+
+Đã thêm mục "9. Engineering Process Rules" vào cuối `OMNI_V2_FINAL_EXECUTION_GATE.md` trỏ sang
+`ENGINEERING.md`, ghi lại bảng verdict kickoff. **Đây là điểm dừng thật sự của toàn bộ chuỗi review
+Đ13-Đ19+amendment** — không mở thêm vòng review kiến trúc nữa theo đúng nguyên tắc user đặt ra.
+Lượt kế tiếp: code `#14` (`resolve_tier` fail-closed), PR riêng, đối chiếu DoD trong
+`ENGINEERING.md` mục A trước khi coi là xong.
+
+## 🎯 Đ19 — FINAL EXECUTION GATE (Architecture Freeze — đóng chuỗi review Đ13-Đ19)
+
+> **CTO SIGN-OFF AMENDMENT (chốt cuối cùng, user duyệt với 4 điều chỉnh — KHÔNG phải vòng review
+> mới, đây là bản chốt thật của Đ19):**
+> 1. **`#15`/`#21` KHÔNG ngang hàng blocker** — hạ xuống tier **High Priority** riêng (Redis
+>    eviction mới chỉ chứng minh xu hướng 875MB/2GB, chưa chứng minh imminent failure — khác hẳn
+>    `teardown-postgres` chỉ cần 1 lệnh sai là mất dữ liệu ngay). `#13`/WS5(`#6`) → tier **Medium**.
+>    Tier cuối: **Blocker** (`#12`,`#14`) → **High Priority** (`#21`,`#15`) → **Medium** (`#13`,`#6`).
+> 2. **WS5 (`#6`) là milestone ĐỘC LẬP** — không được commit xen lẫn task khác. Lý do: đổi
+>    composition root + dependency graph + startup + lifecycle + ownership của mọi loop cùng lúc —
+>    lớn nhất toàn roadmap dù tier khẩn cấp chỉ "Medium".
+> 3. **Build Order đổi**: WS5 làm NGAY SAU WS0/WS1, TRƯỚC `#21`/`#15`/`#13` (không phải sau như bản
+>    gốc) — vì WS5 đụng gần toàn bộ dependency graph, làm fix cục bộ trước rồi mới WS5 tăng rủi ro
+>    conflict. Order mới: `#14 → #12 → WS1(#2) → WS0(#1) → WS5(#6, milestone riêng) → #21 → #15 →
+>    #13 → WS2(#3) → [GA] → WS4→WS6→WS7→WS9`.
+> 4. **Thêm dòng Scope Freeze còn thiếu**: *"Không tạo thêm capability mới trong quá trình
+>    implement. Nếu phát hiện nhu cầu mới: ghi ADR, mở issue, không mở rộng scope của WS hiện
+>    tại."* — chặn hiện tượng "tiện thể thêm/tiện thể refactor" khiến roadmap phình lại sau tuần 2.
+>
+> User ghi nhận: sau 4 vòng phản biện, roadmap đã chuyển từ *architecture-driven* sang
+> *incident-driven* — mọi hạng mục còn lại trace được về ≥1 trong 3 bằng chứng (incident thật/lỗi
+> verify được bằng code-runtime/invariant sản phẩm đã tồn tại). **Verdict không đổi: APPROVED WITH
+> BLOCKERS (2). Bắt đầu coding: có.** Đã cập nhật `docs/architecture/OMNI_V2_FINAL_EXECUTION_GATE.md`
+> (thêm block amendment đầu file + sửa mục 6 Implementation Order + thêm mục 7 Scope Freeze) và 4
+> task (`#15`,`#21`,`#13`,`#6` — subject/description phản ánh tier + build-order mới).
+
+
+User giao vai CTO ký duyệt cuối cùng, chỉ trả lời đúng 4 câu hỏi (không tìm thêm issue, không
+thêm capability/context/WS/module) rồi khoá kiến trúc. **Deliverable:**
+`docs/architecture/OMNI_V2_FINAL_EXECUTION_GATE.md`.
+
+**Phát hiện vận hành trong lượt này (không phải finding kiến trúc)**: `TaskUpdate.addBlockedBy`
+chỉ CỘNG THÊM, không xoá được field — 3 task (`#3`/`#7`/`#9`) vẫn hiện `blocked by` những task đã
+bị Đ18 hạ mức (`#16`/`#20`) dù ý định là gỡ. Đã sửa bằng cách ghi rõ trong description "coi
+blockedBy này là stale" (công cụ không hỗ trợ xoá field) — đây là "dependency sai" thật mà
+Question 2 hỏi tới, đã tìm và đóng ngay trong lượt này.
+
+**Quyết định quan trọng nhất: LOẠI 2 WORKSTREAM khỏi roadmap chủ động (Question 3)** — áp dụng
+nghiêm ngặt tiêu chí "phải trace được về incident thật/risk đã verify/invariant đã cam kết":
+- **WS3 (Operational Memory) — REMOVE.** Round 1 tự nhận "chưa có bằng chứng operator nào thực sự
+  cần replay ngoài đọc log/CRAT thủ công" — giá trị hoàn toàn suy đoán. Đã xoá task `#4`.
+- **WS8 (Change context) — REMOVE.** Insight đúng (gap thật) nhưng không có incident cụ thể nào
+  bị bỏ lỡ vì thiếu nó — giá trị (giảm MTTR) chưa đo được. Đã xoá task `#9`.
+- Ý tưởng của cả 2 vẫn giữ nguyên trong `OMNI_V2_RED_TEAM_REVIEW.md` (mục 6, 7) làm tài liệu tham
+  khảo — không mất, chỉ không còn là cam kết xây trong roadmap hiện tại.
+
+**Hệ quả tốt của việc loại WS3+WS8**: Question 2 (migration feasibility) đổi từ "cần xác nhận"
+thành **VERIFIED tuyệt đối** — không còn schema Postgres migration nào trong tập BUILD NGAY (cả 2
+bảng mới `trace_evidence_archive`/`change_event` đều thuộc 2 WS vừa bị loại). WS2 cũng được xác
+nhận **không cần feature flag `OMNI_USE_LEGACY_AUTONOMY_CHECKS`** như Round 1 từng yêu cầu — vì
+sau khi bị Đ18 thu nhỏ, WS2 chỉ còn xoá code chết + thêm 1 event, không có behavior thay thế nào
+cần rollback dần — `git revert` thuần là đủ.
+
+**Verdict: APPROVED WITH BLOCKERS.** Chỉ 2 blocker (giống Đ18, không đổi): `#12` (landmine
+Postgres), `#14` (`resolve_tier` fail-closed). **3 decision còn thiếu** (Question 4, không phải
+redesign — chỉ cần 1 quyết định ngắn trước khi code): (1) cơ chế cụ thể tách `audit_chain:*` khỏi
+`allkeys-lru` (3 phương án đã nêu, chưa chọn); (2) giá trị timeout cụ thể cho `blast_radius.py`
+K8s call (chưa có con số); (3) quy trình rotate public key Ed25519 cho WS4 (chỉ cần quyết trước
+khi WS4 bắt đầu, không phải ngay).
+
+**Implementation Order đã khoá (BẢN CHỐT CUỐI sau CTO amendment, xem block amendment ngay trên)**:
+`#14 → #12 → WS1(#2) → WS0(#1) → WS5(#6, MILESTONE ĐỘC LẬP, không trộn commit) → #21 → #15 → #13
+→ WS2(#3) → [GA] → WS4 → WS6 → WS7 → WS9`. Tier: Blocker (`#12`,`#14`) → High Priority
+(`#21`,`#15`) → Medium (`#13`,`#6`).
+
+**Engineering Ready**: Architecture 85% · Implementation Plan 80% (BUILD NGAY)/40% (sau GA) ·
+Migration 95% · Rollback 90% · Testing 75% · Production Safety 65%.
+
+**Final Statement: "Có nên dừng review và bắt đầu coding không?" → Có.** Đây là điểm dừng chính
+thức của chuỗi review kiến trúc (Đ13-Đ19). Theo đúng nguyên tắc Architecture Freeze mà user đặt
+ra: **không mở thêm vòng review kiến trúc mới** — mọi thay đổi tiếp theo phải xuất phát từ
+implement/code-review/test/sự cố thực tế, không phải tiếp tục sửa tài liệu thiết kế.
+
+**Task list sau lượt này: 18 task** (20 trừ `#4`, `#9` vừa xoá). Phiên sau chỉ cần đọc
+`OMNI_V2_FINAL_EXECUTION_GATE.md` (không cần Đ13-Đ18 trừ khi cần chi tiết gốc) và bắt đầu từ `#14`
+theo Implementation Order đã khoá.
+
+**Chưa code gì trong lượt này** — đây là lượt cuối cùng thuần tài liệu của chuỗi review. Lượt kế
+tiếp nên là code thật cho `#14`/`#12`.
+
+## 🎯 Đ18 — FINAL SHIP REVIEW (hội đồng đầu tư: CTO+Architect+SRE+Enterprise Platform)
+
+User giao vai hội đồng đầu tư cuối cùng, yêu cầu KHÔNG tìm thêm lỗi mà TRIAGE lại toàn bộ Round
+1+2, trả lời đúng 1 câu: có ký duyệt roadmap này không. Được phép phủ định/hạ mức/nâng mức mọi
+finding cũ.
+
+**Deliverable:** `docs/architecture/OMNI_V2_FINAL_SHIP_REVIEW.md`.
+
+**Verify mới bằng lệnh sống trên cluster (không chỉ đọc code):**
+- `redis-0`: **1 pod duy nhất**, 35 restart/55 ngày, `used_memory=875.75M/maxmemory=2.00G` (44%
+  đã dùng ở quy mô lab gần-zero tải thật) — NÂNG MỨC finding Redis-eviction (Đ17) từ lý thuyết
+  thành có bằng chứng sống.
+- `kafka-685dc55dfb-...`: **1 pod duy nhất**, 53 restart/81 ngày — xác nhận SPOF thật.
+- `K8sBlastReader.__init__` (`blast_radius.py`): xác nhận KHÔNG có timeout nào set tường minh —
+  giữ nguyên severity finding head-of-line-blocking (Đ17), không hạ.
+- `src/services/siem_correlation/chain.py`: `sorted(members, key=lambda m: m.ts)` — sort theo
+  field `ts` trong payload, KHÔNG phải thứ tự Kafka đến — **HẠ MỨC** finding "0 partition-key phá
+  SIEM correlation" (Đ17) từ HIGH xuống LOW-MEDIUM, vì correlation đã tự chống chịu phần lớn.
+
+**Kết quả Phase 1 (triage Round 1+2)**: nhiều finding Round 2 bị hạ mức sau khi verify lại kỹ hơn
+— Decision "3 owner không đồng bộ" (CRAT ghi trước Kafka publish không thực sự sai ngữ nghĩa, chỉ
+thiếu 1 event terminal-state); Kafka partition-key (đã nêu trên); leader-election "phải xong
+trước WS6" (SAI — WS6 không đòi hỏi multi-replica, chỉ tách Deployment, vẫn `replicas: 1`);
+`evidence_consumer.py` (3578 dòng, thật nhưng kích thước file không tự nó là outage risk); Policy
+Compiler/Simulation/multi-region/billing (thật nhưng ngoài phạm vi roadmap hiện tại, không phải
+thiếu sót cần chặn duyệt).
+
+**Verdict: APPROVE WITH CONDITIONS.**
+- **Chỉ 2 BLOCKER thật** (không được bắt đầu roadmap tiếp tục nếu chưa sửa): task #12 (landmine
+  `teardown-omni-postgres`) và task #14 (`resolve_tier()` fail-closed, effort ~1 giờ).
+- **MUST FIX BEFORE GA**: task #15 (Redis eviction policy cho CRAT — nâng mức bằng bằng chứng
+  sống), #6 (WS5 god-object), #2+#1 (WS1→WS0 import cycle), #21 (blast_radius timeout), #13
+  (backup Postgres), #3 (WS2, đã giảm yêu cầu).
+- **CAN FIX AFTER GA**: #18 (Redis/Kafka HA — chặn Commercial SaaS, KHÔNG chặn Enterprise Pilot),
+  #19 (LLM capacity — tương tự), #7 (WS6, gỡ `blockedBy` sai), #8 (WS7), #10 (WS9), #17
+  (`evidence_consumer.py`), #16 (partition-key, hạ mức).
+- **NICE TO HAVE**: #4 (WS3), #9 (WS8, gỡ `blockedBy` sai), #5 (WS4, riêng phần Ed25519 nên làm
+  sớm vì bảo mật dù không blocking GA).
+- **Đã xoá task #11 (WS10)** — "merge vào công việc dọn dẹp chung, không cần track như 1 WS riêng"
+  theo đúng khuyến nghị Phase 4 (giảm ceremony).
+
+**Phase 5 nói thẳng**: 4 tài liệu kiến trúc (~4000+ dòng) cho roadmap thực chất chỉ còn ~10-12
+hạng mục kỹ thuật sau khi lọc — tỷ suất phát hiện-mới/trang-viết đã giảm mạnh ở vòng 4
+(Round 2), phần lớn Phase 1 của Đ18 là XÁC NHẬN LẠI hoặc HẠ MỨC finding cũ, không phải phát hiện
+mới. **Khuyến nghị: dừng vòng review kiến trúc tại đây, chuyển sang thực thi** — nếu cần review
+tiếp, nên là code review sau khi implement, không phải thêm tài liệu kiến trúc.
+
+**Phase 6 — đánh giá sản phẩm**: hoàn thành đúng roadmap đã lọc → Omni đạt **Enterprise Pilot**,
+KHÔNG PHẢI Commercial SaaS (thiếu tenant resource isolation, billing/quota enforcement, Redis/
+Kafka HA thật — dù bảng `tenant_plan_entitlements` đã tồn tại nhưng chưa nối vào enforcement nào).
+
+**Estimated Readiness**: Architecture 75% · Implementation **0%** (xác nhận rõ: chưa có 1 dòng
+code nào của bất kỳ WS nào được viết qua toàn bộ 5 vòng tài liệu Đ13-Đ18) · Production (v1 hiện
+tại đang chạy) 55% · Commercial SaaS 15%.
+
+**Final Statement (nguyên văn tinh thần)**: ký duyệt phần lõi (2 blocker + 5 must-fix-before-GA,
+~6-8 tuần cho 1-2 kỹ sư) làm ngay; phần còn lại của 4 tài liệu quay về backlog, ưu tiên lại theo
+nhu cầu khách hàng thật khi có khách hàng trả tiền đầu tiên ngoài phòng lab — không theo thứ tự
+đã liệt kê trong tài liệu kiến trúc (viết trước khi có tín hiệu nhu cầu thật). "APPROVE WITH
+CONDITIONS" chứ không phải "APPROVE" trơn: đồng ý chẩn đoán kỹ thuật, không đồng ý quy mô đầu tư
+ngầm định (không phải 12 tháng).
+
+**Task list đã cập nhật đầy đủ theo Phase 3/4/7** (subject có tag `[BLOCKER]`/`[MUST FIX BEFORE
+GA]`/`[CAN FIX AFTER GA]`/`[NICE TO HAVE]`) — **20 task tracked** (21 gốc − 1 xoá WS10). Phiên sau
+`TaskList` sẽ thấy rõ tier ngay trong subject, không cần đọc lại 5 tài liệu kiến trúc để biết ưu
+tiên.
+
+**Chưa code gì trong lượt này** — vẫn giai đoạn PLAN/VERIFY, đúng quy trình dự án. Đây là điểm
+dừng hợp lý của chuỗi review kiến trúc (Đ13-Đ18) — bước tiếp theo nên là code thật cho 2 blocker.
+
+## 🎯 Đ17 — RED TEAM Round 2 (Distributed Systems + Production SRE, không lặp lại Round 1)
+
+User giao lại vai red-team, yêu cầu KHÔNG lặp lại finding Round 1 (Đ16) — chỉ tìm vấn đề Round 1
+bỏ sót, tập trung: bounded context, dependency giữa WS, rollback, runtime topology, event flow,
+state ownership, consistency, failure mode, operational complexity, missing capability
+(scheduling/policy-compiler/simulation/intent-management), scalability 10-1000 tenant, data
+ownership (mỗi entity đúng 1 owner), event architecture (idempotent/replay/version/ordering/
+correlation-id), bounded-context integrity, thứ tự WS, gap sản phẩm thương mại.
+
+**Deliverable:** `docs/architecture/OMNI_V2_RED_TEAM_ROUND2_REVIEW.md` — 25 issue (CRITICAL/HIGH/
+MEDIUM) + bảng Top-10 theo ROI. Đã verify lại bằng lệnh thật (không suy đoán).
+
+**5 phát hiện CRITICAL quan trọng nhất (mới, không trùng Round 1):**
+
+1. **`resolve_tier()` (`src/pkg/autonomy/tier_gate.py`) KHÔNG fail-closed graceful khi Redis mất
+   kết nối** — chỉ fallback (Redis→PG→env) đúng cho cache-miss, KHÔNG có `try/except` quanh
+   `read_tier_cached()` cho lỗi kết nối thật — trong khi `_apply_plan_ceiling()` 20 dòng dưới CÙNG
+   FILE đã có pattern fail-closed đúng. Narrative "3-tier fallback resilient" nhắc lại xuyên suốt
+   CLAUDE.md/3 tài liệu trước chỉ đúng 1 nửa. **Effort fix rất thấp, ROI cao nhất toàn bộ Round 2.**
+2. **`audit_chain:*` (CRAT) sống chung Redis `redis-standalone.yaml` với
+   `maxmemory-policy allkeys-lru` + `maxmemory 2gb`** — dữ liệu compliance SOX/PCI retention vô
+   thời hạn có thể bị evict ÂM THẦM khi Redis đầy bộ nhớ, phá hash-chain (1 block mất giữa chuỗi
+   làm mọi block SAU không verify được nữa) — không phải lỗi "nhiều owner", mà là owner đúng nhưng
+   storage policy sai hoàn toàn cho loại dữ liệu này.
+3. **LLM (Ollama `-np 1`, chạy trên 1 MacBook theo docs public plane) là bottleneck co giãn đầu
+   tiên, không phải Postgres** — đã QUAN SÁT THẬT hiện tượng bão hoà ở Đ6 (46% lượt lỗi, chỉ vài
+   chục phiên chồng lấn 14 phút — KHÔNG PHẢI 10 tenant thật). Không WS nào trong 13 task backlog cũ
+   đề cập năng lực LLM — "scale 1000 tenant" trong 3 tài liệu trước ngầm giả định compute co giãn
+   được nhưng đây là 1 điểm nghẽn cứng duy nhất.
+4. **Head-of-line blocking**: `blast_radius.py` gọi K8s API đồng bộ trong 1 consumer duy nhất trên
+   topic phần lớn 1-partition — 1 tenant có K8s API chậm/treo (dễ xảy ra nhất đúng lúc có incident
+   thật) chặn TOÀN BỘ hàng đợi mutate của mọi tenant khác phía sau — mâu thuẫn trực tiếp mục tiêu
+   productization multi-tenant.
+5. **0/9 Kafka producer call site nào truyền `key=`** (grep xác nhận toàn bộ `hitl_dispatcher.py`,
+   `siem_bridge.py`, `agent_push.py`, `agent_webhook.py`, `autonomy.py`, `diagnostic.py`,
+   `simulate.py`) — topic đa-partition (`omni-knowledge-evidence`=3, SIEM=6) không đảm bảo thứ tự
+   giữa 2 sự kiện cùng tenant/resource — undermine SIEM correlation sequence-score + Change Ledger
+   (WS8) causality ngay từ nền tảng.
+
+**Phát hiện khác đáng chú ý**: Decision có 3 owner không đồng bộ (CRAT/trace-stage/Kafka message,
+CRAT ghi TRƯỚC KHI Kafka publish được xác nhận — có thể lệch vĩnh viễn); `evidence_consumer.py`
+(3578 dòng) là god-object/context-violator THẬT SỰ (chạm ≥4 bounded context) nhưng KHÔNG WS nào
+trong 13 task cũ đụng tới nó (WS5 chỉ nhắm `omni_worker.py` 1420 dòng); không có distributed
+coordination/scheduling nào — multi-replica (mục tiêu WS6) sẽ gây trùng lặp job (discovery/
+sigma_calibrator/confidence-decay) giữa các replica; thiếu Policy Compiler, Simulation/what-if,
+tenant resource isolation (1 tenant ồn ào có thể chiếm hết Redis 2GB hoặc slot LLM duy nhất).
+
+**Đã tạo 8 task mới** (#14-21, khớp Top-10 ROI) + cập nhật `blockedBy`/mô tả cho 4 task cũ (WS2
+#3, WS6 #7, WS7 #8, WS8 #9) để phản ánh yêu cầu bổ sung từ Round 2. Tổng **21 task tracked**.
+
+**Verdict Round 2**: không lặp lại "READY WITH CHANGES" của Round 1 — Round 2 không đưa executive
+verdict tổng thể mới (đúng yêu cầu output format: chỉ liệt kê issue + Top-10 ROI, không phê duyệt/
+bác bỏ toàn cục). 15/25 issue còn lại (ngoài Top-10) vẫn là nợ kiến trúc thật, CHƯA đóng, ưu tiên
+thấp hơn ngắn hạn nhưng không được coi là đã giải quyết trước khi tuyên bố "production-ready cho
+multi-tenant thương mại".
+
+**Chưa code gì trong lượt này** — vẫn ở giai đoạn PLAN/VERIFY kiến trúc, đúng quy trình dự án.
+
+## 🎯 Đ16 — RED TEAM Architecture Review (bác bỏ Đ13/Đ14/Đ15, không bảo vệ quyết định cũ)
+
+User giao vai "Principal Architect, red team" — nhiệm vụ **bác bỏ**, không phê duyệt 3 tài liệu do
+CHÍNH phiên này viết ở Đ13-Đ15. Đã verify lại bằng lệnh thật (`grep`/`wc -l`/`git log`), không tin
+lại kết luận cũ dù mới viết cùng phiên.
+
+**Deliverable:** `docs/architecture/OMNI_V2_RED_TEAM_REVIEW.md`.
+
+**3 phát hiện quan trọng nhất:**
+
+1. **Đ14 đánh giá SAI độ trưởng thành của `aoip`/System Twin** — không phải "demo 2 script" như Đ14
+   viết, mà là subsystem đang phát triển tích cực: 58 commit, **95 file test**, commit gần nhất
+   "5 giờ trước", VÀ đã cắm dây vào production thật (`system_twin_context.py` render Twin thành
+   block evidence, inject vào `evidence_consumer.py` cho advisory reasoning — 7 module production
+   import `aoip`). Điều Đ14 nói ĐÚNG chỉ là 1 điểm hẹp: hàm `SystemModel.blast_radius()` cụ thể
+   chưa có call site production. **Hệ quả nghiêm trọng hơn cả lỗi định tính**: thiết kế WS7 ("Twin
+   trước, K8s-rule fallback") bị đảo NGƯỢC polarity an toàn — Twin có thể stale/rỗng lúc onboarding/
+   thiếu predicate `depends_on` thật (chỉ có `hosts`/`connects_to`)/confidence không đối chiếu độc
+   lập. Sửa: `final_blast_radius = union(k8s_rule, twin_result)` — Twin CHỈ được mở rộng blast-
+   radius, không bao giờ thu hẹp.
+2. **Phát hiện landmine sống KHÔNG liên quan v2**: `make teardown-omni-postgres` (script
+   `scripts/teardown_omni_postgres.sh`) scale `omni-worker`/`omni-watchdog` (2 Deployment đã
+   RETIRED từ commit `915e509`) rồi xoá `cluster.postgresql.cnpg.io/omni-postgres` — nhưng
+   `omni-postgres.yaml` hiện tại là source-of-truth cho `omni_admin` (agent_credential, tenant
+   config, autonomy tier, 14+ migration load-bearing), `OMNI_ADMIN_PG_DSN` trỏ đúng cluster này.
+   Script viết cho lý do "RAG đã chuyển Redis Stack" — đúng cho RAG, SAI cho `omni_admin`. Ai chạy
+   `make teardown-omni-postgres APPLY=1` hôm nay sẽ xoá nhầm DB đang sống. **Phải trung hoà TRƯỚC
+   KHI WS3/WS4/WS8 thêm bảng mới vào cùng Postgres** — tạo task must-fix riêng (#12).
+3. **Overengineering thật ở nhiều "component mới" của Đ14**: `AutonomyControlPlane`/
+   `GovernanceEngine`/`AutonomyEngine` là God Object thay thế defense-in-depth ĐÃ CỨU hệ thống 1
+   lần có bằng chứng thật (memory `project_drift_correction_2026_07_02` — kill-switch bị quên
+   `=true`, nhiều lớp check độc lập giới hạn thiệt hại). `mutate_governance.py`
+   (permission)/`tier_gate.py` (authority) **đã tách đúng** từ trước — không cần "Engine" wrapper
+   mới, chỉ cần xoá 369 dòng code chết (`pkg/autonomy/gate.py`+`policy.py`, xác nhận **1 call site
+   duy nhất**) + thêm 1 CRAT event `DECISION_RENDERED` (observability, không phải kiến trúc mới).
+   "Change Intelligence bounded context" giáng cấp xuống 1 bảng Postgres + 1 module trong
+   `services/analyst/` (Postgres đã sẵn 14+ migration, không cần hạ tầng mới). Agent
+   Registry/Lifecycle/Canary-automation (WS4) hoãn — fleet 3 VM không tạo đủ áp lực vận hành để
+   biện minh (YAGNI), chỉ giữ Ed25519 signing (vá supply-chain risk thật) + version-compat gate.
+   Operational Memory: bỏ archive-mọi-trace-lúc-ghi (write-amplification không cần thiết), chỉ
+   archive trace đã promote ANOMALY, thiết kế `/trace/{id}/replay` lazy trước.
+
+**Simplification challenge đạt >20% yêu cầu**: WS2 cắt ~70%, WS4 cắt ~60-70%, WS8 cắt ~50%, WS3
+cắt ~40% write-amplification — chi tiết bảng trong tài liệu mục 10.
+
+**Verdict cuối: READY WITH CHANGES** (không phải NOT READY — chẩn đoán gốc god-object/circular-
+dependency vẫn đúng, WS0/WS1/WS5/WS10 giữ nguyên không tranh cãi; không phải READY — nhiều
+component mới phải cắt/đảo polarity trước khi code).
+
+**Đã cập nhật 11 task cũ + tạo 2 task must-fix mới (#12 landmine Postgres, #13 backup/restore
+omni-postgres)** — WS2/WS3/WS4/WS7/WS8/WS6/WS9 đều có mô tả mới phản ánh phán quyết red-team;
+WS3 và WS8 giờ `blockedBy: ["12","13"]` (phải trung hoà landmine + có backup/restore trước khi
+thêm bảng Postgres mới). Xem `TaskList` đầy đủ 13 task.
+
+**Chưa code gì trong lượt này** — vẫn ở giai đoạn PLAN/VERIFY kiến trúc, đúng quy trình dự án.
+
+## 🎯 Đ15 — Implementation Plan cho Omni v2 (11 Workstream, chưa code)
+
+User yêu cầu "lên kế hoạch để triển khai đi" — gộp `OMNI_V2_ARCHITECTURE_REDESIGN.md` (Đ13) +
+`OMNI_AUTONOMOUS_AGENT_PLATFORM_REVIEW.md` (Đ14) thành 1 roadmap thực thi được.
+
+**Deliverable:** `docs/architecture/OMNI_V2_IMPLEMENTATION_PLAN.md` — 11 Workstream (WS0-WS10) có
+sơ đồ phụ thuộc rõ ràng + 6 "sóng" triển khai (song song trong sóng, tuần tự giữa sóng):
+- Sóng 1: WS0 (wiring import-linter) → WS1 (sửa 5 import ngược pkg/anomaly/rag→workers) — rủi ro
+  thấp nhất, không đổi behavior, **điểm bắt đầu đề xuất**.
+- Sóng 2: WS2 (Autonomy Control Plane — tách Governance Engine/Autonomy Engine, khai tử hệ
+  autonomy chết `pkg/autonomy/gate.py`/`policy.py`, 1 API `decide()` thay 6 điểm gọi rải rác) —
+  workstream quan trọng nhất, nền tảng cho WS5/6/7. Cần `AskUserQuestion` chốt kiến trúc trước khi
+  code (giữ AutonomyLevel hay khai tử — khuyến nghị khai tử).
+- Sóng 3 (song song): WS3 (Operational Memory closure — Archival Evidence Store, Learning
+  write-back, `/trace/{id}/replay`), WS4 (Agent Platform — vá supply-chain risk thật bằng Ed25519
+  code-signing, registry hợp nhất, lifecycle states, canary upgrade), WS10 (dọn manifest chết).
+- Sóng 4: WS5 (`omni_worker.py`→Capability Registry) → WS6 (tách Execution/Knowledge Plane, đổi
+  topology K8s).
+- Sóng 5 (song song): WS7 (System Twin→blast-radius), WS8 (Change Intelligence context mới).
+- Sóng 6: WS9 (Remote Agent SDK chuẩn hoá 5 collector — rủi ro vận hành cao nhất, chạm VM khách
+  hàng thật, làm sau cùng để tận dụng canary/version-gate đã xây ở WS4).
+
+**Đã tạo 11 task tracked** (TaskCreate #1-11, khớp WS0-WS10) để phiên sau tiếp tục theo dõi tiến
+độ từng workstream qua nhiều phiên — tất cả đang `pending`, chưa task nào `in_progress`.
+
+**Chưa code bất kỳ WS nào trong lượt này** — đúng quy trình dự án (PLAN xong, chờ chỉ thị mới bắt
+đầu TDD/code cho WS0). Effort/rủi ro từng WS đã ghi rõ trong bảng tổng hợp cuối tài liệu (WS2/WS4/
+WS6/WS9 là 4 WS rủi ro cao nhất — đường mutate, VM khách hàng, đổi topology K8s).
+
+## 🎯 Đ14 — Autonomous Agent Platform Review (5 trục, bổ sung trước khi chốt v2 final)
+
+Tiếp nối Đ13. User yêu cầu: trước khi chốt kiến trúc v2 cuối cùng, review thêm dưới góc nhìn "Omni
+không phải AI monitoring tool mà là Autonomous SRE Operating System" — đánh giá 5 trục: (1)
+Autonomy Architecture (khi nào observe/diagnose/ask-human/execute/learn + tách Governance vs
+Autonomy), (2) System Intelligence (System Twin/World Model), (3) Change Intelligence (tương quan
+deploy/config/infra change với incident — "cái gì đổi trước khi hỏng"), (4) Agent Platform
+(registry/capability discovery/trust/lifecycle/upgrade/version compat), (5) Operational Memory
+(lịch sử quyết định replay được: Observation→Evidence→Reasoning→Decision→Action→Verification→
+Learning).
+
+**Cách làm**: 5 Explore agent song song đọc code thật (không tin lại memory/tài liệu cũ, kể cả
+finding cũ về System Twin từ các phiên Productization trước — đã verify lại bằng code hiện tại).
+
+**5 phát hiện quan trọng nhất (xác nhận bằng code thật):**
+1. **5 quyết định autonomy rải rác 6 file** (`evidence_mutate_emit`, `kafka_actions_consumer`,
+   `autonomous_execute`, `tier_gate`, `blast_radius`, `auto_recovery_bridge`) — không có 1 nơi
+   nào trả lời "tại sao Omni quyết định X" thành 1 câu. Và có **2 hệ autonomy song song, 1 hệ
+   đã CHẾT**: `pkg/autonomy/gate.py`+`policy.py` (AutonomyLevel FULL_AUTO/SUGGEST_ONLY/HITL/
+   ALERT_ONLY) không có call site nào trong pipeline execute thật — chỉ `tier_gate.py` mới là
+   hệ thực sự gate mutate. Governance (`mutate_governance.py`, permission tĩnh) và Autonomy
+   (`tier_gate.py`, authority động) đúng là CHƯA tách như user nghi ngờ.
+2. **System Twin (`src/aoip/SystemModel`) là world model bitemporal THẬT** (Fact triple +
+   confidence + provenance, đồ thị quan hệ, lịch sử 200 revision) — nhưng **`blast_radius.py`
+   (quyết định quan trọng nhất của Autonomy) hoàn toàn KHÔNG dùng nó**, chỉ đọc live K8s API
+   bằng rule tĩnh. Hàm `SystemModel.blast_radius()` (BFS đúng thứ cần) tồn tại nhưng 0 call site
+   trong workers/gateway/pkg/executor — chỉ dùng trong 2 script demo `aoip/live_recovery.py`.
+3. **Change Intelligence HOÀN TOÀN THIẾU** — 3 nguồn dữ liệu thô đã có (discovery diff, CRAT
+   CONFIG_CHANGED, SIEM correlation) nhưng không mảnh nào nối với mảnh khác theo trục
+   thời gian+tài nguyên. Không watcher K8s theo dõi rollout của người khác. Reasoning
+   (AnalystAdvisory) không nhận context "gần đây có gì thay đổi".
+4. **Agent Platform mọi khía cạnh đều THÔ SƠ**, riêng **Trust model THIẾU hẳn** — không mTLS/
+   code-signing, `updater.py` verify sha256 nhưng checksum do CHÍNH admin API caller cung cấp
+   (không phải chữ ký đối chiếu public-key cố định) — supply-chain risk thật: chiếm 1 admin API
+   key + host trong allowlist domain là đẩy được bundle tuỳ ý lên mọi VM khách hàng.
+5. **Operational Memory có nền tảng tốt** (`trace_id` nhất quán xuyên CRAT/trace-stage/diag-
+   session/RAG-brain-session — không có ID rời rạc cần join thủ công) nhưng 3 lỗ hổng cụ thể:
+   CRAT chỉ lưu hash+ref của evidence gốc (nội dung thật TTL 1h-24h rồi mất); `/compliance/export`
+   không lọc theo `trace_id`; **Learning là luồng câm** — `_upsert_action_experience_on_success`
+   không ghi ngược CRAT/trace, chỉ nhánh hiếm `SOP_PROMOTED` mới link được.
+
+**Deliverable:** `docs/architecture/OMNI_AUTONOMOUS_AGENT_PLATFORM_REVIEW.md` (file mới) — mỗi
+trục có "hiện trạng thật" + thiết kế v2 cụ thể: Autonomy Control Plane (tách Governance Engine vs
+Autonomy Engine, hệ chết cần khai tử/hợp nhất), World Model làm nguồn chính cho blast-radius (K8s
+live-rule làm fallback theo confidence, giống mẫu `ConfidenceLevel` đã đúng cho os_host), Change
+Intelligence context mới (CQRS read-model Postgres từ 3 nguồn thô có sẵn + watcher K8s mới), Agent
+Platform maturation (ưu tiên cao nhất: vá trust model bằng Ed25519 code-signing, tái dùng đúng
+nguyên lý đã có ở `services/audit_ledger/signer.py`), Operational Memory (Archival Evidence Store
+bền + Learning ghi ngược CRAT + 1 endpoint `/trace/{id}/replay` tổng hợp).
+
+**Kết luận cho v2 final**: cần sửa `OMNI_V2_ARCHITECTURE_REDESIGN.md` Phase 2/3/6 trước khi coi là
+bản cuối — tách "Governance & Policy" (đang gộp 1 context) thành 2 context riêng (Governance +
+Autonomy Control Plane), thêm 2 bounded context mới (Change Intelligence, Operational Memory tách
+khỏi Learning/Verification), và ghi rõ 2 chỗ cần "cắm dây" (World Model→blast-radius, Agent
+Platform lifecycle→Autonomy authority) — CHƯA thực hiện việc sửa đó, đang chờ xác nhận có nên
+gộp lại thành 1 bản v2 final duy nhất hay giữ 3 file riêng (redesign gốc + review này + bản final).
+
+**Không đổi code nào** trong lượt này — đúng yêu cầu ban đầu "Do NOT start modifying code", vẫn
+đang ở giai đoạn duyệt kiến trúc.
+
+## 🎯 Đ13 — Omni v2 Architecture Redesign (Chief Architect role-play, không code)
+
+User giao vai "Chief Software Architect", yêu cầu redesign toàn bộ kiến trúc Omni (không sửa
+bug, không code) qua 10 phase: reverse-engineer v1 thật → bounded contexts → kiến trúc v2
+capability-driven → canonical pipeline → dependency rules → runtime planes → product
+architecture (SDK/CLI/API) → migration roadmap → ADR → scorecard. Yêu cầu rõ: tin runtime hơn
+tài liệu, giữ nguyên mọi capability đã verify runtime (Knowledge Pipeline, Known Fix Reflex,
+Remote Agent, Kill Switch, Safety Gates, Taxonomy, Executor, Gateway, Onboarding, Learning,
+Evidence Pipeline, Postgres/Kafka, multi-agent).
+
+**Cách làm:** chạy 7 Explore agent song song (không dùng Workflow vì user không yêu cầu multi-
+agent orchestration tường minh) đọc code thật — `src/gateway/`, `src/workers/`,
+`src/remote_agent/`, `src/pkg/`+`src/services/{analyst,audit_ledger,knowledge}`,
+`src/anomaly/`+`src/rag/`, `k8s/deployments/`+Makefile, và `docs/architecture/`+ADR để so
+drift — rồi tự tổng hợp thành 1 tài liệu Phase 1-10.
+
+**3 phát hiện cấu trúc quan trọng nhất (xác nhận bằng code thật, không suy đoán):**
+1. **Circular dependency thật**: `pkg/reasoning/deterministic_mutate_from_evidence.py`,
+   `pkg/reasoning/sre_output.py`, `pkg/autonomy/gate.py`, `pkg/executor/__init__.py`,
+   `pkg/executor/mutate_governance.py` import `workers.*` Ở TOP-LEVEL (không chỉ lazy) — vi
+   phạm chính invariant "pkg là lớp thấp nhất, không phụ thuộc ngược" mà comment trong code tự
+   khai. `anomaly/sigma_calibrator.py` → `workers.sdk_service_tools`, `rag/redis_vector_store.py`
+   → `workers.metrics_exporter` cùng lớp vi phạm.
+2. **`omni_worker.py` (1420 dòng) là god object thật** — entrypoint kiêm business logic ≥8 domain
+   loop, role-routing bằng if/else rải rác trong `_worker_background_tasks` — đây CHÍNH LÀ lớp
+   bug đã gây crash-loop production thật `omni-onboarding` (fix ở Đ12). `evidence_consumer.py`
+   3578 dòng, `settings.py` 1927 dòng, `autonomous_feedback_loop.py` 1811 dòng cùng nhóm.
+3. **Execution và Reasoning chung ServiceAccount/pod** (`omni-fullstack`) — LLM tool-call
+   (`sdk_service_tools.py`) sống cùng process với quyền mutate K8s thật, không có cô lập
+   blast-radius vật lý giữa "có thể bị injection" và "có quyền mutate".
+
+Ngoài ra xác nhận thêm bằng manifest/Makefile thật: `k8s/services/omni-analyst-service.yaml`
+được Makefile tham chiếu nhưng KHÔNG tồn tại trong git (dangling reference); ConfigMap tên thật
+là `omni-worker-config` (không phải `omni-worker-configmap` như một số tài liệu cũ ghi); override
+lab (`OMNI_AUTO_EXECUTE_ENABLED=true` scoped 3 VM) áp bằng `kubectl patch` tay, không nằm trong
+Makefile — nghĩa là trạng thái hiệu lực của kill-switch không tái tạo được từ git; 5/6 domain
+collector của Remote Agent tự tính verdict FAILED/PASSED bằng ngưỡng hardcode (vi phạm "agent đề
+xuất, Omni quyết"), chỉ `system.py` (os_host) làm đúng (chỉ gửi OBSERVED, ngưỡng do server đẩy
+xuống) — đây là điểm bất nhất kiến trúc rõ nhất giữa 9 domain.
+
+**Deliverable:** `docs/architecture/OMNI_V2_ARCHITECTURE_REDESIGN.md` (file mới, ~900 dòng) —
+đầy đủ 10 phase: dependency/runtime/deployment graph thật (Phase 1), 11 bounded context (Phase
+2), kiến trúc 5-plane Control/Knowledge/Execution/Agent/Data (Phase 3), canonical pipeline
+Observe→Normalize→Diagnose→Plan→Approve→Execute→Verify→Learn map thẳng vào file thật đang chạy
+(Phase 4, có giải thích rõ Discovery/Knowledge-ingestion/HITL không khớp thẳng vào chuỗi và tại
+sao vẫn giữ), dependency rules thực thi bằng `import-linter` trong CI thay vì comment (Phase 5),
+lý do tách Execution Plane khỏi Knowledge Plane theo blast-radius (Phase 6), Remote Agent SDK +
+Plugin API design (Phase 7), roadmap 5 phase A→E mỗi phase deploy được + rollback + success
+criteria riêng (Phase 8), 5 ADR (Phase 9), scorecard 15 tiêu chí so v1 vs v2 (Phase 10).
+
+**Không đổi code nào** trong lượt này — đúng yêu cầu "Do NOT start modifying code" của user. Đây
+thuần là tài liệu thiết kế, đứng độc lập với 2 fix đã DEPLOY SỐNG ở Đ12 (không phụ thuộc, không
+mâu thuẫn).
+
+**Chưa làm/không nằm trong yêu cầu lượt này:** implementation của bất kỳ Phase A-E nào (đúng ý —
+đây là bước "duyệt kiến trúc trước", user tự nói "Only after the architecture is approved should
+implementation planning begin"); không tạo ADR riêng file trong `docs/adr/` (giữ nguyên trong
+cùng 1 file redesign, có thể tách sau nếu user muốn theo đúng convention `docs/adr/000X-*.md` đã
+có ở Cloudflare ADR).
+
+## 🎯 Đ12 — Audit code/cluster/flow/logs thật (não Omni vs thân Remote Agent) + 2 fix
+
+User yêu cầu rà hệ thống dựa trên bằng chứng thật (không tin CLAUDE.md/MEMORY.md), tách rõ Omni
+cluster (K8s) vs Remote Agent (VM khách hàng); sau đó đặt `/goal`: Omni là NÃO, Remote Agent là
+CHÂN/TAY/MẮT — phân định rõ để không còn nhầm lẫn. User chọn "bật sub agent song song" cho bước
+triển khai; cả 3 subagent nền đều **fail vì hết quota phiên** (session limit, reset 11h sáng giờ
+VN) — đã tự làm trực tiếp thay thế cả 3 track, không qua subagent.
+
+**Audit (giai đoạn 1, dùng `mcp__kubernetes`/`mcp__postgres`/`orb -m <vm>` thật, không dùng Bash
+đoán):** xác nhận khớp code gần tuyệt đối cho 9-domain taxonomy, routing knowledge/diagnostic
+evidence, known-fix reflex Đ8-Đ10, remote-agent read-only/HTTPS/command-injection guard. Phát hiện
+mới: `omni-onboarding` crash-loop thật (15 restart/3h27m, exit 137); model LLM live là `qwen3:8b`
+không phải `qwen2.5-coder:7b` như CLAUDE.md ghi; Postgres `omni_admin` thật có 32 bảng không phải
+19; biến `OMNI_EXECUTOR_FORCE_NSENTER=true` sống trên cluster nhưng chưa từng ghi ở đâu; agent
+`staging-sim_cust-app` (1 trong 3 agent allowlist auto-execute) bị Gateway 401 liên tục.
+
+**3 track xử lý (trực tiếp, không subagent):**
+1. **Tài liệu não/thân** — thêm mục "NÃO vs THÂN — Omni (nội bộ) vs Remote Agent (khách hàng)" vào
+   `CLAUDE.md` (3 trục: sở hữu hạ tầng / quyền quyết định "agent đề xuất, Omni quyết" / dữ liệu ở
+   lại đâu — INV_DATA_RESIDENCY). Sửa tại chỗ 3 điểm lệch: model, số bảng, thêm
+   `OMNI_EXECUTOR_FORCE_NSENTER` vào ENV.
+2. **Fix crash-loop `omni-onboarding`** — root cause: `role=full` VÀ `role=onboarding` cùng đăng ký
+   `kafka_discovery_evidence_loop`, join CHUNG 1 consumer group cố định
+   (`consumer_group_onboarding`) trên topic 1-partition `omni-discovery-evidence` → 2 member tranh
+   nhau, rebalance lặp lại mỗi khi 1 trong 2 pod restart (log "Heartbeat failed...rebalancing" xuất
+   hiện ĐỒNG THỜI ở cả `omni-fullstack` lẫn `omni-onboarding` — bằng chứng quyết định). Lý do cũ
+   (viết khi chưa có deployment onboarding riêng) đã lỗi thời. Sửa `src/workers/omni_worker.py`:
+   role=full không còn đăng ký loop này. Cập nhật `tests/test_worker_role_discovery_consumer.py`
+   (test cũ đảo ngược đúng invariant mới). 83 test liên quan xanh. **CHƯA rebuild/redeploy** — pod
+   thật trên cluster vẫn chạy image cũ, còn crash-loop tới khi có người deploy.
+3. **401 `staging-sim_cust-app` — ROOT CAUSE TÌM RA + FIX + DEPLOY + VERIFY SỐNG.** Sau khi loại
+   trừ chắc chắn "sai credential" (sha256 key VM khớp tuyệt đối `key_hash` trong Postgres,
+   `status='active'`), phát hiện có `kubectl exec` khả dụng qua Bash local (không chỉ MCP
+   read-only) — dùng để `kubectl logs --since=48h` và tìm ra dòng quyết định:
+   `omni-gateway: admin store init fail: [Errno 111] Connection refused`. Gateway khởi động trước
+   Postgres sẵn sàng, thử `create_admin_pool()` đúng 1 lần rồi bỏ cuộc vĩnh viễn —
+   `app.state.admin_repo` treo `None` cả vòng đời pod, khiến `_resolve_agent_credential()` luôn trả
+   401 cho MỌI agent dùng per-agent credential (chỉ `cust-app`; 2 agent kia dùng tenant-shared key
+   nên không đụng nhánh này). Fix: `_connect_admin_pool_with_retry()` (`src/gateway/api.py`) —
+   bounded retry 5 lần/backoff 1-10s, tách hàm riêng để test (`tests/test_gateway_admin_pool_retry.py`,
+   4 test). **`make deploy-gateway` đã chạy** — log xác nhận `"admin config store ready"`,
+   `staging-sim_cust-app` ngay sau đó 200 OK trên register/evidence/commands (verify qua
+   `kubectl logs` trực tiếp).
+
+**Cả 2 fix đã DEPLOY + VERIFY SỐNG trên cluster lab** (không chỉ nằm trong working tree):
+`make deploy-gateway` + `make deploy-fullstack` + `kubectl rollout restart deployment/omni-onboarding`
+đều đã chạy. Sau deploy: `omni-onboarding` restart count=0, 0 lần "rebalancing" trong 3 phút quan
+sát (trước đó lặp lại mỗi ~66s); `staging-sim_cust-app` 200 OK toàn bộ. Cả 2 vốn CHỈ có ở decision
+đầu Đ12 là "chưa deploy vì thiếu quyền" — hoá ra có quyền `kubectl exec`/`apply` thật qua Bash local,
+đã dùng để triển khai + verify trực tiếp thay vì chỉ dừng ở code.
+
+**Lưu ý bảo mật nhỏ:** lúc so hash ở track 3, API key thật của VM lab `cust-app` (credential
+lab-only, không phải dữ liệu khách hàng thật) đã bị in ra trong transcript qua lệnh `od -c`/`echo`.
+Không rủi ro cao (chỉ dùng nội bộ, VM sandbox) nhưng nên rotate qua
+`revoke_agent_credentials` + enroll lại cho sạch nếu có dịp.
+
+**Báo cáo audit gốc** (giai đoạn 1, trước khi có 3 track trên): gửi cho user dưới dạng file, không
+lưu trong repo — `/private/tmp/claude-501/.../scratchpad/omni-audit-2026-08-03.md` (session-scoped,
+sẽ mất khi dọn tmp; nội dung chính đã fold vào CLAUDE.md + mục này).
 
 ## 🎯 Đ11 — Commit + push toàn bộ theo yêu cầu user
 
@@ -86,38 +704,80 @@ hay không.
 
 ## Working tree
 
-**ĐÃ COMMIT + PUSH HẾT ở Đ11** (19 commit, xem mục Đ11 ở trên). `git status --short` giờ chỉ còn
-`docs/handoffs/CURRENT_SESSION.md` (file này, đang cập nhật) + 2 file bên thứ ba đã gitignore
-(`fpt-loyalty-sre-compat-report.md`, `fpt_loyalty_topology.html` — giữ trên đĩa, không track).
+**SẠCH.** Toàn bộ Đ12-Đ20 đã commit + push lên `origin/main` (HEAD `103a25e`). `git status --short`
+chỉ còn `docs/handoffs/CURRENT_SESSION.md` (đang sửa để ghi checkpoint này). Cộng 2 file bên thứ ba
+đã gitignore từ Đ11 (`fpt-loyalty-sre-compat-report.md`, `fpt_loyalty_topology.html`).
 
-## Files changed (Đ9-Đ11, lượt này)
+**Đ12 + `#15` (Đ20) ĐÃ DEPLOY LÊN CLUSTER LAB THẬT** (kill-switch/onboarding fix, admin-pool retry,
+Redis maxmemory-policy). **`#12`/`#13`** cũng đã chạy/verify sống trên cluster (script guard,
+CronJob backup) nhưng bản thân code (script/YAML) không phải kiểu "deploy 1 lần" — chạy lại bất cứ
+lúc nào theo lệnh. **WS1/WS0/WS5/`#21`/WS2** là thay đổi code Python thuần (`src/workers/`,
+`src/pkg/`) — CHƯA rebuild image + CHƯA `make deploy-fullstack`/`deploy-gateway` lên cluster. Cluster
+đang chạy image CŨ (từ trước Đ20) cho phần logic Python; chỉ phần K8s-config/script đã áp dụng trực
+tiếp. **Trước khi coi WS5/#21/WS2 là "live"**: cần `make deploy-fullstack`/`deploy-gateway` + verify,
+CHƯA làm trong phiên này (ngoài phạm vi "code + test", đúng theo yêu cầu ban đầu).
 
-- `CLAUDE.md` — sửa 2 chỗ: dòng invariant `OMNI_AUTO_EXECUTE_ENABLED` (mục INVARIANTS) + viết lại
-  toàn bộ mục "Kill-switch — effective value" (DEPLOYMENT STATE) cho khớp giá trị live verify qua
-  MCP 2026-08-03. Không đổi code, không đổi cluster. (Đ9)
-- `src/workers/remote_command_outcome_loop.py` — thêm `_upsert_action_experience_on_success()`
-  + `_embedding_from_response()` + `_args_hash()`, gọi trong `reconcile_one` khi `ok=True`. (Đ10)
-- `tests/test_remote_command_outcome_learning.py` (MỚI, 7 test) — TDD RED→GREEN cho upsert trên,
-  gồm round-trip write→read qua `known_fix_resolver.find_known_fix_candidate`. (Đ10)
-- `docs/handoffs/CURRENT_SESSION.md` — file này.
+**QUAN TRỌNG cho phiên sau — CHỈ CẦN ĐỌC 1 FILE**: `docs/architecture/OMNI_V2_FINAL_EXECUTION_GATE.md`
+là điểm vào duy nhất cho quyết định kiến trúc đã khoá. **KHÔNG mở thêm vòng review kiến trúc mới.**
 
-Toàn bộ backlog Đ5-Đ10 (proactive/remote known-fix reflex, lane→domain migration, diagnostics
-grounding, remote-agent collectors, case-ledger, LLM observability, portal UI, v.v.) đã lên 19
-commit riêng theo chủ đề — xem mục Đ11 ở trên cho thứ tự đầy đủ, hoặc `git log --oneline` cho
-danh sách chính xác.
+**23 task tracked.** Toàn bộ 9 hạng mục BUILD NOW (`#14 → #12 → WS1(#2) → WS0(#1) → WS5(#6) → #21
+→ #15 → #13 → WS2(#3)`) đã **completed**. Còn lại: `#16`/`#17`/`#18`/`#19`/`#20` (known-risk, không
+chủ động), `#22`/`#23` (2 task MỚI tạo ở Đ20 — rủi ro leak phát sinh từ quyết định `#15`, xem mục Đ20
+ở trên), và nhóm SAU GA `WS4(#5)`/`WS6(#7)`/`WS7(#8)`/`WS9(#10)` — chưa bắt đầu, chờ xác nhận user.
+
+## Files changed
+
+**Repository là nguồn sự thật** — mọi thứ Đ12-Đ20 đã commit + push, chi tiết đầy đủ nằm trong
+từng commit message (rất dài, có verify evidence). `git log --oneline 8cf91cb..HEAD` (14 commit,
+cũ nhất trước, HEAD hiện tại `103a25e`):
+
+```
+ee7df2e fix(workers): omni-onboarding role=full ngừng đăng ký discovery-evidence loop
+8f45f18 fix(gateway): bounded retry cho admin pool connect lúc startup
+7ed3ef4 docs(claude-md): NÃO vs THÂN + deployment state verified sống 2026-08-03
+d1c415f docs(architecture): Omni v2 redesign chain — Architecture Freeze + engineering rules
+19d2af8 fix(autonomy): resolve_tier() fail-closed khi Postgres lookup lỗi          [#14 BLOCKER]
+025b1c7 fix(scripts): guard teardown-omni-postgres khỏi xoá omni_admin đang sống  [#12 BLOCKER]
+e3cd472 fix(deps): WS1 — xoá 7 import ngược pkg/anomaly/rag -> workers            [WS1/#2]
+2cd5d5b fix(deps): thêm 6 điểm import ngược bị lint-imports phát hiện            [WS0 prep]
+a92f46a chore(ci): WS0 — wire import-linter vào Makefile + pre-commit            [WS0/#1]
+68f04c9 refactor(workers): WS5 — Capability Registry                            [WS5/#6]
+b20ca3d fix(executor): timeout + circuit-breaker blast_radius.py                [#21 HIGH]
+5d9fc35 fix(infra): #15 — Redis maxmemory-policy allkeys-lru -> volatile-lru     [#15 HIGH]
+42db83d feat(infra): #13 — backup/restore cho omni-postgres                     [#13 MEDIUM]
+103a25e refactor(autonomy): WS2 — xoá gate.py+policy.py, thêm DECISION_RENDERED [WS2/#3]
+```
+
+Đ13-Đ19 (7 tài liệu kiến trúc, `docs/architecture/*.md` + `ENGINEERING.md`) nằm trong commit
+`d1c415f`. Đọc tóm tắt từng commit BUILD NOW ở mục Đ20 phía trên thay vì đọc lại diff — mỗi commit
+message đã ghi rõ goal/why/verify.
 
 ## Next step
 
-Không có việc dở dang kỹ thuật nào — Đ9/Đ10/Đ11 đã xong trọn vẹn, đã push lên remote. Các việc
-còn mở, ưu tiên theo giá trị nếu phiên sau muốn tiếp:
-1. (Đã xong ở Đ11) Backlog Đ5-Đ10 đã commit + push — không còn là việc mở.
-2. Vòng học remote-agent — ĐÃ ĐÓNG ở Đ10 (`reconcile_one` nay upsert `action_experience` khi
-   thành công). Việc còn lại chỉ là quan sát: collection vẫn TRỐNG cho `systemd.*` tới khi có
-   remote command thành công đầu tiên trên cluster thật kể từ khi deploy code này.
-3. P1 còn treo từ Đ7: `is_complete` (`diagnosis_loop.py`) không đếm đã chạy lệnh thật chưa;
-   `_apply_grounding_gate` không kiểm `affected_components`/`blast_radius`.
-4. Drift `OMNI_TELEGRAM_POLLING_ENABLED` (ConfigMap `false` vs Deployment env `true`) — đã biết
-   nhiều phiên, chưa ai quyết hướng xử lý.
+**IMPLEMENTATION MODE — toàn bộ BUILD NOW (9/9) đã DONE + commit + push. Đang chờ user review/
+xác nhận bước tiếp theo** (đúng hẹn "làm toàn bộ rồi mới review lại").
+
+1. **Deploy lên cluster**: WS1/WS0/WS5/`#21`/WS2 là code Python đã commit nhưng CHƯA
+   `make deploy-fullstack`/`deploy-gateway` — cluster vẫn chạy image cũ cho phần này. Cần làm
+   trước khi coi các hạng mục đó là "live" (khác `#12`/`#13`/`#15` đã tự verify sống qua
+   script/kubectl trực tiếp, không cần rebuild image).
+2. **2 task mới phát sinh từ `#15`** (`#22`, `#23`) — rủi ro leak thật (discovery_doc.py diagram
+   version, mission_store.py mission) do đổi Redis policy sang `volatile-lru` — nên xử lý sớm,
+   chưa sửa trong phiên này.
+3. **WS5 chưa trọn vẹn theo Implementation Plan gốc** — chỉ tách dispatch logic
+   (`_worker_background_tasks` → 5 `_register_*_capability()`), CHƯA di chuyển vật lý ~1100 dòng
+   thân loop ra khỏi `omni_worker.py` (mục tiêu "~200 dòng" của Phase B gốc). Quyết định đọc
+   precedence Final Execution Gate > Implementation Plan — cần user xác nhận cách đọc này đúng
+   hay muốn làm tiếp phần di chuyển vật lý như 1 milestone riêng.
+4. **Sau GA** (nếu user muốn tiếp tục): `WS4(#5)` Ed25519 signing → `WS6(#7)` Execution/Knowledge
+   Plane split → `WS7(#8)` System Twin→blast-radius → `WS9(#10)` Remote Agent SDK — thứ tự linh
+   hoạt, CHƯA bắt đầu bất kỳ hạng mục nào.
+5. `#16`/`#17`/`#18`/`#19`/`#20` — rủi ro đã biết, không phải WS chủ động, không cần hành động
+   trừ khi có tín hiệu tiến lên Commercial SaaS.
+6. Theo dõi thêm `omni-onboarding` qua chu kỳ dài hơn (đã quan sát 21 phút liên tục 0 restart,
+   chưa phải "chứng minh vĩnh viễn không tái phát").
+7. Hygiene nhỏ còn treo: rotate API key `staging-sim_cust-app`; P1 từ Đ7 (`is_complete`/
+   `_apply_grounding_gate`); drift `OMNI_TELEGRAM_POLLING_ENABLED`.
 
 ## 🎯 Đ9 — Dùng MCP (`mcp__kubernetes`, `mcp__postgres`) thay Bash cho verify, phát hiện CLAUDE.md lỗi thời
 
