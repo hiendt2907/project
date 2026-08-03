@@ -51,3 +51,9 @@ cloudflare/k8s/*-config.yaml
 
 # Cache do wrangler tự tạo khi deploy Pages — không thuộc source.
 .wrangler/
+
+# Dữ liệu khảo sát hạ tầng/bảo mật của BÊN THỨ BA (FPT Loyalty), không thuộc
+# dự án Omni — tuyệt đối không commit (chứa IP nội bộ + phát hiện secret
+# plaintext của hệ thống production của khách hàng khác).
+/fpt-loyalty-sre-compat-report.md
+/fpt_loyalty_topology.html
