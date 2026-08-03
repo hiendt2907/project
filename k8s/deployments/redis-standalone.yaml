@@ -35,7 +35,18 @@ data:
 
     # Vector index + Kafka stream data: 2gb
     maxmemory 2gb
-    maxmemory-policy allkeys-lru
+    # volatile-lru (not allkeys-lru): task #15 — audit_chain:* (CRAT, SOX/PCI,
+    # unlimited retention by design) is written WITHOUT a TTL. allkeys-lru can
+    # evict ANY key incl. audit_chain:* under memory pressure regardless of
+    # logical DB (maxmemory-policy is instance-wide, not per-DB — a "separate
+    # logical DB" does not isolate eviction). volatile-lru only ever evicts
+    # keys that HAVE an expiry set, so a permanent audit_chain:* key is never
+    # a candidate. Audited (2026-08-03) every other no-TTL key pattern in the
+    # codebase before this switch — see docs/handoffs/CURRENT_SESSION.md for
+    # the 2 flagged follow-ups (discovery_doc.py diagram versions,
+    # mission_store.py missions) that now rely on their own retention instead
+    # of falling back to Redis eviction.
+    maxmemory-policy volatile-lru
 
     # In-cluster only (ClusterIP). Do not expose Redis publicly with protected-mode no.
     protected-mode no
