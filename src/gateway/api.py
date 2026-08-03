@@ -425,6 +425,7 @@ from gateway.routes.simulate import router as _simulate_router  # noqa: E402
 from gateway.routes.kb import router as _kb_router  # noqa: E402
 from gateway.routes.onboarding import router as _onboarding_router  # noqa: E402
 from gateway.routes.agent_enroll import router as _agent_enroll_router  # noqa: E402
+from gateway.routes.diagnostic import router as _diagnostic_router  # noqa: E402
 
 app.include_router(_kpi_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_playbooks_router, dependencies=[_Depends(_require_api_key)])
@@ -441,6 +442,7 @@ app.include_router(_trace_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_simulate_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_kb_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_onboarding_router, dependencies=[_Depends(_require_api_key)])
+app.include_router(_diagnostic_router, dependencies=[_Depends(_require_api_key)])
 app.include_router(_agent_push_router)  # agent_push has its own auth — no gateway API key guard
 # Enroll: token trong body chính là credential (one-time) — không gắn API key guard (IT-3).
 app.include_router(_agent_enroll_router)
