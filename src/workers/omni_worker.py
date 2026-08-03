@@ -1188,104 +1188,150 @@ async def _sigma_calibration_loop(ctx: WorkerHandlerContext, stop: asyncio.Event
             pass
 
 
-def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> list[asyncio.Task[Any]]:
-    """Split Kafka and periodic loops by ``OMNI_WORKER_ROLE`` (Master Plan V3)."""
+# ── Capability Registry (WS5) ────────────────────────────────────────────────
+# Each _register_*_capability() owns exactly one bounded context: its own
+# role-gating + optional settings-flag gating + task creation. Replaces the
+# single 100-line if/else _worker_background_tasks used to be — that function
+# is the exact place a role/flag condition once drifted and caused a real
+# production crash-loop (omni-onboarding, exit 137, 2026-08-03; see the
+# comment preserved in _register_onboarding_capability below). Splitting one
+# god-function into N independently-readable functions makes each bounded
+# context's role membership auditable in isolation instead of buried in a
+# shared nested if/else. Task names and consumer-group behavior are UNCHANGED
+# — this is a pure dispatch-logic refactor, not a behavior change.
+
+
+def _register_executor_capability(ctx: WorkerHandlerContext, stop: asyncio.Event) -> list[asyncio.Task[Any]]:
     role = ctx.settings.worker_role
-    tasks: list[asyncio.Task[Any]] = []
-    if role == "executor":
-        tasks.append(asyncio.create_task(kafka_actions_loop(ctx, stop), name="kafka_actions_loop"))
-        return tasks
+    if role not in ("executor", "full"):
+        return []
+    # full = legacy monolith runs ALL loops (CODEBASE.md role map). The split-role
+    # consolidation (2026-06-03) left the executor loop wired ONLY for
+    # role=executor, so omni-fullstack silently stopped consuming omni-actions.
+    return [asyncio.create_task(kafka_actions_loop(ctx, stop), name="kafka_actions_loop")]
+
+
+def _register_alerts_capability(ctx: WorkerHandlerContext, stop: asyncio.Event) -> list[asyncio.Task[Any]]:
+    role = ctx.settings.worker_role
+    if role not in ("full", "prober"):
+        return []
+    tasks: list[asyncio.Task[Any]] = [
+        asyncio.create_task(kafka_alerts_loop(ctx, stop), name="kafka_alerts_loop"),
+        asyncio.create_task(delayed_queue_loop(ctx, stop), name="delayed_queue_loop"),
+        asyncio.create_task(circuit_breaker_loop(ctx, stop), name="circuit_breaker"),
+    ]
+    if ctx.telegram is not None and ctx.settings.telegram_polling_enabled:
+        tasks.append(asyncio.create_task(telegram_loop(ctx, stop), name="telegram_loop"))
+    return tasks
+
+
+def _register_evidence_capability(ctx: WorkerHandlerContext, stop: asyncio.Event) -> list[asyncio.Task[Any]]:
+    role = ctx.settings.worker_role
+    if role not in ("full", "analyst"):
+        return []
+    tasks: list[asyncio.Task[Any]] = [
+        asyncio.create_task(kafka_evidence_loop(ctx, stop), name="kafka_evidence_loop"),
+        asyncio.create_task(kafka_action_feedback_loop(ctx, stop), name="kafka_action_feedback_loop"),
+        asyncio.create_task(_run_kpi_collector(ctx, stop), name="kpi_collector"),
+        asyncio.create_task(dlq_archiver_loop(ctx, stop), name="dlq_archiver"),
+        asyncio.create_task(dlq_rollup_flush_loop(ctx, stop), name="dlq_rollup_flush"),
+    ]
+    # Autonomy tier (MASTER_PLAN §5/§7): CRAT outbox drainer + readiness publish.
+    from workers.tier_loops import (
+        crat_outbox_drainer_loop,
+        hitl_ui_decisions_loop,
+        tier_readiness_loop,
+    )
+    tasks.append(asyncio.create_task(crat_outbox_drainer_loop(ctx, stop), name="crat_outbox_drainer"))
+    tasks.append(asyncio.create_task(tier_readiness_loop(ctx, stop), name="tier_readiness"))
+    from workers.capacity_loops import capacity_report_loop
+
+    tasks.append(asyncio.create_task(capacity_report_loop(ctx, stop), name="capacity_report"))
+    tasks.append(asyncio.create_task(hitl_ui_decisions_loop(ctx, stop), name="hitl_ui_decisions"))
     if role == "full":
-        # full = legacy monolith runs ALL loops (CODEBASE.md role map). The split-role
-        # consolidation (2026-06-03) left the executor loop wired ONLY for
-        # role=executor, so omni-fullstack silently stopped consuming omni-actions.
-        tasks.append(asyncio.create_task(kafka_actions_loop(ctx, stop), name="kafka_actions_loop"))
-    if role in ("full", "prober"):
-        tasks.extend(
-            [
-                asyncio.create_task(kafka_alerts_loop(ctx, stop), name="kafka_alerts_loop"),
-                asyncio.create_task(delayed_queue_loop(ctx, stop), name="delayed_queue_loop"),
-                asyncio.create_task(circuit_breaker_loop(ctx, stop), name="circuit_breaker"),
-            ]
-        )
-        if ctx.telegram is not None and ctx.settings.telegram_polling_enabled:
-            tasks.append(asyncio.create_task(telegram_loop(ctx, stop), name="telegram_loop"))
-    if role in ("full", "analyst"):
-        tasks.append(asyncio.create_task(kafka_evidence_loop(ctx, stop), name="kafka_evidence_loop"))
-        tasks.append(asyncio.create_task(kafka_action_feedback_loop(ctx, stop), name="kafka_action_feedback_loop"))
-        tasks.append(asyncio.create_task(
-            _run_kpi_collector(ctx, stop), name="kpi_collector",
-        ))
-        tasks.append(asyncio.create_task(dlq_archiver_loop(ctx, stop), name="dlq_archiver"))
-        tasks.append(asyncio.create_task(dlq_rollup_flush_loop(ctx, stop), name="dlq_rollup_flush"))
-        # Autonomy tier (MASTER_PLAN §5/§7): CRAT outbox drainer + readiness publish.
-        from workers.tier_loops import (
-            crat_outbox_drainer_loop,
-            hitl_ui_decisions_loop,
-            tier_readiness_loop,
-        )
-        tasks.append(asyncio.create_task(crat_outbox_drainer_loop(ctx, stop), name="crat_outbox_drainer"))
-        tasks.append(asyncio.create_task(tier_readiness_loop(ctx, stop), name="tier_readiness"))
-        from workers.capacity_loops import capacity_report_loop
+        # Chỉ role `full` (xem bảng COMPONENT ROLES): vòng này ghi vào bảng
+        # quyền của tenant, chạy ở nhiều role song song sẽ nộp đơn trùng.
+        from workers.tier_loops import scope_advocacy_loop
 
-        tasks.append(asyncio.create_task(capacity_report_loop(ctx, stop), name="capacity_report"))
-        tasks.append(asyncio.create_task(hitl_ui_decisions_loop(ctx, stop), name="hitl_ui_decisions"))
-        if role == "full":
-            # Chỉ role `full` (xem bảng COMPONENT ROLES): vòng này ghi vào bảng
-            # quyền của tenant, chạy ở nhiều role song song sẽ nộp đơn trùng.
-            from workers.tier_loops import scope_advocacy_loop
-
-            tasks.append(asyncio.create_task(
-                scope_advocacy_loop(ctx, stop), name="scope_advocacy",
-            ))
-        if ctx.settings.siem_chain_consumer_enabled:
-            tasks.append(asyncio.create_task(
-                kafka_siem_chains_loop(ctx, stop), name="kafka_siem_chains_loop",
-            ))
-        if ctx.settings.siem_correlation_enabled:
-            from workers.siem_correlation_loop import kafka_siem_correlation_loop
-
-            tasks.append(asyncio.create_task(
-                kafka_siem_correlation_loop(ctx, stop), name="kafka_siem_correlation_loop",
-            ))
-        tasks.append(asyncio.create_task(kafka_knowledge_evidence_loop(ctx, stop), name="kafka_knowledge_evidence_loop"))
-        # Closes the remote-host recovery loop: durable command terminal outcome ->
-        # EXECUTOR/FEEDBACK stages + CRAT + omni-action-feedback. Without it a VM
-        # mutation executes and verifies but the trace still reads "stopped at
-        # DISPATCH" (0/809 traces had ever reached EXECUTOR before 2026-08-02).
-        from workers.remote_command_outcome_loop import remote_command_outcome_loop
+        tasks.append(asyncio.create_task(scope_advocacy_loop(ctx, stop), name="scope_advocacy"))
+    if ctx.settings.siem_chain_consumer_enabled:
+        tasks.append(asyncio.create_task(kafka_siem_chains_loop(ctx, stop), name="kafka_siem_chains_loop"))
+    if ctx.settings.siem_correlation_enabled:
+        from workers.siem_correlation_loop import kafka_siem_correlation_loop
 
         tasks.append(asyncio.create_task(
-            remote_command_outcome_loop(ctx, stop), name="remote_command_outcome",
+            kafka_siem_correlation_loop(ctx, stop), name="kafka_siem_correlation_loop",
         ))
-    if role in ("full", "core"):
-        tasks.extend(
-            [
-                asyncio.create_task(deep_scout_periodic_loop(ctx, stop), name="deep_scout_periodic"),
-                asyncio.create_task(autonomous_forecast_loop(ctx, stop), name="autonomous_forecast"),
-                asyncio.create_task(baseline_snapshot_loop(ctx, stop), name="baseline_snapshot"),
-            ]
-        )
-        if ctx.settings.autonomous_decider_enabled:
-            tasks.append(asyncio.create_task(autonomous_decider_loop(ctx, stop), name="autonomous_decider"))
-        if ctx.settings.proactive_enabled:
-            tasks.append(asyncio.create_task(proactive_evaluate_loop(ctx, stop), name="proactive_evaluate"))
-            tasks.append(asyncio.create_task(kafka_proactive_incidents_loop(ctx, stop), name="kafka_proactive_incidents"))
-        tasks.append(asyncio.create_task(_temporal_prediction_loop(ctx, stop), name="temporal_prediction"))
-        tasks.append(asyncio.create_task(_sigma_calibration_loop(ctx, stop), name="sigma_calibration"))
-    if role == "onboarding":
-        # Onboarding pipeline (agent/plans/PLAN_onboarding_ops_agent.md step-3). Previously also
-        # wired for role=full ("must also consume discovery evidence — otherwise onboarding
-        # accumulation silently never runs in production") from when no dedicated onboarding
-        # deployment existed. A dedicated `omni-onboarding` Deployment (role=onboarding) now runs
-        # permanently alongside `omni-fullstack` (see CLAUDE.md "Declared target topology") — with
-        # role=full ALSO joining the same fixed consumer_group_onboarding group, two independent
-        # group members compete over a single-partition topic, causing a rebalance every time either
-        # pod restarts or a slow fold_and_persist() call misses a heartbeat. Confirmed live 2026-08-03:
-        # omni-onboarding crash-looped (exit 137, 15 restarts/3h27m) while both pods logged the same
-        # "Heartbeat failed ... rebalancing" cycle for group omni-onboarding-discovery. role=full no
-        # longer joins this group — the dedicated deployment is the sole owner.
-        tasks.append(asyncio.create_task(kafka_discovery_evidence_loop(ctx, stop), name="kafka_discovery_evidence_loop"))
+    tasks.append(asyncio.create_task(kafka_knowledge_evidence_loop(ctx, stop), name="kafka_knowledge_evidence_loop"))
+    # Closes the remote-host recovery loop: durable command terminal outcome ->
+    # EXECUTOR/FEEDBACK stages + CRAT + omni-action-feedback. Without it a VM
+    # mutation executes and verifies but the trace still reads "stopped at
+    # DISPATCH" (0/809 traces had ever reached EXECUTOR before 2026-08-02).
+    from workers.remote_command_outcome_loop import remote_command_outcome_loop
+
+    tasks.append(asyncio.create_task(remote_command_outcome_loop(ctx, stop), name="remote_command_outcome"))
+    return tasks
+
+
+def _register_core_capability(ctx: WorkerHandlerContext, stop: asyncio.Event) -> list[asyncio.Task[Any]]:
+    role = ctx.settings.worker_role
+    if role not in ("full", "core"):
+        return []
+    tasks: list[asyncio.Task[Any]] = [
+        asyncio.create_task(deep_scout_periodic_loop(ctx, stop), name="deep_scout_periodic"),
+        asyncio.create_task(autonomous_forecast_loop(ctx, stop), name="autonomous_forecast"),
+        asyncio.create_task(baseline_snapshot_loop(ctx, stop), name="baseline_snapshot"),
+    ]
+    if ctx.settings.autonomous_decider_enabled:
+        tasks.append(asyncio.create_task(autonomous_decider_loop(ctx, stop), name="autonomous_decider"))
+    if ctx.settings.proactive_enabled:
+        tasks.append(asyncio.create_task(proactive_evaluate_loop(ctx, stop), name="proactive_evaluate"))
+        tasks.append(asyncio.create_task(kafka_proactive_incidents_loop(ctx, stop), name="kafka_proactive_incidents"))
+    tasks.append(asyncio.create_task(_temporal_prediction_loop(ctx, stop), name="temporal_prediction"))
+    tasks.append(asyncio.create_task(_sigma_calibration_loop(ctx, stop), name="sigma_calibration"))
+    return tasks
+
+
+def _register_onboarding_capability(ctx: WorkerHandlerContext, stop: asyncio.Event) -> list[asyncio.Task[Any]]:
+    role = ctx.settings.worker_role
+    if role != "onboarding":
+        return []
+    # Onboarding pipeline (agent/plans/PLAN_onboarding_ops_agent.md step-3). Previously also
+    # wired for role=full ("must also consume discovery evidence — otherwise onboarding
+    # accumulation silently never runs in production") from when no dedicated onboarding
+    # deployment existed. A dedicated `omni-onboarding` Deployment (role=onboarding) now runs
+    # permanently alongside `omni-fullstack` (see CLAUDE.md "Declared target topology") — with
+    # role=full ALSO joining the same fixed consumer_group_onboarding group, two independent
+    # group members compete over a single-partition topic, causing a rebalance every time either
+    # pod restarts or a slow fold_and_persist() call misses a heartbeat. Confirmed live 2026-08-03:
+    # omni-onboarding crash-looped (exit 137, 15 restarts/3h27m) while both pods logged the same
+    # "Heartbeat failed ... rebalancing" cycle for group omni-onboarding-discovery. role=full no
+    # longer joins this group — the dedicated deployment is the sole owner.
+    return [asyncio.create_task(kafka_discovery_evidence_loop(ctx, stop), name="kafka_discovery_evidence_loop")]
+
+
+# Registration order matches the original if/else order exactly (does not
+# affect behavior — asyncio.gather() below runs all tasks concurrently
+# regardless of list order — kept only for easy diffing against history).
+_CAPABILITY_REGISTRY = (
+    _register_executor_capability,
+    _register_alerts_capability,
+    _register_evidence_capability,
+    _register_core_capability,
+    _register_onboarding_capability,
+)
+
+
+def _worker_background_tasks(ctx: WorkerHandlerContext, stop: asyncio.Event) -> list[asyncio.Task[Any]]:
+    """Capability Registry dispatch (WS5) — see the register functions above.
+
+    Each bounded context's role membership is self-contained; adding/removing a
+    capability for a role means editing exactly 1 function, not a shared
+    if/else chain shared by every other domain.
+    """
+    tasks: list[asyncio.Task[Any]] = []
+    for register in _CAPABILITY_REGISTRY:
+        tasks.extend(register(ctx, stop))
     return tasks
 
 
