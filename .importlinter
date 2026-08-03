@@ -1,0 +1,50 @@
+[importlinter]
+root_packages =
+    pkg
+    workers
+    anomaly
+    rag
+    gateway
+
+[importlinter:contract:no-upward-imports]
+name = pkg/anomaly/rag must not import workers (INV dependency direction, CLAUDE.md)
+type = forbidden
+source_modules =
+    pkg
+    anomaly
+    rag
+forbidden_modules =
+    workers
+# Known, documented exceptions (WS0, 2026-08-03) — do NOT add new entries here
+# without a matching comment explaining why. Each is a real violation the
+# contract would otherwise catch; kept as an explicit, reviewed exception
+# instead of silently narrowing source_modules/forbidden_modules.
+ignore_imports =
+    # gate.py is dead code (0 production call sites) slated for deletion in
+    # WS2 — fixing its import is wasted work, see task #2/#3 description.
+    pkg.autonomy.gate -> workers.kpi_metrics
+    # Deliberate soft/optional dependency, already documented in this file's
+    # own docstring: pkg/observability/ must import-clean for the gateway
+    # image (no workers/), so these 3 call sites wrap the workers-only
+    # Prometheus/trace-id helpers in try/except ImportError and no-op when
+    # absent. This is a runtime capability probe, not a layering bug.
+    pkg.observability.llm_observability -> workers.metrics_exporter
+    pkg.observability.llm_observability -> workers.request_trace
+    # known_fix_resolver.py's in-cluster execution path calls
+    # TOOL_REGISTRY[tool](ctx, args) directly — it is inherently workers-domain
+    # execution logic (see its own docstring: "chỉ đúng cho tài nguyên trong
+    # cụm ... Remote-agent dùng workers.remote_known_fix thay vì hàm này").
+    # Untangling this needs a real DI refactor (caller-supplied registry),
+    # bigger than a WS0 CI-wiring pass — tracked as follow-up, not silently
+    # dropped.
+    pkg.reasoning.known_fix_resolver -> workers.tool_observation
+    pkg.reasoning.known_fix_resolver -> workers.tool_registry
+    pkg.reasoning.known_fix_resolver -> workers.tools
+
+[importlinter:contract:gateway-no-workers]
+name = gateway must not import workers (INV_GATEWAY_NO_WORKERS, CLAUDE.md)
+type = forbidden
+source_modules =
+    gateway
+forbidden_modules =
+    workers

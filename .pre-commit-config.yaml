@@ -4,3 +4,11 @@ repos:
     hooks:
       - id: gitleaks
         args: ["--config=.gitleaks.toml"]
+  - repo: local
+    hooks:
+      - id: lint-imports
+        name: import-linter (pkg/anomaly/rag must not import workers/)
+        entry: make lint-imports
+        language: system
+        pass_filenames: false
+        always_run: true
