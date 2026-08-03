@@ -195,6 +195,18 @@ async def test_resolve_tier_db_over_env(redis):
     assert await resolve_tier(settings=s, repo=_FakeRepo("assist"), redis=redis) == "assist"
 
 
+class _ExplodingRepo:
+    async def get_tier(self, tenant_id: str = "default") -> str | None:
+        raise ConnectionError("postgres down")
+
+
+async def test_resolve_tier_db_lookup_fail_closed(redis):
+    """Postgres lookup raising (e.g. connection lost) must fail-closed to shadow,
+    not propagate — mirrors _apply_plan_ceiling's existing fail-closed pattern."""
+    s = SimpleNamespace(omni_autonomy_tier="auto", omni_auto_execute_enabled=True)
+    assert await resolve_tier(settings=s, repo=_ExplodingRepo(), redis=redis) == "shadow"
+
+
 @pytest.mark.asyncio
 async def test_resolve_tier_applies_provider_plan_ceiling(redis):
     s = SimpleNamespace(omni_autonomy_tier="auto", omni_auto_execute_enabled=True)

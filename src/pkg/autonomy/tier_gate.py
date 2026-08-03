@@ -175,7 +175,11 @@ async def resolve_tier(
     if cached in VALID_TIERS:
         return await _apply_plan_ceiling(cached, repo, tenant_id)
     if repo is not None:
-        db_tier = normalize_tier(await repo.get_tier(tenant_id))
+        try:
+            db_tier = normalize_tier(await repo.get_tier(tenant_id))
+        except Exception as exc:  # noqa: BLE001 — fail closed on tier lookup
+            logger.warning("tier_gate: db tier lookup failed tenant=%s err=%s", tenant_id, exc)
+            return SHADOW
         if db_tier in VALID_TIERS:
             return await _apply_plan_ceiling(db_tier, repo, tenant_id)
     # env fallback — chấp nhận tên mode (shadow|minimal|autonomous) lẫn canonical.
