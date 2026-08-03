@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "kubernetes": {
+      "command": "npx",
+      "args": ["-y", "mcp-server-kubernetes@4.1.2"],
+      "env": {
+        "ALLOW_ONLY_READONLY_TOOLS": "true",
+        "K8S_CONTEXT": "orbstack",
+        "K8S_NAMESPACE": "multi-agent",
+        "MASK_SECRETS": "true"
+      }
+    },
+    "postgres": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "exec npx -y @henkey/postgres-mcp-server@1.0.7 --connection-string \"$(kubectl get secret omni-pg-secret -n multi-agent -o jsonpath='{.data.OMNI_ADMIN_PG_DSN}' | base64 -d)\" --tools-config \"${CLAUDE_PROJECT_DIR:-.}/.mcp/postgres-readonly-tools.json\""
+      ]
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@3.2.5"]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "enabledTools": [
+    "pg_analyze_database",
+    "pg_debug_database",
+    "pg_monitor_database",
+    "pg_execute_query"
+  ]
+}

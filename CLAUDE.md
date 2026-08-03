@@ -2,7 +2,7 @@
 
 > **TRƯỚC MỌI TASK: đọc `MEMORY.md` + `docs/CODEBASE.md`.** Bản đồ nhanh ở memory `project_architecture_map`; chi tiết file-level ở `docs/CODEBASE.md`.
 
-**Omni** — async-first multi-agent SRE automation for K8s. Ollama diagnoses via 4 evidence lanes; split Kafka pipeline executes remediation.
+**Omni** — async-first multi-agent SRE automation. Agent trên host khách chỉ THU SỐ; **Omni** phán bất thường bằng baseline nó tự học, phân loại theo **9 domain**, rồi tự điều tra nhiều lượt. Split Kafka pipeline thực thi khắc phục.
 
 ## Context Hygiene
 
@@ -15,14 +15,41 @@
 - Trước khi chuyển milestone hoặc `/clear`: cập nhật handoff và engineering artifacts bị ảnh hưởng (dùng `/prepare-clear`).
 - Session mới phải kiểm tra Git state và handoff trước khi tiếp tục. Session hooks tự nạp ngữ cảnh; chi tiết ở `docs/engineering/claude-session-automation.md`.
 
-## DIAGNOSTIC FLOWS
+## DIAGNOSTIC FLOWS — 9 DOMAIN (4 lane đã bị bỏ, 2026-07-30)
 
-| Lane | Signal | Key file |
+Trục phân loại là **9 domain canonical** (`src/pkg/domain/taxonomy.py`), không còn 4 lane.
+Lý do: lane là thuộc tính của một ALERT, và 4 lane không diễn đạt được
+network/storage/database/service/hardware. Kế hoạch + bằng chứng:
+`plans/lane-to-domain-and-omni-decides-2026-07-30.md`.
+
+⚠️ **"lane" là BA trục khác nhau cùng tên. Chỉ trục A bị bỏ.** Đọc khối cảnh báo trong
+`pkg/domain/taxonomy.py` trước khi chạm bất cứ gì có chữ `lane`:
+- **A** `envelope.lane` (`SYS_RESOURCE|SYS_HARD_FAIL|APP_HTTP|SIEM_SECURITY`) → đang bỏ,
+  chỉ giữ để đọc dữ liệu lịch sử qua `lane_to_domain()`. `SYS_HARD_FAIL` → `unknown` CỐ Ý
+  (nó gánh 4 domain).
+- **B** `proof_lane` (`resource|state|app_log`, `VALID_PROOF_LANES`) = *cần bằng chứng vật
+  lý loại nào để mở cổng*. Lái `ERR_REA_NO_PHYSICAL_PROOF` + `LANE_BADGE` Telegram.
+  **KHÔNG gộp vào domain.**
+- **C** `proactive|reactive` (`llm_semaphore`) = pool đồng thời LLM. Không liên quan.
+
+| Domain | Ai phát hiện | Trạng thái đã kiểm bằng lỗi thật (2026-07-30) |
 |---|---|---|
-| 1 SYS_RESOURCE | 3σ z-score CPU/mem | `anomaly/three_sigma.py` (in-cluster), `anomaly/remote_host_baseline.py` (remote-host) |
-| 2 SYS_HARD_FAIL | OS state machine + LLM | `os_state_validator.py`, `AnalystAdvisory` schema |
-| 3 APP_HTTP | HTTP status classes (5xx/429/401) | `log_surge_probe.py` |
-| 4 SIEM_SECURITY | FinGuard incidents, kill-chain | `siem_reasoning.py`, `_siem_diagnosis_from_batch()` |
+| `os_host` | `remote_host_baseline.py` (3σ, Omni phán) · `three_sigma.py` in-cluster | ✅ `decided_by=omni_baseline` z=3.739 → critical → 8 lượt ReAct |
+| `database` | `collectors/database.py` (dò cổng/health) | ✅ critical → diagnosis loop |
+| `service` | `collectors/services.py` | ✅ unit `failed` **và** unit vừa chuyển active→inactive (dừng sạch) |
+| `kubernetes` | `os_state_validator.py`, probe K8s | ✅ |
+| `storage` | `collectors/storage.py` · metric `disk_percent` | ✅ ngưỡng: 95% critical / 90% warn (94% ra `INCONCLUSIVE` là ĐÚNG thiết kế, không phải bug) |
+| `application` | `collectors/logs.py`, `log_surge_probe.py` | ⚠️ chỉ đạt urgency `medium` |
+| `network` | `collectors/network.py` (MỚI) | ✅ cổng lắng nghe vừa đóng → `NetworkListenerLost`; verified `tcp/80` trên VM |
+| `security` | `siem_reasoning.py`, FinGuard | ❌ chưa kiểm được trong lab |
+| `hardware` | — | ❌ không kiểm được trên OrbStack (không có cảm biến) |
+
+**Ai phán "bất thường": OMNI, không phải agent.** Agent gửi `METRIC_SAMPLE`
+(`result="OBSERVED"`), Omni dựng baseline và quyết định trong
+`knowledge_pipeline._handle_metric_sample` theo thang `ConfidenceLevel`
+(STATIC_GUARD → ngưỡng tĩnh tại Omni · ASSISTED/AUTONOMOUS → z-score). Nâng cấp thành
+`ANOMALY` **phải** dùng `result="FAILED"` — `assess_domain_severity` so đúng chuỗi đó để
+lên critical, thiếu là chết lặng ở Stage 4. Nguồn phán ghi ở `omni_decision.decided_by`.
 
 **Advisory schema** (`src/pkg/reasoning/analyst_advisory_schema.py`): WHAT/WHO/WHY/HOW-TO + ForecastTimeline (5 horizons). L1→L4: os_baremetal → network → kubernetes → prometheus.
 **Telegram**: `unified_incident_card.py` — nhãn VI (Sự cố/Workload/Kiểm chứng/Khắc phục/Dự báo/🧾 Audit). WHAT/WHO/WHY/HOW-TO = marker máy, KHÔNG đổi (parse-coupled).
@@ -65,12 +92,26 @@ mới rõ ràng.
 - Async-only: `asyncio`, `kubernetes-asyncio`, `redis[hiredis]`, `aiokafka`. No subprocess for K8s.
 - `src/gateway/` KHÔNG import `workers/`. Shared code → `src/pkg/`.
 - Mutations only via executor; analyst is read-only.
-- `OMNI_AUTO_EXECUTE_ENABLED=false` — master kill-switch (fail-closed).
+- `OMNI_AUTO_EXECUTE_ENABLED=false` — master kill-switch (fail-closed) tại **ConfigMap**
+  `omni-worker-configmap` (default an toàn). Deployment env: có thể override `true` — hiện đang
+  override cho lab, xem "Kill-switch" trong DEPLOYMENT STATE để biết giá trị hiệu lực thật.
 - **CRAT Fail-Closed**: `write_audit_block()` MUST succeed trước Telegram emit / action dispatch.
 - `kafka_evidence_loop` dùng `auto_offset_reset="earliest"` — KHÔNG đổi thành `latest`.
 - `omni-audit-chain` topic cần message key (compact policy).
 - `INV_NO_RESTART_ON_BROKEN_SPEC` · `INV_READ_BEFORE_MUTATE` · `INV_NAMESPACE_ISOLATION` · `ERR_REA_NO_PHYSICAL_PROOF` · `ERR_GOV_UNAUTHORIZED_MUTATION`
-- `INV_KNOWLEDGE_NOT_ALERT` (xem KNOWLEDGE PIPELINE) · `INV_DATA_RESIDENCY`: tài liệu khách hàng chỉ lưu metadata trên Omni (file_id + summary ≤2000 chars).
+- `INV_KNOWLEDGE_NOT_ALERT` — **nới có kiểm soát 2026-07-30**: `METRIC_SAMPLE` nay ĐƯỢC phân
+  tích (baseline + phát hiện lệch, thuần số, KHÔNG LLM); chỉ khi lệch mới nâng thành
+  `ANOMALY` và vào pipeline đầy đủ. Một mẫu bình thường vẫn **không** gọi LLM, **không** tạo
+  incident. Có dedup `omni:knowledge:promoted:{tenant}:{host}:{metric}` TTL 600s.
+- `INV_DATA_RESIDENCY`: tài liệu khách hàng chỉ lưu metadata trên Omni (file_id + summary
+  ≤2000 chars). Metric **số** (cpu/mem/disk) KHÔNG thuộc phạm vi này — đó là số đo, không
+  phải dữ liệu khách.
+- Catalogue lệnh chẩn đoán **fail-closed ở tầng LOAD**: nạp lỗi ⇒ từ chối MỌI lệnh. Đường
+  dẫn mặc định phải resolve được ở **cả hai layout** (repo `src/pkg/...` và bundle
+  `/opt/omni-remote-agent/pkg/...`) và **cả hai định dạng** (`.yaml` repo, `.json` bundle —
+  host khách không có PyYAML). Xem `_default_catalog_candidates()`.
+- Domain do collector **tự khai** thắng mọi suy đoán: luôn truyền `domain_hint=` vào
+  `detect_domain()`. Bỏ sót là để cascade nội dung gán sai lĩnh vực (đã trả giá).
 - RBAC: worker SA (`omni-fullstack`) **không có quyền Secrets tuỳ ý** — ngoại lệ duy nhất có chủ
   đích là `patch`/`update` qua `omni-executor-mutate-lab` ClusterRole
   (`k8s/deployments/omni-fullstack-rbac.yaml`), backing cho tool `k8s_patch_secret` đã gate bằng
@@ -147,13 +188,33 @@ sang provider/tenant; xoá source tree là quyết định riêng cần xác nh�
 | ~~`omni-brain-go`~~ | **RETIRED 2026-07-22** — đã port sang Python (`src/services/siem_correlation/` + loop `kafka_siem_correlation_loop` trong `omni-fullstack`, group `omni-siem-correlation`, cùng Redis key layout `corr:*`). Parity test PASS 2/2 (output Python == Go từng field trên cùng input) trước khi xoá Deployment + manifest. KHÔNG bật lại brain-go song song với `OMNI_SIEM_CORRELATION_ENABLED=true` — 2 engine sẽ đua trên cùng key `corr:*` và double-emit chains. Lưu ý parity: khi các event đến trong CÙNG 1 giây, sequence-score phụ thuộc thứ tự tie (Go sort không ổn định = ngẫu nhiên; Python ổn định newest-first = bảo thủ hơn) — hành vi vốn có của cả 2 engine, không phải bug port. | Deployment đã xoá |
 | `redis-0`, `kafka`, `omni-postgres-0`, `redis-exporter`, `aoip-dex`, `aoip-provider-*`, `aoip-tenant-*` | portal/hạ tầng phụ trợ (provider/tenant portal là portal thật duy nhất, `omni-ui` đã retired) | Running |
 
-### Kill-switch — effective value đã xác minh trên pod thật
-`OMNI_AUTO_EXECUTE_ENABLED=false` (đã revert 2026-07-02; trước đó bị override thành `true` từ phiên
-lab `2090ac7` ngày 2026-06-11 "bật SIEM self-heal user-authorized" và bị bỏ quên chưa rollback —
-xem post-mortem). `OMNI_SIEM_SUGGEST_ONLY=true` (advisory-only, đã revert). `OMNI_AUTONOMY_TIER`
-override đã gỡ khỏi Deployment env — tier hiệu lực nay chỉ đến từ Redis cache/PG theo đúng invariant
-`resolve_tier`. Precedence xác nhận: ConfigMap `omni-worker-configmap` (default an toàn) < Deployment
-`env:` override (đã dọn) < Redis cache (nguồn hiệu lực thật cho tier).
+### Kill-switch — effective value đã xác minh qua MCP (`mcp__kubernetes`, read-only) trên pod thật
+
+**Cập nhật 2026-08-03** (describe pod `omni-fullstack` trực tiếp qua MCP, không phải cache tài
+liệu): ConfigMap `omni-worker-configmap` vẫn giữ default an toàn
+(`OMNI_AUTO_EXECUTE_ENABLED="false"`, `OMNI_SIEM_SUGGEST_ONLY="true"`) — nhưng Deployment
+`omni-fullstack` hiện có **override `env:` sống** đè lên default đó:
+
+```
+OMNI_AUTO_EXECUTE_ENABLED:    true
+OMNI_AUTO_ROLLBACK_ENABLED:   true
+OMNI_SIEM_SUGGEST_ONLY:       false
+OMNI_LAB_AUTO_EXECUTE_AGENTS: staging-sim_cust-app,staging-sim_cust-edge,staging-sim_cust-db
+```
+
+Đây là **chủ đích** (không phải drift kiểu 2026-06-11) — chỉ mở autonomous mutate cho đúng 3 VM
+lab qua allowlist `OMNI_LAB_AUTO_EXECUTE_AGENTS`, đúng cơ chế blast-radius control mà
+`auto_recovery_bridge.dispatch_if_eligible()` đã kiểm (xem Đ8 trong handoff). Namespace K8s vẫn
+giới hạn `OMNI_AUTONOMOUS_ALLOWED_NAMESPACES=multi-agent`. Claim cũ "đã revert 2026-07-02, gỡ khỏi
+Deployment env" chỉ đúng tại thời điểm đó — **không còn đúng hiện tại**, đã lỗi thời.
+
+`OMNI_AUTONOMY_TIER` override vẫn không có trên Deployment env — tier hiệu lực vẫn chỉ đến từ Redis
+cache/PG theo đúng invariant `resolve_tier`. Precedence: ConfigMap (default an toàn) < Deployment
+`env:` override (nay CÓ tồn tại, có chủ đích, scoped) < Redis cache (nguồn hiệu lực thật cho tier
+riêng).
+
+`OMNI_TELEGRAM_POLLING_ENABLED`: ConfigMap `"false"` nhưng Deployment env override `"true"` —
+drift đã biết, carry sang từ Đ7/Đ8, vẫn chưa xử lý (không liên quan tới lô kill-switch trên).
 
 ### PUBLIC PLANE — app.omnisre.xyz (2026-07-29, đang sống trên Internet)
 
