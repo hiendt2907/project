@@ -100,7 +100,34 @@ def _looks_secret(path: str) -> bool:
     return any(path == d or path.startswith(d.rstrip("/") + "/") for d in _SECRET_DIRS)
 
 _ENV_EXTRA_CATALOG = "OMNI_DIAG_COMMAND_CATALOG"
-_DEFAULT_CATALOG = Path(__file__).resolve().parents[3] / "config" / "diagnostic_commands.yaml"
+
+
+def _default_catalog_candidates() -> list[Path]:
+    """Nơi có thể có catalogue mặc định, theo thứ tự ưu tiên.
+
+    Phải là một DANH SÁCH vì module này chạy ở HAI layout khác nhau, và một hằng
+    `parents[3]` chỉ đúng ở một layout (đã trả giá 2026-07-30 — agent trên cả 3 VM
+    không nạp được catalogue, fail-closed ⇒ từ chối MỌI lệnh chẩn đoán):
+
+      repo:   <root>/src/pkg/diagnostics/command_catalog.py  → parents[3] = <root>
+      bundle: /opt/omni-remote-agent/pkg/diagnostics/...     → parents[2] = install dir
+              (bundle không có tầng `src/`, nên lệch đúng một cấp)
+
+    Và phải thử cả `.json`: `requirements-agent.txt` CỐ Ý không có PyYAML — không thêm
+    dependency vào tiến trình chạy trên hạ tầng khách — nên bundle mang bản JSON sinh
+    từ YAML gốc lúc build. `_parse` đã tự nhận cả hai định dạng.
+    """
+    here = Path(__file__).resolve()
+    roots = [here.parents[3], here.parents[2]]
+    names = ("diagnostic_commands.yaml", "diagnostic_commands.json")
+    return [root / "config" / name for root in roots for name in names]
+
+
+def _resolve_default_catalog() -> Path | None:
+    for cand in _default_catalog_candidates():
+        if cand.exists():
+            return cand
+    return None
 
 
 class CatalogError(ValueError):
@@ -258,7 +285,16 @@ def load_catalog(
     (nhiều file cách nhau bằng `:`), merge theo `command` — file sau ghi đè file trước.
     """
     src = os.environ if env is None else env
-    files: list[Path] = list(paths) if paths else [_DEFAULT_CATALOG]
+    if paths:
+        files: list[Path] = list(paths)
+    else:
+        default = _resolve_default_catalog()
+        if default is None:
+            raise CatalogError(
+                "khong tim thay catalogue mac dinh; da thu: "
+                + ", ".join(str(c) for c in _default_catalog_candidates())
+            )
+        files = [default]
     extra = (src.get(_ENV_EXTRA_CATALOG) or "").strip()
     if extra:
         files += [Path(p) for p in extra.split(":") if p.strip()]
@@ -267,8 +303,9 @@ def load_catalog(
     used: list[str] = []
     for f in files:
         if not f.exists():
-            if paths is None and f == _DEFAULT_CATALOG:
-                raise CatalogError(f"khong tim thay catalogue mac dinh: {f}")
+            # Đường mặc định đã được `_resolve_default_catalog()` xác nhận tồn tại ở
+            # trên, nên tới đây chỉ còn file do `OMNI_DIAG_COMMAND_CATALOG` hoặc
+            # `paths=` chỉ định — trỏ sai là lỗi cấu hình, phải bật ra.
             raise CatalogError(f"catalogue khong ton tai: {f}")
         for raw in _parse(f.read_text(encoding="utf-8"), origin=str(f)):
             spec = _spec_from_dict(raw)
