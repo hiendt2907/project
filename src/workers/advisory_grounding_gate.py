@@ -12,6 +12,16 @@ its output that does not appear in evidence_text necessarily came from the
 prompt template or model memory — fabrication by construction. This gate
 deterministically neutralizes such advisories the same way
 services/analyst/diagnosis_loop.py does for the remote-agent lane.
+
+TRỤC KIỂM THỨ HAI (2026-08-02) — `pkg.diagnostics.measurement_grounding`.
+Gate này neo theo TOKEN: đường dẫn, phần trăm, tên object. Nó mù trước một câu
+hoàn toàn không có token nào neo được, ví dụ "Insufficient memory available on
+the host" — kết luận thật của session `ra-689e6dc59ea4`, sinh ra sau khi lệnh
+duy nhất chạy được trong phiên là `df -h` (ĐĨA). Trục thứ hai hỏi câu khác:
+*"có công cụ nào trong phiên này ĐO đại lượng đó không"*. Hai trục bù nhau,
+không thay nhau; `diagnosis_loop` chạy cả hai nối tiếp. Lane advisory hiện chỉ
+chạy trục token — mở rộng sang trục hai cần `command_results` của phiên, thứ
+lane advisory chưa mang theo.
 """
 
 from __future__ import annotations

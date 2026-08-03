@@ -26,6 +26,9 @@ import time
 import uuid
 from typing import Any
 
+from pkg.diagnostics.command_normalize import normalize_command
+from pkg.diagnostics.measurement_grounding import apply_measurement_gate
+
 logger = logging.getLogger(__name__)
 
 _MAX_TURNS = 8
@@ -188,6 +191,31 @@ _TRUNCATED_NOTE = "\n…[truncated for context budget]"
 _TRUNCATE_KEEP_CHARS = 400
 _CHARS_PER_TOKEN = 3  # heuristic for log-heavy text
 _KEEP_RECENT_MESSAGES = 4  # 2 most recent (assistant, user) pairs
+_NUM_PREDICT = 1024  # tokens reserved for the model's own reply — see below
+
+# Số lỗi hạ tầng LIÊN TIẾP trước khi bỏ cuộc. Đo trên 32 phiên thật 2026-08-02:
+# khi LLM bắt đầu timeout thì nó gần như không bao giờ hồi (lỗi đầu ở lượt 2 ⇒ 7
+# lượt lỗi). Mỗi lượt tốn tới `llm_chat_timeout_sec`=120s VÀ lại đập thêm vào
+# đúng con model đang quá tải — vòng lặp tự khuếch đại cơn bão sinh ra nó.
+_MAX_CONSECUTIVE_LLM_ERRORS = 2
+
+
+def _best_turn(turns: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Lượt có kết luận THẬT và đáng tin nhất — không phải lượt cuối.
+
+    `turns[-1]` là lựa chọn sai một cách hệ thống: khi LLM chết ở giữa phiên,
+    lượt cuối LUÔN là lượt lỗi. Đo trên 32 phiên thật, 6 phiên kết thúc bằng
+    `root_cause="llm_error", confidence=0.0` trong khi lượt 1 đã chẩn đúng
+    ("CPU saturation on host cust-app", confidence 0.75–0.95) — chẩn đoán đúng
+    bị chính cơ chế tổng kết vứt đi.
+    """
+    real = [
+        t for t in turns
+        if str(t.get("hypothesis") or "") not in ("", "llm_error", "parse_error")
+    ]
+    if not real:
+        return None
+    return max(real, key=lambda t: (float(t.get("confidence") or 0.0), t.get("turn", 0)))
 
 
 def _enforce_context_budget(
@@ -199,8 +227,13 @@ def _enforce_context_budget(
     num_ctx is exceeded. To prevent that, keep messages[0] (system) and
     messages[1] (initial evidence) intact plus the 2 most recent turn pairs,
     and truncate the content of everything in between.
+
+    `num_ctx` là cửa sổ CHUNG cho prompt + completion, nên phần model sắp sinh
+    ra (`num_predict`) phải được trừ trước: nếu không, ngay tại biên prompt vẫn
+    vừa ngân sách nhưng completion đẩy tổng vượt cửa sổ, và Ollama cắt ĐẦU —
+    tức là mất đúng system prompt mà hàm này sinh ra để bảo vệ.
     """
-    budget = num_ctx * _CHARS_PER_TOKEN
+    budget = max(num_ctx - _NUM_PREDICT, num_ctx // 2) * _CHARS_PER_TOKEN
     total_chars = sum(len(m["content"]) for m in messages)
     if total_chars <= budget or len(messages) <= 2 + _KEEP_RECENT_MESSAGES:
         return list(messages)
@@ -224,10 +257,13 @@ def _format_command(cmd: dict[str, Any]) -> str:
 
     Used to show the operator WHAT was run on the host (e.g. "ls -lS /var/log"),
     not just the LLM's free-text purpose.
+
+    Renders the NORMALIZED form — the same transformation `_enqueue_commands`
+    applies — so the card, the evidence corpus and the process that actually ran
+    describe one command, not three variants of it.
     """
-    name = str(cmd.get("command", "")).strip()
-    args = [str(a) for a in cmd.get("args", [])]
-    return " ".join([name, *args]).strip()
+    name, args = normalize_command(str(cmd.get("command", "")), [str(a) for a in cmd.get("args", [])])
+    return " ".join([name.strip(), *args]).strip()
 
 
 # ── Grounding gate (INV_DIAG_GROUNDED) ──────────────────────────────────────
@@ -356,6 +392,13 @@ def _fallback_remediation(text: str) -> list[str]:
 def _fallback_remediation_steps(text: str) -> list[str]:
     """Generate keyword-based remediation steps when LLM leaves remediation_steps empty."""
     t = text.lower()
+    if "cpu" in t or "load average" in t or "load_avg" in t or "saturation" in t:
+        return [
+            "Check top consumers: top -b -n 1 | head -20",
+            "Per-process CPU: ps aux --sort=-%cpu | head -10",
+            "Load trend: uptime",
+            "Check for runaway process/cron: ps -eo pid,etime,cmd --sort=-%cpu | head -10",
+        ]
     if "disk" in t or "inode" in t or "space" in t or "partition" in t:
         return [
             "Run: df -h (identify which partition is full)",
@@ -432,10 +475,13 @@ async def _enqueue_commands(
     queue_key = f"{_CMD_QUEUE_PREFIX}{agent_id}"
     for cmd in commands[:5]:  # cap per turn
         cmd_id = f"cmd-{uuid.uuid4().hex[:12]}"
+        # Chuẩn hoá ở PRODUCER: hàng đợi chỉ chứa lệnh chạy được. Đây là lớp duy
+        # nhất có hiệu lực ngay mà không cần triển khai lại agent trên VM khách.
+        cmd_name, cmd_args = normalize_command(cmd.get("command", ""), cmd.get("args", []))
         payload = json.dumps({
             "cmd_id": cmd_id,
-            "command": cmd.get("command", ""),
-            "args": cmd.get("args", []),
+            "command": cmd_name,
+            "args": cmd_args,
             "timeout_s": cmd.get("timeout_s", 30),
             "trace_id": trace_id,
             "purpose": cmd.get("purpose", ""),
@@ -604,6 +650,7 @@ def _build_initial_context(
 def _build_followup_context(
     command_results: list[dict[str, Any]],
     next_turn: int,
+    suppressed: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the user message for turn >= 2 — ONLY the new command results.
 
@@ -611,9 +658,23 @@ def _build_followup_context(
     in its conversation history (message-history is accumulated, not reset).
     Resending them would waste context and risk contradicting the model's own
     remembered reasoning, so we send only what is new since the last turn.
+
+    `suppressed` = lệnh bị dedup chặn lại. Phải nói RÕ, vì đây là ngữ cảnh chỉ
+    vòng lặp biết: model không thể suy ra được rằng lệnh nó vừa xin đã chạy rồi.
+    Đo trên phiên thật `ra-7be04b7fb43e`: 7/8 lượt bị dedup, model chỉ nhận
+    "(no commands were dispatched)" nên xin lại y hệt cho tới khi cạn lượt.
     """
     parts: list[str] = ["[COMMAND RESULTS from your previous request]"]
-    if not command_results:
+    if suppressed:
+        listed = ", ".join(
+            _format_command(c) or str(c.get("command", "")) for c in suppressed
+        )
+        parts.append(
+            f"NOT DISPATCHED — you already ran these earlier in THIS session: {listed}.\n"
+            f"Their output is above in this conversation. Re-read it instead of "
+            f"re-requesting. Ask for a DIFFERENT command, or conclude."
+        )
+    elif not command_results:
         parts.append("(no commands were dispatched)")
     for cmd_result in command_results:
         cmd_id = cmd_result.get("cmd_id", "")
@@ -661,23 +722,26 @@ async def _call_llm_turn(
     model: str,
     messages: list[dict[str, str]],
     num_ctx: int = 8192,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[dict[str, Any], str, bool]:
     """Call LLM for one diagnosis turn using the ACCUMULATED message history.
 
     INV_ONE_ALERT_ONE_SESSION: `messages` carries the full conversation (system
-    + every prior user/assistant turn). Returns (parsed_response, raw_text) so
-    the caller can append the assistant turn back into the history before the
-    next iteration — keeping the session stateful across turns 2..8.
+    + every prior user/assistant turn). Returns (parsed_response, raw_text,
+    is_infra_error) so the caller can append the assistant turn back into the
+    history before the next iteration — keeping the session stateful across
+    turns 2..8 — WITHOUT poisoning that history with an infra failure (see
+    caller: an infra error is not something the model "said", so it must not
+    appear as an assistant turn or the next turn parrots "llm_error" back).
     """
     try:
         resp = await llm_client.chat(
             model=model,
             messages=messages,
             format="json",
-            options={"num_ctx": num_ctx, "temperature": 0.1, "num_predict": 1024},
+            options={"num_ctx": num_ctx, "temperature": 0.1, "num_predict": _NUM_PREDICT},
         )
         raw = _extract_raw_content(resp)
-        return _parse_llm_response(raw), raw
+        return _parse_llm_response(raw), raw, False
     except Exception as exc:
         logger.error("[diag-loop] LLM turn failed: %s", exc)
         return (
@@ -689,6 +753,7 @@ async def _call_llm_turn(
                 "confidence": 0.0,
             },
             "",
+            True,
         )
 
 
@@ -698,14 +763,22 @@ async def run_diagnosis_loop(
     agent_id: str,
     ev_doc: dict[str, Any],
     trace_id: str,
-    model: str = "qwen2.5-coder:7b",
+    model: str = "qwen3:8b",
     num_ctx: int = 8192,
     knowledge_text: str = "",
+    semaphore: Any = None,
 ) -> dict[str, Any]:
     """Run multi-turn diagnosis loop. Returns FinalDiagnosis dict.
 
     INVARIANT INV_NO_SINGLE_TURN: runs at least MIN_TURNS regardless of confidence.
     INVARIANT INV_DIAG_STORED: saves session to Redis before returning.
+
+    `semaphore` (LLMSemaphore, optional): mỗi lượt PHẢI xếp hàng qua làn
+    `reactive` trước khi gọi LLM. Đo trên 32 phiên thật 2026-08-02: 18 phiên
+    8-lượt chồng lên nhau trong đúng 14 phút (10:37→10:51) cùng đập vào một
+    model 7B duy nhất — không có gate nào giữa `run_diagnosis_loop` và
+    `llm_client.chat`. Semaphore là optional (không phá call site cũ) nhưng
+    PHẢI truyền ở production; xem call site `remote_agent_pipeline.py`.
     """
     logger.info(
         "[diag-loop] START trace_id=%s agent_id=%s probe=%s",
@@ -754,6 +827,19 @@ async def run_diagnosis_loop(
     # examples are exactly what must not be citable.
     evidence_corpus_parts: list[str] = [initial_context]
 
+    # INV_DIAG_MEASURED: trục kiểm thứ HAI, độc lập với corpus ở trên. Corpus trả
+    # lời "chuỗi này có trong bằng chứng không"; danh sách này trả lời "có công cụ
+    # nào ĐO đại lượng mà kết luận nêu ra không". Ca `ra-689e6dc59ea4` lọt trục
+    # một (câu "Insufficient memory available on the host" không có đường dẫn,
+    # không có phần trăm) và chỉ trục hai bắt được.
+    all_command_results: list[dict[str, Any]] = []
+    alert_hint_text = str(ev_doc.get("alert_hint", "") or "")
+    consecutive_llm_errors = 0
+    # "Hết slot LLM ngay từ đầu" và "phiên thật nhưng không kết luận nổi" đều có
+    # thể để lại total_turns=0/thấp — downstream (CRAT, KPI) không tự phân biệt
+    # được hai trường hợp đó nếu không có cờ riêng.
+    semaphore_bailout = False
+
     for turn_n in range(1, _MAX_TURNS + 1):
         logger.info(
             "[diag-loop] turn=%d/%d trace=%s msg_history=%d",
@@ -761,9 +847,52 @@ async def run_diagnosis_loop(
         )
 
         messages = _enforce_context_budget(messages, num_ctx)
-        llm_resp, raw = await _call_llm_turn(llm_client, model, messages, num_ctx)
-        # Append the assistant turn so the next call continues this same session.
-        messages.append({"role": "assistant", "content": raw or json.dumps(llm_resp)})
+
+        sem_token = None
+        if semaphore is not None:
+            try:
+                sem_token = await semaphore.acquire_reactive()
+            except Exception as exc:
+                # Hết slot: đây là suy giảm có kiểm soát, không phải sự cố. Dừng
+                # vòng lặp ngay — KHÔNG gọi LLM, KHÔNG đếm là lỗi hạ tầng — và để
+                # phần fallback bên dưới kết luận từ những gì đã có (có thể rỗng).
+                logger.warning(
+                    "[diag-loop] semaphore busy trace=%s turn=%d err=%s — bailing out",
+                    trace_id, turn_n, exc,
+                )
+                semaphore_bailout = True
+                break
+        try:
+            llm_resp, raw, is_infra_error = await _call_llm_turn(llm_client, model, messages, num_ctx)
+        finally:
+            if sem_token is not None:
+                try:
+                    await semaphore.release(sem_token)
+                except Exception as exc:
+                    # Lỗi RELEASE (ví dụ Redis rpush lỗi mạng thoáng qua) xảy ra ở
+                    # MỌI lượt, không chỉ khi bận — không được để nó thoát khỏi
+                    # vòng lặp: trước bản vá này, một exception ở đây văng thẳng ra
+                    # khỏi run_diagnosis_loop, khiến `redis.set(session)` cuối hàm
+                    # KHÔNG BAO GIỜ chạy — mất luôn kết luận đúng đã có ở các lượt
+                    # trước (vi phạm INV_DIAG_STORED âm thầm). Slot rò ở Redis vẫn
+                    # còn nghiêm trọng (làn reactive cạn dần) nhưng đó là suy giảm
+                    # có thể quan sát qua metric, không phải mất trắng phiên.
+                    logger.error(
+                        "[diag-loop] semaphore.release lỗi trace=%s turn=%d err=%s — "
+                        "tiếp tục phiên, có thể rò slot",
+                        trace_id, turn_n, exc,
+                    )
+
+        if is_infra_error:
+            consecutive_llm_errors += 1
+        else:
+            consecutive_llm_errors = 0
+            # Append the assistant turn so the next call continues this same
+            # session. An infra error is NOT appended — it never was something
+            # the model "said", and doing so poisons the next turn's history
+            # with the literal string "llm_error", which the model then reads
+            # back as its own prior conclusion (observed on 6/32 real sessions).
+            messages.append({"role": "assistant", "content": raw or json.dumps(llm_resp)})
 
         commands_requested = llm_resp.get("commands_to_run", [])
         command_results: list[dict[str, Any]] = []
@@ -773,9 +902,11 @@ async def run_diagnosis_loop(
         # Drop commands already run this session (dedup) — keeps the loop from
         # spinning on the same df/lsblk request when it yields nothing new.
         fresh_commands: list[dict[str, Any]] = []
+        suppressed_commands: list[dict[str, Any]] = []
         for c in commands_requested:
             sig = (c.get("command", ""), tuple(str(a) for a in c.get("args", [])))
             if sig in executed_signatures:
+                suppressed_commands.append(c)
                 continue
             fresh_commands.append(c)
 
@@ -808,6 +939,7 @@ async def run_diagnosis_loop(
                     cid = r.get("cmd_id", "")
                     r["purpose"] = purpose_by_id.get(cid, "")
                     r["command_str"] = cmd_str_by_id.get(cid, "")
+                    all_command_results.append(r)
                     if r.get("status") != "timeout":
                         evidence_corpus_parts.append(
                             f"{r.get('command_str', '')}\n{r.get('stdout', '')}\n{r.get('stderr', '')}"
@@ -825,6 +957,16 @@ async def run_diagnosis_loop(
         }
         turns.append(turn_record)
 
+        if is_infra_error and consecutive_llm_errors >= _MAX_CONSECUTIVE_LLM_ERRORS:
+            # Ngắt mạch: đo thật cho thấy sau lỗi đầu tiên, LLM gần như không hồi
+            # trong phiên đó (7/8 lượt lỗi liên tiếp là mẫu điển hình). Mỗi lượt
+            # thêm tốn `llm_chat_timeout_sec` và tự khuếch đại cơn bão gây ra nó.
+            logger.warning(
+                "[diag-loop] %d lỗi LLM liên tiếp — ngắt mạch trace=%s turn=%d",
+                consecutive_llm_errors, trace_id, turn_n,
+            )
+            break
+
         if is_complete:
             root_cause = llm_resp.get("root_cause") or llm_resp.get("hypothesis", "")
             final = _apply_grounding_gate(
@@ -840,6 +982,12 @@ async def run_diagnosis_loop(
                     ),
                 },
                 "\n".join(evidence_corpus_parts),
+            )
+            final = apply_measurement_gate(
+                final,
+                alert_hint=alert_hint_text,
+                command_results=all_command_results,
+                turns=turns,
             )
             # Ensure remediation_steps is never empty when root cause is known
             if not final["remediation_steps"] and root_cause:
@@ -862,7 +1010,12 @@ async def run_diagnosis_loop(
         # Not complete → feed the new command results into the SAME session so
         # the next turn continues the conversation (INV_ONE_ALERT_ONE_SESSION).
         if turn_n < _MAX_TURNS:
-            if llm_resp.get("_parse_error"):
+            if is_infra_error:
+                # Không append gì: không có assistant turn nào vừa xảy ra để nối
+                # tiếp (xem lý do skip ở trên). `messages` giữ nguyên — lượt sau
+                # thử lại đúng yêu cầu cũ, không phải một câu hỏi mới.
+                pass
+            elif llm_resp.get("_parse_error"):
                 # Error-recovery contract: tell the model WHY the turn was wasted
                 # and HOW to retry, instead of silently burning the turn.
                 messages.append({
@@ -877,25 +1030,47 @@ async def run_diagnosis_loop(
             else:
                 messages.append({
                     "role": "user",
-                    "content": _build_followup_context(command_results, turn_n + 1),
+                    "content": _build_followup_context(
+                        command_results, turn_n + 1, suppressed=suppressed_commands,
+                    ),
                 })
 
     if not final:
-        last = turns[-1] if turns else {}
-        hypothesis = last.get("hypothesis", "")
+        # Lấy lượt TỐT NHẤT, không phải lượt cuối — lượt cuối chỉ vô tình là lượt
+        # tốt nhất khi phiên kết thúc suôn sẻ. Khi ngắt mạch vì lỗi hạ tầng (nhánh
+        # trên) hoặc phiên cạn lượt giữa chừng một câu trả lời lỗi, `turns[-1]`
+        # LUÔN là lượt lỗi trong khi một lượt trước đó có thể đã chẩn đúng. Đo
+        # thật: 6/32 phiên kết luận `root_cause="llm_error", confidence=0.0` dù
+        # lượt 1 đã cho "CPU saturation on host cust-app", confidence 0.75-0.95.
+        best = _best_turn(turns)
+        hypothesis = best.get("hypothesis", "") if best else ""
+        confidence = best.get("confidence", 0.0) if best else 0.0
         final = _apply_grounding_gate(
             {
-                "root_cause": hypothesis or "Diagnosis inconclusive after max turns — see hypothesis per turn",
+                "root_cause": hypothesis or "Diagnosis inconclusive — no infrastructure-error-free turn produced a hypothesis",
                 "affected_components": [],
                 "blast_radius": "",
-                "impact_summary": "Diagnosis reached maximum turns. Best-effort root cause from available evidence.",
+                "impact_summary": (
+                    "Diagnosis reached maximum turns. Best-effort root cause from available evidence."
+                    if len(turns) >= _MAX_TURNS else
+                    "Diagnosis stopped early (LLM unavailable). Best-effort root cause from available evidence."
+                ),
                 "remediation_steps": [],
-                "confidence": last.get("confidence", 0.0),
+                "confidence": confidence,
             },
             "\n".join(evidence_corpus_parts),
         )
+        final = apply_measurement_gate(
+            final,
+            alert_hint=alert_hint_text,
+            command_results=all_command_results,
+            turns=turns,
+        )
         final["remediation_steps"] = _fallback_remediation(hypothesis)
-        logger.warning("[diag-loop] max_turns reached trace=%s", trace_id)
+        logger.warning(
+            "[diag-loop] no diagnosis_complete trace=%s total_turns=%d best_turn=%s",
+            trace_id, len(turns), best.get("turn") if best else None,
+        )
 
     session = {
         "trace_id": trace_id,
@@ -906,8 +1081,13 @@ async def run_diagnosis_loop(
         "turns": turns,
         "total_turns": len(turns),
         "final": final,
-        "degraded": not agent_online,
-        "degraded_reason": "" if agent_online else "agent_offline: no command execution available",
+        "degraded": (not agent_online) or semaphore_bailout,
+        "degraded_reason": "; ".join(
+            r for r in (
+                "" if agent_online else "agent_offline: no command execution available",
+                "llm_unavailable: no reactive semaphore slot before turn completed" if semaphore_bailout else "",
+            ) if r
+        ),
         "completed_at": int(time.time()),
     }
 

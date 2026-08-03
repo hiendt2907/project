@@ -33,6 +33,7 @@ from workers.remote_diagnosis_emitter import (
     has_placeholder_parroting,
 )
 from workers.pipeline_stages import mark_stage
+from workers.trace_context import inbound_trace_scope
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ async def handle_remote_agent_evidence(
     trace: str,
 ) -> str:
     """End-to-end pipeline for a single remote-agent evidence item."""
+    logger.info("[RAP]Handling remote agent evidence trace=%s probe=%s", trace, ev_doc.get("probe"))
     extracted = ev_doc.get("extracted_fact") or {}
     if isinstance(extracted, str):
         try:
@@ -265,11 +267,29 @@ async def handle_remote_agent_evidence(
         fp, triage.route, triage.urgency,
     )
     # RAG stage reflects the playbook recall done inside triage.
-    _recall_score = getattr(getattr(triage, "recall", None), "top_score", None)
-    if _recall_score:
-        await mark_stage(ctx.redis, trace, "RAG", "ok", detail=f"recall={_recall_score:.3f} route={triage.route}", lane=lane)
-    else:
-        await mark_stage(ctx.redis, trace, "RAG", "skip", detail=f"no_hit route={triage.route}", lane=lane)
+    logger.info("[RAP] About to process RAG stage for trace=%s", trace)
+    try:
+        recall_obj = getattr(triage, "recall", None)
+        logger.info("[RAP] Recall object for trace=%s: %s", trace, recall_obj)
+        if recall_obj is not None:
+            _recall_score = getattr(recall_obj, "top_score", None)
+            logger.info("[RAP] Recall score for trace=%s: %s", trace, _recall_score)
+        else:
+            _recall_score = None
+            logger.info("[RAP] Recall object is None for trace=%s", trace)
+
+        if _recall_score:
+            logger.info("[RAP] Marking RAG stage as ok for trace=%s with score=%s", trace, _recall_score)
+            await mark_stage(ctx.redis, trace, "RAG", "ok", detail=f"recall={_recall_score:.3f} route={triage.route}", lane=lane)
+            logger.info("[RAP] Successfully marked RAG stage as ok for trace=%s", trace)
+        else:
+            logger.info("[RAP] Marking RAG stage as skip for trace=%s (no recall score)", trace)
+            await mark_stage(ctx.redis, trace, "RAG", "skip", detail=f"no_hit route={triage.route}", lane=lane)
+            logger.info("[RAP] Successfully marked RAG stage as skip for trace=%s", trace)
+    except Exception as e:
+        logger.error("[RAP] Error processing RAG stage for trace=%s: %s", trace, str(e), exc_info=True)
+        # Re-raise to see if it bubbles up
+        raise
 
     # ── Stage 4: Research — multi-turn diagnosis loop for urgent clusters ──
     # INVARIANT INV_NO_SINGLE_TURN: diagnosis loop runs minimum 2 turns.
@@ -292,7 +312,7 @@ async def handle_remote_agent_evidence(
             ctx.settings, "telegram_admin_chat_id", None
         )
         llm = getattr(ctx, "llm", None)
-        model = getattr(getattr(ctx, "settings", None), "diag_evidence_llm_model", None) or "qwen2.5-coder:7b"
+        model = getattr(getattr(ctx, "settings", None), "diag_evidence_llm_model", None) or "qwen3:8b"
         num_ctx = int(getattr(getattr(ctx, "settings", None), "llm_num_ctx", 8192) or 8192)
 
         if llm is not None and chat_id is not None:
@@ -410,7 +430,33 @@ async def _run_diagnosis_and_notify(
     """Background task: run multi-turn diagnosis loop then emit Telegram.
 
     INVARIANT INV_DIAG_STORED: session must be stored in Redis before emit.
+
+    Trace binding (2026-08-02): mọi thứ trong đây chạy trong một asyncio task
+    RIÊNG. Instrument LLM đo được 63/67 lệnh gọi ghi ``trace=-``, và chỗ mất
+    nằm đúng ở nhánh này — không có trace id thì không nối được một lệnh gọi
+    LLM với sự cố sinh ra nó, tức mất khả năng truy "chẩn đoán sai này đến từ
+    prompt nào". Bind TẠI ĐÂY chứ không dựa vào context của caller: task này
+    có thể được tạo từ nhiều đường, và một thay đổi ở chỗ tạo task không được
+    phép âm thầm làm rơi trace lần nữa.
     """
+    async with inbound_trace_scope(trace):
+        await _run_diagnosis_and_notify_inner(
+            ctx=ctx, ev_doc=ev_doc, agent_id=agent_id, trace=trace,
+            llm=llm, model=model, num_ctx=num_ctx, chat_id=chat_id,
+        )
+
+
+async def _run_diagnosis_and_notify_inner(
+    ctx: WorkerHandlerContext,
+    ev_doc: dict,
+    agent_id: str,
+    trace: str,
+    llm: Any,
+    model: str,
+    num_ctx: int,
+    chat_id: int,
+) -> None:
+    """Thân thật của `_run_diagnosis_and_notify` — luôn chạy trong trace scope."""
     from services.analyst.diagnosis_loop import run_diagnosis_loop
     from workers.archivist import recall_knowledge_context
 
@@ -442,6 +488,11 @@ async def _run_diagnosis_and_notify(
             model=model,
             num_ctx=num_ctx,
             knowledge_text=knowledge_text,
+            # Xếp hàng qua làn reactive: đo thật 2026-08-02 cho thấy 18 phiên
+            # 8-lượt chồng nhau trong 14 phút cùng đập vào một model 7B mà
+            # KHÔNG có gate nào — `acquire_reactive()` từng không có call site
+            # nào trong toàn repo dù làn này đã được cấp slot sẵn.
+            semaphore=getattr(ctx, "semaphore", None),
         )
         _turns = getattr(session, "total_turns", None)
         if _turns is None and isinstance(session, dict):
@@ -479,6 +530,12 @@ async def _run_diagnosis_and_notify(
             "affected_components": (_final or {}).get("affected_components", []),
             "total_turns": _turns,
             "degraded": session.get("degraded") if isinstance(session, dict) else None,
+            # INV_DIAG_MEASURED: nếu cổng đo-lường đã vô hiệu hoá kết luận, dấu vết
+            # đó phải nằm trong chuỗi audit — không chỉ trong log. Người đọc lại
+            # phải biết thẻ đó đã bị hạ độ tin vì lý do gì.
+            "unmeasured_quantities": (_final or {}).get("unmeasured_quantities", []),
+            "contradicted_claims": (_final or {}).get("contradicted_claims", []),
+            "confidence_inflation": (_final or {}).get("confidence_inflation"),
         }
         try:
             await write_audit_block(
@@ -540,15 +597,37 @@ async def _dispatch_auto_recovery_if_eligible(
                 agent_id=agent_id,
                 tenant_id=tenant_id,
                 trace_id=trace,
+                # BẮT BUỘC. `auto_recovery_bridge` nay ghi CRAT TRƯỚC khi dispatch
+                # (ledger hỏng ⇒ không phát lệnh, giữ đúng bất biến CRAT fail-closed)
+                # và đăng ký lệnh vào work-list cho `remote_command_outcome_loop`.
+                # Thiếu hai tham số này thì nó luôn trả `audit_ledger_unavailable`:
+                # an toàn, nhưng toàn bộ đường tự khắc phục nằm im.
+                redis=ctx.redis,
+                kafka=ctx.kafka,
             )
     except Exception as exc:
         logger.error("[RAP] auto_recovery_dispatch_error trace=%s err=%s", trace, exc)
         await mark_stage(ctx.redis, trace, "AUTO_RECOVERY", "fail", detail=f"dispatch_error: {exc}", lane=lane)
         return
 
-    if result.get("reason") in ("no_suggested_recovery", "confidence_below_threshold",
-                                 "gateway_api_key_not_configured"):
-        return  # expected, common — not worth a stage row for every diagnosis
+    # Lý do "không đủ điều kiện", KHÔNG phải lỗi. Trước đây nhánh này `return` câm —
+    # 808/809 trace không ghi lấy một dòng, nên "vì sao không tự khắc phục" là câu
+    # không trả lời được từ sổ. Nay vẫn không ghi `fail` (nó bóp méo tỉ lệ lỗi),
+    # nhưng ghi `skip` KÈM LÝ DO. `agent_not_in_lab_allowlist` thuộc nhóm này:
+    # agent ngoài allowlist là cấu hình có chủ đích, không phải sự cố.
+    _SKIP_REASONS = (
+        "no_suggested_recovery",
+        "confidence_below_threshold",
+        "gateway_api_key_not_configured",
+        "agent_not_in_lab_allowlist",
+    )
+    reason = str(result.get("reason") or "")
+    if reason in _SKIP_REASONS:
+        await mark_stage(
+            ctx.redis, trace, "AUTO_RECOVERY", "skip",
+            detail=f"reason={reason}", lane=lane,
+        )
+        return
 
     status = "ok" if result.get("dispatched") else "fail"
     await mark_stage(

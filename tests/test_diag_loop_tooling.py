@@ -284,3 +284,155 @@ def test_preview_shows_head_and_tail_regardless_of_sort():
     assert "huge.log" in preview  # tail preserved
     assert "total 100" in preview  # head preserved
     assert "dòng) …" in preview
+
+
+# ── INV_DIAG_MEASURED end-to-end (2026-08-02) ────────────────────────────────
+#
+# Ca thật `omni:diag:session:ra-689e6dc59ea4`: alert CPU, LLM xin `df -h` (đĩa),
+# thấy đĩa ổn rồi kết luận về BỘ NHỚ mà không đo bộ nhớ lần nào — confidence còn
+# TĂNG 0.75 → 0.95. Test này chạy qua CHÍNH `run_diagnosis_loop`, không phải chỉ
+# hàm gate, để cổng không bị bỏ quên ở call site (bài học
+# project_positional_pairing_bug_class: test hàm xanh mà bug vẫn còn).
+
+
+@pytest.mark.asyncio
+async def test_df_then_memory_conclusion_is_neutralized_end_to_end():
+    import asyncio
+
+    redis = _redis()
+    await _register_agent(redis, "staging-sim_cust-app")
+
+    llm = _FakeLLM([
+        {"reasoning": "CPU 98.3%, load 11.37", "hypothesis":
+            "CPU saturation on host cust-app due to high load average",
+         "evidence_gaps": ["No information about disk usage or memory pressure"],
+         "commands_to_run": [{"command": "df", "args": ["-h"], "purpose": "check disk"}],
+         "diagnosis_complete": False, "confidence": 0.75},
+        {"reasoning": "disk is only 18% used, so it must be memory",
+         "hypothesis": "Insufficient memory available on the host",
+         "evidence_gaps": [], "commands_to_run": [],
+         "diagnosis_complete": True, "confidence": 0.95,
+         "root_cause": "Insufficient memory available on the host",
+         "affected_components": ["payment-api"],
+         "remediation_steps": ["Increase the amount of RAM allocated to the VM"],
+         "suggested_recovery": {"capability": "systemd.restart_unit", "unit": "payment-api.service"}},
+    ])
+    ev_doc = {"probe": "remote_system_metrics", "lane": "SYS_RESOURCE",
+              "alert_hint": "[cust-app] CPU 98.3%>80.0%",
+              "extracted_fact": {"cpu_percent": 98.3, "mem_percent": 60.0}}
+
+    # Trả kết quả `df` ngay khi lệnh vào hàng đợi, để loop đi tiếp mà không chờ.
+    async def _answer_df():
+        for _ in range(200):
+            keys = await redis.keys(f"{dl._CMD_QUEUE_PREFIX}staging-sim_cust-app")
+            if keys:
+                raw = await redis.rpop(f"{dl._CMD_QUEUE_PREFIX}staging-sim_cust-app")
+                if raw:
+                    cmd = json.loads(raw)
+                    await redis.set(
+                        f"{dl._CMD_RESULT_PREFIX}{cmd['cmd_id']}",
+                        json.dumps({
+                            "cmd_id": cmd["cmd_id"], "blocked": False,
+                            "stdout": "Filesystem Size Used Avail Use% Mounted on\n"
+                                      "/dev/vdb1 178G 32G 146G 18% /\n",
+                            "stderr": "", "rc": 0, "exit_code": 0, "duration_ms": 7,
+                        }),
+                    )
+                    return
+            await asyncio.sleep(0.01)
+
+    answerer = asyncio.create_task(_answer_df())
+    session = await dl.run_diagnosis_loop(
+        redis=redis, llm_client=llm, agent_id="staging-sim_cust-app",
+        ev_doc=ev_doc, trace_id="t-mem-pivot",
+    )
+    answerer.cancel()
+
+    final = session["final"]
+    # Đại lượng "memory" không alert nào nêu, không lệnh nào đo.
+    assert final["unmeasured_quantities"] == ["memory"]
+    assert final["root_cause"].startswith("[UNMEASURED: memory]")
+    # Không được lên thẻ như sự thật: độ tin bị hạ, auto-recovery bị gỡ.
+    assert final["confidence"] <= 0.3
+    assert final["suggested_recovery"] is None
+    # Và ghi lại chính cú tăng độ tin vô căn cứ.
+    assert final["confidence_inflation"]["from_confidence"] == pytest.approx(0.75)
+    assert final["confidence_inflation"]["to_confidence"] == pytest.approx(0.95)
+
+
+@pytest.mark.asyncio
+async def test_packed_llm_args_are_normalized_before_enqueue():
+    """`ps` với ["aux --sort=-%cpu"] phải vào hàng đợi ở dạng tách token."""
+    redis = _redis()
+    ids = await dl._enqueue_commands(
+        redis, "cust-app",
+        [{"command": "ps", "args": ["aux --sort=-%cpu"], "purpose": "top cpu"},
+         {"command": "top", "args": [], "purpose": "live view"}],
+        "t-norm",
+    )
+    assert len(ids) == 2
+    queued = [json.loads(x) for x in await redis.lrange(f"{dl._CMD_QUEUE_PREFIX}cust-app", 0, -1)]
+    by_cmd = {q["command"]: q["args"] for q in queued}
+    assert by_cmd["ps"] == ["aux", "--sort=-%cpu"]
+    assert "-b" in by_cmd["top"] and "-n" in by_cmd["top"]
+
+
+# ── Trace binding trong background task (2026-08-02) ─────────────────────────
+#
+# Instrument LLM đo được 63/67 lệnh gọi ghi `trace=-`. Chỗ mất là nhánh
+# remote_agent_pipeline: vòng chẩn đoán chạy trong asyncio task riêng. Test bám
+# vào CALL SITE (không phải bản thân `inbound_trace_scope`) — test hàm sẽ xanh
+# mà trace vẫn rơi (project_positional_pairing_bug_class).
+
+
+@pytest.mark.asyncio
+async def test_diagnosis_background_task_binds_trace_id():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from workers import remote_agent_pipeline as rap
+    from workers.request_trace import current_trace_id
+
+    seen: list[str] = []
+
+    async def _fake_inner(**kwargs):
+        seen.append(current_trace_id())
+
+    ctx = SimpleNamespace(redis=_redis(), settings=SimpleNamespace(), kafka=None)
+    with patch.object(rap, "_run_diagnosis_and_notify_inner", new=AsyncMock(side_effect=_fake_inner)):
+        await rap._run_diagnosis_and_notify(
+            ctx=ctx, ev_doc={}, agent_id="a", trace="ra-deadbeef1234",
+            llm=object(), model="m", num_ctx=8192, chat_id=1,
+        )
+
+    assert seen == ["ra-deadbeef1234"]
+
+
+@pytest.mark.asyncio
+async def test_trace_id_survives_into_a_spawned_task():
+    """Bind phải sống qua ranh giới task — đó chính là chỗ nó từng rơi."""
+    import asyncio
+
+    from workers import remote_agent_pipeline as rap
+    from workers.request_trace import current_trace_id
+
+    seen: list[str] = []
+
+    async def _probe():
+        await asyncio.sleep(0)
+        seen.append(current_trace_id())
+
+    async def _fake_inner(**kwargs):
+        await asyncio.create_task(_probe())
+
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    ctx = SimpleNamespace(redis=_redis(), settings=SimpleNamespace(), kafka=None)
+    with patch.object(rap, "_run_diagnosis_and_notify_inner", new=AsyncMock(side_effect=_fake_inner)):
+        await rap._run_diagnosis_and_notify(
+            ctx=ctx, ev_doc={}, agent_id="a", trace="ra-cafebabe9999",
+            llm=object(), model="m", num_ctx=8192, chat_id=1,
+        )
+
+    assert seen == ["ra-cafebabe9999"]

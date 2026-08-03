@@ -757,10 +757,10 @@ class WorkerSettings(BaseSettings):
         description="Embeddings endpoint base URL; alias OMNI_OLLAMA_EMBED_URL.",
     )
     # Tier-1 DEFAULT_WORKER — SDK tool JSON, status, chart
-    chat_model: str = Field(default="qwen2.5-coder:7b")
-    model_reasoning_engine: str = Field(default="qwen2.5-coder:7b")
-    model_heavy_lifter: str = Field(default="qwen2.5-coder:7b")
-    model_helper: str = Field(default="qwen2.5-coder:7b")
+    chat_model: str = Field(default="qwen3:8b")
+    model_reasoning_engine: str = Field(default="qwen3:8b")
+    model_heavy_lifter: str = Field(default="qwen3:8b")
+    model_helper: str = Field(default="qwen3:8b")
     embed_model: str = Field(default="nomic-embed-text")
     #: Fallback embed model; empty = chỉ retry truncate khi error.
     embed_model_fallback: str = Field(

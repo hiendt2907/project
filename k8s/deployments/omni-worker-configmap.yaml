@@ -110,18 +110,25 @@ data:
   OMNI_LLM_SLI_METRICS_ENABLED: "true"
   VLLM_BASE_URL: "http://host.orb.internal:11434/v1"
   VLLM_EMBED_URL: "http://host.orb.internal:11434/v1"
-  VLLM_MODEL: "qwen2.5-coder:7b"
+  VLLM_MODEL: "qwen3:8b"
   OMNI_LLM_NUM_PARALLEL: "4"
   OMNI_TELEGRAM_ENABLED: "true"
   # E2E harness: Bot API getUpdates must not compete with in-cluster long-poll.
   OMNI_TELEGRAM_POLLING_ENABLED: "false"
-  # Model profile — qwen2.5-coder:7b for all roles
-  OMNI_CHAT_MODEL: "qwen2.5-coder:7b"
-  OMNI_MODEL_REASONING_ENGINE: "qwen2.5-coder:7b"
-  OMNI_MODEL_HEAVY_LIFTER: "qwen2.5-coder:7b"
-  OMNI_MODEL_HELPER: "qwen2.5-coder:7b"
-  OMNI_DIAG_EVIDENCE_LLM_MODEL: "qwen2.5-coder:7b"
-  OMNI_AUTONOMOUS_DECIDER_MODEL: "qwen2.5-coder:7b"
+  # Model profile — qwen3:8b for all roles (2026-08-03, sau qwen2.5-coder:7b).
+  # ĐÃ THỬ qwen3.6:27b trước — revert vì đo thật: llama-server chiếm 300%+ CPU /
+  # 14.4GB RAM (57% RAM máy) liên tục trên MacBook chạy chung K8s+Redis+nhiều
+  # pod, khiến test suite local (thường 175s) không xong nổi trong 10 phút.
+  # qwen3:8b: đã có sẵn trên Ollama host (không cần pull), footprint gần với
+  # qwen2.5-coder:7b cũ (8.2B vs 7.6B), thế hệ Qwen3 mới hơn, có capability
+  # "tools", context 40960 (> 32768 cũ). CHƯA đo latency một lượt thật
+  # (num_predict=1024) trên tải thật — theo dõi qua LLM observability (Đ2).
+  OMNI_CHAT_MODEL: "qwen3:8b"
+  OMNI_MODEL_REASONING_ENGINE: "qwen3:8b"
+  OMNI_MODEL_HEAVY_LIFTER: "qwen3:8b"
+  OMNI_MODEL_HELPER: "qwen3:8b"
+  OMNI_DIAG_EVIDENCE_LLM_MODEL: "qwen3:8b"
+  OMNI_AUTONOMOUS_DECIDER_MODEL: "qwen3:8b"
   OMNI_EMBED_MODEL: "nomic-embed-text"
   OMNI_DEEP_SCOUT_INTERVAL_SEC: "1800"
   OMNI_METRICS_LISTEN_PORT: "9090"
