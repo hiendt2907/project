@@ -182,19 +182,22 @@ async def _run_execute_mutate_tool_impl(
             except Exception as _re:
                 _reader = None
                 logger.warning("[%s] blast_radius reader unavailable: %s", trace_id, _re)
-            if _reader is not None:
-                _verdict = await assess_blast_radius(
-                    _reader, tool=reg_name, args=args or {},
-                    max_pods=int(getattr(ws, "omni_blast_max_pods", 10) or 10),
-                    capacity_drop_pct=float(getattr(ws, "omni_blast_capacity_drop_pct", 20.0) or 20.0),
+            # Always call assess_blast_radius, even with reader=None: it has its own
+            # fail-closed handling for destructive verbs when there's no cluster view
+            # (e.g. circuit breaker open after repeated K8s API failures). Skipping the
+            # call here would silently disable that fail-closed path.
+            _verdict = await assess_blast_radius(
+                _reader, tool=reg_name, args=args or {},
+                max_pods=int(getattr(ws, "omni_blast_max_pods", 10) or 10),
+                capacity_drop_pct=float(getattr(ws, "omni_blast_capacity_drop_pct", 20.0) or 20.0),
+            )
+            if _verdict.hard_block:
+                logger.error(
+                    "[%s] event=blast_radius_hard_block tool=%s affected=%d reasons=%s",
+                    trace_id, reg_name, _verdict.affected_pods, "; ".join(_verdict.reasons),
                 )
-                if _verdict.hard_block:
-                    logger.error(
-                        "[%s] event=blast_radius_hard_block tool=%s affected=%d reasons=%s",
-                        trace_id, reg_name, _verdict.affected_pods, "; ".join(_verdict.reasons),
-                    )
-                    msg = _verdict.deny_message()
-                    return msg, infer_exit_code_from_tool_output(msg)
+                msg = _verdict.deny_message()
+                return msg, infer_exit_code_from_tool_output(msg)
         except Exception as _be:
             logger.warning("[%s] blast_radius assess error (allowing): %s", trace_id, _be)
 

@@ -449,6 +449,40 @@ async def test_run_mutate_alias_k8s_patch_deployment():
 
 
 # ---------------------------------------------------------------------------
+# run_execute_mutate_tool — blast-radius reader unavailable (circuit breaker open)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_run_mutate_blast_radius_reader_unavailable_fails_closed():
+    """Regression: when K8sBlastReader() raises (e.g. circuit breaker open), the
+    destructive tool must still be hard-blocked via assess_blast_radius(None, ...),
+    not silently allowed through by skipping the blast-radius check entirely."""
+    from workers.autonomous_execute import run_execute_mutate_tool
+    from workers.tools import TOOL_REGISTRY
+
+    settings = _make_settings(unrestricted=True)
+    settings.omni_blast_radius_enabled = True
+    ctx = _make_ctx(settings=settings)
+    mock_fn = AsyncMock(return_value="scale ok")
+    TOOL_REGISTRY["k8s_scale_deployment"] = mock_fn
+    try:
+        with patch(
+            "pkg.executor.blast_radius.K8sBlastReader",
+            side_effect=RuntimeError("circuit breaker open"),
+        ):
+            out, code = await run_execute_mutate_tool(
+                ctx, tool_name="k8s_scale_deployment",
+                args={"namespace": "multi-agent", "deployment": "my-app", "replicas": 3},
+                trace_id="trace-one",
+            )
+        assert code != 0
+        assert "cannot bound blast radius" in out or "fail-closed" in out
+        mock_fn.assert_not_called()
+    finally:
+        TOOL_REGISTRY.pop("k8s_scale_deployment", None)
+
+
+# ---------------------------------------------------------------------------
 # publish_action_feedback
 # ---------------------------------------------------------------------------
 
