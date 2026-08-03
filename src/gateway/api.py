@@ -334,6 +334,50 @@ def _build_redis_client() -> aioredis.Redis:
     return aioredis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 
+async def _connect_admin_pool_with_retry(
+    dsn: str,
+    *,
+    pool_min: int = 1,
+    pool_max: int = 8,
+    max_attempts: int = 5,
+    backoff_start: float = 1.0,
+    backoff_max: float = 10.0,
+    _create_pool: Any = None,
+) -> Any:
+    """Bounded retry+backoff around ``create_admin_pool``.
+
+    Postgres may not be ready yet at gateway startup — same race class as the
+    already-documented Kafka producer race for this pod. Without a retry, a
+    single failed attempt left ``admin_repo`` permanently ``None`` for the
+    pod's whole lifetime (no restart until next rollout) — confirmed live
+    2026-08-03 as the root cause of per-agent-credential auth
+    (``staging-sim_cust-app``) 401'ing on every request while tenant-shared-key
+    agents kept working fine (that path never touches ``admin_repo``).
+    """
+    from types import SimpleNamespace
+
+    if _create_pool is None:
+        from services.admin_config import create_admin_pool as _create_pool
+
+    backoff = backoff_start
+    for attempt in range(max_attempts):
+        try:
+            pool = await _create_pool(
+                SimpleNamespace(admin_pg_dsn=dsn, admin_pg_pool_min=pool_min, admin_pg_pool_max=pool_max)
+            )
+            if pool is not None:
+                return pool
+        except Exception as exc:  # noqa: BLE001 — caller decides whether to give up
+            logger.error(
+                "omni-gateway: admin store connect attempt %d/%d failed: %s",
+                attempt + 1, max_attempts, exc,
+            )
+        if attempt < max_attempts - 1:
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, backoff_max)
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _redis, _kafka, _rate_tokens, _token_refill_task
@@ -364,21 +408,18 @@ async def lifespan(app: FastAPI):
     app.state.kafka_topic_evidence = KAFKA_TOPIC_EVIDENCE
     app.state.kafka_topic_knowledge_evidence = KAFKA_TOPIC_KNOWLEDGE_EVIDENCE
     app.state.kafka_topic_alerts = KAFKA_TOPIC_ALERTS
-    # Admin config store (Postgres omni_admin) — source-of-truth cho tier/runtime/risk.
-    # Gateway KHÔNG import workers (bất biến) — đọc DSN trực tiếp từ env.
+    # Admin config store (Postgres omni_admin) — source-of-truth cho tier/runtime/risk +
+    # per-agent credential auth (_resolve_agent_credential). Gateway KHÔNG import workers
+    # (bất biến) — đọc DSN trực tiếp từ env.
     app.state.admin_repo = None
     app.state.admin_pool = None
     _admin_dsn = (os.environ.get("OMNI_ADMIN_PG_DSN") or "").strip()
     if _admin_dsn:
-        try:
-            from types import SimpleNamespace
+        from services.admin_config import AdminConfigRepo, run_migrations
 
-            from services.admin_config import AdminConfigRepo, create_admin_pool, run_migrations
-
-            _admin_pool = await create_admin_pool(
-                SimpleNamespace(admin_pg_dsn=_admin_dsn, admin_pg_pool_min=1, admin_pg_pool_max=8)
-            )
-            if _admin_pool is not None:
+        _admin_pool = await _connect_admin_pool_with_retry(_admin_dsn)
+        if _admin_pool is not None:
+            try:
                 await run_migrations(_admin_pool)
                 app.state.admin_pool = _admin_pool
                 app.state.admin_repo = AdminConfigRepo(_admin_pool, redis=_redis)
@@ -391,8 +432,12 @@ async def lifespan(app: FastAPI):
                     logger.info("omni-gateway: cmd ledger reconcile %s", _rc)
                 except Exception as _rc_exc:  # noqa: BLE001 — safety net, không chặn gateway
                     logger.error("omni-gateway: cmd ledger reconcile fail: %s", _rc_exc)
-        except Exception as _admin_exc:  # noqa: BLE001 — store optional, không chặn gateway
-            logger.error("omni-gateway: admin store init fail: %s", _admin_exc)
+            except Exception as _mig_exc:  # noqa: BLE001 — store optional, không chặn gateway
+                logger.error("omni-gateway: admin store migration fail: %s", _mig_exc)
+                app.state.admin_repo = None
+                app.state.admin_pool = None
+        else:
+            logger.error("omni-gateway: admin store init fail after 5 attempts — per-agent credential auth degraded")
     yield
     if getattr(app.state, "admin_pool", None) is not None:
         await app.state.admin_pool.close()
