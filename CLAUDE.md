@@ -2,7 +2,20 @@
 
 > **TRƯỚC MỌI TASK: đọc `MEMORY.md` + `docs/CODEBASE.md`.** Bản đồ nhanh ở memory `project_architecture_map`; chi tiết file-level ở `docs/CODEBASE.md`.
 
-**Omni** — async-first multi-agent SRE automation. Agent trên host khách chỉ THU SỐ; **Omni** phán bất thường bằng baseline nó tự học, phân loại theo **9 domain**, rồi tự điều tra nhiều lượt. Split Kafka pipeline thực thi khắc phục.
+**Omni** — async-first multi-agent SRE automation. **Omni là NÃO** (trung tâm điều hành duy nhất), **Remote Agent là CHÂN/TAY/MẮT** trên hạ tầng khách hàng. Omni phán bất thường bằng baseline nó tự học, phân loại theo **9 domain**, rồi tự điều tra nhiều lượt. Split Kafka pipeline thực thi khắc phục. Ranh giới sở hữu/quyết định/dữ liệu giữa hai bên: xem mục **NÃO vs THÂN** ngay dưới đây — đọc trước khi sửa bất cứ gì chạm cả hai phía, nhầm lẫn ở đây từng gây sai lệch tài liệu thật (audit 2026-08-03).
+
+## NÃO vs THÂN — Omni (nội bộ) vs Remote Agent (khách hàng)
+
+Xác nhận qua audit code + cluster K8s thật + VM thật + log thật (2026-08-03). Ba trục, không được gộp:
+
+1. **Sở hữu hạ tầng** — Omni = chạy trong K8s namespace `multi-agent` (`omni-fullstack`, `omni-gateway`, `omni-onboarding` + Postgres/Redis/Kafka nội bộ) = hệ thống CỦA OMNI. Remote Agent = process `python -m remote_agent.agent` (code ở `src/remote_agent/`), systemd unit `omni-remote-agent.service`, chạy TRÊN server/VM khách hàng (lab: cust-edge/cust-app/cust-db qua `orb -m <machine>`) — KHÔNG phải một phần của cluster Omni dù code sống chung 1 repo.
+
+2. **Quyền quyết định — "agent đề xuất, Omni quyết"**, KHÔNG phải "agent chỉ thu số" cho mọi domain:
+   - Chỉ domain `os_host` (`src/remote_agent/collectors/system.py`) luôn gửi `result="OBSERVED"` thuần số, không tự phán.
+   - 5 domain còn lại — `database/storage/service/network/application` — agent TỰ TÍNH verdict FAILED/PASSED bằng ngưỡng tĩnh hardcode ngay trên host khách trước khi gửi (vd `collectors/database.py`: threads>500/slow>100/repl_lag>300; `collectors/storage.py`: disk >95% critical/>90% warn; `collectors/network.py`: cổng đóng→FAILED; `collectors/services.py`: unit failed/stopped→FAILED). Đây là đề xuất thô, KHÔNG phải phán quyết cuối.
+   - Omni luôn là nơi quyết định CUỐI CÙNG: `knowledge_pipeline.py` ghi đè cứng `result="FAILED"` khi nâng cấp thành `ANOMALY`; `assess_domain_severity` phán mức nghiêm trọng; `remote_host_baseline.py` tự học baseline + z-score cho `os_host`. Remote Agent không bao giờ tự dispatch mutate hay tự chốt mức khẩn cấp cuối cùng.
+
+3. **Dữ liệu ở lại đâu (`INV_DATA_RESIDENCY`)** — nội dung tài liệu/log khách hàng chỉ lên Omni dưới dạng hash + metadata (`pkg/onboarding/discovery_doc.py` hash-on-arrival nếu agent gửi raw; `services/knowledge/document_store.py::ingest_customer_knowledge()` metadata-only ≤2000 chars). Số đo vận hành thuần (cpu/mem/disk/latency) KHÔNG thuộc phạm vi residency — đó là số đo, không phải dữ liệu khách.
 
 ## Context Hygiene
 
@@ -131,9 +144,14 @@ mới rõ ràng.
 - **K8s**: OrbStack, namespace `multi-agent`. **KHÔNG phải pod duy nhất** — xem "DEPLOYMENT STATE" bên
   dưới cho topology thật (đã audit runtime, không phải suy diễn từ tài liệu cũ).
   `make deploy-worker` = `deploy-fullstack` (chỉ deploy `omni-fullstack`, không phải toàn bộ stack).
-- **LLM**: Ollama `qwen2.5-coder:7b` (active) + `nomic-embed-text:latest` (768-dim). Host: `host.orb.internal:11434`.
-- **DB**: PostgreSQL `omni_admin` schema (19 bảng, migration `migrations/omni_admin/000{1..4}_*.sql`,
-  chạy tự động lúc worker khởi động qua `run_migrations()` cho role `full/analyst/onboarding` nếu
+- **LLM**: Ollama `qwen3:8b` (active, đổi từ `qwen2.5-coder:7b` 2026-08-03 — xem comment
+  `k8s/deployments/omni-worker-configmap.yaml`: đã thử `qwen3.6:27b` trước, revert vì
+  llama-server ăn 300%+ CPU; `qwen3:8b` gần footprint `qwen2.5-coder:7b` cũ, thế hệ mới hơn)
+  + `nomic-embed-text:latest` (768-dim). Host: `host.orb.internal:11434`.
+- **DB**: PostgreSQL `omni_admin` schema (**32 bảng thật** — xác nhận qua `pg_tables` trực tiếp
+  2026-08-03, có `migration_0014_state` nghĩa là ≥14 migration đã chạy, không phải 4; đừng tin số "19
+  bảng"/"migration 000{1..4}" nếu thấy ở tài liệu cũ khác), migration tự động lúc worker khởi động qua
+  `run_migrations()` cho role `full/analyst/onboarding` nếu
   `OMNI_ADMIN_PG_DSN` không rỗng) = source-of-truth autonomy config + tenant registry. Tenant PHẢI
   được provision qua `AdminConfigRepo.create_tenant()` / `POST /autonomy/tenants` trước khi
   onboarding pipeline ghi `tenant_readiness_state` cho tenant đó — thiếu bước này gây FK violation
@@ -158,7 +176,7 @@ NS=multi-agent make omni-death-loop                                # chaos loop
 
 ## ENV (critical)
 
-`OMNI_WORKER_ROLE` · `OMNI_ENV_MODE` (lab|prod) · `OMNI_KAFKA_BOOTSTRAP_SERVERS` · `OMNI_REDIS_URL` · `OMNI_OLLAMA_BASE_URL` · `OMNI_AUTO_EXECUTE_ENABLED` (default false) · `OMNI_LLM_NUM_CTX` (default 8192) · `OMNI_KAFKA_TOPIC_KNOWLEDGE_EVIDENCE` (default omni-knowledge-evidence) · `OMNI_AUDIT_PRIVATE_KEY_PATH` · `OMNI_TENANT_APIKEYS` (tenant_id:key,...) · `OMNI_GATEWAY_API_KEY`
+`OMNI_WORKER_ROLE` · `OMNI_ENV_MODE` (lab|prod) · `OMNI_KAFKA_BOOTSTRAP_SERVERS` · `OMNI_REDIS_URL` · `OMNI_OLLAMA_BASE_URL` · `OMNI_AUTO_EXECUTE_ENABLED` (default false) · `OMNI_LLM_NUM_CTX` (default 8192) · `OMNI_KAFKA_TOPIC_KNOWLEDGE_EVIDENCE` (default omni-knowledge-evidence) · `OMNI_AUDIT_PRIVATE_KEY_PATH` · `OMNI_TENANT_APIKEYS` (tenant_id:key,...) · `OMNI_GATEWAY_API_KEY` · `OMNI_EXECUTOR_FORCE_NSENTER` (bool, đang `true` trên omni-fullstack — khi bật, `autonomous_execute.py` chặn cứng `ERR_GOV_UNAUTHORIZED_MUTATION` cho mọi mutate tool KHÁC `kubectl_cluster`; xem `settings.py::omni_executor_force_nsenter`, `kubectl_cluster.py::_force_nsenter()`)
 
 ## DEPLOYMENT STATE (2026-07-02, xác minh qua Whole-System Reality Audit + Drift Correction Slice)
 
@@ -184,7 +202,7 @@ sang provider/tenant; xoá source tree là quyết định riêng cần xác nh�
 |---|---|---|
 | `omni-fullstack` | `OMNI_WORKER_ROLE=full`, tier hiệu lực = Redis cache `omni:cfg:tier:default`=`shadow` | 1/1 Running |
 | `omni-gateway` | FastAPI HTTP ingress (không import `workers/`) | 1/1 Running (restart do race Kafka-chưa-ready lúc pod khởi động — dependency outage, tự phục hồi, không phải bug) |
-| `omni-onboarding` | `OMNI_WORKER_ROLE=onboarding` — discovery-evidence worker | 1/1 Running |
+| `omni-onboarding` | `OMNI_WORKER_ROLE=onboarding` — discovery-evidence worker | ✅ **FIX ĐÃ DEPLOY + VERIFY SỐNG 2026-08-03.** Trước fix: crash-loop thật, 15 restart/3h27m, exit 137. Root cause: `src/workers/omni_worker.py` (`_worker_background_tasks`) từng chạy `kafka_discovery_evidence_loop` cho CẢ role=full lẫn role=onboarding, cả hai join CÙNG 1 `consumer_group_onboarding` cố định — 2 member tranh nhau 1 topic 1-partition (`omni-discovery-evidence`), gây rebalance lặp lại mỗi khi 1 trong 2 pod restart (log "Heartbeat failed...rebalancing" xuất hiện ĐỒNG THỜI ở cả 2 pod — bằng chứng quyết định). Lý do cũ ("role=full phải chạy vì khi đó chưa có deployment onboarding riêng") đã lỗi thời từ khi `omni-onboarding` thành Deployment riêng thật. Fix: role=full không còn đăng ký loop này (điều kiện đổi `role in ("full","onboarding")` → `role == "onboarding"`). `make deploy-fullstack` + `kubectl rollout restart deployment/omni-onboarding` đã chạy — pod mới `Restart Count=0`, `grep -c rebalancing` = 0 trong 3 phút quan sát sau deploy (trước đó lặp lại mỗi ~66s). Test `tests/test_worker_role_discovery_consumer.py` cập nhật, 83 test liên quan xanh. |
 | ~~`omni-brain-go`~~ | **RETIRED 2026-07-22** — đã port sang Python (`src/services/siem_correlation/` + loop `kafka_siem_correlation_loop` trong `omni-fullstack`, group `omni-siem-correlation`, cùng Redis key layout `corr:*`). Parity test PASS 2/2 (output Python == Go từng field trên cùng input) trước khi xoá Deployment + manifest. KHÔNG bật lại brain-go song song với `OMNI_SIEM_CORRELATION_ENABLED=true` — 2 engine sẽ đua trên cùng key `corr:*` và double-emit chains. Lưu ý parity: khi các event đến trong CÙNG 1 giây, sequence-score phụ thuộc thứ tự tie (Go sort không ổn định = ngẫu nhiên; Python ổn định newest-first = bảo thủ hơn) — hành vi vốn có của cả 2 engine, không phải bug port. | Deployment đã xoá |
 | `redis-0`, `kafka`, `omni-postgres-0`, `redis-exporter`, `aoip-dex`, `aoip-provider-*`, `aoip-tenant-*` | portal/hạ tầng phụ trợ (provider/tenant portal là portal thật duy nhất, `omni-ui` đã retired) | Running |
 
@@ -215,6 +233,35 @@ riêng).
 
 `OMNI_TELEGRAM_POLLING_ENABLED`: ConfigMap `"false"` nhưng Deployment env override `"true"` —
 drift đã biết, carry sang từ Đ7/Đ8, vẫn chưa xử lý (không liên quan tới lô kill-switch trên).
+
+**Thêm 1 biến sống chưa từng ghi ở đây trước audit 2026-08-03**: `OMNI_EXECUTOR_FORCE_NSENTER=true`
+trên Deployment `omni-fullstack`. Đây là một lớp gate ĐỘC LẬP với kill-switch/allowlist ở trên —
+khi bật, `autonomous_execute.py` (dòng ~125-133) chặn cứng `ERR_GOV_UNAUTHORIZED_MUTATION` cho bất
+kỳ mutate tool nào KHÁC `kubectl_cluster`; `kubectl_cluster.py::_force_nsenter()` bọc lệnh qua
+`nsenter` thay vì exec thẳng trong container. Với giá trị hiện tại, executor trên thực tế bị thu hẹp
+chỉ còn 1 con đường mutate.
+
+**Gap vận hành ĐÃ FIX + DEPLOY + VERIFY SỐNG 2026-08-03** (trước đó là gap đang sống): agent
+`staging-sim_cust-app` — 1 trong đúng 3 agent nằm trong `OMNI_LAB_AUTO_EXECUTE_AGENTS` ở trên — bị
+Gateway trả **401 Unauthorized trên mọi request**, trong khi `staging-sim_cust-edge`/
+`staging-sim_cust-db` đều 200 OK.
+
+Root cause thật (có `kubectl exec` qua Bash local, không chỉ MCP read-only, nên điều tra được tận
+gốc): `sha256()` của API key thật trên VM khớp **tuyệt đối** với `key_hash` trong
+`omni_admin.agent_credential` (`status='active'`) — dữ liệu hoàn toàn đúng, không phải sai
+credential. `kubectl logs --since=48h` phát hiện dòng quyết định:
+`omni-gateway: admin store init fail: [Errno 111] Connection refused` — gateway khởi động TRƯỚC
+khi Postgres sẵn sàng (cùng lớp race đã biết với Kafka producer ở pod này), thử kết nối
+`create_admin_pool()` ĐÚNG 1 LẦN rồi bỏ cuộc vĩnh viễn (`app.state.admin_repo` treo `None` suốt
+vòng đời pod, không có retry). Vì `_resolve_agent_credential()` trả `None` ngay khi `admin_repo is
+None` (`api.py`), MỌI request dùng per-agent credential (chỉ `cust-app` dùng nhánh này — 2 agent
+kia dùng tenant-shared key nên không đụng `admin_repo`) đều 401 bất kể key đúng hay sai.
+
+Fix: thêm `_connect_admin_pool_with_retry()` (`src/gateway/api.py`) — bounded retry 5 lần, backoff
+1s→10s quanh `create_admin_pool()`, tách hàm riêng để test được (`tests/test_gateway_admin_pool_retry.py`,
+4 test). `make deploy-gateway` đã chạy — log pod mới: `"admin config store ready (omni_admin)"`,
+và `staging-sim_cust-app` ngay sau đó register/evidence/commands đều 200 OK (verify trực tiếp qua
+`kubectl logs`, không suy đoán). Auto-execute allowlist nay hoạt động đủ 3/3 agent thật.
 
 ### PUBLIC PLANE — app.omnisre.xyz (2026-07-29, đang sống trên Internet)
 
