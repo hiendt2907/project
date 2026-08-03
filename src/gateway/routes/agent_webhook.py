@@ -34,7 +34,12 @@ _RL_PREFIX = "omni:evrl:"           # omni:evrl:{agent_id} — per-agent item co
 _RL_PROBE_PREFIX = "omni:evrl:p:"   # omni:evrl:p:{agent_id}:{probe}:{result}
 _RL_WINDOW_S = 60
 _RL_AGENT_LIMIT = 200               # max items/min per agent across all probes
-_RL_PROBE_LIMITS: dict[str, int] = {"FAILED": 30, "INCONCLUSIVE": 20, "PASSED": 20}
+# OBSERVED có hạn mức cao hơn vì nó là dòng đo LIÊN TỤC (mỗi chu kỳ agent), không
+# phải kết quả kiểm tra rời rạc. Đặt bằng PASSED sẽ chặn mất mẫu và làm baseline 3σ
+# thiếu dữ liệu đúng lúc cần nhất — khi host đang biến động.
+_RL_PROBE_LIMITS: dict[str, int] = {
+    "FAILED": 30, "INCONCLUSIVE": 20, "PASSED": 20, "OBSERVED": 60,
+}
 _DEDUP_PREFIX = "omni:evdedup:"     # omni:evdedup:{agent_id}:{fingerprint}
 _DEDUP_WINDOW_S = 300               # 5-min dedup window
 _DEDUP_PASS_COUNT = 3               # allow first N occurrences; after that, skip Kafka
@@ -80,7 +85,13 @@ class EvidenceItem(BaseModel):
     probe: str = Field(min_length=1, max_length=128)
     alert_rule: str = Field(default="RemoteAgentAlert", max_length=256)
     alert_hint: str = Field(default="", max_length=2000)
-    result: str = Field(default="PASSED", pattern="^(PASSED|FAILED|INCONCLUSIVE|SKIPPED)$")
+    # OBSERVED (2026-07-30): mẫu đo được ghi nhận, agent KHÔNG phán xét. Khác PASSED
+    # ở chỗ agent không khẳng định "đã kiểm và sạch" — nó chỉ báo số. Phải nằm trong
+    # pattern này, nếu không gateway trả 422, emitter retry 4 lần rồi bỏ cả batch và
+    # toàn bộ dòng METRIC_SAMPLE tắt lịm trong im lặng.
+    result: str = Field(
+        default="PASSED", pattern="^(PASSED|FAILED|INCONCLUSIVE|SKIPPED|OBSERVED)$"
+    )
     extracted_fact: dict[str, Any] = Field(default_factory=dict)
     raw: str = Field(default="", max_length=4000)
     symptom_group: str = Field(default="", max_length=128)
@@ -229,14 +240,22 @@ async def _check_dedup(redis: Any, agent_id: str, fp: str) -> tuple[int, bool]:
 def _classify_item(item: EvidenceItem) -> dict[str, Any]:
     """Compute quality metadata for injection into evidence envelope."""
     lane = item.lane
-    domain = detect_domain(item.probe, item.alert_hint, item.raw, lane)
+    # Xem ghi chú ở `remote_agent_pipeline`: domain collector tự khai phải thắng suy đoán.
+    domain = detect_domain(
+        item.probe, item.alert_hint, item.raw, lane,
+        domain_hint=getattr(item, "domain", "") or None,
+    )
     severity = assess_domain_severity(
         domain, item.alert_hint, item.raw,
         item.extracted_fact if isinstance(item.extracted_fact, dict) else {},
     )
 
     SEVERITY_SCORE = {"critical": 0.9, "high": 0.7, "medium": 0.5, "baseline": 0.15, "none": 0.05}
-    RESULT_SCORE = {"FAILED": 1.0, "INCONCLUSIVE": 0.5, "PASSED": 0.15, "SKIPPED": 0.0}
+    # OBSERVED = 0.15 như PASSED: một mẫu đo tự nó không mang tin hiệu sự cố. Việc
+    # phán lệch là của Omni (knowledge_pipeline), không phải của thang điểm này.
+    RESULT_SCORE = {
+        "FAILED": 1.0, "INCONCLUSIVE": 0.5, "PASSED": 0.15, "SKIPPED": 0.0, "OBSERVED": 0.15,
+    }
     LANE_SCORE = {"SIEM_SECURITY": 1.0, "SYS_HARD_FAIL": 0.9, "APP_HTTP": 0.8, "SYS_RESOURCE": 0.6}
 
     score = (

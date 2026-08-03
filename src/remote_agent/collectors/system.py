@@ -4,13 +4,17 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from pkg.domain.taxonomy import OS_HOST
 from remote_agent.evidence import build_envelope
 
 logger = logging.getLogger(__name__)
 
-# Safe defaults — overridden at runtime by thresholds pushed from Omni via the
-# /webhook/agent/register response (see agent.py). Tuning these no longer
-# requires redeploying the agent on customer hosts.
+# Static fences, kept only to be REPORTED to Omni (``thresholds_seen``) — the
+# agent no longer compares against them to decide "anomaly". Deciding what is
+# abnormal is Omni's job: it holds the per-host baseline and the confidence
+# level. A static number on the customer host cannot know either.
+# Overridden at runtime by thresholds pushed from Omni via the
+# /webhook/agent/register response (see agent.py).
 _CPU_WARN = 80.0
 _MEM_WARN = 85.0
 _DISK_WARN = 90.0
@@ -48,31 +52,35 @@ async def collect_system_metrics(
             "load_avg_1m": round(load[0], 2),
             "load_avg_5m": round(load[1], 2),
             "load_avg_15m": round(load[2], 2),
+            # The static fence is REPORTED, not applied: Omni needs to know what
+            # hedge the host was configured with, but the verdict is Omni's.
+            "thresholds_seen": {
+                "cpu_warn": cpu_warn,
+                "mem_warn": mem_warn,
+                "disk_warn": disk_warn,
+            },
         }
 
-        anomaly = cpu > cpu_warn or mem.percent > mem_warn or disk.percent > disk_warn
-        result = "FAILED" if anomaly else "PASSED"
-
-        parts = []
-        if cpu > cpu_warn:
-            parts.append(f"CPU {cpu:.1f}%>{cpu_warn}%")
-        if mem.percent > mem_warn:
-            parts.append(f"MEM {mem.percent:.1f}%>{mem_warn}%")
-        if disk.percent > disk_warn:
-            parts.append(f"DISK {disk.percent:.1f}%>{disk_warn}%")
-        hint = f"[{hostname}] " + (", ".join(parts) if parts else f"CPU={cpu:.1f}% MEM={mem.percent:.1f}% DISK={disk.percent:.1f}%")
+        hint = (
+            f"[{hostname}] CPU={cpu:.1f}% MEM={mem.percent:.1f}% "
+            f"DISK={disk.percent:.1f}%"
+        )
 
         return build_envelope(
             probe="remote_system_metrics",
             lane="SYS_RESOURCE",
-            result=result,
+            domain=OS_HOST,
+            # No verdict here. This collector reads NUMBERS; whether a number is
+            # abnormal depends on the host's baseline and Omni's confidence
+            # level, neither of which lives on the customer machine.
+            result="OBSERVED",
             extracted_fact=fact,
-            alert_rule="RemoteSystemAnomaly" if anomaly else "RemoteSystemNormal",
+            alert_rule="RemoteSystemSample",
             alert_hint=hint,
             symptom_group="workload_resource",
             namespace=hostname,
-            # METRIC_SAMPLE feeds 3σ baseline; only a breach is ANOMALY.
-            signal_type="ANOMALY" if anomaly else "METRIC_SAMPLE",
+            # Always a sample: Omni's knowledge pipeline decides on deviation.
+            signal_type="METRIC_SAMPLE",
         )
     except Exception as exc:
         logger.error("[collector.system] error: %s", exc)

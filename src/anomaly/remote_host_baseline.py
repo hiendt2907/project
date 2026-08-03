@@ -22,9 +22,14 @@ import logging
 from enum import Enum
 from typing import Any
 
-from anomaly.three_sigma import ThreeSigmaGate
+from anomaly.three_sigma import DEFAULT_THRESHOLD, ThreeSigmaGate
+from pkg.domain import taxonomy
 
 logger = logging.getLogger(__name__)
+
+# Ngưỡng z để coi một mẫu là lệch. Dùng đúng hằng của engine 3σ in-cluster
+# (`three_sigma.DEFAULT_THRESHOLD` = 3.0) — không phát minh số mới cho remote host.
+REMOTE_Z_THRESHOLD = DEFAULT_THRESHOLD
 
 # ---------------------------------------------------------------------------
 # Data Confidence Score
@@ -136,6 +141,39 @@ _METRIC_KEYS: tuple[tuple[str, str], ...] = (
     ("mem_percent", "mem"),
     ("disk_percent", "disk"),
 )
+
+
+# Bản đồ (fact_key, z_key, static_threshold_key) — nối 3 metric của remote agent
+# với z-score do baseline sinh ra và với hàng rào tĩnh do
+# `services.admin_config.agent_thresholds.resolve_agent_thresholds` trả về.
+# Chỉ là dữ liệu tra cứu: không đổi nghĩa gì của `_METRIC_KEYS`.
+REMOTE_METRIC_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("cpu_percent", "z_cpu", "cpu_warn"),
+    ("mem_percent", "z_mem", "mem_warn"),
+    ("disk_percent", "z_disk", "disk_warn"),
+)
+
+# Lĩnh vực kỹ thuật của TỪNG metric — KHÔNG phải của envelope chứa nó.
+#
+# `remote_system_metrics` gộp CPU, RAM và đĩa vào một envelope mang `domain=os_host`.
+# Nếu lấy domain từ envelope thì một sự cố **đĩa đầy** cũng được gán `os_host`, và Omni
+# sẽ gọi bộ chẩn đoán os_host (26 lệnh: tải, tiến trình, dmesg…) thay vì storage
+# (12 lệnh: df, du, lsblk, inode…) — điều tra sai chỗ, rồi kết luận "không thấy gì".
+# Đã trả giá 2026-07-30 khi bơm đĩa lên 94% trên VM thật.
+REMOTE_METRIC_DOMAIN: dict[str, str] = {
+    "cpu_percent": taxonomy.OS_HOST,
+    "mem_percent": taxonomy.OS_HOST,
+    "disk_percent": taxonomy.STORAGE,
+}
+
+
+def metric_domain(metric: str, *, fallback: str = "") -> str:
+    """Domain của một metric. Không biết ⇒ trả ``fallback`` (thường là domain envelope).
+
+    Fallback thay vì ``unknown`` có chủ đích: metric lạ chưa được xếp lĩnh vực thì domain
+    của envelope vẫn tốt hơn là mất hẳn thông tin lĩnh vực.
+    """
+    return REMOTE_METRIC_DOMAIN.get(metric, fallback)
 
 
 def _gate(redis: Any) -> ThreeSigmaGate:
