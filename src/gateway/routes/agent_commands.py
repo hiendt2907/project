@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, require_agent_tenant, resolve_scope
+from pkg.diagnostics.command_normalize import normalize_command
 from pkg.diagnostics.validator import validate_command
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,9 @@ class CommandResultItem(BaseModel):
     stdout: str = Field(default="", max_length=8192)
     stderr: str = Field(default="", max_length=512)
     rc: int = 0
+    # Agent mới gửi cả hai; agent cũ chỉ gửi `rc` ⇒ None ở đây và gateway lấp
+    # bằng `rc` khi lưu. Không bắt buộc để không phá agent chưa cập nhật.
+    exit_code: int | None = None
     duration_ms: int = 0
 
 
@@ -194,6 +198,10 @@ async def receive_command_result(
             "stdout": result.stdout,
             "stderr": result.stderr,
             "rc": result.rc,
+            # Alias cùng giá trị: agent 1.x cũ chỉ gửi `rc`, còn UI/script kiểm
+            # tra đọc `exit_code` → ra None trong khi thẻ Telegram in rc=1. Lưu
+            # cả hai để hai đầu không bao giờ mô tả khác nhau về cùng một lần chạy.
+            "exit_code": result.exit_code if result.exit_code is not None else result.rc,
             "duration_ms": result.duration_ms,
             "received_at": int(time.time()),
         })
@@ -240,7 +248,12 @@ async def enqueue_commands(body: EnqueueCommandsRequest, request: Request) -> JS
     blocked: list[str] = []
 
     for cmd in body.commands:
-        args_ok, args_reason = validate_command(cmd.command, cmd.args)
+        # Chuẩn hoá TRƯỚC khi validate/enqueue: một `args` bị nhồi cả dòng lệnh
+        # (`["aux --sort=-%cpu"]`) qua được validator nhưng chết ở execve trên
+        # host khách. Chuẩn hoá ở đây nghĩa là hàng đợi chỉ chứa lệnh chạy được,
+        # kể cả khi bundle agent còn cũ hơn repo.
+        cmd_name, cmd_args = normalize_command(cmd.command, cmd.args)
+        args_ok, args_reason = validate_command(cmd_name, cmd_args)
         if not args_ok:
             blocked.append(cmd.command)
             logger.warning(
@@ -251,8 +264,8 @@ async def enqueue_commands(body: EnqueueCommandsRequest, request: Request) -> JS
         cmd_id = f"cmd-{uuid.uuid4().hex[:12]}"
         payload = json.dumps({
             "cmd_id": cmd_id,
-            "command": cmd.command,
-            "args": cmd.args,
+            "command": cmd_name,
+            "args": cmd_args,
             "timeout_s": cmd.timeout_s,
             "trace_id": cmd.trace_id,
             "purpose": cmd.purpose,

@@ -29,6 +29,7 @@ import shutil
 import time
 from typing import Any
 
+from pkg.diagnostics.command_normalize import normalize_command
 from pkg.diagnostics.validator import validate_command
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,12 @@ async def execute_command(
     timeout_s: int = 30,
 ) -> dict[str, Any]:
     """Execute a whitelisted read-only command. Returns result dict."""
+    # Chuẩn hoá TRƯỚC khi validate — hàng rào cuối phía agent. Model 7B nhồi cả
+    # dòng lệnh vào args[0] (`ps` ← ["aux --sort=-%cpu"] ⇒ "unsupported option
+    # (BSD syntax)") và gọi `top` không cờ (không tty ⇒ rc=1 im lặng). Chuẩn hoá
+    # KHÔNG nới guard nào: validate_command chạy sau, trên chính token đã tách.
+    command, args = normalize_command(command, args)
+
     allowed, reason = _is_command_allowed(command, args)
     if not allowed:
         logger.warning(
@@ -111,6 +118,10 @@ async def execute_command(
             "stdout": "",
             "stderr": reason,
             "rc": -1,
+            # Cùng một con số, hai tên. Trước đây chỉ có `rc`, nên mọi consumer đọc
+            # `exit_code` (UI/script kiểm tra) thấy None trong khi thẻ Telegram in
+            # rc=1 — hai đầu mô tả cùng một lần chạy mà không khớp.
+            "exit_code": -1,
             "duration_ms": 0,
         }
 
@@ -126,6 +137,7 @@ async def execute_command(
             "stdout": "",
             "stderr": reason,
             "rc": -1,
+            "exit_code": -1,
             "duration_ms": 0,
         }
 
@@ -164,6 +176,7 @@ async def execute_command(
         "stdout": stdout,
         "stderr": stderr,
         "rc": rc,
+        "exit_code": rc,
         "duration_ms": duration_ms,
     }
 
