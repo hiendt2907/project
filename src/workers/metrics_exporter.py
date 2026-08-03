@@ -66,6 +66,11 @@ _llm_ttft_seconds: Any = None
 _llm_client_completion_seconds: Any = None
 _llm_completion_tokens: Any = None
 _llm_prompt_tokens: Any = None
+# LLM call-level observability (pairs with pkg.observability.llm_observability)
+_llm_calls: Any = None
+_llm_prompt_chars: Any = None
+_llm_response_chars: Any = None
+_rag_gate_outcome: Any = None
 # Feature: Self-monitoring health checks
 _worker_last_message_age: Any = None
 _health_check_status: Any = None
@@ -74,6 +79,7 @@ _kpi_mttd: Any = None
 _kpi_mttr: Any = None
 _kpi_advisory_acceptance_rate: Any = None
 _kpi_false_positive_rate: Any = None
+_kpi_advisory_total: Any = None
 _kpi_incidents: Any = None
 # Feature: Advisory benchmark
 _advisory_benchmark_score: Any = None
@@ -107,8 +113,10 @@ def _ensure_metrics() -> None:
     global _evidence_llm_contradiction, _rag_empty_result, _crat_write, _telegram_timeout, _kafka_consumer_lag, _dlq_published, _dlq_archived, _alert_qos_shed
     global _executor_execute_skipped
     global _llm_ttft_seconds, _llm_client_completion_seconds, _llm_completion_tokens, _llm_prompt_tokens
+    global _llm_calls, _llm_prompt_chars, _llm_response_chars, _rag_gate_outcome
     global _worker_last_message_age, _health_check_status
     global _kpi_mttd, _kpi_mttr, _kpi_advisory_acceptance_rate, _kpi_false_positive_rate, _kpi_incidents
+    global _kpi_advisory_total
     global _advisory_benchmark_score, _advisory_benchmark_pass_rate
     global _siem_chains_total, _chain_confidence, _chain_llm_skipped, _chain_cohesion_degraded
     global _autonomy_tier, _tier_gate_blocked, _tier_promotion_ready, _crat_outbox_pending
@@ -355,6 +363,31 @@ def _ensure_metrics() -> None:
         "Prompt input tokens observed at VLLMClient (usage.prompt_tokens / Ollama prompt_eval_count).",
         ["model", "call_kind"],
     )
+    # Call-level LLM observability. `outcome` separates a served completion from a
+    # transport/HTTP failure — omni_llm_ttft_seconds only ever sees successes.
+    _llm_calls = Counter(
+        "omni_llm_calls_total",
+        "LLM chat calls at the VLLMClient boundary, by outcome (ok|error).",
+        ["model", "call_kind", "outcome"],
+    )
+    _llm_prompt_chars = Histogram(
+        "omni_llm_prompt_chars",
+        "Prompt size in characters sent to the model (proxy for context pressure).",
+        ["model", "call_kind"],
+        buckets=[256, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072],
+    )
+    _llm_response_chars = Histogram(
+        "omni_llm_response_chars",
+        "Response size in characters returned by the model.",
+        ["model", "call_kind"],
+        buckets=[64, 256, 512, 1024, 2048, 4096, 8192, 16384],
+    )
+    # RAG gate decision — distinguishes a KB/cache hit from a turn that spent a real LLM call.
+    _rag_gate_outcome = Counter(
+        "omni_rag_gate_outcome_total",
+        "RAG gate decisions (hit|miss|cache_hit|disabled|query_too_short|error).",
+        ["outcome", "collection"],
+    )
     # SIEM correlation chains (Phase 5)
     _siem_chains_total = Counter(
         "omni_siem_chains_total",
@@ -399,13 +432,31 @@ def _ensure_metrics() -> None:
         ["lane"],
         buckets=[30, 60, 120, 300, 600, 1800, 3600, 7200],
     )
+    # Gauge KHÔNG diễn đạt được "chưa có dữ liệu": prometheus_client khởi tạo mọi Gauge
+    # bằng 0.0 và xuất ngay từ giây đầu. `kpi_metrics.read_outcome_rates` cố ý trả None
+    # trong tình huống đó (fail-closed), nhưng tầng xuất metric xoá mất sự phân biệt ấy:
+    # "0% chấp nhận" và "chưa ai phán lần nào" ra cùng một con số. Hệ quả đo được
+    # 2026-08-02: alert OmniAdvisoryAcceptanceLow fire vĩnh viễn từ lúc worker khởi động,
+    # sinh ~340 incident meta_self/ngày — chiếm gần trọn phần pipeline còn hoạt động.
+    #
+    # `omni_kpi_advisory_total` là mẫu số hiển thị: alert rule PHẢI kèm `> 0` để phân biệt
+    # "kém" với "chưa biết". Đừng bỏ nhãn `tenant` — trước đây một tỉ lệ toàn cục gộp mọi
+    # tenant vào cùng con số, dữ liệu khách này lái cảnh báo của khách kia.
     _kpi_advisory_acceptance_rate = Gauge(
         "omni_kpi_advisory_acceptance_rate",
         "Rolling 24h advisory acceptance rate (accepted / total)",
+        ["tenant"],
     )
     _kpi_false_positive_rate = Gauge(
         "omni_kpi_false_positive_rate",
         "Rolling 24h false positive rate (executor_fail / total_executed)",
+        ["tenant"],
+    )
+    _kpi_advisory_total = Gauge(
+        "omni_kpi_advisory_total",
+        "Rolling 24h advisory outcome sample count — mẫu số của hai tỉ lệ trên. "
+        "0 nghĩa là CHƯA BIẾT, không phải 'tốt'.",
+        ["tenant"],
     )
     _kpi_incidents = Counter(
         "omni_kpi_incidents_total",
@@ -846,6 +897,35 @@ def observe_llm_client_sli(
         _llm_prompt_tokens.labels(model=m, call_kind=k).inc(int(prompt_tokens))
 
 
+def observe_llm_call(
+    *,
+    model: str,
+    call_kind: str,
+    outcome: str,
+    prompt_chars: int,
+    response_chars: int,
+) -> None:
+    """Record one LLM call including failures (observe_llm_client_sli sees successes only)."""
+    _ensure_metrics()
+    m = (model or "unknown")[:64]
+    k = (call_kind or "unknown")[:32]
+    o = (outcome or "unknown")[:32]
+    _llm_calls.labels(model=m, call_kind=k, outcome=o).inc()
+    if prompt_chars > 0:
+        _llm_prompt_chars.labels(model=m, call_kind=k).observe(int(prompt_chars))
+    if response_chars > 0:
+        _llm_response_chars.labels(model=m, call_kind=k).observe(int(response_chars))
+
+
+def inc_rag_gate_outcome(*, outcome: str, collection: str = "unknown") -> None:
+    """Record a RAG gate decision — KB/cache hit vs a turn that burns a real LLM call."""
+    _ensure_metrics()
+    _rag_gate_outcome.labels(
+        outcome=(outcome or "unknown")[:32],
+        collection=(collection or "unknown")[:64],
+    ).inc()
+
+
 async def observability_metrics_loop(
     *,
     redis: Any,
@@ -1003,14 +1083,24 @@ def observe_kpi_mttr(lane: str, seconds: float) -> None:
     _kpi_mttr.labels(lane=(lane or "unknown")[:48]).observe(max(0.0, float(seconds)))
 
 
-def set_kpi_advisory_acceptance_rate(rate: float) -> None:
+def set_kpi_advisory_acceptance_rate(rate: float, tenant: str = "default") -> None:
     _ensure_metrics()
-    _kpi_advisory_acceptance_rate.set(max(0.0, min(1.0, float(rate))))
+    _kpi_advisory_acceptance_rate.labels(tenant=(tenant or "default")[:64]).set(
+        max(0.0, min(1.0, float(rate)))
+    )
 
 
-def set_kpi_false_positive_rate(rate: float) -> None:
+def set_kpi_false_positive_rate(rate: float, tenant: str = "default") -> None:
     _ensure_metrics()
-    _kpi_false_positive_rate.set(max(0.0, min(1.0, float(rate))))
+    _kpi_false_positive_rate.labels(tenant=(tenant or "default")[:64]).set(
+        max(0.0, min(1.0, float(rate)))
+    )
+
+
+def set_kpi_advisory_total(total: int, tenant: str = "default") -> None:
+    """Mẫu số của hai tỉ lệ KPI. Alert rule phải kèm `> 0` — xem chú thích ở `_ensure_metrics`."""
+    _ensure_metrics()
+    _kpi_advisory_total.labels(tenant=(tenant or "default")[:64]).set(max(0, int(total)))
 
 
 def inc_kpi_incident(lane: str, outcome: str) -> None:

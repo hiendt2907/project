@@ -58,6 +58,62 @@ def _record_llm_client_sli(
         pass
 
 
+def _record_call(
+    *,
+    model: str,
+    call_kind: str,
+    prompt: str,
+    response: str = "",
+    duration_ms: float = 0.0,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    outcome: str = "ok",
+    error: str = "",
+    endpoint: str = "",
+) -> None:
+    """Structured log + call counter + Tempo span for one LLM call (best-effort)."""
+    try:
+        from pkg.observability.llm_observability import record_llm_call
+    except ImportError:
+        return
+    record_llm_call(
+        model=model,
+        call_kind=call_kind,
+        prompt=prompt,
+        response=response,
+        duration_ms=duration_ms,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        outcome=outcome,
+        error=error,
+        endpoint=endpoint,
+    )
+
+
+def _prompt_text(messages: list[dict[str, Any]]) -> str:
+    """Flatten messages for size/digest accounting. Never logged verbatim by default."""
+    try:
+        from pkg.observability.llm_observability import messages_text
+
+        return messages_text(messages)
+    except ImportError:
+        return ""
+
+
+def _kind_label(llm_call_kind: Any, format_json: bool) -> str:
+    """Resolve the ``call_kind`` metric/log label.
+
+    Most call sites reach :meth:`VLLMClient.chat` directly without passing
+    ``llm_call_kind``, which used to bucket every series under ``"unspecified"``
+    and made the label carry no information. Fall back to the response contract
+    actually requested, which is the distinction the label is meant to express.
+    """
+    s = str(llm_call_kind) if llm_call_kind is not None else ""
+    if s:
+        return s
+    return str(LLMCallKind.STRUCTURED) if format_json else str(LLMCallKind.CHAT)
+
+
 class LLMCallKind(StrEnum):
     """Explicit call semantics for routing / logs (chat vs tool JSON contracts)."""
 
@@ -150,7 +206,43 @@ class VLLMClient(BaseModel):
 
         ``llm_call_kind`` is for logs only (CHAT vs STRUCTURED); prefer
         :meth:`chat_plain` / :meth:`chat_structured` at new call sites.
+
+        Success is recorded by the dispatch branches; this wrapper exists so a
+        transport failure is observable too — otherwise a model that is down
+        looks identical to a model that is merely idle.
         """
+        t_start = time.perf_counter()
+        try:
+            return await self._chat_dispatch(
+                model=model,
+                messages=messages,
+                stream=stream,
+                options=options,
+                format=format,
+                llm_call_kind=llm_call_kind,
+            )
+        except Exception as exc:
+            _record_call(
+                model=model,
+                call_kind=_kind_label(llm_call_kind, format == "json"),
+                prompt=_prompt_text(messages),
+                duration_ms=(time.perf_counter() - t_start) * 1000.0,
+                outcome="error",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+
+    async def _chat_dispatch(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        stream: bool = False,
+        options: dict[str, Any] | None = None,
+        format: str | None = None,
+        llm_call_kind: str | LLMCallKind | None = None,
+    ) -> dict[str, Any]:
+        """Route to native /api/chat, non-streamed, or streamed completion."""
         opts = options or {}
         temperature: float = float(opts.get("temperature", 0.0))
         # num_predict caps output tokens; num_ctx is the context window (input+output).
@@ -183,7 +275,8 @@ class VLLMClient(BaseModel):
         # because Ollama's /v1/chat/completions ignores the think parameter for Qwen3 models.
         think_val = opts.get("think", None)
 
-        kind_label = kind_s or "unspecified"
+        kind_label = _kind_label(llm_call_kind, fmt_json)
+        prompt_text = _prompt_text(messages)
 
         if think_val is False:
             return await self._chat_ollama_native(
@@ -194,6 +287,7 @@ class VLLMClient(BaseModel):
                 num_ctx=int(opts.get("num_ctx", DEFAULT_MAX_TOKENS)),
                 format_json=fmt_json,
                 kind_label=kind_label,
+                prompt_text=prompt_text,
             )
 
         if not _STREAM_FOR_SLI:
@@ -214,6 +308,16 @@ class VLLMClient(BaseModel):
                 model=model,
                 call_kind=kind_label,
                 prompt_tokens=in_tok,
+            )
+            _record_call(
+                model=model,
+                call_kind=kind_label,
+                prompt=prompt_text,
+                response=content,
+                duration_ms=_dur * 1000.0,
+                prompt_tokens=in_tok,
+                completion_tokens=out_tok,
+                endpoint="/v1/chat/completions",
             )
             return {"message": {"role": "assistant", "content": content}}
 
@@ -258,6 +362,16 @@ class VLLMClient(BaseModel):
             call_kind=kind_label,
             prompt_tokens=int(prompt_tokens or 0),
         )
+        _record_call(
+            model=model,
+            call_kind=kind_label,
+            prompt=prompt_text,
+            response=content,
+            duration_ms=total_s * 1000.0,
+            prompt_tokens=int(prompt_tokens or 0),
+            completion_tokens=out_tok,
+            endpoint="/v1/chat/completions[stream]",
+        )
         return {"message": {"role": "assistant", "content": content}}
 
     async def _chat_ollama_native(
@@ -270,6 +384,7 @@ class VLLMClient(BaseModel):
         num_ctx: int,
         format_json: bool,
         kind_label: str,
+        prompt_text: str = "",
     ) -> dict[str, Any]:
         """POST /api/chat with think=false — native Ollama API, bypasses OpenAI compat layer."""
         base = self.base_url.rstrip("/").removesuffix("/v1").rstrip("/")
@@ -299,6 +414,16 @@ class VLLMClient(BaseModel):
             model=model,
             call_kind=kind_label,
             prompt_tokens=in_tok,
+        )
+        _record_call(
+            model=model,
+            call_kind=kind_label,
+            prompt=prompt_text,
+            response=content,
+            duration_ms=_dur * 1000.0,
+            prompt_tokens=in_tok,
+            completion_tokens=out_tok,
+            endpoint="/api/chat",
         )
         return {"message": {"role": "assistant", "content": content}}
 

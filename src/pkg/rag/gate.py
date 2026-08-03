@@ -237,6 +237,36 @@ async def evaluate_rag_gate(
     hints: dict[str, str] | None = None,
     trace: str | None = None,
 ) -> RagGateOutcome:
+    """Evaluate the gate and record which way it went.
+
+    The outcome is the "did this turn cost a real LLM call?" signal: a ``hit``
+    (or ``cache_hit``) is answered from knowledge, anything else falls through
+    to the model. Recording is best-effort and never alters the outcome.
+    """
+    outcome = await _evaluate_rag_gate_impl(ctx, raw_text, hints=hints, trace=trace)
+    try:
+        from pkg.observability.llm_observability import record_rag_gate
+
+        reason = str((outcome.detail or {}).get("reason") or "")
+        record_rag_gate(
+            "hit" if outcome.hit and reason != "cache_hit" else (reason or "hit"),
+            collection=outcome.collection or "",
+            trace_id=trace,
+        )
+    except ImportError:
+        pass
+    except Exception as _exc:  # noqa: BLE001 — telemetry must not break the gate
+        logger.warning("rag_gate: outcome record failed trace=%s err=%s", trace, _exc)
+    return outcome
+
+
+async def _evaluate_rag_gate_impl(
+    ctx: Any,
+    raw_text: str,
+    *,
+    hints: dict[str, str] | None = None,
+    trace: str | None = None,
+) -> RagGateOutcome:
     """
     similarity_search trên collection ``pgvector_collection_k8s_expert``.
     HIT khi best_score >= threshold và có chunk hợp lệ.

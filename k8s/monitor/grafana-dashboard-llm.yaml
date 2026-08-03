@@ -1,0 +1,763 @@
+# Grafana dashboard: tầng LLM (prompt / response / latency / token / RAG-vs-LLM).
+#
+# Provisioning: sidecar k8s-sidecar trong Deployment grafana WATCH mọi ConfigMap
+# trong namespace monitor có label grafana_dashboard="1", ghi ra emptyDir
+# /etc/grafana/dashboards/omni (provider file "omni" → folder Omni).
+# => apply ConfigMap này là đủ, KHÔNG cần restart grafana.
+#
+# Nguồn JSON: k8s/monitor/dashboards/omni_llm.json (sửa ở đó rồi regenerate file này).
+# Datasource: mimir (Prometheus remote_write → Mimir) + loki (log event=llm_call).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-omni-llm
+  namespace: monitor
+  labels:
+    app: grafana
+    grafana_dashboard: "1"
+    grafana_folder: omni
+data:
+  omni_llm.json: |
+    {
+      "title": "Omni LLM",
+      "uid": "omni-llm",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "tags": [
+        "omni",
+        "llm",
+        "observability"
+      ],
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "refresh": "30s",
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "label": "namespace",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "mimir"
+            },
+            "query": "label_values(omni_llm_up, kubernetes_namespace)",
+            "current": {
+              "selected": true,
+              "text": "multi-agent",
+              "value": "multi-agent"
+            },
+            "refresh": 1,
+            "includeAll": false
+          },
+          {
+            "name": "model",
+            "label": "model",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "mimir"
+            },
+            "query": "label_values(omni_llm_calls_total{kubernetes_namespace=\"$namespace\"}, model)",
+            "current": {
+              "selected": true,
+              "text": "All",
+              "value": "$__all"
+            },
+            "refresh": 2,
+            "includeAll": true,
+            "allValue": ".*",
+            "multi": true
+          },
+          {
+            "name": "pod",
+            "label": "pod",
+            "type": "query",
+            "datasource": {
+              "type": "loki",
+              "uid": "loki"
+            },
+            "query": {
+              "label": "pod_name",
+              "stream": "{namespace=\"$namespace\"}",
+              "type": 1
+            },
+            "current": {
+              "selected": true,
+              "text": "omni-fullstack.*",
+              "value": "omni-fullstack.*"
+            },
+            "refresh": 1,
+            "includeAll": true,
+            "allValue": ".*",
+            "multi": true
+          },
+          {
+            "name": "trace_id",
+            "label": "trace_id",
+            "type": "textbox",
+            "query": "",
+            "current": {
+              "selected": false,
+              "text": "",
+              "value": ""
+            },
+            "description": "Để trống = xem tất cả. Dán trace_id để soi đúng một lượt chẩn đoán."
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 100,
+          "type": "row",
+          "title": "Sức khoẻ tầng LLM — LLM health",
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "panels": []
+        },
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Model reachable",
+          "description": "omni_llm_up: Ollama /health probe. 1 = reachable.",
+          "gridPos": {
+            "h": 5,
+            "w": 4,
+            "x": 0,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(omni_llm_up)"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Calls / min",
+          "description": "Every chat call at the VLLMClient boundary, success and failure alike.",
+          "gridPos": {
+            "h": 5,
+            "w": 5,
+            "x": 4,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(omni_llm_calls_total{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])) * 60"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 2
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Error ratio (5m)",
+          "description": "Transport/HTTP failures as a share of all calls. omni_llm_ttft_seconds records successes only, so this is the only place a down model becomes visible.",
+          "gridPos": {
+            "h": 5,
+            "w": 5,
+            "x": 9,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(omni_llm_calls_total{kubernetes_namespace=\"$namespace\",model=~\"$model\",outcome!=\"ok\"}[5m])) / clamp_min(sum(rate(omni_llm_calls_total{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])), 0.0001)"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 3
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "p95 completion",
+          "description": "Wall time for a full completion.",
+          "gridPos": {
+            "h": 5,
+            "w": 5,
+            "x": 14,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(omni_llm_client_completion_seconds_bucket{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])))"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "decimals": 1
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "p95 TTFT",
+          "description": "Time to first token (streaming) or full request time (non-streaming).",
+          "gridPos": {
+            "h": 5,
+            "w": 5,
+            "x": 19,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(omni_llm_ttft_seconds_bucket{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])))"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "decimals": 1
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Call rate theo kết quả — call rate by outcome",
+          "description": "ok vs error. A sustained error line means the model endpoint is failing, not idle.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (outcome) (rate(omni_llm_calls_total{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m]))",
+              "legendFormat": "{{outcome}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 8,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                }
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Call rate theo loại — call rate by call_kind",
+          "description": "chat = free-text completion; structured = JSON contract (ReAct / tool output).",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 6
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (call_kind) (rate(omni_llm_calls_total{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m]))",
+              "legendFormat": "{{call_kind}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 8,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                }
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 101,
+          "type": "row",
+          "title": "Độ trễ — latency",
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 14
+          },
+          "panels": []
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Completion latency (p50 / p95 / p99)",
+          "description": "",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 15
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(omni_llm_client_completion_seconds_bucket{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])))",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(omni_llm_client_completion_seconds_bucket{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])))",
+              "legendFormat": "p95"
+            },
+            {
+              "refId": "C",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(omni_llm_client_completion_seconds_bucket{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])))",
+              "legendFormat": "p99"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 8
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "TTFT p95 theo loại — TTFT p95 by call_kind",
+          "description": "",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 15
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le, call_kind) (rate(omni_llm_ttft_seconds_bucket{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])))",
+              "legendFormat": "{{call_kind}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 8
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 102,
+          "type": "row",
+          "title": "Token & kích thước prompt — tokens & prompt size",
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 23
+          },
+          "panels": []
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Token throughput / s",
+          "description": "Input vs output token rate. Input dominating means prompts are heavy, not answers.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 24
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(omni_llm_prompt_tokens_total{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m]))",
+              "legendFormat": "prompt (in)"
+            },
+            {
+              "refId": "B",
+              "expr": "sum(rate(omni_llm_completion_tokens_total{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m]))",
+              "legendFormat": "completion (out)"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 8
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "Token trung bình mỗi call — avg tokens per call",
+          "description": "Compare prompt/call against OMNI_LLM_NUM_CTX (default 8192) to see how close prompts run to the context ceiling.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 24
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(omni_llm_prompt_tokens_total{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])) / clamp_min(sum(rate(omni_llm_calls_total{kubernetes_namespace=\"$namespace\",model=~\"$model\",outcome=\"ok\"}[5m])), 0.0001)",
+              "legendFormat": "prompt/call"
+            },
+            {
+              "refId": "B",
+              "expr": "sum(rate(omni_llm_completion_tokens_total{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])) / clamp_min(sum(rate(omni_llm_calls_total{kubernetes_namespace=\"$namespace\",model=~\"$model\",outcome=\"ok\"}[5m])), 0.0001)",
+              "legendFormat": "completion/call"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 8
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Prompt size p50/p95 (ký tự — chars)",
+          "description": "",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 32
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(omni_llm_prompt_chars_bucket{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])))",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(omni_llm_prompt_chars_bucket{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])))",
+              "legendFormat": "p95"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 8
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Response size p50/p95 (ký tự — chars)",
+          "description": "",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 32
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.5, sum by (le) (rate(omni_llm_response_chars_bucket{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])))",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(omni_llm_response_chars_bucket{kubernetes_namespace=\"$namespace\",model=~\"$model\"}[5m])))",
+              "legendFormat": "p95"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 8
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 103,
+          "type": "row",
+          "title": "RAG hit hay gọi LLM thật — knowledge hit vs real LLM call",
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 40
+          },
+          "panels": []
+        },
+        {
+          "id": 14,
+          "type": "stat",
+          "title": "RAG hit ratio (5m)",
+          "description": "Share of gate evaluations answered from knowledge. The remainder fall through to a real LLM call.",
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 41
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(omni_rag_gate_outcome_total{kubernetes_namespace=\"$namespace\",outcome=~\"hit|cache_hit\"}[5m])) / clamp_min(sum(rate(omni_rag_gate_outcome_total{kubernetes_namespace=\"$namespace\"}[5m])), 0.0001)"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 3
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 15,
+          "type": "stat",
+          "title": "Gate evals / min",
+          "description": "",
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 41
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(omni_rag_gate_outcome_total{kubernetes_namespace=\"$namespace\"}[5m])) * 60"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "decimals": 2
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 16,
+          "type": "timeseries",
+          "title": "Lý do gate — gate outcome breakdown",
+          "description": "hit / cache_hit = answered from knowledge. below_threshold / no_points / post_filter_empty = fell through to the model.",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 41
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (outcome) (rate(omni_rag_gate_outcome_total{kubernetes_namespace=\"$namespace\"}[5m]))",
+              "legendFormat": "{{outcome}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 8,
+                "stacking": {
+                  "mode": "normal",
+                  "group": "A"
+                }
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 104,
+          "type": "row",
+          "title": "Log thô mỗi lần gọi LLM — raw per-call logs",
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 46
+          },
+          "panels": []
+        },
+        {
+          "id": 17,
+          "type": "logs",
+          "title": "event=llm_call (lọc theo $trace_id)",
+          "description": "Mỗi dòng = 1 lần gọi LLM (event=llm_call): trace, model, call_kind, outcome, duration_ms, prompt/response chars + tokens + SHA. INV_DATA_RESIDENCY: KHÔNG log nguyên văn prompt. Bật xem trước có giới hạn bằng OMNI_LLM_LOG_PREVIEW_CHARS (mặc định 0 = tắt, trần 512).",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 13,
+            "w": 24,
+            "x": 0,
+            "y": 47
+          },
+          "options": {
+            "showLabels": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "{namespace=\"$namespace\", pod_name=~\"$pod\"} |= \"event=llm_call\" |= \"$trace_id\""
+            }
+          ]
+        },
+        {
+          "id": 18,
+          "type": "logs",
+          "title": "event=rag_gate (quyết định RAG)",
+          "description": "Gate decision per turn. Pair with the llm_call panel on the same trace to see whether that turn spent a model call.",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 60
+          },
+          "options": {
+            "showLabels": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "{namespace=\"$namespace\", pod_name=~\"$pod\"} |= \"event=rag_gate\" |= \"$trace_id\""
+            }
+          ]
+        }
+      ]
+    }
