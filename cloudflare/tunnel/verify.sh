@@ -169,6 +169,55 @@ else
     S "NS $DOMAIN chưa trỏ Cloudflare — mọi gate edge bị chặn"
 fi
 
+# ── G. Tunnel → origin: chặng DUY NHẤT mà mọi gate trên KHÔNG chạm tới ────────
+# Vì sao phải có nhóm này (sự cố 502 ngày 2026-07-30): Access chặn mọi request ẩn
+# danh NGAY TẠI EDGE, nên không phép thử ẩn danh nào đi qua tunnel tới origin. Nhóm A
+# và C thì gọi Traefik TRỰC TIẾP, cũng bỏ qua tunnel. Kết quả: 17/17 PASS trong khi
+# người dùng thật nhận 502, vì cloudflared không dial được origin
+# (`dial tcp 192.168.139.2:80: connect: no route to host` — IP LB nằm trên bridge ảo
+# OrbStack, chập khi máy build nặng). Nhóm G kiểm đúng chặng đó.
+H "G. Tunnel → origin"
+
+CF_CONFIG="${CF_CONFIG:-$HOME/.cloudflared/config.yml}"
+if [ ! -f "$CF_CONFIG" ]; then
+    S "không thấy $CF_CONFIG — chưa cấu hình tunnel"
+else
+    origin="$(awk '/^[[:space:]]*service:[[:space:]]*http/ {print $2; exit}' "$CF_CONFIG")"
+    if [ -z "$origin" ]; then
+        F "không đọc được origin từ $CF_CONFIG"
+    else
+        # Dial ĐÚNG origin mà cloudflared dùng, từ chính máy chạy cloudflared.
+        host_port="${origin#http://}"; host_port="${host_port%%/*}"
+        if curl -sf -m 5 -H "Host: $APP_HOST" "http://$host_port/" -o /dev/null; then
+            P "cloudflared dial được origin $origin"
+        else
+            F "origin $origin KHÔNG dial được — người dùng sẽ nhận 502"
+        fi
+
+        # Origin trỏ vào IP bridge OrbStack là mong manh: bridge biến mất khi OrbStack
+        # dừng và chập khi máy tải cao. Loopback + NodePort không phụ thuộc bridge đó.
+        if printf '%s' "$origin" | grep -qE '127\.0\.0\.1|localhost'; then
+            P "origin dùng loopback (không phụ thuộc bridge ảo OrbStack)"
+        else
+            F "origin $origin trỏ IP bridge OrbStack — đã gây 502 thật, đổi sang 127.0.0.1:<nodePort>"
+        fi
+    fi
+fi
+
+CF_LOG="${CF_LOG:-$HOME/Library/Logs/omnisre-cloudflared.err.log}"
+if [ ! -f "$CF_LOG" ]; then
+    S "không thấy log cloudflared ($CF_LOG)"
+else
+    # Chỉ đếm phần CUỐI log: lỗi từ nhiều ngày trước đã được xử lý thì không nên
+    # làm gate đỏ mãi. 400 dòng ≈ vài giờ hoạt động bình thường.
+    recent_unreachable="$(tail -400 "$CF_LOG" | grep -c 'no route to host\|Unable to reach the origin' || true)"
+    if [ "${recent_unreachable:-0}" -eq 0 ]; then
+        P "log cloudflared không có lỗi origin-unreachable gần đây"
+    else
+        F "cloudflared báo $recent_unreachable lỗi không tới được origin gần đây → 502 cho người dùng"
+    fi
+fi
+
 # ── Tổng kết ─────────────────────────────────────────────────────────────────
 printf '\n\033[1m%d PASS · %d FAIL · %d SKIP\033[0m\n' "$pass" "$fail" "$skip"
 [ "$skip" -gt 0 ] && printf 'SKIP nghĩa là CHƯA CHẠY ĐƯỢC, không phải đã đạt.\n'

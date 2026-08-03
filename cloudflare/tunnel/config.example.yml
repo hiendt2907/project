@@ -17,11 +17,22 @@ loglevel: info
 
 ingress:
   # ── Omni Console ────────────────────────────────────────────────────────────
-  # Đích là Traefik LoadBalancer của OrbStack, KHÔNG phải từng Service riêng lẻ.
+  # Đích là Traefik NodePort qua LOOPBACK, KHÔNG phải LoadBalancer IP của OrbStack.
+  #
+  # ⚠️ ĐỪNG đổi lại thành `http://192.168.139.2:80` (IP LoadBalancer). Sự cố 502 ngày
+  # 2026-07-30: IP đó nằm trên bridge ảo `bridge101` của OrbStack; khi bridge chập
+  # (quan sát được trong lúc build image nặng), cloudflared báo
+  # `dial tcp 192.168.139.2:80: connect: no route to host` và Cloudflare trả 502.
+  # `curl` từ Mac vẫn 200 lúc kiểm nên lỗi trông như không tồn tại. Loopback +
+  # NodePort không đi qua bridge đó. NodePort lấy từ:
+  #   kubectl -n traefik get svc traefik -o jsonpath='{.spec.ports[0].nodePort}'
+  #
+  # Vẫn nhắm vào Traefik (không phải từng Service riêng lẻ) để toàn bộ routing
+  # (/auth, /api/provider/v1, /dex, /) và middleware hiện có được tái dùng nguyên vẹn.
   # Nhờ vậy toàn bộ routing (/auth, /api/provider/v1, /dex, /) và mọi middleware
   # hiện có được tái dùng nguyên vẹn — xem k8s/ingress/omnisre-public.yaml.
   - hostname: app.omnisre.xyz
-    service: http://192.168.139.2:80
+    service: http://127.0.0.1:32080
     originRequest:
       # KHÔNG đặt httpHostHeader: Ingress `omnisre-public-console` khai báo đúng
       # host app.omnisre.xyz, nên Host gốc phải được giữ nguyên để Traefik khớp.
