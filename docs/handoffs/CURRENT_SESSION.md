@@ -1,6 +1,60 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-04 (Đ28 KẾT THÚC — drill sự cố thật chạy tới hoàn tất. Kết quả: chẩn đoán ĐÚNG hướng nhưng KHÔNG tự khắc phục được. Chuỗi nhân quả đầy đủ đã truy ra, 3 task mới #38/#39/#40.) · **Branch:** `main` · **HEAD:** `44ef41f` (**ĐÃ PUSH**) · **Working tree:** sạch, không code nào sửa thêm sau lúc deploy
+**Cập nhật:** 2026-08-04 (Đ29 — Sửa 3 root cause #38/#39/#40 tìm được ở Đ28, deploy sống, phát hiện thêm `#41`, đang chạy lại drill lần 2 để xác nhận /goal.) · **Branch:** `main` · **HEAD:** `43fcfa8` (**ĐÃ PUSH**) · **Working tree:** sạch
+
+## 🔧 Đ29 — "Xử lý luôn đi": sửa #38/#39/#40, deploy, chạy lại drill lần 2
+
+User: "Xử lú luôn đi" (xử lý luôn đi) — uỷ quyền sửa 3 finding từ Đ28.
+
+### 3 fix đã làm, commit riêng biệt, đã deploy sống
+
+1. **`#39` (root cause chính xác) — `9fc766e`**: `src/llm/vllm_client.py` — thêm `max_retries=0`
+   cho cả `_chat_client`/`_embed_client`. Root cause tìm ra bằng cách đọc code + đo trực tiếp:
+   `openai.AsyncOpenAI` mặc định `max_retries=2` (3 lần thử/lệnh), HOÀN TOÀN ẩn với caller. Khớp
+   chính xác số đo Đ28: 361343.6ms ≈ 3×120s, 256443.6ms ≈ 2×120s+. Đây cũng là một phần nguyên nhân
+   `#38` — mỗi "1 lượt gọi" logic âm thầm thành 3 request xếp hàng khi Ollama quá tải.
+2. **`#38` (config) — kubectl set env**: `OMNI_LLM_NUM_PARALLEL=1` (từ 4) — khớp thực tế Ollama chỉ
+   có `-np 1` (xác nhận qua `ps aux` trên host Mac ở Đ28). Đây LÀ config, không phải code, nên
+   không có commit — chỉ ghi lại đây.
+3. **`#40` — `43fcfa8`**: `src/workers/auto_recovery_bridge.py` — nhánh `no_suggested_recovery` giờ
+   `logger.info` rõ trace/agent/root_cause thay vì im lặng hoàn toàn.
+
+Verify: 3 test mới (`test_vllm_client_no_retry.py` ×2, `test_auto_recovery_bridge.py` +1), full
+suite **7343 passed** (từ 7340), `lint-imports` sạch. `make deploy-fullstack` xong, verify sống
+bằng `inspect.getsource()`/thuộc tính client thật trong pod — cả 3 fix chạy đúng.
+
+### `#41` MỚI — tự phát hiện ngay lúc deploy: manifest âm thầm xoá 1 quyết định Đ26
+
+`kubectl apply` (trong `make deploy-fullstack`) đã **reset `OMNI_EXECUTOR_FORCE_NSENTER` về `true`**
+— xoá mất quyết định mở full mutate ở Đ26! Lý do: biến này khai báo TƯỜNG MINH trong
+`k8s/deployments/omni-fullstack.yaml:87-88` nên bị 3-way-merge ghi đè theo file; còn
+`OMNI_LLM_NUM_PARALLEL`/`OMNI_MIN_DISPATCH_CONFIDENCE`/`OMNI_LAB_AUTO_EXECUTE_AGENTS` KHÔNG có
+trong manifest nên sống sót qua `apply` như thay đổi ngoài-luồng. Đã tự phát hiện + tự sửa lại
+(`kubectl set env ... =false`) ngay trong phiên này, nhưng đây là bẫy sẽ **lặp lại ở MỌI lần
+`make deploy-fullstack` tương lai** cho tới khi quyết định: sửa thẳng manifest, hay chấp nhận phải
+set lại tay mỗi lần. Đã ghi task `#41`, chưa quyết định thay mặt user.
+
+### Trạng thái deploy hiện tại (đã verify qua API, không phải config file)
+`OMNI_LLM_NUM_PARALLEL=1` · `OMNI_MIN_DISPATCH_CONFIDENCE=0.3` ·
+`OMNI_LAB_AUTO_EXECUTE_AGENTS` gồm cả `tenant-replay-01_cust-app,tenant-replay-01_cust-edge` ·
+`OMNI_EXECUTOR_FORCE_NSENTER=false`. Pod mới `Restart Count=0`, không traceback/CRITICAL thật (1
+false-positive do grep khớp chữ "critical" trong `urgency=critical`).
+
+### Drill lần 2 — đang chạy, CHƯA có kết quả lúc ghi handoff này
+
+Baseline reset: `orb -m cust-app sudo systemctl start payment-api` (active) → gây sự cố lại:
+`orb -m cust-app sudo systemctl stop payment-api` lúc **`03:37:03Z`**. Đang chờ pipeline phát hiện
++ chẩn đoán + (hy vọng) tự khắc phục với 3 fix mới. **Đây là bằng chứng cuối cùng cho `/goal`** — có
+đủ để LLM hoàn tất 8 turn (hoặc ít hơn) mà không bị timeout/quá tải như lần 1 không.
+
+### Next step (nếu session bị ngắt giữa chừng)
+1. Kiểm tra kết quả drill lần 2: `kubectl -n multi-agent logs <pod omni-fullstack> --since=30m | grep -i payment-api` +
+   `orb -m cust-app systemctl is-active payment-api` (nếu `active` = tự khắc phục THÀNH CÔNG).
+2. Nếu vẫn treo/timeout: kiểm tra thêm có phải do quá nhiều tenant `tier=auto` cùng lúc vẫn gây
+   nghẽn dù đã giảm `OMNI_LLM_NUM_PARALLEL=1` (giảm concurrency KHÔNG giảm được tổng số request cần
+   xử lý, chỉ giảm số chạy song song — hàng đợi vẫn có thể rất sâu nếu traffic tổng quá lớn).
+3. Quyết định `#41` (manifest vs override tay).
+4. `#33`–`#36` (Smart SIEM merge) vẫn chưa bắt đầu, độc lập với nhánh này.
 
 ## 🔬 Đ28 — Commit/push/deploy Đ27 + drill sự cố thật, soi qua Loki/Tempo — TÌM THÊM 2 BUG THẬT
 
