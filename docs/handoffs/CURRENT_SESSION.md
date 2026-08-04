@@ -1,6 +1,62 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-04 (Đ30 — 🎉 `/goal` ĐẠT ĐƯỢC THẬT: 1 sự cố đi trọn từ phát hiện → chẩn đoán → tự khắc phục có xác minh, KHÔNG cần người. + dọn Redis 317K→6K key.) · **Branch:** `main` · **HEAD:** `43fcfa8` (**ĐÃ PUSH**) · **Working tree:** sạch
+**Cập nhật:** 2026-08-04 (Đ32 — commit+push 2 fix Đ31 (Harbor comment + ADR 0002 stale), phát hiện
+git identity trống trên VM GCP mới → set local config; user cấp standing authorization commit+push
+khi CI/CD có rollback → ghi vào CLAUDE.md AUTONOMY RULES.) · **Branch:** `main` · **HEAD:**
+`6d4a735` (**ĐÃ PUSH**) · **Working tree:** sạch
+
+## 🩹 Đ32 — commit/push fix Đ31 + standing authorization vào CLAUDE.md
+
+User: "hệ thống hiện tại đã có full luồng CI/CD, nên mỗi thay đổi code được quyền commit và push
+lên gitea để apply code mới, lỗi đã có thể rollback, cập nhật claude.md luôn".
+
+1. `git commit` lần đầu fail: `Author identity unknown` — VM GCP mới, chưa từng set
+   `user.name`/`user.email` local. Set local (không phải `--global`) bằng email đã biết
+   (`danghien2907@gmail.com`) + tên `hiendang`, khớp style commit trước (`HienDang`).
+2. Commit `b01b3cd`: `k8s/gitops/harbor-values.yaml` (comment trỏ đúng `svc/harbor`) +
+   `docs/adr/0002-gcp-k3s-full-migration.md` (ghi chú stale domain) — push thành công lên Gitea, CI
+   sẽ tự chạy.
+3. Commit `6d4a735`: cập nhật `CLAUDE.md` mục **AUTONOMY RULES** — ghi standing authorization: với
+   CI/CD đầy đủ (Gitea→Jenkins→ArgoCD, rollback qua `kubectl rollout undo`/revert), thay đổi
+   code/docs đã verify được quyền tự commit+push, KHÔNG cần hỏi lại mỗi lần. Thao tác phá hoại/khó
+   đảo ngược (force-push, reset --hard, sửa lịch sử) vẫn phải hỏi trước — không đổi.
+
+### Next step
+
+Không có việc đang dở. Nếu có task tiếp theo, đọc từ tin nhắn user kế tiếp.
+
+## 🩹 Đ31 — `/code-review` sau migrate lên GCP VM, sửa finding + doc stale
+
+User: yêu cầu `/code-review` verify lại sau khi chuyển toàn bộ project từ MacBook local lên VM GCP
+này. Review chạy nền qua skill `code-review` (bị gián đoạn 1 lần do session restart giữa chừng —
+đã `SendMessage` resume từ transcript trên đĩa, không mất tiến độ).
+
+### Finding duy nhất (đã verify qua web search hành vi Harbor Helm chart thật)
+
+`k8s/gitops/harbor-values.yaml:8` — comment (thêm ở commit `a31aeb0`, "Harbor + Vault UI back to
+cluster-internal") hướng dẫn `kubectl port-forward -n harbor svc/harbor-portal 8080:80`, nhưng với
+`expose.type: clusterIP`, Harbor Helm chart route qua một Service nginx reverse-proxy RIÊNG (fronts
+cả core+portal, xử lý `/v2`, `/api`, `/service` tới `harbor-core`) — không phải Service portal trực
+tiếp. Port-forward vào `harbor-portal` chỉ trúng static web console, `docker login`/push/pull sẽ
+fail vì thiếu route registry API.
+
+### Đã sửa (2 file, CHƯA commit — user chưa xác nhận)
+
+1. **`k8s/gitops/harbor-values.yaml`**: comment sửa thành trỏ `svc/harbor` (Service proxy đúng),
+   kèm cảnh báo rõ `svc/harbor-portal` không proxy registry API.
+2. **`docs/adr/0002-gcp-k3s-full-migration.md`**: phát hiện thêm lúc review — dòng liệt kê "6 domain
+   HTTPS thật" (viết TRƯỚC commit `a31aeb0` cùng ngày) vẫn liệt `registry.omnisre.xyz` và
+   `vault.omnisre.xyz` như đang public, nhưng `a31aeb0` đã rút ingress 2 domain này về
+   ClusterIP-only. Đã thêm ghi chú inline "Lỗi thời từ commit `a31aeb0`" ngay dưới câu gốc, giữ
+   nguyên câu gốc làm bằng chứng lịch sử (không xoá/viết lại) — đúng convention repo này (xem cách
+   CLAUDE.md tự đánh dấu claim cũ "đã lỗi thời" thay vì xoá).
+
+### Next step
+
+Chưa commit — hỏi lại user có muốn commit 2 file trên không (câu hỏi đang chờ trả lời cuối lượt
+trước khi hook này chạy). Nếu user đồng ý: `git add k8s/gitops/harbor-values.yaml
+docs/adr/0002-gcp-k3s-full-migration.md && git commit`. Không có test nào cần chạy (chỉ sửa
+comment/doc, không đụng code).
 
 ## 🔧 Đ29 — "Xử lý luôn đi": sửa #38/#39/#40, deploy, chạy lại drill lần 2
 
