@@ -355,4 +355,13 @@ discovery probe nào (chỉ metrics/log probe), là bottleneck kế tiếp. Chi 
 
 ## AUTONOMY RULES
 
-EXPLORE → PLAN → VERIFY → GIT (chỉ khi được chỉ thị). CI/CD loop tự động trong Lab. `#` để ghi rule mới vào đây.
+EXPLORE → PLAN → VERIFY → GIT. CI/CD loop tự động trong Lab.
+
+**Standing authorization (2026-08-04, GCP VM, full CI/CD có sẵn):** với hạ tầng đã có CI/CD đầy đủ
+(Gitea → Jenkins build/rollout, ArgoCD drift-detect, rollback được qua `kubectl rollout undo` /
+revert commit), **mỗi thay đổi code/docs được quyền tự `git commit` + `git push origin main`**
+ngay sau khi verify xong (test/lint pass, hoặc với doc/comment-only change: đọc lại diff cho khớp
+ý), KHÔNG cần hỏi lại xác nhận commit mỗi lần — vì lỗi triển khai đã có đường rollback an toàn.
+Vẫn áp dụng nguyên Git Safety Protocol ở system prompt cho các thao tác phá hoại/khó đảo ngược
+(force-push, reset --hard, xoá branch, sửa lịch sử) — những thao tác đó vẫn phải hỏi trước. `#` để
+ghi rule mới vào đây.
