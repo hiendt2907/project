@@ -1,6 +1,151 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-04 (Đ22 — Review toàn bộ BUILD NOW bằng code-reviewer agent, tìm+fix 1 bug HIGH thật, tạo 3 task follow-up MEDIUM/LOW. Đã deploy live + verify.) · **Branch:** `main` · **HEAD:** `bbebf3d` (đã push)
+**Cập nhật:** 2026-08-04 (Đ24 — Triển khai Phase A+B của plan Đ23: #27/#28/#29/#30 code+test+deploy xong. User đi vắng, tự chủ thực thi có ghi rõ mọi quyết định phạm vi.) · **Branch:** `main` · **HEAD:** `7618d2e` (CHƯA PUSH) · **Working tree:** sạch (4 commit mới, xem dưới)
+
+## 🎯 Đ24 — Triển khai #27/#28/#29/#30 (Phase A+B), deploy sống, chưa push
+
+User: "Triển khai toàn bộ, tôi đi uống cafe. /goal sự cố trên hệ thống khách phải được xử lý thật,
+tận dụng tối đa LLM và RAG, phải học được thật" — uỷ quyền tự chủ đầy đủ, không có mặt để hỏi.
+4 commit mới (chưa push, chờ user xác nhận trước khi push theo kỷ luật session):
+`d9f7278` (#27) → `b802a66` (#28) → `383cc1a` (#29/#30) → `7618d2e` (docs plan).
+
+### `#27` CRITICAL — đào sâu hơn lúc code mới thấy phạm vi thật lớn hơn mô tả gốc
+
+Khi bắt tay vào sửa mới phát hiện: KHÔNG chỉ "thiếu 1 INSERT". Có 2 hệ HITL tách biệt trong repo —
+(a) `hitl_telegram.py`+`build_hitl_card`+Postgres `hitl_decision` (thiết kế đúng ý MASTER_PLAN §4)
+và (b) `evidence_mutate_emit.py:emit_hitl_pending`→Kafka→`hitl_dispatcher.py`→FinGuard API external
+(`hitl-api.finguard-customer.svc.cluster.local` — **namespace này không tồn tại trong cluster**,
+`omni-hitl-dispatcher` đã scale=0 có chủ đích). Gốc rễ thật: 2 call site duy nhất của
+`gate_decision_for_tool` (`kafka_actions_consumer.py`, `gateway/routes/agent_runtime.py`) khi
+tier_gate trả "HITL" chỉ skip+feedback/HTTP 423 — không hề tạo pending nào. **HITL trong tier_gate
+thực chất là "từ chối im lặng".**
+
+Quyết định phạm vi (tự đưa ra, không có user để hỏi): CHỈ nối `kafka_actions_consumer.py` (đường
+K8s in-cluster, fire-and-forget qua Kafka, an toàn) vào `build_hitl_card`/Postgres/Redis vốn có sẵn
+nhưng mồ côi — **không đổi hành vi mặc định** (mutate vẫn không tự chạy khi HITL, chỉ thêm đường để
+người chủ động duyệt sau, tái dùng đúng `handle_hitl_callback` đã có sẵn logic dispatch). Đường
+`agent_runtime.py` (VM/remote-agent, HTTP 423 đồng bộ) CỐ Ý để lại — đổi bán đồng bộ→bất đồng bộ là
+quyết định thiết kế lớn hơn, không đoán mù lúc không có người giám sát.
+
+Code: `AdminConfigRepo.create_hitl_pending()` (INSERT gốc, ON CONFLICT DO NOTHING) +
+`record_hitl_decision()` fail-loud (raise thay vì UPDATE 0-row bị nuốt) + `hitl_telegram.
+open_hitl_pending_for_mutate()` (đóng vòng CRAT→Postgres→Redis→Telegram) + wiring trong
+`_handle_execute_mutate`.
+
+### `#28` HIGH — nhánh chẩn đoán chính không mở case_ledger
+
+`remote_diagnosis_emitter.emit_diagnosis_to_telegram` (nhánh CHÍNH, mọi cluster critical/high) gửi
+Telegram trần. Fix: mirror đúng pattern đã chạy tốt ở `telegram_advisory_emitter.
+render_advisory_to_telegram` — `open_advisory_case()` trước khi gửi + `build_advisory_ack_keyboard`
+gắn vào chunk CUỐI. `tenant_id` thread qua tham số mới (default "default", backward-compat).
+
+### `#29`/`#30` MEDIUM/LOW — KPI một chiều + tàn dư bug "đọc = đồng ý"
+
+`advisory_ack.py`: verdict=INCORRECT giờ gọi `record_false_positive()` (trước đây chỉ bị bỏ qua);
+verdict=None (callback 1-nút cũ) giờ không ghi gì cả (trước đây bị tính là accepted).
+
+### Verify đã làm (không chỉ "test pass")
+
+- 96+30+... test mới/liên quan pass riêng lẻ theo từng commit; **full suite 7334 passed, 11
+  deselected** (1 lần chạy duy nhất sau khi cả 4 concern đã xong).
+- `make lint-imports`: 2 kept, 0 broken.
+- **Deploy sống thật**: `make deploy-fullstack` + `make deploy-gateway`, cả 2 pod mới `Restart
+  Count=0`. Verify KHÔNG suy đoán từ "rollout successful" — `kubectl exec` + `inspect.getsource()`/
+  `hasattr()` trong pod thật xác nhận cả 4 fix đã chạy (`open_hitl_pending_for_mutate` tồn tại,
+  `create_hitl_pending` có trên `AdminConfigRepo`, `emit_diagnosis_to_telegram` chứa
+  `open_advisory_case`, `advisory_ack` chứa `record_false_positive`). Log pod sau deploy: traffic
+  remote-agent thật vẫn chạy bình thường (`route=KNOWN_BASELINE`, `verdict=no_advisory`), không có
+  traceback/exception mới.
+
+### CHƯA làm — quyết định có chủ đích, không phải bỏ sót
+
+- **`#32` (mới, = phase C trong plan)** — reconciliation loop CRAT↔case_ledger. Đây là loop nền
+  MỚI luôn-bật; cần quyết định vận hành (Kafka consumer group riêng hay Redis poll định kỳ, tần
+  suất, ngưỡng alert, đăng ký role nào trong `omni_worker.py`) trước khi bật unsupervised — để lại
+  cho user review.
+- **Phase D (RAG ingest có nhãn) + Phase E (tối ưu LLM)** — bị Phase A/B chặn cứng theo đúng thiết
+  kế trong plan (không có nhãn thì không có gì để học/đo). Giờ A/B đã xong và đã DEPLOY SỐNG, nhưng
+  cần vài giờ/ngày để case thật tích luỹ nhãn trước khi Phase D có dữ liệu để làm — không phải việc
+  làm ngay được.
+- **Chưa `git push`** — cố ý dừng ở local commit theo đúng kỷ luật "AUTONOMY RULES: GIT chỉ khi
+  được chỉ thị" trong CLAUDE.md; user chưa xác nhận trực tiếp việc push dù đã uỷ quyền "triển khai
+  toàn bộ" (uỷ quyền đó tôi hiểu là code+deploy+verify, không mặc định bao gồm push lên remote).
+
+### Next step
+
+1. User xác nhận: có push 4 commit này lên `origin/main` không.
+2. Theo dõi cluster vài giờ: case_ledger có bắt đầu có dòng verdict≠UNJUDGED không (bằng chứng #28
+   sống thật, không chỉ deploy).
+3. Nếu ổn: quyết định #32 (reconciliation loop) theo các câu hỏi thiết kế đã liệt kê, rồi mới làm
+   Phase D/E.
+
+---
+
+
+## 🎯 Đ23 — Audit thực chứng (Postgres + Redis + code sống) + kế hoạch đóng vòng học
+
+User yêu cầu rà lại hệ thống dựa trên **code thật / cluster thật / flow thật / log thật**, tách rõ
+Omni (NÃO) vs Remote Agent (THÂN), **không code**. Sau đó yêu cầu lập kế hoạch để mọi sự cố được
+xử lý triệt để và tận dụng tối đa LLM/RAG.
+
+### Ground truth đo trực tiếp (không suy đoán, không tin tài liệu cũ)
+
+| Nguồn | Số liệu thật |
+|---|---|
+| CRAT hash-chain Redis (`audit_chain:*`) | 2033 `ADVISORY_DISPATCHED`, **801** `ADVISORY_DECISION` (default) + **202** (staging-sim), 72 `HITL_ESCALATION_EMITTED`, chỉ **1** `HITL_DECISION` từng có |
+| `omni_admin.case_ledger` | **2 dòng TỪNG BAO GIỜ**, cả 2 `UNJUDGED` |
+| `case_verdict_history` / `hitl_decision` / `playbook_graduation` | **0 dòng TỪNG BAO GIỜ** |
+| `omni:kpi:z:*` | **0 key** — chưa từng có mẫu acceptance/FP nào |
+| `omni:rag:sop` | HLEN 1019 — **corpus seed tĩnh**, không phải trí nhớ sống |
+| `omni:3sigma:confidence:staging-sim:*` | 100/100 cả 3 host (AUTONOMOUS) — baseline learning `os_host` CHẠY THẬT |
+| `agent_command_outcome` | remediation drill thật COMPLETED, `verified=true, service_health=ok` — phía THÂN mutate tốt |
+
+⇒ **Engine chẩn đoán chạy thật (1003 quyết định), nhưng không quyết định nào từng được chấm
+đúng/sai.** Đây là định lượng chính xác cho vấn đề gốc đã biết ([[project_no_ground_truth_root_cause]]).
+
+### Root cause đã verify bằng code (2 agent Explore độc lập, có file:dòng)
+
+1. **`#27` CRITICAL — silent failure thật cấp production.** `hitl_decision` không nơi nào INSERT
+   dòng PENDING, chỉ có UPDATE. Telegram (`hitl_telegram.py:210` → `repo.py:511`): UPDATE 0-row →
+   asyncpg không raise → `except Exception: logger.warning` (dòng 213) nuốt sạch. Portal
+   (`autonomy.py:596` → `repo.py:872`): luôn raise 409. **Cả 2 kênh chết 100%, log trông bình thường.**
+2. **`#28` HIGH — gap kiến trúc.** `remote_diagnosis_emitter.emit_diagnosis_to_telegram` (nhánh
+   CHÍNH, `remote_agent_pipeline.py:540-559`, chạy cho mọi cluster critical/high) gửi Telegram trần:
+   không `reply_markup`, không gọi `case_ledger`. Chỉ 2 nhánh phụ hiếm gặp (`evidence_consumer.py:3003`,
+   `remote_agent_pipeline.py:369`) có mở case. ⇒ operator **không có cách nào phản hồi** phần lớn cảnh báo thật.
+3. **`#29` MEDIUM** — nút "❌ Sai" chỉ *skip* `record_accepted`, không gọi `record_false_positive`
+   (`advisory_ack.py:309-315`); hàm đó chỉ có call site trong `_handle_feedback` cần mutation thật.
+4. **`#30` LOW** — callback cũ 1-nút trả `verdict=None`, bị coi là đồng ý (tàn dư bug "đọc = đồng ý").
+5. **`#31` LOW-MED** — PlaybookGovernor (Redis) không write-through Postgres, bảng graduation vô dụng cho audit.
+
+### 1 sự cố thật ĐÃ được giải quyết (nhưng không qua vòng tự học)
+
+`OmniAdvisoryAcceptanceRateLow` bắn **517 lần liên tục 2026-06-22 → 08-02** (Gauge Prometheus mặc
+định 0.0 ⇒ "chưa có mẫu" và "0% chấp nhận" cùng số). Đã fix thật và **verify đang sống trong
+ConfigMap cluster**: `... < 0.5 and omni_kpi_advisory_total > 0` (commit `54e5137`, 2026-08-03).
+Nhưng do người tự sửa rule, **không qua case_ledger/HITL/graduation của chính platform** ⇒ không
+tính là "hệ thống tự học" theo /goal.
+
+### Deliverable: `plans/close-incident-loop-and-rag-2026-08-04.md` (CHƯA COMMIT)
+
+6 phase, thứ tự không đảo được — **A2(#27) → A1(#28) → B(#29,#30) → D(RAG sống) → E(LLM) → F(drill thật)**;
+C (bất biến chống im lặng: reconciliation CRAT↔case_ledger) chạy song song, nên làm sớm vì nó là
+lưới bắt mọi lỗi cùng lớp về sau.
+
+Chốt kỹ thuật quan trọng: **không tối ưu LLM/RAG trước khi có nhãn** — RAG hiện là seed tĩnh, mọi
+chỉ số chất lượng không đo được, tối ưu lúc này là tối ưu mù. Hai cảnh báo tránh đuổi nhầm mục tiêu
+đã ghi trong plan: advisory `META_SELF_DETERMINISTIC` **không tốn LLM** (mode `deterministic_contrast`);
+grounding gate **đang bắt LLM thổi phồng thật** (`confidence_inflation` 0.0→0.65, `unsupported_quantities:[cpu]`)
+— giữ nguyên.
+
+### Next step
+
+Chờ user chốt vào code: bắt đầu **`#27` (A2)** trước `#28` (A1), vì A1 đẩy thêm traffic vào đúng
+đường A2 đang gãy im lặng. Cần commit `plans/close-incident-loop-and-rag-2026-08-04.md` khi bắt đầu.
+Memory đã lưu: `project_ground_truth_audit_2026_08_04`.
+
+---
+
 
 ## 🎯 Đ22 — Review BUILD NOW (theo yêu cầu "dừng lại, review trước" của user), tìm 1 bug HIGH thật
 
