@@ -272,13 +272,23 @@ pipeline {
           kubectl apply -f k8s/monitor/grafana-alerting-provisioning.yaml
 
           # grafana.yaml bundles the grafana-admin Secret in the same multi-doc file as
-          # everything else, still carrying its checked-in __REQUIRED_*__ placeholder —
-          # apply it first, then overwrite just that Secret with a real value.
-          kubectl apply -f k8s/monitor/grafana.yaml
+          # everything else, still carrying its checked-in __REQUIRED_*__ placeholder.
+          # Applying the whole file every build was resetting the real password back to
+          # that placeholder each time (kubectl apply's 3-way merge sees the file's
+          # tracked-desired state literally has the placeholder, so it "corrects" the
+          # live Secret back to it) — confirmed live: password rotated on every single
+          # build instead of staying stable. Filter the Secret doc out before applying;
+          # it's managed exclusively by the guarded create-if-placeholder step below.
+          python3 -c "
+import sys, yaml
+with open('k8s/monitor/grafana.yaml') as f:
+    docs = [d for d in yaml.safe_load_all(f) if d and not (d.get('kind') == 'Secret' and d['metadata']['name'] == 'grafana-admin')]
+yaml.dump_all(docs, sys.stdout)
+" | kubectl apply -f -
 
           # Real values never live in git; generate/keep out of source control, and only
           # write once so re-runs don't rotate the admin password on every deploy.
-          CURRENT_PW=$(kubectl get secret grafana-admin -n monitor -o jsonpath="{.data.password}" | base64 -d)
+          CURRENT_PW=$(kubectl get secret grafana-admin -n monitor -o jsonpath="{.data.password}" 2>/dev/null | base64 -d)
           if [ "$CURRENT_PW" = "__REQUIRED_GRAFANA_ADMIN_PASSWORD__" ] || [ -z "$CURRENT_PW" ]; then
             kubectl create secret generic grafana-admin -n monitor \
               --from-literal=password="$(openssl rand -hex 16)" \
