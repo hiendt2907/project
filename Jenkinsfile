@@ -91,10 +91,10 @@ pipeline {
               --from-literal=bot-token='' --from-literal=chat-id='0' \
               --dry-run=client -o yaml | kubectl apply -f -
 
-          kubectl rollout restart deployment/prometheus -n monitor
+          kubectl rollout restart statefulset/prometheus -n monitor
           kubectl rollout restart deployment/loki -n monitor
           kubectl rollout restart deployment/grafana -n monitor
-          kubectl rollout status deployment/prometheus -n monitor --timeout=180s
+          kubectl rollout status statefulset/prometheus -n monitor --timeout=180s
           kubectl rollout status deployment/loki -n monitor --timeout=180s
           kubectl rollout status deployment/grafana -n monitor --timeout=180s
         '''
