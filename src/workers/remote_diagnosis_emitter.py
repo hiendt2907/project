@@ -23,6 +23,7 @@ import re
 from typing import Any
 
 from pkg.domain.taxonomy import UNKNOWN, lane_to_domain, normalize_domain
+from workers.advisory_ack import build_advisory_ack_keyboard, open_advisory_case
 from workers.handler_context import WorkerHandlerContext
 from workers.metrics_exporter import inc_telegram_timeout
 
@@ -267,8 +268,20 @@ async def emit_diagnosis_to_telegram(
     ctx: WorkerHandlerContext,
     session: dict[str, Any],
     chat_id: int,
+    *,
+    tenant_id: str = "default",
 ) -> None:
-    """Send diagnosis session to Telegram. Enforces 5-section completeness."""
+    """Send diagnosis session to Telegram. Enforces 5-section completeness.
+
+    #28: đây là nhánh CHÍNH của luồng chẩn đoán (mọi cluster critical/high đi qua
+    ``_run_diagnosis_and_notify_inner`` gọi hàm này) — trước bản vá nó gửi tin nhắn
+    trần, không nút, không mở case_ledger. Ground truth 2026-08-04: 1003+ quyết
+    định thật trong audit chain nhưng case_ledger chỉ có 2 dòng vì nhánh này chưa
+    bao giờ tạo cơ hội phản hồi. Mirror đúng pattern đã hoạt động ở
+    ``telegram_advisory_emitter.render_advisory_to_telegram``: mở ca TRƯỚC khi
+    gửi (lúc phát biểu, chưa biết đúng sai — để mẫu số không chỉ gồm ca có người
+    quan tâm), gắn ack-keyboard vào chunk CUỐI.
+    """
     if not ctx.telegram:
         logger.warning("[diag-emit] telegram disabled — skipping")
         return
@@ -276,11 +289,24 @@ async def emit_diagnosis_to_telegram(
     trace_id = session.get("trace_id", "?")
     message = render_diagnosis_session(session)
 
+    # Mở case TRƯỚC khi gửi — best-effort tuyệt đối, lỗi sổ ca không được chặn
+    # đường gửi Telegram (giống open_advisory_case's own docstring).
+    await open_advisory_case(
+        ctx,
+        trace_id=str(trace_id),
+        tenant_id=tenant_id,
+        lane=str(session.get("lane") or ""),
+        alertname=str(session.get("probe") or ""),
+    )
+    ack_keyboard = build_advisory_ack_keyboard(str(trace_id))
+
     timeout = float(getattr(ctx.settings, "telegram_send_timeout_sec", _SEND_TIMEOUT_S))
 
-    async def _send(text: str) -> None:
+    async def _send(text: str, *, reply_markup: dict[str, Any] | None = None) -> None:
         await asyncio.wait_for(
-            ctx.telegram.send_message(chat_id, text, parse_mode="HTML"),
+            ctx.telegram.send_message(
+                chat_id, text, parse_mode="HTML", reply_markup=reply_markup
+            ),
             timeout=timeout,
         )
 
@@ -290,8 +316,9 @@ async def emit_diagnosis_to_telegram(
     chunks = _chunk_on_newlines(message, 3500)
     for idx, chunk in enumerate(chunks):
         prefix = f"[{idx + 1}/{len(chunks)}] " if len(chunks) > 1 else ""
+        is_last = idx == len(chunks) - 1
         try:
-            await _send(f"{prefix}{chunk}")
+            await _send(f"{prefix}{chunk}", reply_markup=ack_keyboard if is_last else None)
             logger.info(
                 "[diag-emit] sent trace=%s chunk=%d/%d chat=%s",
                 trace_id, idx + 1, len(chunks), chat_id,

@@ -556,7 +556,7 @@ async def _run_diagnosis_and_notify_inner(
             return  # fail-closed: do NOT emit Telegram without a successful audit block
 
         await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="diagnosis audit block written", lane=_lane)
-        await emit_diagnosis_to_telegram(ctx, session, chat_id)
+        await emit_diagnosis_to_telegram(ctx, session, chat_id, tenant_id=tenant_id)
         await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail="diagnosis emitted (Telegram)", lane=_lane)
         await _dispatch_auto_recovery_if_eligible(ctx, _final, agent_id, tenant_id, trace, _lane)
     except RuntimeError as exc:
