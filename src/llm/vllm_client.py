@@ -146,15 +146,26 @@ class VLLMClient(BaseModel):
     _native_client: httpx.AsyncClient = PrivateAttr()
 
     def model_post_init(self, _context: Any) -> None:
+        # max_retries=0: openai SDK mặc định retry 2 lần (3 lần thử tổng), MỖI lần chờ tới
+        # timeout_s — hoàn toàn im lặng với caller. Đo thật 2026-08-04 (drill payment-api):
+        # 2 lệnh lỗi mất 256s và 361s dù timeout_s=120 — khớp chính xác ~2x/~3x120s, tức
+        # SDK đã âm thầm thử lại bên trong trước khi ném lỗi ra ngoài. Các caller (vd
+        # services.analyst.diagnosis_loop) đã tự có retry/circuit-breaker RIÊNG ở tầng
+        # ReAct-turn (_MAX_CONSECUTIVE_LLM_ERRORS) dựa trên giả định "mỗi lượt tốn tối đa
+        # timeout_s" — retry ẩn của SDK phá giả định đó VÀ khi Ollama đã quá tải, mỗi "1 lượt
+        # gọi" logic lại âm thầm biến thành 3 request xếp hàng, tự khuếch đại chính cơn quá
+        # tải gây ra lỗi. Tắt hẳn, để caller quyết định có retry hay không.
         chat = openai.AsyncOpenAI(
             api_key=_API_KEY,
             base_url=_base_url(self.base_url),
             timeout=self.timeout_s,
+            max_retries=0,
         )
         embed = openai.AsyncOpenAI(
             api_key=_API_KEY,
             base_url=_base_url(self.embed_url),
             timeout=self.timeout_s,
+            max_retries=0,
         )
         try:
             native = httpx.AsyncClient(timeout=self.timeout_s)
