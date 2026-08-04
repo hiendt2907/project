@@ -55,10 +55,10 @@ spec:
           env:
             - name: DOMAIN
               value: "https://bitwarden.omnisre.xyz"
-            # TEMPORARY true so the first (and only) account can be created —
-            # flip to "false" and redeploy right after that account exists.
+            # Locked closed 2026-08-04 after the one intended account
+            # (hiendt1@outlook.com.vn) was created and confirmed working.
             - name: SIGNUPS_ALLOWED
-              value: "true"
+              value: "false"
             - name: WEBSOCKET_ENABLED
               value: "true"
             - name: ADMIN_TOKEN
