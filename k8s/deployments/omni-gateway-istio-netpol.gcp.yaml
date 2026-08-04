@@ -1,0 +1,36 @@
+# Additive NetworkPolicy for the GCP cluster only — omni-gateway.yaml's existing
+# omni-gateway-netpol only allow-lists kafka:9092 + redis:6379 egress. That's fine
+# without a mesh, but once the istio-proxy sidecar is injected (GCP-only, see task
+# "Cài Istio service mesh") it also needs to reach istiod (XDS/CA) and DNS, or the
+# sidecar hangs at Init with "connection refused" to istiod:15012 forever.
+# NetworkPolicies for the same pod selector are additive (union of all matching
+# policies), so this only ever adds allowed egress — it never narrows what
+# omni-gateway.yaml's own policy already permits, and is a no-op anywhere Istio
+# isn't installed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: omni-gateway-istio-egress
+  namespace: multi-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: omni-gateway
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+      ports:
+        - {protocol: TCP, port: 15012}
+        - {protocol: TCP, port: 15010}
+        - {protocol: TCP, port: 15014}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}

@@ -64,6 +64,20 @@ pipeline {
       }
     }
 
+    stage('Install Istio mesh') {
+      steps {
+        sh '''
+          set -e
+          istioctl install --set profile=default -y
+          kubectl label namespace multi-agent istio-injection=enabled --overwrite
+          # omni-gateway.yaml's own NetworkPolicy only allow-lists kafka/redis egress;
+          # once the istio-proxy sidecar is injected it also needs istiod (XDS/CA) + DNS,
+          # or the sidecar hangs forever at Init with "connection refused" to istiod:15012.
+          kubectl apply -f k8s/deployments/omni-gateway-istio-netpol.gcp.yaml
+        '''
+      }
+    }
+
     stage('Deploy portals + Dex (omnisre.xyz)') {
       steps {
         sh '''
