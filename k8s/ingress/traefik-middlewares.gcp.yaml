@@ -1,0 +1,21 @@
+# Traefik Middleware CRDs for the GCP single-node cluster — multi-agent namespace
+# only (smart-siem / finguard-customer namespaces from the lab file don't exist
+# here, and Middleware objects can't be created in a namespace that isn't there).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: sse-buffering-off
+  namespace: multi-agent
+spec:
+  headers:
+    customResponseHeaders:
+      X-Accel-Buffering: "no"
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: body-limit-10m
+  namespace: multi-agent
+spec:
+  buffering:
+    maxRequestBodyBytes: 10485760

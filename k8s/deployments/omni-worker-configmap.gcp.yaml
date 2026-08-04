@@ -14,7 +14,7 @@ metadata:
   labels:
     app: omni-worker
 data:
-  OMNI_AGENT_UPDATE_ALLOWED_HOSTS: "gateway.ai-agent.local"
+  OMNI_AGENT_UPDATE_ALLOWED_HOSTS: "gateway.omnisre.xyz"
   OMNI_OOM_DETERMINISTIC_REMEDIATE_ENABLED: "false"
   OMNI_PROMETHEUS_URL: "prometheus.monitor.svc.cluster.local:9090"
   OMNI_VMAGENT_URL: "prometheus.monitor.svc.cluster.local:9090"

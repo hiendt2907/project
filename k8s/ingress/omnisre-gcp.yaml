@@ -1,0 +1,172 @@
+# GCP single-node k3s ingress — real public domain omnisre.xyz, TLS via
+# cert-manager (ClusterIssuer letsencrypt-prod, see cert-manager-issuer.yaml).
+# Mirrors k8s/ingress/ai-agent-local.yaml + aoip-portals.yaml for the lab, but
+# with a real domain + real certs instead of /etc/hosts + self-signed CA.
+# gateway.ai-agent.local's self-signed-CA workaround (INV_HTTPS_ONLY, agent
+# self-update bundle) is no longer needed here — Let's Encrypt is a real CA
+# already trusted by the agent's default httpx client.
+
+# ── omni-gateway: default path (body-limit-10m applies) ──────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omni-gateway-gcp
+  namespace: multi-agent
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      multi-agent-sse-buffering-off@kubernetescrd,multi-agent-body-limit-10m@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [gateway.omnisre.xyz]
+      secretName: gateway-omnisre-tls
+  rules:
+    - host: gateway.omnisre.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: omni-gateway, port: {number: 80}}
+
+# ── omni-gateway: SSE-only path (NO body-limit middleware — see lab file for why) ──
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omni-gateway-sse-gcp
+  namespace: multi-agent
+  annotations:
+    # No cert-manager.io/cluster-issuer here on purpose: this ingress shares the
+    # gateway-omnisre-tls secret managed by omni-gateway-gcp above. Adding the
+    # annotation on both would make cert-manager create two competing
+    # Certificate objects writing to the same Secret.
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.middlewares: multi-agent-sse-buffering-off@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [gateway.omnisre.xyz]
+      secretName: gateway-omnisre-tls
+  rules:
+    - host: gateway.omnisre.xyz
+      http:
+        paths:
+          - path: /trace/stream
+            pathType: Prefix
+            backend:
+              service: {name: omni-gateway, port: {number: 80}}
+
+# ── omni-gateway: plain HTTP (kept so cert-manager's HTTP-01 challenge and any
+#    non-TLS agent bootstrap calls still work; browsers should use https) ────
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omni-gateway-http-gcp
+  namespace: multi-agent
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      multi-agent-sse-buffering-off@kubernetescrd,multi-agent-body-limit-10m@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: gateway.omnisre.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: omni-gateway, port: {number: 80}}
+
+# ── aoip-provider-portal ──────────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aoip-provider-portal-gcp
+  namespace: multi-agent
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [provider.omnisre.xyz]
+      secretName: provider-omnisre-tls
+  rules:
+    - host: provider.omnisre.xyz
+      http:
+        paths:
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-portal, port: {number: 8081}}
+          - path: /api/provider/v1
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-portal, port: {number: 8081}}
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-web, port: {number: 3001}}
+
+# ── aoip-tenant-portal ─────────────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aoip-tenant-portal-gcp
+  namespace: multi-agent
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [tenant.omnisre.xyz]
+      secretName: tenant-omnisre-tls
+  rules:
+    - host: tenant.omnisre.xyz
+      http:
+        paths:
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service: {name: aoip-tenant-portal, port: {number: 8082}}
+          - path: /api/tenant/v1
+            pathType: Prefix
+            backend:
+              service: {name: aoip-tenant-portal, port: {number: 8082}}
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: aoip-tenant-web, port: {number: 3002}}
+
+# ── aoip-dex ───────────────────────────────────────────────────────────────────
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aoip-dex-gcp
+  namespace: multi-agent
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [dex.omnisre.xyz]
+      secretName: dex-omnisre-tls
+  rules:
+    - host: dex.omnisre.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: aoip-dex, port: {number: 5556}}

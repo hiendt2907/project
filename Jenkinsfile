@@ -1,8 +1,8 @@
 // Omni GCP CI/CD — build core images and roll out to the single-node k3s
-// cluster on this same VM. Scope: gateway + fullstack (role=full) + onboarding.
-// Portal/dex/hitl are added in a later pipeline once the public domain (task #6)
-// is settled — their OIDC issuer strings are absolute-string-compared and must
-// not be guessed ahead of that decision.
+// cluster on this same VM. Scope: gateway + fullstack (role=full) + onboarding
+// + monitoring + provider/tenant portals + Dex, all on the real public domain
+// omnisre.xyz (decided 2026-08-04 — replaces the lab's ai-agent.local, same
+// subdomain names). hitl-dispatcher is still deferred to a later pipeline.
 pipeline {
   agent any
 
@@ -17,6 +17,10 @@ pipeline {
           set -e
           docker build -t multi-agent-system:latest -f Dockerfile .
           docker build -t omni-gateway:latest -f Dockerfile.gateway .
+          docker build -t aoip-provider-web:latest -f ui/apps/provider-portal/Dockerfile \
+            --build-arg AOIP_BACKEND_URL=http://aoip-provider-portal:8081 ui
+          docker build -t aoip-tenant-web:latest -f ui/apps/tenant-portal/Dockerfile \
+            --build-arg AOIP_BACKEND_URL=http://aoip-tenant-portal:8082 ui
         '''
       }
     }
@@ -27,6 +31,8 @@ pipeline {
           set -e
           docker save multi-agent-system:latest | sudo k3s ctr images import -
           docker save omni-gateway:latest | sudo k3s ctr images import -
+          docker save aoip-provider-web:latest | sudo k3s ctr images import -
+          docker save aoip-tenant-web:latest | sudo k3s ctr images import -
         '''
       }
     }
@@ -54,6 +60,36 @@ pipeline {
           kubectl apply -f k8s/deployments/omni-gateway.yaml
           kubectl apply -f k8s/deployments/omni-fullstack.yaml
           kubectl apply -f k8s/deployments/omni-onboarding.yaml
+        '''
+      }
+    }
+
+    stage('Deploy portals + Dex (omnisre.xyz)') {
+      steps {
+        sh '''
+          set -e
+          # cert-manager install is idempotent (kubectl apply of the same manifest);
+          # cheap to re-run every build so a fresh cluster bootstraps in one pipeline run.
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
+          kubectl wait --for=condition=Available deployment -n cert-manager --all --timeout=180s
+          kubectl apply -f k8s/deployments/cert-manager-issuer.yaml
+
+          kubectl apply -f k8s/ingress/traefik-middlewares.gcp.yaml
+          kubectl apply -f k8s/deployments/aoip-dex.gcp.yaml
+          kubectl apply -f k8s/deployments/aoip-portals.gcp.yaml
+          kubectl apply -f k8s/deployments/aoip-portals-web.yaml
+          kubectl apply -f k8s/ingress/omnisre-gcp.yaml
+
+          kubectl rollout restart deployment/aoip-dex -n multi-agent
+          kubectl rollout restart deployment/aoip-provider-portal -n multi-agent
+          kubectl rollout restart deployment/aoip-tenant-portal -n multi-agent
+          kubectl rollout restart deployment/aoip-provider-web -n multi-agent
+          kubectl rollout restart deployment/aoip-tenant-web -n multi-agent
+          kubectl rollout status deployment/aoip-dex -n multi-agent --timeout=180s
+          kubectl rollout status deployment/aoip-provider-portal -n multi-agent --timeout=180s
+          kubectl rollout status deployment/aoip-tenant-portal -n multi-agent --timeout=180s
+          kubectl rollout status deployment/aoip-provider-web -n multi-agent --timeout=180s
+          kubectl rollout status deployment/aoip-tenant-web -n multi-agent --timeout=180s
         '''
       }
     }

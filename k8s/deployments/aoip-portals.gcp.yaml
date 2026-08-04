@@ -1,0 +1,104 @@
+# GCP variant of aoip-portals.yaml — issuer/authorize/redirect URIs point at the
+# real omnisre.xyz domain (https) instead of the lab's ai-agent.local. Token/JWKS
+# URLs stay cluster-internal (http://aoip-dex:5556) since those calls never leave
+# the pod network. Per INV_PUBLIC_PLANE_ISOLATED the lab file is never touched;
+# this is a separate object applied only by the GCP pipeline.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aoip-provider-portal
+  namespace: multi-agent
+  labels: {app: aoip-provider-portal}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: aoip-provider-portal}}
+  template:
+    metadata: {labels: {app: aoip-provider-portal}}
+    spec:
+      containers:
+        - name: portal
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "aoip.console.server:provider_app", "--host", "0.0.0.0", "--port", "8081"]
+          ports: [{containerPort: 8081}]
+          env:
+            - {name: OMNI_REDIS_URL, value: "redis://redis:6379/0"}
+            - name: OMNI_ADMIN_PG_DSN
+              valueFrom: {secretKeyRef: {name: omni-pg-secret, key: OMNI_ADMIN_PG_DSN}}
+            - {name: AOIP_PROVIDER_ORIGINS, value: "https://provider.omnisre.xyz"}
+            - {name: AOIP_OIDC_PROVIDER_ISSUER, value: "https://dex.omnisre.xyz/dex"}
+            - {name: AOIP_OIDC_PROVIDER_CLIENT_ID, value: "aoip-provider-portal"}
+            - {name: AOIP_OIDC_PROVIDER_CLIENT_SECRET, value: "provider-portal-secret"}
+            - {name: AOIP_OIDC_PROVIDER_AUTHORIZE_URL, value: "https://dex.omnisre.xyz/dex/auth"}
+            - {name: AOIP_OIDC_PROVIDER_TOKEN_URL, value: "http://aoip-dex:5556/dex/token"}
+            - {name: AOIP_OIDC_PROVIDER_JWKS_URL, value: "http://aoip-dex:5556/dex/keys"}
+            - {name: AOIP_OIDC_PROVIDER_REDIRECT_URI, value: "https://provider.omnisre.xyz/auth/callback"}
+          readinessProbe:
+            httpGet: {path: /, port: 8081}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /assets/shell.css, port: 8081}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket: {port: 8081}
+            failureThreshold: 30
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata: {name: aoip-provider-portal, namespace: multi-agent}
+spec:
+  selector: {app: aoip-provider-portal}
+  ports: [{name: http, port: 8081, targetPort: 8081}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aoip-tenant-portal
+  namespace: multi-agent
+  labels: {app: aoip-tenant-portal}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: aoip-tenant-portal}}
+  template:
+    metadata: {labels: {app: aoip-tenant-portal}}
+    spec:
+      containers:
+        - name: portal
+          image: multi-agent-system:latest
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "aoip.console.server:tenant_app", "--host", "0.0.0.0", "--port", "8082"]
+          ports: [{containerPort: 8082}]
+          env:
+            - {name: OMNI_REDIS_URL, value: "redis://redis:6379/0"}
+            - name: OMNI_ADMIN_PG_DSN
+              valueFrom: {secretKeyRef: {name: omni-pg-secret, key: OMNI_ADMIN_PG_DSN}}
+            - {name: AOIP_TENANT_ORIGINS, value: "https://tenant.omnisre.xyz"}
+            - {name: AOIP_OIDC_TENANT_ISSUER, value: "https://dex.omnisre.xyz/dex"}
+            - {name: AOIP_OIDC_TENANT_CLIENT_ID, value: "aoip-tenant-portal"}
+            - {name: AOIP_OIDC_TENANT_CLIENT_SECRET, value: "tenant-portal-secret"}
+            - {name: AOIP_OIDC_TENANT_AUTHORIZE_URL, value: "https://dex.omnisre.xyz/dex/auth"}
+            - {name: AOIP_OIDC_TENANT_TOKEN_URL, value: "http://aoip-dex:5556/dex/token"}
+            - {name: AOIP_OIDC_TENANT_JWKS_URL, value: "http://aoip-dex:5556/dex/keys"}
+            - {name: AOIP_OIDC_TENANT_REDIRECT_URI, value: "https://tenant.omnisre.xyz/auth/callback"}
+          readinessProbe:
+            httpGet: {path: /, port: 8082}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /assets/shell.css, port: 8082}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          startupProbe:
+            tcpSocket: {port: 8082}
+            failureThreshold: 30
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata: {name: aoip-tenant-portal, namespace: multi-agent}
+spec:
+  selector: {app: aoip-tenant-portal}
+  ports: [{name: http, port: 8082, targetPort: 8082}]
