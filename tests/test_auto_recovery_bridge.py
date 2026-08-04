@@ -170,6 +170,24 @@ class TestDispatchIfEligible:
         assert result == {"dispatched": False, "reason": "no_suggested_recovery",
                           "command_id": None, "state": None}
 
+    async def test_no_suggested_recovery_logs_reason(self, caplog):
+        """#40: trước bản vá, nhánh này KHÔNG log gì — không cách nào từ log phân biệt
+        được "chưa từng chạy" với "chạy rồi bỏ qua im lặng". Drill payment-api thật
+        (2026-08-04) rơi đúng nhánh này và không để lại dấu vết nào ngoài Redis session."""
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="workers.auto_recovery_bridge"):
+            await dispatch_if_eligible(
+                settings=SimpleNamespace(), http_client=AsyncMock(),
+                final={"root_cause": "payment-api stopped", "confidence": 0.9},
+                agent_id="a-1", tenant_id="t-1", trace_id="tr-silent",
+                redis=_StubRedis(), kafka=_StubKafka(),
+            )
+        assert any(
+            "no_suggested_recovery" in r.message and "tr-silent" in r.message
+            for r in caplog.records
+        ), "skip vì thiếu suggested_recovery phải để lại log, không được im lặng"
+
     async def test_skips_when_confidence_below_threshold(self):
         final = {"confidence": 0.5,
                 "suggested_recovery": {"capability": "systemd.restart_unit", "unit": "x.service"}}

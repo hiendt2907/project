@@ -203,6 +203,17 @@ async def dispatch_if_eligible(
     """
     suggested = extract_suggested_recovery(final)
     if suggested is None:
+        # #40 (2026-08-04): trước đây nhánh này KHÔNG log gì — không cách nào từ log phân
+        # biệt được "dispatch_if_eligible chưa từng chạy" với "chạy rồi bỏ qua im lặng".
+        # Đo thật: drill payment-api có final["suggested_recovery"]=None (diagnosis bị
+        # circuit-breaker cắt ở turn giữa chừng, chưa kịp sinh cấu trúc remediation) — sự cố
+        # không tự khắc phục được và KHÔNG CÓ MỘT DÒNG LOG NÀO giải thích tại sao.
+        logger.info(
+            "event=auto_recovery_skipped reason=no_suggested_recovery trace=%s agent=%s "
+            "root_cause=%r — diagnosis chưa sinh được suggested_recovery có cấu trúc "
+            "(có thể do vòng ReAct bị cắt giữa chừng)",
+            trace_id, agent_id, str(final.get("root_cause") or "")[:200],
+        )
         return {"dispatched": False, "reason": "no_suggested_recovery",
                 "command_id": None, "state": None}
 
