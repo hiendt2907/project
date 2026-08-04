@@ -86,10 +86,16 @@ pipeline {
               --from-literal=password="$(openssl rand -hex 16)" \
               --dry-run=client -o yaml | kubectl apply -f -
           fi
-          kubectl get secret grafana-telegram-alerting -n monitor >/dev/null 2>&1 || \
+          # Grafana's own alerting provisioning initContainer hard-fails startup if
+          # bot-token is empty ("could not find Bot Token in settings") — unlike the
+          # omni-worker telegram-bot secret, this can't be blank even when unused.
+          CURRENT_BOT=$(kubectl get secret grafana-telegram-alerting -n monitor -o jsonpath="{.data.bot-token}" 2>/dev/null | base64 -d)
+          if [ -z "$CURRENT_BOT" ]; then
             kubectl create secret generic grafana-telegram-alerting -n monitor \
-              --from-literal=bot-token='' --from-literal=chat-id='0' \
+              --from-literal=bot-token='0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' \
+              --from-literal=chat-id='0' \
               --dry-run=client -o yaml | kubectl apply -f -
+          fi
 
           kubectl rollout restart statefulset/prometheus -n monitor
           kubectl rollout restart deployment/loki -n monitor
