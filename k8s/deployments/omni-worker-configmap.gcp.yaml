@@ -1,0 +1,112 @@
+# GCP single-node k3s variant of omni-worker-configmap.yaml. Same object
+# (name/namespace), applied INSTEAD OF the lab file by Jenkinsfile — kubectl apply
+# on a ConfigMap replaces the whole `data` map, so this must stay a full copy,
+# not a partial patch. Only difference from the lab file: OMNI_VLLM_BASE_URL /
+# OMNI_VLLM_EMBED_URL / VLLM_BASE_URL / VLLM_EMBED_URL / OMNI_CLUSTER_VERSION —
+# Ollama stays on the Mac, reached from GCP over Tailscale instead of
+# OrbStack's host.orb.internal DNS. Keep in sync with the lab file by hand;
+# a Kustomize overlay would remove this duplication if the drift becomes painful.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: omni-worker-config
+  namespace: multi-agent
+  labels:
+    app: omni-worker
+data:
+  OMNI_AGENT_UPDATE_ALLOWED_HOSTS: "gateway.ai-agent.local"
+  OMNI_OOM_DETERMINISTIC_REMEDIATE_ENABLED: "false"
+  OMNI_PROMETHEUS_URL: "prometheus.monitor.svc.cluster.local:9090"
+  OMNI_VMAGENT_URL: "prometheus.monitor.svc.cluster.local:9090"
+  OMNI_AUTONOMOUS_FORECAST_ENABLED: "true"
+  OMNI_AUTONOMOUS_FORECAST_INTERVAL_SEC: "3600"
+  OMNI_AUTONOMOUS_FORECAST_PROMQL: 'avg(rate(node_cpu_seconds_total{mode!="idle"}[5m]))'
+  OMNI_AUTONOMOUS_FORECAST_THRESHOLD: "0.95"
+  OMNI_AUTONOMOUS_FORECAST_DURATION: "24h"
+  OMNI_AUTONOMOUS_FORECAST_ALERT_COOLDOWN_SEC: "3600"
+  OMNI_PROACTIVE_PROMQL: 'sum(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"})'
+  OMNI_PROACTIVE_TRIGGER_THRESHOLD: "0"
+  OMNI_PROACTIVE_EVAL_INTERVAL_SEC: "300"
+  OMNI_BASELINE_SNAPSHOT_ENABLED: "true"
+  OMNI_BASELINE_SNAPSHOT_INTERVAL_SEC: "600"
+  OMNI_BASELINE_SNAPSHOT_REDIS_TTL_SEC: "600"
+  OMNI_BASELINE_MANIFEST_MAX_CHARS: "1400"
+  OMNI_BASELINE_SYSTEM_PROMPT_MAX_CHARS: "1600"
+  OMNI_BASELINE_DR_Z_THRESHOLD: "3.0"
+  OMNI_BASELINE_PROMQL_Z_CPU: "omni:node_cpu:z"
+  OMNI_BASELINE_PROMQL_Z_MEM: "omni:mem:z"
+  OMNI_BASELINE_PROMQL_Z_DISK: "omni:node_disk:z"
+  OMNI_BASELINE_PROMQL_Z_NET: ""
+  OMNI_BASELINE_PROMQL_SEASONAL_CPU: "omni:health:cpu_seasonal_drift_z"
+  OMNI_CHS_WEIGHTS: '{"cpu":0.25,"mem":0.25,"disk":0.25,"net":0.25}'
+  OMNI_CHS_THRESHOLD: "10"
+  OMNI_GOLDEN_LATENCY_PROMQL: ""
+  OMNI_LATENCY_THRESHOLD_MS: ""
+  OMNI_BASELINE_LEGACY_CPU_DRIFT_FOR_DR: "false"
+  OMNI_BASELINE_CPU_DRIFT_THRESHOLD: "0.15"
+  OMNI_BASELINE_PROMQL: ""
+  OMNI_BASELINE_SNAPSHOT_MAX_CHARS: "1800"
+  OMNI_GOD_MODE: "false"
+  OMNI_AUTONOMOUS_DECIDER_ENABLED: "false"
+  OMNI_AUTONOMOUS_DECIDER_INTERVAL_SEC: "300"
+  OMNI_AUTONOMOUS_FIX_COOLDOWN_SEC: "600"
+  OMNI_AUTONOMOUS_SAFE_TOOLS: "k8s_rollout_restart,redis_health,redis_expert_check,sandbox_cleanup"
+  OMNI_AUTONOMOUS_ALLOWED_NAMESPACES: "multi-agent"
+  OMNI_SHADOW_OS_MODE: "true"
+  OMNI_AUTO_EXECUTE_ENABLED: "false"
+  OMNI_SIEM_SUGGEST_ONLY: "true"
+  OMNI_MULTI_HYPOTHESIS_SHADOW_ONLY: "true"
+  OMNI_SHADOW_INFLUENCE_SUGGEST_ONLY: "true"
+  OMNI_HITL_ROUTING_ENABLED: "true"
+  OMNI_AUTONOMOUS_ROLLOUT_ON_FAULT_INCIDENT: "false"
+  OMNI_ALERT_QOS_NORMAL_CAP: "500"
+  OMNI_ALERT_QOS_WINDOW_SEC: "60"
+  OMNI_DLQ_ROLLUP_WINDOW_SEC: "60"
+  OMNI_BLAST_RADIUS_ENABLED: "true"
+  OMNI_BLAST_MAX_PODS: "10"
+  OMNI_BLAST_CAPACITY_DROP_PCT: "20"
+  OMNI_RAG_FRESHNESS_ENABLED: "true"
+  OMNI_RAG_FRESHNESS_MAX_AGE_SEC: "2592000"
+  OMNI_CLUSTER_VERSION: "gcp-k3s-single-node"
+  OMNI_REDIS_URL: "redis://redis:6379/0"
+  OMNI_REDIS_CLUSTER: "false"
+  OMNI_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  OMNI_KAFKA_TOPIC_KNOWLEDGE_EVIDENCE: "omni-knowledge-evidence"
+  OMNI_ENV_MODE: "prod"
+  OMNI_LAB_CHAOS_CREDENTIAL_AUTOFIX_ENABLED: "true"
+  OMNI_CLUSTER_FULL_ACCESS: "false"
+  OMNI_LLM_FIRST_AUTONOMY_ENABLED: "true"
+  OMNI_LEGACY_DETERMINISTIC_FALLBACK: "false"
+  # Ollama stays on the MacBook (Apple Silicon GPU) — reached from this GCP VM
+  # over the Tailscale tailnet instead of OrbStack's host.orb.internal DNS.
+  OMNI_VLLM_BASE_URL: "http://100.93.3.96:11434/v1"
+  OMNI_VLLM_EMBED_URL: "http://100.93.3.96:11434/v1"
+  OMNI_OLLAMA_BASE_URL: "http://100.93.3.96:11434/v1"
+  OMNI_VLLM_STREAM_FOR_SLI: "true"
+  OMNI_LLM_SLI_METRICS_ENABLED: "true"
+  VLLM_BASE_URL: "http://100.93.3.96:11434/v1"
+  VLLM_EMBED_URL: "http://100.93.3.96:11434/v1"
+  VLLM_MODEL: "qwen3:8b"
+  OMNI_LLM_NUM_PARALLEL: "1"
+  OMNI_TELEGRAM_ENABLED: "false"
+  OMNI_TELEGRAM_POLLING_ENABLED: "false"
+  OMNI_CHAT_MODEL: "qwen3:8b"
+  OMNI_MODEL_REASONING_ENGINE: "qwen3:8b"
+  OMNI_MODEL_HEAVY_LIFTER: "qwen3:8b"
+  OMNI_MODEL_HELPER: "qwen3:8b"
+  OMNI_DIAG_EVIDENCE_LLM_MODEL: "qwen3:8b"
+  OMNI_AUTONOMOUS_DECIDER_MODEL: "qwen3:8b"
+  OMNI_EMBED_MODEL: "nomic-embed-text"
+  OMNI_DEEP_SCOUT_INTERVAL_SEC: "1800"
+  OMNI_METRICS_LISTEN_PORT: "9090"
+  OMNI_OPENSANDBOX_ENABLED: "false"
+  OMNI_OPENSANDBOX_BASE_URL: "http://opensandbox-shim.opensandbox.svc.cluster.local:8888"
+  OMNI_OPENSANDBOX_EXEC_PATH: "/api/v1/execute"
+  OMNI_K8S_DEFAULT_NAMESPACE: "multi-agent"
+  OMNI_MONITOR_STACK_NAMESPACE: "monitor"
+  OMNI_AGENTIC_SLOW_PATH_ENABLED: "true"
+  OMNI_AGENTIC_MAX_LLM_ITERATIONS: "5"
+  OMNI_OTEL_TRACING_ENABLED: "false"
+  OMNI_OTEL_EXPORTER_OTLP_ENDPOINT: "http://tempo.monitor.svc.cluster.local:4317"
+  OMNI_OTEL_SERVICE_NAME: "omni-worker"
+  OMNI_GATEWAY_SILENCE_CHAOS_LAB: "false"

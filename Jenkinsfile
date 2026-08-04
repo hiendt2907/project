@@ -45,22 +45,58 @@ pipeline {
           kubectl apply -f k8s/deployments/redis-standalone.yaml
           kubectl apply -f k8s/kafka/kafka-single.yaml
           kubectl apply -f k8s/deployments/omni-fullstack-rbac.yaml
-          kubectl apply -f k8s/deployments/omni-worker-configmap.yaml
+          # GCP variant (Ollama reached over Tailscale) — NOT the lab file, see the
+          # header comment in omni-worker-configmap.gcp.yaml for why this can't be
+          # a partial `kubectl patch` on top of the shared lab ConfigMap.
+          kubectl apply -f k8s/deployments/omni-worker-configmap.gcp.yaml
           kubectl apply -f k8s/deployments/omni-chaos-secret.yaml
-
-          # telegram-bot is not wired up in this environment; chat-id must still be a
-          # valid integer or WorkerSettings fails pydantic validation at startup.
-          kubectl create secret generic telegram-bot -n multi-agent \
-            --from-literal=bot-token='' --from-literal=chat-id='0' \
-            --dry-run=client -o yaml | kubectl apply -f -
-
+          kubectl apply -f k8s/deployments/telegram-bot-secret.yaml
           kubectl apply -f k8s/deployments/omni-gateway.yaml
           kubectl apply -f k8s/deployments/omni-fullstack.yaml
           kubectl apply -f k8s/deployments/omni-onboarding.yaml
+        '''
+      }
+    }
 
-          # Ollama stays on the Mac — point workers at it via Tailscale.
-          kubectl patch configmap omni-worker-config -n multi-agent --type merge \
-            -p '{"data":{"OMNI_VLLM_BASE_URL":"http://100.93.3.96:11434/v1","OMNI_OLLAMA_BASE_URL":"http://100.93.3.96:11434/v1"}}'
+    stage('Deploy monitoring') {
+      steps {
+        sh '''
+          set -e
+          kubectl apply -f k8s/monitor/namespace.yaml
+          kubectl apply -f k8s/monitor/prometheus.yaml
+          kubectl apply -f k8s/monitor/node-exporter.yaml
+          kubectl apply -f k8s/monitor/kube-state-metrics.yaml
+          kubectl apply -f k8s/monitor/promtail.yaml
+          kubectl apply -f k8s/monitor/loki.yaml
+          kubectl apply -f k8s/monitor/redis-exporter.yaml
+          kubectl apply -f k8s/monitor/grafana-dashboards.yaml
+          kubectl apply -f k8s/monitor/grafana-dashboard-llm.yaml
+          kubectl apply -f k8s/monitor/grafana-alerting-provisioning.yaml
+
+          # grafana.yaml bundles the grafana-admin Secret in the same multi-doc file as
+          # everything else, still carrying its checked-in __REQUIRED_*__ placeholder —
+          # apply it first, then overwrite just that Secret with a real value.
+          kubectl apply -f k8s/monitor/grafana.yaml
+
+          # Real values never live in git; generate/keep out of source control, and only
+          # write once so re-runs don't rotate the admin password on every deploy.
+          CURRENT_PW=$(kubectl get secret grafana-admin -n monitor -o jsonpath="{.data.password}" | base64 -d)
+          if [ "$CURRENT_PW" = "__REQUIRED_GRAFANA_ADMIN_PASSWORD__" ] || [ -z "$CURRENT_PW" ]; then
+            kubectl create secret generic grafana-admin -n monitor \
+              --from-literal=password="$(openssl rand -hex 16)" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          fi
+          kubectl get secret grafana-telegram-alerting -n monitor >/dev/null 2>&1 || \
+            kubectl create secret generic grafana-telegram-alerting -n monitor \
+              --from-literal=bot-token='' --from-literal=chat-id='0' \
+              --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl rollout restart deployment/prometheus -n monitor
+          kubectl rollout restart deployment/loki -n monitor
+          kubectl rollout restart deployment/grafana -n monitor
+          kubectl rollout status deployment/prometheus -n monitor --timeout=180s
+          kubectl rollout status deployment/loki -n monitor --timeout=180s
+          kubectl rollout status deployment/grafana -n monitor --timeout=180s
         '''
       }
     }
@@ -83,6 +119,7 @@ pipeline {
   post {
     always {
       sh 'kubectl get pods -n multi-agent -o wide || true'
+      sh 'kubectl get pods -n monitor -o wide || true'
     }
   }
 }
