@@ -1,0 +1,32 @@
+# ArgoCD Application — syncs the omni core Deployments straight from this
+# repo's own Gitea instance (in-cluster, not the external gitea.omnisre.xyz
+# path) so a `git push` to Gitea both triggers the Jenkins build AND keeps
+# ArgoCD's view of desired state current. selfHeal/prune stay OFF: Jenkins is
+# still the one that actually rolls out image changes (rebuild + `k3s ctr
+# images import` + `kubectl rollout restart`); ArgoCD here is the drift
+# detector / audit trail, not (yet) the sole source of truth for rollouts.
+#
+# omni-gateway.yaml is deliberately excluded from `include` — that Deployment
+# was replaced by the Rollout in omni-gateway-rollout.yaml (see that file for
+# why), and having both ArgoCD and the Rollout controller reconcile pods with
+# the same `app: omni-gateway` selector would fight each other.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: omni-core
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://gitea.cicd.svc.cluster.local:3000/hiendang/project.git
+    targetRevision: main
+    path: k8s/deployments
+    directory:
+      include: "{omni-fullstack.yaml,omni-onboarding.yaml,omni-worker-configmap.gcp.yaml}"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: multi-agent
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: false

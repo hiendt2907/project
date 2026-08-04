@@ -1,0 +1,130 @@
+# Argo Rollouts canary for omni-gateway — GCP cluster only. Replaces the plain
+# Deployment in omni-gateway.yaml with a Rollout so image/version changes get
+# progressive canary steps instead of an all-at-once restart.
+#
+# NOT using trafficRouting.traefik: Argo Rollouts' Traefik plugin targets the
+# legacy `traefik.containo.us/v1alpha1` TraefikService API; k3s bundles Traefik
+# v3, which only ships `traefik.io/v1alpha1` CRDs. Confirmed live — RBAC was
+# fine (get/patch both allowed) but the controller still logged "the server
+# could not find the requested resource" against the `traefik.io` object,
+# consistent with a hardcoded old API group in the plugin. Falling back to
+# Argo Rollouts' basic (non-traffic-routed) canary: promotion is driven by
+# ReplicaSet scaling per step instead of L7 weighted traffic. At replicas: 1
+# this makes each step a coarse 0%/100% flip rather than a fine percentage,
+# but pause/promote/rollback semantics are otherwise fully real — confirmed
+# live via a demo rollout that stepped 20 -> 50 -> 100 and auto-promoted with
+# zero downtime (gateway.omnisre.xyz/healthz stayed 200 throughout).
+# stableService/canaryService are kept (harmless, useful again if the Traefik
+# plugin version gap closes later); the omni-gateway Service in
+# omni-gateway.yaml still selects `app: omni-gateway` directly and keeps
+# serving all pods regardless of revision — that's what the public ingress
+# actually routes through today.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: omni-gateway
+  namespace: multi-agent
+  labels:
+    app: omni-gateway
+    app.kubernetes.io/name: omni-gateway
+    app.kubernetes.io/part-of: omni-platform
+    omni.io/managed: "true"
+    omni.io/criticality: "P1"
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: omni-gateway
+  strategy:
+    canary:
+      canaryService: omni-gateway-canary
+      stableService: omni-gateway-stable
+      steps:
+        - setWeight: 20
+        - pause: {duration: 60}
+        - setWeight: 50
+        - pause: {duration: 60}
+        - setWeight: 100
+  template:
+    metadata:
+      labels:
+        app: omni-gateway
+        app.kubernetes.io/name: omni-gateway
+        app.kubernetes.io/part-of: omni-platform
+        omni.io/managed: "true"
+        omni.io/criticality: "P1"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: gateway
+          image: omni-gateway:latest
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "gateway.api:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: omni-worker-config
+            - secretRef:
+                name: omni-gateway-secret
+                optional: true
+          env:
+            - name: OMNI_ADMIN_PG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: omni-pg-secret
+                  key: OMNI_ADMIN_PG_DSN
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: {cpu: "100m", memory: "128Mi"}
+            limits: {cpu: "1", memory: "512Mi"}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omni-gateway-stable
+  namespace: multi-agent
+spec:
+  selector:
+    app: omni-gateway
+  ports: [{name: http, port: 80, targetPort: 8000}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omni-gateway-canary
+  namespace: multi-agent
+spec:
+  selector:
+    app: omni-gateway
+  ports: [{name: http, port: 80, targetPort: 8000}]
+---
+apiVersion: traefik.io/v1alpha1
+kind: TraefikService
+metadata:
+  name: omni-gateway-traefik
+  namespace: multi-agent
+spec:
+  weighted:
+    services:
+      - name: omni-gateway-stable
+        port: 80
+        weight: 100
+      - name: omni-gateway-canary
+        port: 80
+        weight: 0

@@ -58,6 +58,12 @@ pipeline {
           kubectl apply -f k8s/deployments/omni-chaos-secret.yaml
           kubectl apply -f k8s/deployments/telegram-bot-secret.yaml
           kubectl apply -f k8s/deployments/omni-gateway.yaml
+          # omni-gateway runs as an Argo Rollouts Rollout instead (see "Deploy
+          # Argo Rollouts" stage + k8s/gitops/omni-gateway-rollout.yaml) — the
+          # Service/NetworkPolicy from the file above are still real and needed,
+          # but the plain Deployment would fight the Rollout over the same
+          # `app: omni-gateway` pod selector, so it's deleted right after applying.
+          kubectl delete deployment omni-gateway -n multi-agent --ignore-not-found
           kubectl apply -f k8s/deployments/omni-fullstack.yaml
           kubectl apply -f k8s/deployments/omni-onboarding.yaml
         '''
@@ -74,6 +80,110 @@ pipeline {
           # once the istio-proxy sidecar is injected it also needs istiod (XDS/CA) + DNS,
           # or the sidecar hangs forever at Init with "connection refused" to istiod:15012.
           kubectl apply -f k8s/deployments/omni-gateway-istio-netpol.gcp.yaml
+        '''
+      }
+    }
+
+    stage('Deploy Harbor registry') {
+      steps {
+        sh '''
+          set -e
+          helm repo add harbor https://helm.goharbor.io >/dev/null 2>&1 || true
+          helm repo update >/dev/null
+
+          kubectl create namespace harbor --dry-run=client -o yaml | kubectl apply -f -
+          # Bootstrap secret generated once, then reused across builds so the admin
+          # password doesn't rotate on every deploy (same pattern as grafana-admin).
+          kubectl get secret harbor-admin-bootstrap -n harbor >/dev/null 2>&1 || \
+            kubectl create secret generic harbor-admin-bootstrap -n harbor \
+              --from-literal=password="$(openssl rand -hex 16)"
+          HARBOR_PW=$(kubectl get secret harbor-admin-bootstrap -n harbor -o jsonpath="{.data.password}" | base64 -d)
+
+          helm upgrade --install harbor harbor/harbor -n harbor \
+            -f k8s/gitops/harbor-values.yaml \
+            --set harborAdminPassword="$HARBOR_PW" \
+            --timeout 10m
+        '''
+      }
+    }
+
+    stage('Deploy ArgoCD (GitOps)') {
+      steps {
+        sh '''
+          set -e
+          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.2/manifests/install.yaml
+          kubectl wait --for=condition=Available deployment -n argocd --all --timeout=180s
+
+          # Server needs --insecure so Traefik (not argocd-server's own bundled TLS)
+          # terminates HTTPS at the cert-manager-issued ingress cert.
+          if ! kubectl get deployment argocd-server -n argocd -o jsonpath="{.spec.template.spec.containers[0].args}" | grep -q -- --insecure; then
+            kubectl patch deployment argocd-server -n argocd --type=json \
+              -p="[{\\"op\\": \\"add\\", \\"path\\": \\"/spec/template/spec/containers/0/args/-\\", \\"value\\": \\"--insecure\\"}]"
+          fi
+          kubectl rollout status deployment/argocd-server -n argocd --timeout=120s
+
+          # Stock ArgoCD install.yaml ships per-component NetworkPolicies tuned for
+          # multi-tenant clusters; on this k3s node they blocked the application
+          # controller from even reaching its own repo-server (confirmed live —
+          # "connection error...i/o timeout" on repo-server:8081 until removed).
+          # Single-tenant lab/production box: RBAC + auth is the real boundary here.
+          kubectl delete networkpolicy --all -n argocd --ignore-not-found
+
+          kubectl apply -f k8s/gitops/argocd-ingress.yaml
+
+          # Repo credentials: reuse the same Gitea token this Jenkinsfile pushes with,
+          # read from the git remote so it never needs to be typed into a manifest.
+          GITEA_TOKEN=$(git remote get-url gitea | sed -n "s#http://[^:]*:\\([^@]*\\)@.*#\\1#p")
+          kubectl create secret generic omni-gitea-repo -n argocd \
+            --from-literal=type=git \
+            --from-literal=url=http://gitea.cicd.svc.cluster.local:3000/hiendang/project.git \
+            --from-literal=username=hiendang \
+            --from-literal=password="$GITEA_TOKEN" \
+            --dry-run=client -o yaml | kubectl label --local -f - argocd.argoproj.io/secret-type=repository -o yaml | kubectl apply -f -
+
+          kubectl apply -f k8s/gitops/argocd-application.yaml
+        '''
+      }
+    }
+
+    stage('Deploy Vault + External Secrets') {
+      steps {
+        sh '''
+          set -e
+          helm repo add hashicorp https://helm.releases.hashicorp.com >/dev/null 2>&1 || true
+          helm repo add external-secrets https://charts.external-secrets.io >/dev/null 2>&1 || true
+          helm repo update >/dev/null
+
+          helm upgrade --install vault hashicorp/vault -n vault --create-namespace \
+            --set "server.dataStorage.enabled=true" \
+            --set "server.dataStorage.size=5Gi" \
+            --set "ui.enabled=true" \
+            --timeout 5m
+          helm upgrade --install external-secrets external-secrets/external-secrets \
+            -n external-secrets --create-namespace --timeout 5m
+          kubectl wait --for=condition=Available deployment -n external-secrets --all --timeout=120s
+
+          kubectl wait --for=condition=PodScheduled pod/vault-0 -n vault --timeout=90s
+          bash k8s/gitops/vault-bootstrap.sh
+
+          kubectl apply -f k8s/gitops/vault-clustersecretstore.yaml
+          kubectl apply -f k8s/gitops/omni-gateway-external-secret.yaml
+        '''
+      }
+    }
+
+    stage('Deploy Argo Rollouts') {
+      steps {
+        sh '''
+          set -e
+          kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+          kubectl wait --for=condition=Available deployment -n argo-rollouts --all --timeout=120s
+
+          kubectl apply -f k8s/gitops/omni-gateway-rollout.yaml
+          kubectl patch rollout omni-gateway -n multi-agent --type merge \
+            -p "{\\"spec\\":{\\"restartAt\\":\\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\\"}}"
         '''
       }
     }
@@ -161,10 +271,11 @@ pipeline {
       steps {
         sh '''
           set -e
-          kubectl rollout restart deployment/omni-gateway -n multi-agent
+          # omni-gateway restarts via the "Deploy Argo Rollouts" stage's restartAt
+          # patch, not here — it's a Rollout, and `kubectl rollout restart` only
+          # understands the built-in Deployment/DaemonSet/StatefulSet kinds.
           kubectl rollout restart deployment/omni-fullstack -n multi-agent
           kubectl rollout restart deployment/omni-onboarding -n multi-agent
-          kubectl rollout status deployment/omni-gateway -n multi-agent --timeout=180s
           kubectl rollout status deployment/omni-fullstack -n multi-agent --timeout=180s
           kubectl rollout status deployment/omni-onboarding -n multi-agent --timeout=180s
         '''
@@ -176,6 +287,8 @@ pipeline {
     always {
       sh 'kubectl get pods -n multi-agent -o wide || true'
       sh 'kubectl get pods -n monitor -o wide || true'
+      sh 'kubectl get rollout -n multi-agent || true'
+      sh 'kubectl get application -n argocd || true'
     }
   }
 }

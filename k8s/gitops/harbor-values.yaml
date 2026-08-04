@@ -1,0 +1,36 @@
+# Harbor Helm values — GCP single-node k3s. Registry for GitOps image promotion
+# (ArgoCD pulls from here instead of relying on `k3s ctr images import` by hand).
+# trivy/notary disabled to save RAM on a single 16GB node; re-enable later if
+# vulnerability scanning becomes a real requirement.
+expose:
+  type: ingress
+  ingress:
+    hosts:
+      core: registry.omnisre.xyz
+    className: traefik
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    enabled: true
+    certSource: secret
+    secret:
+      secretName: registry-omnisre-tls
+externalURL: https://registry.omnisre.xyz
+trivy:
+  enabled: false
+notary:
+  enabled: false
+persistence:
+  enabled: true
+  persistentVolumeClaim:
+    registry:
+      size: 20Gi
+    database:
+      size: 5Gi
+    redis:
+      size: 2Gi
+    jobservice:
+      jobLog:
+        size: 1Gi
+    trivy:
+      size: 1Gi

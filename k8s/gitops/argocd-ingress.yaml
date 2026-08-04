@@ -1,0 +1,24 @@
+# ArgoCD UI/API — argocd.omnisre.xyz. Server runs with --insecure (plain HTTP
+# inside the pod); TLS terminates at Traefik via cert-manager, standard pattern
+# for exposing ArgoCD behind an ingress that isn't its own bundled controller.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server-gcp
+  namespace: argocd
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [argocd.omnisre.xyz]
+      secretName: argocd-omnisre-tls
+  rules:
+    - host: argocd.omnisre.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: argocd-server, port: {number: 80}}
