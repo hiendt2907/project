@@ -2,55 +2,15 @@
 # Let's Encrypt cert instead of the lab's http://dex.ai-agent.local. Per
 # INV_PUBLIC_PLANE_ISOLATED (CLAUDE.md / ADR 0001), the lab file's issuer must
 # NEVER change; this is a separate object applied only by the GCP pipeline.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: aoip-dex-config
-  namespace: multi-agent
-data:
-  config.yaml: |
-    issuer: https://dex.omnisre.xyz/dex
-    storage:
-      type: memory
-    web:
-      http: 0.0.0.0:5556
-    oauth2:
-      skipApprovalScreen: true
-    staticClients:
-      - id: aoip-provider-portal
-        name: AOIP Provider Operations Portal
-        secret: provider-portal-secret
-        redirectURIs:
-          - https://provider.omnisre.xyz/auth/callback
-      - id: aoip-tenant-portal
-        name: AOIP Tenant Operations Portal
-        secret: tenant-portal-secret
-        redirectURIs:
-          - https://tenant.omnisre.xyz/auth/callback
-    enablePasswordDB: true
-    # Test accounts — same seed as lab. Shared password: Password123!
-    staticPasswords:
-      - email: owner@aoip.dev
-        hash: "$2b$10$JB7ra1jsoqHZdWXAmeHjqOLpb85bdeT.eI4gzoHZ.c/yVQDeg4k7i"
-        username: owner
-        userID: 11111111-1111-1111-1111-111111111111
-      - email: support@aoip.dev
-        hash: "$2b$10$OMd.y5JrDO.6VIyPD0ssu..zuHAMbkDNMQS8UJVZANEcGRu78gGbW"
-        username: support
-        userID: 22222222-2222-2222-2222-222222222222
-      - email: sre@acme.dev
-        hash: "$2b$10$3jkdeKHSZ39VDVhbyslvBufemuFpElTE5469R/F/r0BRO6T0jn4um"
-        username: acme-sre
-        userID: 33333333-3333-3333-3333-333333333333
-      - email: approver@acme.dev
-        hash: "$2b$10$MvzgFxt7V2T5mNluxardZ.tHuu.4WGqc8TvwfizrGV.r.5IyS74Fu"
-        username: acme-approver
-        userID: 44444444-4444-4444-4444-444444444444
-      - email: sre@globex.dev
-        hash: "$2b$10$iPA0pWnsE2EKGyuuwWb6KuXuMGa61YwcZNskt5iqlfb3XBMnwpHYS"
-        username: globex-sre
-        userID: 55555555-5555-5555-5555-555555555555
----
+#
+# config.yaml (client secrets + issuer/connectors) no longer lives here as a
+# plaintext ConfigMap — it's rendered by k8s/gitops/aoip-dex-external-secret.yaml
+# from Vault (`secret/aoip-dex-secret`) into a K8s Secret named `aoip-dex-secret`,
+# mounted below. No staticPasswords either (security sweep 2026-08-04: the old
+# ConfigMap shipped 5 test accounts, all sharing password "Password123!",
+# including a "Provider owner" role account, live on the public GCP Dex — removed
+# entirely rather than rotated, since password-based login isn't actually needed
+# here, only the OIDC client-credential flow the portals use).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -76,7 +36,7 @@ spec:
             periodSeconds: 5
       volumes:
         - name: config
-          configMap: {name: aoip-dex-config}
+          secret: {secretName: aoip-dex-secret}
 ---
 apiVersion: v1
 kind: Service

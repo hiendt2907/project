@@ -1,54 +1,66 @@
 # AOIP Dex — OIDC issuer chuẩn (dev/self-hosted) cho hai portal. namespace multi-agent.
 # issuer = host ingress (browser + iss claim); backend gọi token/keys qua svc `aoip-dex:5556`.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: aoip-dex-config
-  namespace: multi-agent
-data:
-  config.yaml: |
-    issuer: http://dex.ai-agent.local/dex
-    storage:
-      type: memory
-    web:
-      http: 0.0.0.0:5556
-    oauth2:
-      skipApprovalScreen: true
-    staticClients:
-      - id: aoip-provider-portal
-        name: AOIP Provider Operations Portal
-        secret: provider-portal-secret
-        redirectURIs:
-          - http://provider.ai-agent.local/auth/callback
-      - id: aoip-tenant-portal
-        name: AOIP Tenant Operations Portal
-        secret: tenant-portal-secret
-        redirectURIs:
-          - http://tenant.ai-agent.local/auth/callback
-    enablePasswordDB: true
-    # Tài khoản thử nghiệm — khớp seed theo EMAIL. Mật khẩu chung: Password123!
-    staticPasswords:
-      - email: owner@aoip.dev
-        hash: "$2b$10$JB7ra1jsoqHZdWXAmeHjqOLpb85bdeT.eI4gzoHZ.c/yVQDeg4k7i"
-        username: owner
-        userID: 11111111-1111-1111-1111-111111111111
-      - email: support@aoip.dev
-        hash: "$2b$10$OMd.y5JrDO.6VIyPD0ssu..zuHAMbkDNMQS8UJVZANEcGRu78gGbW"
-        username: support
-        userID: 22222222-2222-2222-2222-222222222222
-      - email: sre@acme.dev
-        hash: "$2b$10$3jkdeKHSZ39VDVhbyslvBufemuFpElTE5469R/F/r0BRO6T0jn4um"
-        username: acme-sre
-        userID: 33333333-3333-3333-3333-333333333333
-      - email: approver@acme.dev
-        hash: "$2b$10$MvzgFxt7V2T5mNluxardZ.tHuu.4WGqc8TvwfizrGV.r.5IyS74Fu"
-        username: acme-approver
-        userID: 44444444-4444-4444-4444-444444444444
-      - email: sre@globex.dev
-        hash: "$2b$10$iPA0pWnsE2EKGyuuwWb6KuXuMGa61YwcZNskt5iqlfb3XBMnwpHYS"
-        username: globex-sre
-        userID: 55555555-5555-5555-5555-555555555555
----
+#
+# SECURITY SWEEP 2026-08-04: config.yaml (client secrets) không còn ConfigMap
+# plaintext ở đây — trước đó `secret: provider-portal-secret` / `tenant-portal-secret`
+# bị commit thẳng vào git (rotate xong, giá trị cũ đã vô hiệu). Lab này không có
+# Vault (chỉ GCP mới có — xem k8s/gitops/aoip-dex-external-secret.yaml cho bản GCP
+# dùng Vault + ExternalSecret), nên bootstrap bằng tay trước khi apply file này:
+#
+#   PROVIDER_SECRET=$(openssl rand -hex 24)
+#   TENANT_SECRET=$(openssl rand -hex 24)
+#   kubectl create secret generic aoip-dex-secret -n multi-agent --from-file=config.yaml=/dev/stdin <<EOF
+#   issuer: http://dex.ai-agent.local/dex
+#   storage:
+#     type: memory
+#   web:
+#     http: 0.0.0.0:5556
+#   oauth2:
+#     skipApprovalScreen: true
+#   staticClients:
+#     - id: aoip-provider-portal
+#       name: AOIP Provider Operations Portal
+#       secret: ${PROVIDER_SECRET}
+#       redirectURIs:
+#         - http://provider.ai-agent.local/auth/callback
+#     - id: aoip-tenant-portal
+#       name: AOIP Tenant Operations Portal
+#       secret: ${TENANT_SECRET}
+#       redirectURIs:
+#         - http://tenant.ai-agent.local/auth/callback
+#   enablePasswordDB: true
+#   # Tài khoản thử nghiệm — khớp seed theo EMAIL. Mật khẩu chung: Password123!
+#   # Chỉ chấp nhận được vì lab dùng /etc/hosts + không expose Internet — KHÔNG
+#   # copy staticPasswords này sang bất kỳ config internet-facing nào (đã xảy ra
+#   # với aoip-dex.gcp.yaml, đã gỡ khỏi bản GCP trong đợt sweep này).
+#   staticPasswords:
+#     - email: owner@aoip.dev
+#       hash: "\$2b\$10\$JB7ra1jsoqHZdWXAmeHjqOLpb85bdeT.eI4gzoHZ.c/yVQDeg4k7i"
+#       username: owner
+#       userID: 11111111-1111-1111-1111-111111111111
+#     - email: support@aoip.dev
+#       hash: "\$2b\$10\$OMd.y5JrDO.6VIyPD0ssu..zuHAMbkDNMQS8UJVZANEcGRu78gGbW"
+#       username: support
+#       userID: 22222222-2222-2222-2222-222222222222
+#     - email: sre@acme.dev
+#       hash: "\$2b\$10\$3jkdeKHSZ39VDVhbyslvBufemuFpElTE5469R/F/r0BRO6T0jn4um"
+#       username: acme-sre
+#       userID: 33333333-3333-3333-3333-333333333333
+#     - email: approver@acme.dev
+#       hash: "\$2b\$10\$MvzgFxt7V2T5mNluxardZ.tHuu.4WGqc8TvwfizrGV.r.5IyS74Fu"
+#       username: acme-approver
+#       userID: 44444444-4444-4444-4444-444444444444
+#     - email: sre@globex.dev
+#       hash: "\$2b\$10\$iPA0pWnsE2EKGyuuwWb6KuXuMGa61YwcZNskt5iqlfb3XBMnwpHYS"
+#       username: globex-sre
+#       userID: 55555555-5555-5555-5555-555555555555
+#   EOF
+#   kubectl patch secret aoip-dex-secret -n multi-agent --type=merge \
+#     -p "{\"stringData\":{\"provider_secret\":\"${PROVIDER_SECRET}\",\"tenant_secret\":\"${TENANT_SECRET}\"}}"
+#
+# aoip-portals.yaml's AOIP_OIDC_{PROVIDER,TENANT}_CLIENT_SECRET already read
+# provider_secret/tenant_secret from this same Secret via secretKeyRef, so both
+# sides always agree once bootstrapped.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -74,7 +86,7 @@ spec:
             periodSeconds: 5
       volumes:
         - name: config
-          configMap: {name: aoip-dex-config}
+          secret: {secretName: aoip-dex-secret}
 ---
 apiVersion: v1
 kind: Service

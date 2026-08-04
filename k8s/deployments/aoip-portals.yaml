@@ -27,7 +27,8 @@ spec:
             - {name: AOIP_PROVIDER_ORIGINS, value: "http://provider.ai-agent.local"}
             - {name: AOIP_OIDC_PROVIDER_ISSUER, value: "http://dex.ai-agent.local/dex"}
             - {name: AOIP_OIDC_PROVIDER_CLIENT_ID, value: "aoip-provider-portal"}
-            - {name: AOIP_OIDC_PROVIDER_CLIENT_SECRET, value: "provider-portal-secret"}
+            - name: AOIP_OIDC_PROVIDER_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: aoip-dex-secret, key: provider_secret}}
             - {name: AOIP_OIDC_PROVIDER_AUTHORIZE_URL, value: "http://dex.ai-agent.local/dex/auth"}
             - {name: AOIP_OIDC_PROVIDER_TOKEN_URL, value: "http://aoip-dex:5556/dex/token"}
             - {name: AOIP_OIDC_PROVIDER_JWKS_URL, value: "http://aoip-dex:5556/dex/keys"}
@@ -77,7 +78,8 @@ spec:
             - {name: AOIP_TENANT_ORIGINS, value: "http://tenant.ai-agent.local"}
             - {name: AOIP_OIDC_TENANT_ISSUER, value: "http://dex.ai-agent.local/dex"}
             - {name: AOIP_OIDC_TENANT_CLIENT_ID, value: "aoip-tenant-portal"}
-            - {name: AOIP_OIDC_TENANT_CLIENT_SECRET, value: "tenant-portal-secret"}
+            - name: AOIP_OIDC_TENANT_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: aoip-dex-secret, key: tenant_secret}}
             - {name: AOIP_OIDC_TENANT_AUTHORIZE_URL, value: "http://dex.ai-agent.local/dex/auth"}
             - {name: AOIP_OIDC_TENANT_TOKEN_URL, value: "http://aoip-dex:5556/dex/token"}
             - {name: AOIP_OIDC_TENANT_JWKS_URL, value: "http://aoip-dex:5556/dex/keys"}

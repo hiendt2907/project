@@ -170,3 +170,44 @@ spec:
             pathType: Prefix
             backend:
               service: {name: aoip-dex, port: {number: 5556}}
+
+# ── app.omnisre.xyz: legacy Cloudflare Tunnel console hostname ───────────────
+# NOT the bare omnisre.xyz/www.omnisre.xyz domain — those are a separate static
+# site on Cloudflare Pages (cloudflare/pages/), unrelated to this cluster, and
+# must stay off this ingress or cert-manager will spin forever on an HTTP-01
+# challenge for a domain that doesn't point here. app.omnisre.xyz is the one
+# real gap: the static landing page's "Console" link + `_redirects` both point
+# at it, and until now it only resolved via the Cloudflare Tunnel → OrbStack
+# (ADR 0002 "Chưa làm" #1). Same backends as provider.omnisre.xyz — this IS the
+# provider portal, just also reachable at the legacy hostname so retiring the
+# tunnel doesn't break the landing page's Console link.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omnisre-landing-gcp
+  namespace: multi-agent
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [app.omnisre.xyz]
+      secretName: app-omnisre-tls
+  rules:
+    - host: app.omnisre.xyz
+      http:
+        paths:
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-portal, port: {number: 8081}}
+          - path: /api/provider/v1
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-portal, port: {number: 8081}}
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: aoip-provider-web, port: {number: 3001}}

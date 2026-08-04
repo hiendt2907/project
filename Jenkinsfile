@@ -47,6 +47,19 @@ pipeline {
           # enforces "baseline" for the shared OrbStack lab; that blocks pod admission here, so this
           # GCP-only pipeline relaxes enforcement on top of the applied manifest.
           kubectl label namespace multi-agent pod-security.kubernetes.io/enforce=privileged --overwrite
+
+          # Bootstrap secret generated once, then reused across builds — same
+          # pattern as harbor-admin-bootstrap/grafana-admin. omni-postgres.yaml no
+          # longer carries a plaintext Secret (security sweep 2026-08-04 — the old
+          # POSTGRES_PASSWORD was committed in cleartext).
+          kubectl get secret omni-pg-secret -n multi-agent >/dev/null 2>&1 || {
+            PG_PW=$(openssl rand -hex 20)
+            kubectl create secret generic omni-pg-secret -n multi-agent \
+              --from-literal=POSTGRES_USER=omni \
+              --from-literal=POSTGRES_PASSWORD="$PG_PW" \
+              --from-literal=POSTGRES_DB=omnidb \
+              --from-literal=OMNI_ADMIN_PG_DSN="postgresql://omni:${PG_PW}@omni-postgres.multi-agent.svc.cluster.local:5432/omnidb"
+          }
           kubectl apply -f k8s/deployments/omni-postgres.yaml
           kubectl apply -f k8s/deployments/redis-standalone.yaml
           kubectl apply -f k8s/kafka/kafka-single.yaml
@@ -55,7 +68,13 @@ pipeline {
           # header comment in omni-worker-configmap.gcp.yaml for why this can't be
           # a partial `kubectl patch` on top of the shared lab ConfigMap.
           kubectl apply -f k8s/deployments/omni-worker-configmap.gcp.yaml
-          kubectl apply -f k8s/deployments/omni-chaos-secret.yaml
+          # k8s/deployments/omni-chaos-secret.yaml removed (security sweep
+          # 2026-08-04 — plaintext pg-app-password committed). NOTE: omni-fullstack.yaml
+          # still has a required (non-optional) secretKeyRef to omni-chaos-lab/
+          # pg-app-password below, so the secret must already exist before that
+          # apply runs — bootstrap by hand once per cluster if missing:
+          #   kubectl create secret generic omni-chaos-lab -n multi-agent \
+          #     --from-literal=pg-app-password="$(openssl rand -hex 16)"
           kubectl apply -f k8s/deployments/telegram-bot-secret.yaml
           kubectl apply -f k8s/deployments/omni-gateway.yaml
           # omni-gateway runs as an Argo Rollouts Rollout instead (see "Deploy
@@ -211,6 +230,11 @@ pipeline {
           kubectl apply -f k8s/deployments/cert-manager-issuer.yaml
 
           kubectl apply -f k8s/ingress/traefik-middlewares.gcp.yaml
+          # Dex client secrets sourced from Vault (bootstrapped once, see
+          # "Deploy Vault + External Secrets" stage above) — must land before
+          # aoip-dex.gcp.yaml so the Secret it mounts already exists.
+          kubectl apply -f k8s/gitops/aoip-dex-external-secret.yaml
+          kubectl wait --for=condition=Ready externalsecret/aoip-dex-secret -n multi-agent --timeout=60s
           kubectl apply -f k8s/deployments/aoip-dex.gcp.yaml
           kubectl apply -f k8s/deployments/aoip-portals.gcp.yaml
           kubectl apply -f k8s/deployments/aoip-portals-web.yaml

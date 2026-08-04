@@ -162,11 +162,16 @@ ghi rõ trong `vault-bootstrap.sh` kèm đường nâng cấp lên GCP KMS auto-
 
 ## Chưa làm — kế thừa sang task tiếp theo
 
-1. **`app.omnisre.xyz` (Cloudflare Tunnel, ADR 0001) vẫn đang chạy song song** —
-   xác nhận trực tiếp: LaunchAgent `com.omnisre.cloudflared` active, `curl` trả
-   302 (Access redirect) thật. Đây là ứng viên retire theo đúng lộ trình "Đường ra
-   khi rời MacBook" của ADR 0001, nhưng **chưa retire** — cần xác nhận GCP ổn định
-   đủ lâu trước khi gỡ (task #8, dọn hạ tầng local).
+1. ~~`app.omnisre.xyz` (Cloudflare Tunnel, ADR 0001) vẫn đang chạy song song~~ —
+   **RETIRED 2026-08-04.** DNS `app.omnisre.xyz` đổi CNAME→tunnel sang A→GCP IP
+   `136.85.2.181` trực tiếp; ingress `omnisre-landing-gcp`
+   (`k8s/ingress/omnisre-gcp.yaml`) trỏ cùng backend `provider.omnisre.xyz`
+   (`aoip-provider-portal`/`aoip-provider-web`). LaunchAgent
+   `com.omnisre.cloudflared` + `com.omni.cloudflare-tunnel` (không liên quan
+   omnisre.xyz, domain `nginxwaf.xyz`) đã unload, plist chuyển vào
+   `~/Library/LaunchAgents/disabled/`. `omnisre.xyz`/`www.omnisre.xyz` (Cloudflare
+   Pages) không bị ảnh hưởng — độc lập với tunnel từ đầu, chỉ link "Console" trỏ
+   `app.omnisre.xyz` là điểm phụ thuộc duy nhất, giờ đã trỏ đúng GCP.
 2. Chưa đưa gateway/portal/Dex/monitoring vào vòng đồng bộ ArgoCD tự động.
 3. Chưa nâng Vault lên GCP KMS auto-unseal.
 4. Chưa nâng BasicAuth lên Cloudflare Access (thiếu token đủ quyền tại thời điểm

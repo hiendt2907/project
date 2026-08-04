@@ -30,6 +30,11 @@ svc `omni-postgres`. Không dựng Postgres/Redis riêng.
 ## Deploy
 
 ```bash
+# 0) Bootstrap aoip-dex-secret (security sweep 2026-08-04 — aoip-dex.yaml no
+#    longer carries a plaintext ConfigMap). Xem header comment đầy đủ trong
+#    k8s/deployments/aoip-dex.yaml. Skip nếu Secret đã tồn tại.
+kubectl get secret aoip-dex-secret -n multi-agent >/dev/null 2>&1 || echo "Xem k8s/deployments/aoip-dex.yaml — bootstrap trước khi apply."
+
 # 1) Backend (FastAPI auth authority) + Dex + seed
 make docker-worker                                   # build multi-agent-system:latest
 kubectl apply -f k8s/deployments/aoip-dex.yaml

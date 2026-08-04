@@ -1,11 +1,12 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-04 (Đ32 — commit+push 2 fix Đ31 (Harbor comment + ADR 0002 stale), phát hiện
-git identity trống trên VM GCP mới → set local config; user cấp standing authorization commit+push
-khi CI/CD có rollback → ghi vào CLAUDE.md AUTONOMY RULES.) · **Branch:** `main` · **HEAD:**
-`6d4a735` (**ĐÃ PUSH**) · **Working tree:** sạch
+**Cập nhật:** 2026-08-04 (Đ33 — security sweep: rotate Postgres/Dex secret plaintext trong git,
+migrate Dex GCP sang Vault, gỡ static test password khỏi Dex public, retire Cloudflare Tunnel
+`app.omnisre.xyz` sang GCP trực tiếp. Xem chi tiết ở mục Đ33 bên dưới.) · **Branch:** `main` ·
+**HEAD:** commit rebase sau `3442493` (**ĐÃ PUSH**) · **Working tree:** sạch (trừ
+`docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` untracked, cố ý không commit)
 
-## 🩹 Đ32 — commit/push fix Đ31 + standing authorization vào CLAUDE.md
+## 🩹 Đ32 — commit/push fix Đ31 (Harbor comment + ADR 0002 stale) + standing authorization
 
 User: "hệ thống hiện tại đã có full luồng CI/CD, nên mỗi thay đổi code được quyền commit và push
 lên gitea để apply code mới, lỗi đã có thể rollback, cập nhật claude.md luôn".
@@ -57,6 +58,202 @@ Chưa commit — hỏi lại user có muốn commit 2 file trên không (câu h�
 trước khi hook này chạy). Nếu user đồng ý: `git add k8s/gitops/harbor-values.yaml
 docs/adr/0002-gcp-k3s-full-migration.md && git commit`. Không có test nào cần chạy (chỉ sửa
 comment/doc, không đụng code).
+
+## 🔌🔒 Đ33 — Tắt OrbStack, mở kubectl qua Tailscale, retire Cloudflare Tunnel, security sweep rotate secret
+
+User yêu cầu tắt OrbStack để xác nhận GCP chạy độc lập không phụ thuộc ngầm vào máy local, sau đó
+muốn access cluster GCP qua Tailscale IP thay vì IP nội bộ VPC, rồi đưa 1 báo cáo "verify toàn bộ
+hệ thống GCP" (không rõ nguồn — có thể phiên khác) yêu cầu đối chiếu lại.
+
+### 1. OrbStack lab tắt (an toàn, không đụng GCP)
+- Xác nhận trước khi tắt: Ollama chạy **native macOS app** (`/Applications/Ollama.app`), KHÔNG nằm
+  trong OrbStack. GCP ConfigMap (`k8s/deployments/omni-worker-configmap.gcp.yaml`) trỏ Ollama qua
+  Tailscale IP thật `100.93.3.96:11434`, không dùng `host.orb.internal` (DNS riêng của OrbStack —
+  chỉ file lab `omni-worker-configmap.yaml` dùng cái đó).
+- Đã chạy `orbctl stop --all` — 3 VM lab (`cust-app/cust-db/cust-edge`) → `stopped`. OrbStack engine
+  vẫn chạy nền nhưng không container/VM nào active.
+- **Lưu ý cho phiên sau**: OrbStack đang TẮT. Nếu cần lab (VM cust-*) phải `orbctl start --all` lại.
+
+### 2. Mở kubectl access GCP qua Tailscale IP (đã làm, cần biết cho phiên sau)
+- Context `temp-k8s` (cluster `kubernetes`) trước đó trỏ `https://10.69.4.214:6443` (IP nội bộ VPC
+  GCP, không route được từ MacBook) — đổi sang Tailscale IP `100.67.117.19:6443` bị treo vì cert TLS
+  k3s không có SAN cho IP đó.
+- **Đã sửa hạ tầng thật trên VM** (xác nhận với user trước khi làm, vì restart control-plane
+  production): thêm dòng `--tls-san 100.67.117.19 \` vào `ExecStart` của
+  `/etc/systemd/system/k3s.service` trên `omni-k3s-vm`, `systemctl daemon-reload && systemctl
+  restart k3s`. Restart xong node `Ready` trong ~8s. **Thay đổi này KHÔNG có trong git** — chỉ sống
+  trên VM, không phải qua manifest/Terraform. Nếu VM bị tái tạo, `--tls-san` phải thêm lại tay hoặc
+  đưa vào provisioning script (chưa có việc này ở đâu trong repo).
+- Sau restart, k3s dùng dynamic-listener cert MỚI ký bởi CA khác CA cũ trong kubeconfig local →
+  phải fetch lại `/etc/rancher/k3s/k3s.yaml` từ VM qua `gcloud compute ssh --tunnel-through-iap` và
+  cập nhật `certificate-authority`/`client-certificate`/`client-key` cho context `temp-k8s` local
+  (`kubectl config set-cluster`/`set-credentials --embed-certs=true`). File cert tạm trong
+  scratchpad đã xoá sau khi dùng xong.
+- **Trạng thái hiện tại**: `kubectl config current-context` = `temp-k8s`, server =
+  `https://100.67.117.19:6443`, verify OK (`kubectl get nodes` → `omni-k3s-vm Ready`).
+
+### 3. Audit độc lập 1 báo cáo "verify GCP" user dán vào — bắt được 1 claim sai
+Đối chiếu từng dòng bằng lệnh thật trên cluster (không tin báo cáo):
+- ✅ ĐÚNG: pods toàn bộ namespace Running (trừ 1 Pending `svclb-istio-ingressgateway`, port conflict
+  Traefik — đã biết, vô hại); domain public healthz 200 (`gateway.omnisre.xyz/healthz` `/readyz`,
+  `dex.omnisre.xyz/dex/healthz` — path đúng là `/dex/healthz` không phải `/healthz`); provider/
+  tenant/argocd/bitwarden 200, grafana 401 (auth-gated, đúng); secret `omni-gitea-repo` trong
+  `argocd` ns đã có password thật (24 ký tự, patch live đã áp dụng); ArgoCD app `omni-core` fail
+  đúng lỗi `git submodule update` cho `smart-siem` — "Invalid username or token" từ GitHub; Jenkins
+  chạy **systemd service trực tiếp trên VM** (không phải k8s pod, không có manifest trong `k8s/`),
+  job `omni-gcp-deploy` có `<triggers/>` rỗng ở cả 3 chỗ trong config.xml — xác nhận push không
+  auto-deploy.
+- ❌ **SAI**: báo cáo claim "đã edit CLAUDE.md's AUTONOMY RULES để nói rõ Jenkins không auto-deploy
+  (uncommitted)". `git diff CLAUDE.md` thực tế chỉ có ĐÚNG 1 thay đổi chưa commit — banner cảnh báo
+  GCP migration ở đầu file (đã có từ trước phiên này). Không có dòng nào chạm mục AUTONOMY RULES.
+  Claim không có bằng chứng trong working tree — nguồn báo cáo có thể từ phiên khác không lưu được
+  edit, hoặc mô tả sai việc đã làm. **Chưa sửa** — user đang cân nhắc có muốn mình làm thật việc này
+  không (thêm dòng Jenkins vào AUTONOMY RULES) trước khi commit gộp.
+- ⚠️ Một điểm báo cáo không đề cập nhưng cần biết: `harbor.omnisre.xyz` không phản hồi công khai
+  (curl timeout) — đây là ĐÚNG THIẾT KẾ, không phải lỗi, khớp commit gần nhất `a31aeb0` ("Harbor +
+  Vault UI back to cluster-internal, only ArgoCD stays public").
+
+### 4. "2 con Dex" — user thắc mắc, đã xác nhận KHÔNG phải lỗi
+- `argocd-dex-server` (ns `argocd`, ClusterIP, không ingress) = component mặc định đi kèm chuẩn
+  `install.yaml` của ArgoCD upstream — **hoàn toàn chưa cấu hình** (`argocd-cm` không có
+  `data.dex.config`), ArgoCD hiện chỉ login bằng admin nội bộ. Pod chạy nhưng idle, không phục vụ gì.
+- `aoip-dex` (ns `multi-agent`, public `dex.omnisre.xyz`) = OIDC provider THẬT của sản phẩm Omni,
+  provider/tenant portal đang login qua đây.
+- Không phải trùng lặp/nhầm lẫn cấu hình — là 2 hệ thống độc lập, hành vi mặc định vô hại của ArgoCD
+  upstream. Dọn `argocd-dex-server` (nếu muốn) là việc tuỳ chọn, chưa làm.
+
+### 5. Secret của `aoip-dex` (multi-agent, GCP) — tìm ra vị trí, phát hiện nợ kỹ thuật
+User hỏi secret của `aoip-dex` nằm đâu. Trace: Deployment `aoip-dex` mount ConfigMap
+`aoip-dex-config` tại `/etc/dex/config.yaml` (không phải Secret K8s nào cả) — `staticClients` bên
+trong chứa `secret: provider-portal-secret` / `secret: tenant-portal-secret` **plaintext**. File
+nguồn `k8s/deployments/aoip-dex.gcp.yaml` **đã commit vào git** từ `83a3eb0` — nghĩa là client
+secret OIDC nằm nguyên văn trong lịch sử git, không qua Vault/Sealed-Secret. Đã ghi cảnh báo này
+vào CLAUDE.md, CHƯA xử lý (chưa xoay vòng secret, chưa chuyển sang Vault) — quyết định tuỳ user.
+
+### 6. CLAUDE.md đã sửa theo đúng phát hiện thật trong phiên này (chưa commit)
+Banner GCP migration (dòng ~5-18) được cập nhật thêm:
+- Sửa claim SAI cũ ("push → Jenkins tự build/deploy") thành đúng: job `omni-gcp-deploy` có
+  `<triggers/>` rỗng, không auto-deploy, Jenkins chạy systemd service trên VM (không phải pod).
+- Ghi lại việc kubectl local giờ nối GCP qua Tailscale IP `100.67.117.19:6443` + cờ
+  `--tls-san 100.67.117.19` chỉ sống trên VM (không có trong git).
+- Cảnh báo secret `aoip-dex-config` plaintext trong git (mục 5 ở trên).
+Diff đầy đủ: `git diff CLAUDE.md`. User đã xem nội dung sửa nhưng CHƯA xác nhận commit.
+
+### 7. Retire Cloudflare Tunnel — landing page gap tìm ra + vá
+User yêu cầu tắt hẳn Cloudflare Tunnel (ADR 0001) vì GCP đã public. Điều tra trước khi tắt:
+- `omnisre.xyz`/`www.omnisre.xyz` (root) là **Cloudflare Pages** (`cloudflare/pages/`, static HTML
+  không JS, deploy `make deploy-landing` = `wrangler pages deploy`) — độc lập hoàn toàn với
+  MacBook/GCP/tunnel, KHÔNG cần migrate.
+- `app.omnisre.xyz` (link "Console" trên landing page + `_redirects`) là điểm phụ thuộc thật duy
+  nhất — CNAME → `26e56eb8...cfargotunnel.com` (proxied), qua tunnel → OrbStack local Traefik
+  `127.0.0.1:32080`. GCP ingress cũ (`omnisre-gcp.yaml`) KHÔNG có rule cho domain này — gap thật.
+- Vá: thêm Ingress `omnisre-landing-gcp` (`k8s/ingress/omnisre-gcp.yaml`) trỏ `app.omnisre.xyz` về
+  cùng backend `provider.omnisre.xyz` (`aoip-provider-portal`/`aoip-provider-web`); thêm
+  `https://app.omnisre.xyz` vào `AOIP_PROVIDER_ORIGINS` (CSRF allow-list,
+  `aoip-portals.gcp.yaml`) để POST `/auth` không bị 403.
+- User dán Cloudflare API token trực tiếp vào chat (**LẦN 2** — token đã từng lộ ở phiên trước, doc
+  cũ khuyến nghị thu hồi nhưng chưa làm) — dùng token đổi DNS `app.omnisre.xyz` từ CNAME→tunnel
+  sang A→`136.85.2.181` (proxied=false, giống 8 subdomain kia) qua Cloudflare API trực tiếp (không
+  lưu token vào file nào trong repo). cert-manager issue Let's Encrypt cert thành công (~1 phút).
+  Verify trực tiếp GCP IP: `200`, cert đúng domain. **Khuyến nghị mạnh còn treo**: thu hồi token
+  Cloudflare này thật sự tại dashboard — đã dùng 2 lần trong chat là quá nhiều.
+- Tắt tunnel: `launchctl bootout` cả 2 launchd service
+  (`com.omnisre.cloudflared` domain omnisre.xyz + `com.omni.cloudflare-tunnel` — KHÔNG liên quan,
+  domain khác `omni-gateway.nginxwaf.xyz`, user yêu cầu tắt luôn cho gọn). Plist chuyển vào
+  `~/Library/LaunchAgents/disabled/` (không xoá, để khôi phục được) — không tự khởi động lại khi
+  reboot. Verify sau tắt: `app.omnisre.xyz` vẫn 200 (qua GCP trực tiếp), `omnisre.xyz` Pages vẫn 200
+  (không đổi).
+
+### 8. Security sweep — rotate toàn bộ secret plaintext tìm thấy, migrate Dex GCP sang Vault
+User: "rà soát lại 1 lượt về vấn đề bảo mật, cái nào đang lộ thì reset rồi clean nó đi, rồi
+commit/push lên gitea để apply mới. rồi gửi lại password chính xác của dex trên multi-agent".
+
+Quét toàn repo (`grep` pattern secret/password/token/key qua `k8s/`, `docs/`, `Jenkinsfile`) tìm
+được plaintext THẬT (không phải placeholder `__REQUIRED_...__`):
+1. `omni-postgres.yaml`: `POSTGRES_PASSWORD: "omni-admin-s3cr3t-2026"` — Postgres `omni_admin`,
+   production thật.
+2. `aoip-dex.yaml`/`aoip-dex.gcp.yaml` + `aoip-portals.yaml`/`aoip-portals.gcp.yaml`: OIDC client
+   secret `provider-portal-secret`/`tenant-portal-secret`.
+3. **Nghiêm trọng hơn cả 2 trên**: `aoip-dex.gcp.yaml` có `staticPasswords` — 5 tài khoản test dùng
+   chung mật khẩu `Password123!` (bcrypt hash), gồm `owner@aoip.dev` role **"Provider owner"**,
+   sống thật trên `dex.omnisre.xyz` **public** — account-takeover thật, không phải lý thuyết. Log
+   xác nhận có 2 lần login thành công bằng account này ngay trước khi phát hiện
+   (`2026-08-04T10:35-10:36Z`).
+4. `chaos-test/pg-test.yaml` + `omni-chaos-secret.yaml`: `chaos-super-s3cr3t`/`chaos-app-pass-2025`
+   (chỉ chaos-test, không production) — user quyết định ban đầu rotate cả 4 nhóm, sau đổi ý bỏ
+   nhóm 4 khỏi tự động hoá Jenkinsfile ("bỏ cái chaos secret đi, nó là test thôi") — vẫn fix-forward
+   trong git (không còn plaintext) nhưng KHÔNG wire vào Jenkinsfile bootstrap tự động.
+
+Không tìm thấy token high-entropy nào bị commit (GitHub/Cloudflare/AWS) — Gitea/Harbor/Vaultwarden/
+Grafana admin đều bootstrap đúng qua `openssl rand` trong Jenkinsfile, không vào git.
+
+**Rotate thật (live cluster, cả 2 context `temp-k8s`=GCP và `orbstack`=lab)**:
+- Postgres: `ALTER USER omni WITH PASSWORD ...` thật trong DB (patch Secret không tự đổi được vì
+  `POSTGRES_PASSWORD` chỉ đọc lúc init, data đã init rồi bị bỏ qua) → patch Secret →
+  `rollout restart` omni-fullstack/omni-onboarding/aoip-provider-portal/aoip-tenant-portal +
+  promote Argo Rollout `omni-gateway` (canary có `pause: {duration: 60}`, tự chạy tiếp, không cần
+  promote tay) → verify `/readyz` 200.
+- Dex GCP: **không chỉ rotate — nâng cấp kiến trúc**. User hỏi thẳng "tại sao password không lưu
+  vào vault hay secret mà làm gì kỳ vậy, hệ thống có đủ bộ GitOps mà" → làm đúng chuẩn thay vì vá
+  tạm. Viết `secret/aoip-dex-secret` vào Vault (`provider_secret`/`tenant_secret`), tạo
+  `k8s/gitops/aoip-dex-external-secret.yaml` (ExternalSecret + `target.template` render nguyên
+  `config.yaml` — Dex chỉ đọc file, không đọc env riêng lẻ, khác pattern `omni-gateway-secret` đơn
+  giản hơn). `aoip-dex.gcp.yaml` mount Secret thay ConfigMap; `staticPasswords` **gỡ hẳn** (không
+  rotate — không cần login password nữa, chỉ OIDC client-credential flow); `enablePasswordDB: true`
+  vẫn giữ (bắt buộc, Dex lỗi "no connectors specified" nếu tắt hẳn và không có connector khác) —
+  chỉ là không còn user nào trong list nên không ai login được. Verify: POST login local trả `400`
+  (route không còn hoạt động thật).
+- Dex lab (context `orbstack`): không có Vault ở lab — chuyển ConfigMap→Secret (không qua Vault),
+  giữ nguyên `staticPasswords` (chấp nhận được, lab chỉ `/etc/hosts` nội bộ không public Internet).
+- Chaos-test: `chaos-test` namespace không tồn tại trên CẢ 2 cluster (không có gì đang chạy) —
+  chỉ `omni-chaos-lab` Secret (multi-agent) có consumer thật (`omni-fullstack`), đã rotate + restart
+  cả 2 cluster. Phát hiện thêm bug trong `chaos-test/pg-test.yaml`: password app user bị hardcode
+  LẦN 2 trong shell script `postStart` (ngoài Secret) — patch Secret alone sẽ không đổi được password
+  thật; đã fix bằng cách đọc qua env `$CHAOS_APP_PASSWORD` (secretKeyRef) thay vì hardcode.
+
+**Sửa file git** (không còn plaintext, dùng bootstrap pattern nhất quán với
+harbor-admin-bootstrap/grafana-admin đã có sẵn trong Jenkinsfile): `omni-postgres.yaml` (Secret
+bootstrap trong Jenkinsfile), `aoip-dex.yaml`/`aoip-dex.gcp.yaml` (Secret thay ConfigMap),
+`aoip-portals.yaml`/`aoip-portals.gcp.yaml` (`secretKeyRef` thay `value:` plaintext),
+`chaos-test/pg-test.yaml` (bootstrap comment, fix hardcode kép), XOÁ hẳn `omni-chaos-secret.yaml`
+(không còn dùng, comment cũ tự mâu thuẫn "DO NOT commit real passwords" nhưng vẫn có plaintext).
+Jenkinsfile: bootstrap `omni-pg-secret` trước khi apply StatefulSet, apply
+`aoip-dex-external-secret.yaml` + `kubectl wait --for=condition=Ready` trước khi apply
+`aoip-dex.gcp.yaml`. `deploy/aoip-portals/README.md` cập nhật bước bootstrap secret cho lab.
+CLAUDE.md + ADR 0002 cập nhật khớp kiến trúc mới. `GCP_CREDENTIALS_2026-08-04.md` (untracked) cập
+nhật cách đọc secret mới (không ghi giá trị plaintext, chỉ lệnh `kubectl get secret ... | base64 -d`).
+
+**Commit + push**: `3442493` "security: rotate leaked plaintext secrets, migrate Dex to Vault,
+retire Cloudflare Tunnel" — push lần đầu bị `rejected` (remote có 3 commit mới từ phiên khác chạy
+song song: `b01b3cd`/`6d4a735`/`a35d78c`, đúng như báo cáo user dán ở đầu phiên này). Rebase lên
+`gitea/main`: `CLAUDE.md` + ADR 0002 auto-merge sạch (2 phiên sửa 2 vùng khác nhau); riêng
+`docs/handoffs/CURRENT_SESSION.md` conflict thật (cả 2 phiên đều prepend đầu file) — resolve tay,
+giữ cả 2 nội dung theo đúng thứ tự thời gian commit (Đ32 09:47 UTC trước Đ33 17:52 +0700 = 10:52
+UTC sau).
+
+### 9. Password/secret hiện tại của Dex `multi-agent` (GCP) — trả lời câu hỏi cuối user
+Đọc trực tiếp từ Vault/Secret sống, KHÔNG lưu giá trị plaintext ở đây (đã ghi đầy đủ trong
+`docs/handoffs/GCP_CREDENTIALS_2026-08-04.md`, untracked). Lệnh đọc:
+```bash
+kubectl get secret aoip-dex-secret -n multi-agent -o jsonpath='{.data.provider_secret}' | base64 -d
+kubectl get secret aoip-dex-secret -n multi-agent -o jsonpath='{.data.tenant_secret}' | base64 -d
+```
+
+### Next step
+1. **Chưa làm**: thu hồi Cloudflare API token (dùng 2 lần trong chat, khuyến nghị cũ chưa thực hiện)
+   + Tailscale API token (khuyến nghị cũ, vẫn treo).
+2. `docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` vẫn untracked, cố ý không commit — đừng `git add -A`.
+3. Nếu cần lab OrbStack lại (VM cust-*): `orbctl start --all` (hiện đang stopped).
+4. `--tls-san 100.67.117.19` trên k3s hiện chỉ sống trên VM, không có trong repo/provisioning —
+   cân nhắc ghi lại quyết định này vào ADR 0002 hoặc script bootstrap nếu muốn nó sống sót qua việc
+   tái tạo VM.
+5. `omni-chaos-lab`/`chaos-pg-secret` KHÔNG có trong Jenkinsfile bootstrap tự động (user quyết định
+   — "nó là test thôi") — nếu chaos drill cần, bootstrap tay theo comment trong
+   `k8s/chaos-test/pg-test.yaml`.
+6. Dọn `argocd-dex-server` (idle, ArgoCD chưa cấu hình SSO) — việc tuỳ chọn, chưa làm (mục 4 phía
+   trên).
+
+---
 
 ## 🔧 Đ29 — "Xử lý luôn đi": sửa #38/#39/#40, deploy, chạy lại drill lần 2
 

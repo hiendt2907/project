@@ -2,6 +2,54 @@
 
 > **TRƯỚC MỌI TASK: đọc `MEMORY.md` + `docs/CODEBASE.md`.** Bản đồ nhanh ở memory `project_architecture_map`; chi tiết file-level ở `docs/CODEBASE.md`.
 
+> ⚠️ **HẠ TẦNG ĐÃ DI DỜI SANG GCP (2026-08-04) — đọc [`docs/adr/0002-gcp-k3s-full-migration.md`](docs/adr/0002-gcp-k3s-full-migration.md) TRƯỚC khi tin bất kỳ mô tả "OrbStack/MacBook" nào bên dưới.**
+> Core (gateway/fullstack/onboarding/portals/Dex/monitoring/GitOps đầy đủ:
+> Harbor/ArgoCD/Vault/Istio/Argo Rollouts/Vaultwarden) giờ chạy trên GCP VM
+> `omni-k3s-vm` (k3s single-node), domain thật `omnisre.xyz`. Chỉ **Ollama/LLM**
+> còn cố ý ở lại MacBook, nối qua Tailscale. OrbStack lab **vẫn đang chạy song
+> song**, chưa retire — xem "Chưa làm" trong ADR 0002. Mọi mô tả domain
+> `ai-agent.local`, Cloudflare Tunnel `app.omnisre.xyz`, hay "core trên
+> MacBook" bên dưới đây là **lịch sử của lab/ADR 0001**, không phải trạng thái
+> GCP hiện tại. File manifest GCP nằm ở `k8s/gitops/` + các file `*.gcp.yaml`
+> song song với file lab cùng tên — không bao giờ sửa file lab để thay đổi GCP.
+> Credentials: `docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` (không commit) +
+> Vaultwarden tự host tại `https://bitwarden.omnisre.xyz`. Pipeline reproducible
+> qua `Jenkinsfile` (Gitea nội bộ `http://100.67.117.19:30300`), nhưng job
+> `omni-gcp-deploy` **KHÔNG có trigger tự động** (`<triggers/>` rỗng trong
+> `config.xml`, xác nhận trực tiếp trên VM 2026-08-04) — push git KHÔNG tự
+> deploy, phải bấm "Build Now" hoặc gọi Jenkins API tay. Jenkins tự nó chạy như
+> **systemd service ngay trên VM** (`/etc/systemd/system/jenkins.service`),
+> không phải pod K8s, không có manifest trong `k8s/`.
+> `kubectl` local nối cluster qua Tailscale IP `100.67.117.19:6443` (không phải
+> IP nội bộ VPC `10.x` — không route được từ máy ngoài); k3s server có thêm cờ
+> `--tls-san 100.67.117.19` (chỉ sống trên VM, KHÔNG có trong git/manifest —
+> nếu VM bị tái tạo phải thêm lại tay).
+> ⚠️ **Security sweep 2026-08-04 — ĐÃ XỬ LÝ** (không còn nợ kỹ thuật ở các mục
+> dưới, chỉ ghi lại để biết kiến trúc hiện tại): Postgres `omni_admin`
+> (`omni-pg-secret`) + Dex OIDC client secret (`provider-portal-secret`/
+> `tenant-portal-secret`, cũ) từng bị commit plaintext vào git — đã rotate thật
+> (ALTER USER trong Postgres, secret mới trong Vault), giá trị cũ vô hiệu. Dex
+> GCP giờ đọc config qua Secret `aoip-dex-secret` sync từ Vault
+> (`secret/aoip-dex-secret`) bằng ExternalSecret
+> (`k8s/gitops/aoip-dex-external-secret.yaml`) — KHÔNG còn ConfigMap plaintext.
+> Dex GCP cũng đã **gỡ hẳn `staticPasswords`** (5 tài khoản test dùng chung
+> `Password123!`, gồm 1 tài khoản "Provider owner", từng sống công khai trên
+> `dex.omnisre.xyz`) — chỉ còn OIDC client-credential flow. Lab OrbStack giữ
+> staticPasswords (chấp nhận được, không expose Internet) nhưng client secret
+> cũng đã rotate, chuyển ConfigMap→Secret (không qua Vault, lab không có Vault).
+> `k8s/deployments/omni-postgres.yaml`/`aoip-dex.yaml`/`aoip-dex.gcp.yaml` không
+> còn Secret/ConfigMap plaintext trong git nữa — bootstrap qua Jenkinsfile
+> (Postgres/`openssl rand`) hoặc Vault (Dex GCP). Giá trị mới: xem
+> `docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` (không commit).
+> ⚠️ **Cloudflare Tunnel (ADR 0001) đã tắt hẳn 2026-08-04** — `app.omnisre.xyz`
+> chuyển DNS sang A→GCP IP trực tiếp (giống các subdomain khác), có ingress
+> `omnisre-landing-gcp` (`k8s/ingress/omnisre-gcp.yaml`) trỏ cùng backend với
+> `provider.omnisre.xyz`. `com.omnisre.cloudflared` +
+> `com.omni.cloudflare-tunnel` (launchd MacBook) đã unload, plist chuyển vào
+> `~/Library/LaunchAgents/disabled/`. `omnisre.xyz`/`www.omnisre.xyz` là site
+> tĩnh trên **Cloudflare Pages** (`cloudflare/pages/`, deploy qua
+> `make deploy-landing`) — độc lập hoàn toàn với MacBook/GCP, không đổi.
+
 **Omni** — async-first multi-agent SRE automation. **Omni là NÃO** (trung tâm điều hành duy nhất), **Remote Agent là CHÂN/TAY/MẮT** trên hạ tầng khách hàng. Omni phán bất thường bằng baseline nó tự học, phân loại theo **9 domain**, rồi tự điều tra nhiều lượt. Split Kafka pipeline thực thi khắc phục. Ranh giới sở hữu/quyết định/dữ liệu giữa hai bên: xem mục **NÃO vs THÂN** ngay dưới đây — đọc trước khi sửa bất cứ gì chạm cả hai phía, nhầm lẫn ở đây từng gây sai lệch tài liệu thật (audit 2026-08-03).
 
 ## NÃO vs THÂN — Omni (nội bộ) vs Remote Agent (khách hàng)

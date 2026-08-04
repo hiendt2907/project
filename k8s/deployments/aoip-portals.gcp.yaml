@@ -25,10 +25,11 @@ spec:
             - {name: OMNI_REDIS_URL, value: "redis://redis:6379/0"}
             - name: OMNI_ADMIN_PG_DSN
               valueFrom: {secretKeyRef: {name: omni-pg-secret, key: OMNI_ADMIN_PG_DSN}}
-            - {name: AOIP_PROVIDER_ORIGINS, value: "https://provider.omnisre.xyz"}
+            - {name: AOIP_PROVIDER_ORIGINS, value: "https://provider.omnisre.xyz,https://app.omnisre.xyz"}
             - {name: AOIP_OIDC_PROVIDER_ISSUER, value: "https://dex.omnisre.xyz/dex"}
             - {name: AOIP_OIDC_PROVIDER_CLIENT_ID, value: "aoip-provider-portal"}
-            - {name: AOIP_OIDC_PROVIDER_CLIENT_SECRET, value: "provider-portal-secret"}
+            - name: AOIP_OIDC_PROVIDER_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: aoip-dex-secret, key: provider_secret}}
             - {name: AOIP_OIDC_PROVIDER_AUTHORIZE_URL, value: "https://dex.omnisre.xyz/dex/auth"}
             - {name: AOIP_OIDC_PROVIDER_TOKEN_URL, value: "http://aoip-dex:5556/dex/token"}
             - {name: AOIP_OIDC_PROVIDER_JWKS_URL, value: "http://aoip-dex:5556/dex/keys"}
@@ -78,7 +79,8 @@ spec:
             - {name: AOIP_TENANT_ORIGINS, value: "https://tenant.omnisre.xyz"}
             - {name: AOIP_OIDC_TENANT_ISSUER, value: "https://dex.omnisre.xyz/dex"}
             - {name: AOIP_OIDC_TENANT_CLIENT_ID, value: "aoip-tenant-portal"}
-            - {name: AOIP_OIDC_TENANT_CLIENT_SECRET, value: "tenant-portal-secret"}
+            - name: AOIP_OIDC_TENANT_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: aoip-dex-secret, key: tenant_secret}}
             - {name: AOIP_OIDC_TENANT_AUTHORIZE_URL, value: "https://dex.omnisre.xyz/dex/auth"}
             - {name: AOIP_OIDC_TENANT_TOKEN_URL, value: "http://aoip-dex:5556/dex/token"}
             - {name: AOIP_OIDC_TENANT_JWKS_URL, value: "http://aoip-dex:5556/dex/keys"}

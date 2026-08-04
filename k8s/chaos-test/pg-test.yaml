@@ -1,29 +1,22 @@
 # chaos-pg — ephemeral single-node PostgreSQL for chaos engineering.
 # Namespace: multi-agent (kube-state-metrics already covers it).
 #
-# Credentials stored in Secret chaos-pg-secret.
+# Credentials: chaos-pg-secret NOT in git (security sweep 2026-08-04 — the old
+# version hardcoded POSTGRES_PASSWORD/APP_PASSWORD plaintext here, AND baked
+# APP_PASSWORD a second time into the postStart shell command below, so patching
+# the Secret alone couldn't actually rotate the real DB password). Bootstrap
+# before applying this file:
+#   kubectl create secret generic chaos-pg-secret -n multi-agent \
+#     --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
+#     --from-literal=APP_USER=chaos_app \
+#     --from-literal=APP_PASSWORD="$(openssl rand -hex 16)" \
+#     --from-literal=APP_DB=chaosdb
+#
 # Fault injection: kubectl patch secret chaos-pg-secret --type=merge \
 #   -p '{"data":{"APP_PASSWORD":"d3JvbmctcGFzcw=="}}'   ← base64("wrong-pass")
 # Then rollout restart chaos-victim → psql fails → exit 1 → CrashLoopBackOff.
 #
 # Cleanup: kubectl delete -f k8s/chaos-test/pg-test.yaml
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: chaos-pg-secret
-  namespace: multi-agent
-  labels:
-    app: chaos-pg
-    chaos: "true"
-type: Opaque
-stringData:
-  # Superuser password (used by chaos-pg StatefulSet)
-  POSTGRES_PASSWORD: "chaos-super-s3cr3t"
-  # App user credentials (used by chaos-victim to connect)
-  APP_USER: "chaos_app"
-  APP_PASSWORD: "chaos-app-pass-2025"
-  APP_DB: "chaosdb"
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -65,6 +58,13 @@ spec:
               value: chaosdb
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+            # postStart below needs this to create the app role — was previously
+            # hardcoded a second time in the shell command instead of read from here.
+            - name: CHAOS_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: chaos-pg-secret
+                  key: APP_PASSWORD
           # Create the app user + database on first start
           lifecycle:
             postStart:
@@ -77,7 +77,7 @@ spec:
                     psql -U postgres -d chaosdb -c \
                       "DO \$\$ BEGIN
                          IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'chaos_app') THEN
-                           CREATE USER chaos_app WITH PASSWORD 'chaos-app-pass-2025';
+                           CREATE USER chaos_app WITH PASSWORD '$CHAOS_APP_PASSWORD';
                          END IF;
                        END \$\$;"
                     psql -U postgres -d chaosdb -c \
