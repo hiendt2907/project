@@ -2,20 +2,15 @@
 # (ArgoCD pulls from here instead of relying on `k3s ctr images import` by hand).
 # trivy/notary disabled to save RAM on a single 16GB node; re-enable later if
 # vulnerability scanning becomes a real requirement.
+#
+# ClusterIP only, no public ingress — explicit request 2026-08-04: only ArgoCD
+# stays public from the GitOps toolchain, everything else moves back to
+# cluster-internal. Reach it via `kubectl port-forward -n harbor svc/harbor-portal 8080:80`.
 expose:
-  type: ingress
-  ingress:
-    hosts:
-      core: registry.omnisre.xyz
-    className: traefik
-    annotations:
-      cert-manager.io/cluster-issuer: letsencrypt-prod
+  type: clusterIP
   tls:
-    enabled: true
-    certSource: secret
-    secret:
-      secretName: registry-omnisre-tls
-externalURL: https://registry.omnisre.xyz
+    enabled: false
+externalURL: http://harbor-core.harbor.svc.cluster.local:80
 trivy:
   enabled: false
 notary:
