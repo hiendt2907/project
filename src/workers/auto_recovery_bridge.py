@@ -34,9 +34,52 @@ logger = logging.getLogger(__name__)
 _SUPPORTED_CAPABILITIES = frozenset({
     "systemd.restart_unit", "systemd.reset_failed", "systemd.journal_vacuum",
 })
-_MIN_DISPATCH_CONFIDENCE = 0.75
 _AUTO_APPROVER = "auto-recovery:diagnosis_loop"
 _DISPATCH_TIMEOUT_S = 15.0
+
+# Ngưỡng tin cậy tối thiểu để tự dispatch. Đọc thẳng từ env theo đúng quy ước của
+# `lab_auto_execute_agents()` bên dưới (không qua WorkerSettings) để một caller
+# tự dựng settings trong test/harness không vượt qua được nó.
+#
+# Vì sao phải chỉnh được (2026-08-04): độ tin cậy đến TỪ kinh nghiệm, mà kinh
+# nghiệm đến TỪ hành động. Chốt cứng ở 0.75 khoá vòng học ở đúng trạng thái chưa
+# từng học: đo thật trên CRAT, advisory của `staging-sim` có confidence 0.0/0.3/
+# 0.75 — phần lớn sự cố MỚI không bao giờ vượt ngưỡng, nên không bao giờ được
+# thử, nên không bao giờ sinh ra kinh nghiệm để lần sau tự tin hơn. Một sự cố
+# chưa từng gặp thì theo định nghĩa là chưa có gì để tin.
+#
+# Hạ ngưỡng chỉ AN TOÀN khi thất bại cũng dạy được — xem
+# `remote_command_outcome_loop._upsert_action_experience` (ghi cả success lẫn
+# fail từ 2026-08-04). Trước đó hạ ngưỡng chỉ tạo thêm lỗi mà không thêm bài học.
+#
+# Blast radius vẫn bị chặn độc lập bởi: `_SUPPORTED_CAPABILITIES` (chỉ vài lệnh
+# systemd), `lab_auto_execute_agents()` (danh sách agent), verify sau thực thi
+# phía agent, và rollback tự động.
+_ENV_MIN_CONFIDENCE = "OMNI_MIN_DISPATCH_CONFIDENCE"
+_DEFAULT_MIN_DISPATCH_CONFIDENCE = 0.75
+
+
+def min_dispatch_confidence(env: Any = None) -> float:
+    """Ngưỡng tin cậy hiệu lực. Giá trị lỗi/ngoài [0,1] → về mặc định (fail-safe)."""
+    env = os.environ if env is None else env
+    raw = str(env.get(_ENV_MIN_CONFIDENCE, "") or "").strip()
+    if not raw:
+        return _DEFAULT_MIN_DISPATCH_CONFIDENCE
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "event=min_dispatch_confidence_invalid value=%r — dùng mặc định %.2f",
+            raw, _DEFAULT_MIN_DISPATCH_CONFIDENCE,
+        )
+        return _DEFAULT_MIN_DISPATCH_CONFIDENCE
+    if not 0.0 <= value <= 1.0:
+        logger.warning(
+            "event=min_dispatch_confidence_out_of_range value=%s — dùng mặc định %.2f",
+            value, _DEFAULT_MIN_DISPATCH_CONFIDENCE,
+        )
+        return _DEFAULT_MIN_DISPATCH_CONFIDENCE
+    return value
 
 # Blast-radius allowlist for UNATTENDED dispatch (no human in the loop).
 #
@@ -164,7 +207,13 @@ async def dispatch_if_eligible(
                 "command_id": None, "state": None}
 
     confidence = float(final.get("confidence", 0.0) or 0.0)
-    if confidence < _MIN_DISPATCH_CONFIDENCE:
+    threshold = min_dispatch_confidence()
+    if confidence < threshold:
+        logger.info(
+            "event=auto_recovery_skipped reason=confidence_below_threshold trace=%s "
+            "agent=%s confidence=%.2f threshold=%.2f — hạ %s để cho phép thử sự cố mới",
+            trace_id, agent_id, confidence, threshold, _ENV_MIN_CONFIDENCE,
+        )
         return {"dispatched": False, "reason": "confidence_below_threshold",
                 "command_id": None, "state": None}
 

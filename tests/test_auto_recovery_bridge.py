@@ -181,6 +181,34 @@ class TestDispatchIfEligible:
         assert result["dispatched"] is False
         assert result["reason"] == "confidence_below_threshold"
 
+    async def test_confidence_threshold_is_env_tunable(self, monkeypatch):
+        """Ngưỡng phải chỉnh được để hệ thống dám thử sự cố MỚI.
+
+        Độ tin cậy đến từ kinh nghiệm, kinh nghiệm đến từ hành động — chốt cứng
+        0.75 khoá vòng học ở đúng trạng thái chưa từng học (đo thật trên CRAT:
+        advisory staging-sim có confidence 0.0/0.3/0.75).
+        """
+        from workers.auto_recovery_bridge import _ENV_MIN_CONFIDENCE
+
+        final = {"confidence": 0.5, "root_cause": "x down",
+                 "suggested_recovery": {"capability": "systemd.restart_unit", "unit": "x.service"}}
+        monkeypatch.setenv(_ENV_MIN_CONFIDENCE, "0.3")
+        result = await dispatch_if_eligible(
+            settings=SimpleNamespace(omni_gateway_api_key=""), http_client=AsyncMock(),
+            final=final, agent_id="a-1", tenant_id="t-1", trace_id="tr-1",
+            redis=_StubRedis(), kafka=_StubKafka(),
+        )
+        # Đã vượt qua cổng confidence — dừng ở cổng KẾ TIẾP, không phải cổng này.
+        assert result["reason"] != "confidence_below_threshold"
+
+    @pytest.mark.parametrize("bad", ["", "abc", "-0.5", "1.5"])
+    async def test_invalid_threshold_falls_back_to_safe_default(self, monkeypatch, bad):
+        """Giá trị env rác KHÔNG được ngầm mở toang cổng — phải về mặc định 0.75."""
+        from workers.auto_recovery_bridge import _ENV_MIN_CONFIDENCE, min_dispatch_confidence
+
+        monkeypatch.setenv(_ENV_MIN_CONFIDENCE, bad)
+        assert min_dispatch_confidence() == 0.75
+
     async def test_skips_when_gateway_api_key_not_configured(self):
         final = {"confidence": 0.95, "root_cause": "x down",
                 "suggested_recovery": {"capability": "systemd.restart_unit", "unit": "x.service"}}
