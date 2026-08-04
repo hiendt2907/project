@@ -11,6 +11,14 @@
 # pre-provision vault items from outside: encryption keys are derived
 # client-side from the master password, which this deployment never has
 # access to and never should.
+#
+# Pin at least 1.37.x: the browser extension's login flow calls
+# POST /identity/accounts/prelogin/password, which 1.32.5 doesn't implement
+# (404) — confirmed live via server logs: the web vault logged in fine
+# ("logged in successfully", 200 OK) while the extension repeatedly hit that
+# 404 on the same account/password at the same time. Web vault and browser
+# extension are different clients with different release cadences; Vaultwarden
+# trails the newest official-client API surface, so track upstream releases.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -42,7 +50,7 @@ spec:
     spec:
       containers:
         - name: vaultwarden
-          image: vaultwarden/server:1.32.5
+          image: vaultwarden/server:1.37.1
           ports: [{containerPort: 80}]
           env:
             - name: DOMAIN
