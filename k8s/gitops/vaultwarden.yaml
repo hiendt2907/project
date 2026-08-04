@@ -1,0 +1,105 @@
+# Vaultwarden — self-hosted Bitwarden-compatible server (Rust reimplementation,
+# ~20MB RAM vs. official Bitwarden server's full microservice stack; the right
+# choice for a single-node box already running everything else). Stores the
+# actual credential vault — end-to-end encrypted client-side, so this server
+# never sees plaintext passwords, only the encrypted blob.
+#
+# ADMIN_TOKEN (Secret vaultwarden-admin, key admin-token) generated once,
+# never in git. SIGNUPS_ALLOWED starts true ONLY long enough for the first
+# (and only) account to be created by hand at https://bitwarden.omnisre.xyz —
+# then flip it to "false" via this file + redeploy. There is no way to
+# pre-provision vault items from outside: encryption keys are derived
+# client-side from the master password, which this deployment never has
+# access to and never should.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vaultwarden
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vaultwarden-data
+  namespace: vaultwarden
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vaultwarden
+  namespace: vaultwarden
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: vaultwarden}
+  template:
+    metadata:
+      labels: {app: vaultwarden}
+    spec:
+      containers:
+        - name: vaultwarden
+          image: vaultwarden/server:1.32.5
+          ports: [{containerPort: 80}]
+          env:
+            - name: DOMAIN
+              value: "https://bitwarden.omnisre.xyz"
+            # TEMPORARY true so the first (and only) account can be created —
+            # flip to "false" and redeploy right after that account exists.
+            - name: SIGNUPS_ALLOWED
+              value: "true"
+            - name: WEBSOCKET_ENABLED
+              value: "true"
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: {name: vaultwarden-admin, key: admin-token}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          readinessProbe:
+            httpGet: {path: /alive, port: 80}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /alive, port: 80}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: {cpu: "50m", memory: "64Mi"}
+            limits: {cpu: "500m", memory: "256Mi"}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: vaultwarden-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vaultwarden
+  namespace: vaultwarden
+spec:
+  selector: {app: vaultwarden}
+  ports: [{name: http, port: 80, targetPort: 80}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vaultwarden-gcp
+  namespace: vaultwarden
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [bitwarden.omnisre.xyz]
+      secretName: bitwarden-omnisre-tls
+  rules:
+    - host: bitwarden.omnisre.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: vaultwarden, port: {number: 80}}

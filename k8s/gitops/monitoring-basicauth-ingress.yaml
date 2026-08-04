@@ -1,0 +1,87 @@
+# Locks Grafana/Prometheus/Vault UI behind Traefik BasicAuth + TLS — "chỉ tôi
+# được vào" per explicit request 2026-08-04. Password lives ONLY in the
+# monitoring-basicauth Secret (generated once, never in git); this file just
+# wires the Middleware + Ingress + Secret shape.
+#
+# Vault UI in particular holds the root token/unseal key blast radius if
+# compromised — BasicAuth here is a stopgap. Upgrade path if/when a
+# Cloudflare API token with Account > Access: Apps and Policies > Edit is
+# available: swap this for a Cloudflare Access application scoped to one
+# email with email-OTP, same pattern already used for app.omnisre.xyz.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: monitoring-basicauth
+  namespace: monitor
+spec:
+  basicAuth:
+    secret: monitoring-basicauth
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-gcp
+  namespace: monitor
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.middlewares: monitor-monitoring-basicauth@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [grafana.omnisre.xyz]
+      secretName: grafana-omnisre-tls
+  rules:
+    - host: grafana.omnisre.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: grafana, port: {number: 3000}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus-gcp
+  namespace: monitor
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.middlewares: monitor-monitoring-basicauth@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [prometheus.omnisre.xyz]
+      secretName: prometheus-omnisre-tls
+  rules:
+    - host: prometheus.omnisre.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: prometheus, port: {number: 9090}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vault-gcp
+  namespace: vault
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.middlewares: monitor-monitoring-basicauth@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [vault.omnisre.xyz]
+      secretName: vault-omnisre-tls
+  rules:
+    - host: vault.omnisre.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: vault, port: {number: 8200}}

@@ -230,6 +230,32 @@ pipeline {
       }
     }
 
+    stage('Deploy Vaultwarden + monitoring BasicAuth') {
+      steps {
+        sh '''
+          set -e
+          kubectl create namespace vaultwarden --dry-run=client -o yaml | kubectl apply -f -
+          kubectl get secret vaultwarden-admin -n vaultwarden >/dev/null 2>&1 || \
+            kubectl create secret generic vaultwarden-admin -n vaultwarden \
+              --from-literal=admin-token="$(openssl rand -base64 48)"
+          kubectl apply -f k8s/gitops/vaultwarden.yaml
+          kubectl rollout status deployment/vaultwarden -n vaultwarden --timeout=90s
+
+          # htpasswd hash generated once, then reused — same bootstrap-secret pattern
+          # as grafana-admin/harbor-admin-bootstrap. "hiendang" is fixed; only the
+          # password is random, printed once here on first generation only.
+          kubectl create namespace monitor --dry-run=client -o yaml | kubectl apply -f -
+          if ! kubectl get secret monitoring-basicauth -n monitor >/dev/null 2>&1; then
+            MONITORING_PW=$(openssl rand -base64 24 | tr -d '/+=')
+            HTPASSWD_LINE=$(htpasswd -nbB hiendang "$MONITORING_PW")
+            kubectl create secret generic monitoring-basicauth -n monitor --from-literal=users="$HTPASSWD_LINE"
+            echo "Generated new monitoring BasicAuth password — save this now, not printed again: $MONITORING_PW"
+          fi
+          kubectl apply -f k8s/gitops/monitoring-basicauth-ingress.yaml
+        '''
+      }
+    }
+
     stage('Deploy monitoring') {
       steps {
         sh '''
