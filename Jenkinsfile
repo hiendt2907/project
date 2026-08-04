@@ -267,8 +267,15 @@ pipeline {
           kubectl apply -f k8s/monitor/promtail.yaml
           kubectl apply -f k8s/monitor/loki.yaml
           kubectl apply -f k8s/monitor/redis-exporter.yaml
-          kubectl apply -f k8s/monitor/grafana-dashboards.yaml
-          kubectl apply -f k8s/monitor/grafana-dashboard-llm.yaml
+          kubectl apply -f k8s/monitor/mimir.yaml
+
+          # GCP dashboards replace the lab's (grafana-dashboards.yaml /
+          # grafana-dashboard-llm.yaml) entirely per explicit request 2026-08-04 —
+          # delete-and-rebuild, not layer-on-top. Both ConfigMaps deleted live once;
+          # this guards against either ever coming back if some other apply path
+          # re-adds them.
+          kubectl delete configmap grafana-dashboards grafana-dashboard-omni-llm -n monitor --ignore-not-found
+          kubectl apply -f k8s/monitor/grafana-dashboards.gcp.yaml
           kubectl apply -f k8s/monitor/grafana-alerting-provisioning.yaml
 
           # grafana.yaml bundles the grafana-admin Secret in the same multi-doc file as
@@ -307,9 +314,11 @@ yaml.dump_all(docs, sys.stdout)
 
           kubectl rollout restart statefulset/prometheus -n monitor
           kubectl rollout restart deployment/loki -n monitor
+          kubectl rollout restart deployment/mimir -n monitor
           kubectl rollout restart deployment/grafana -n monitor
           kubectl rollout status statefulset/prometheus -n monitor --timeout=180s
           kubectl rollout status deployment/loki -n monitor --timeout=180s
+          kubectl rollout status deployment/mimir -n monitor --timeout=180s
           kubectl rollout status deployment/grafana -n monitor --timeout=180s
         '''
       }
