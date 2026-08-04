@@ -126,6 +126,106 @@ async def dispatch_hitl_ui_decision(ctx: Any, decision_msg: dict[str, Any]) -> b
     return True
 
 
+async def open_hitl_pending_for_mutate(
+    ctx: Any,
+    *,
+    trace: str,
+    tenant_id: str,
+    tool_name: str,
+    args: dict[str, Any],
+    risk_class: str,
+    tier: str,
+) -> None:
+    """Mở 1 pending HITL thật cho mutate bị tier_gate chặn (decision=HITL).
+
+    Trước hàm này, tier_gate trả "HITL" chỉ dẫn tới skip + action_feedback — không
+    nơi nào tạo cơ hội cho người duyệt (``build_hitl_card`` mồ côi, không ai gọi;
+    ``omni_admin.hitl_decision`` không bao giờ có INSERT gốc). Đóng vòng:
+    CRAT ``HITL_ESCALATION_EMITTED`` (fail-closed) → Postgres PENDING row
+    (``create_hitl_pending``, cho UI/audit truy vấn) → Redis pending payload
+    (``action_body`` để ``handle_hitl_callback`` dispatch lại ``omni-actions`` nếu
+    approve) → Telegram card. KHÔNG đổi hành vi mặc định: mutate vẫn không tự
+    chạy ngay; chỉ thêm đường để người chủ động duyệt sau đó.
+    """
+    redis = getattr(ctx, "redis", None)
+    kafka = getattr(ctx, "kafka", None)
+    settings = getattr(ctx, "settings", None)
+    if redis is None or settings is None:
+        return
+    pending_id = f"mut-{trace}"
+    audit_topic = getattr(settings, "kafka_topic_audit_chain", "omni-audit-chain")
+    try:
+        await write_audit_block(
+            event_type="HITL_ESCALATION_EMITTED",
+            trace_id=trace,
+            payload={
+                "pending_id": pending_id,
+                "tool_name": tool_name,
+                "risk_class": risk_class,
+                "tier_at_time": tier,
+                "reason": "tier_gate_hitl_mutate",
+            },
+            redis=redis,
+            kafka=kafka,
+            kafka_topic=audit_topic,
+            tenant_id=tenant_id,
+        )
+    except AuditLedgerError as exc:
+        logger.critical(
+            "hitl_open: CRAT write FAILED trace=%s tool=%s err=%s — không mở pending",
+            trace, tool_name, exc,
+        )
+        return
+
+    from pkg.autonomous_actions import build_execute_mutate_body
+
+    action_body = build_execute_mutate_body(
+        trace, tool_name=tool_name, args=args, attempt_count=1, tenant_id=tenant_id,
+    )
+    pending_payload = {
+        "trace_id": trace,
+        "tenant_id": tenant_id,
+        "tool_name": tool_name,
+        "risk_class": risk_class,
+        "tier": tier,
+        "action_body": action_body,
+    }
+    try:
+        await redis.setex(
+            pending_key(pending_id), 7200, json.dumps(pending_payload, ensure_ascii=False)
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort Redis cache của pending
+        logger.warning("hitl_open: redis setex fail id=%s err=%s", pending_id, exc)
+
+    repo = getattr(ctx, "admin_repo", None)
+    if repo is not None and hasattr(repo, "create_hitl_pending"):
+        try:
+            await repo.create_hitl_pending(
+                pending_id=pending_id, tenant_id=tenant_id, tool_name=tool_name,
+                risk_class=risk_class, tier_at_time=tier,
+            )
+        except Exception as exc:  # noqa: BLE001 — ledger phụ trợ, CRAT mới là chain fail-closed
+            logger.error(
+                "hitl_open: postgres create_hitl_pending FAILED id=%s err=%s", pending_id, exc
+            )
+
+    tg = getattr(ctx, "telegram", None)
+    chat_id = getattr(settings, "telegram_admin_chat_id", None)
+    if tg is not None and chat_id is not None:
+        text, reply_markup = build_hitl_card(
+            pending_id=pending_id, tool_name=tool_name, risk_class=risk_class, tier=tier,
+            reason="tier_gate: mutate cần người duyệt",
+        )
+        try:
+            await tg.send_message(int(chat_id), text, reply_markup=reply_markup, parse_mode="HTML")
+        except Exception as exc:  # noqa: BLE001 — best-effort notify; pending vẫn poll được qua UI
+            logger.warning("hitl_open: telegram send fail id=%s err=%s", pending_id, exc)
+    logger.info(
+        "hitl_open: pending opened id=%s trace=%s tool=%s risk=%s tier=%s",
+        pending_id, trace, tool_name, risk_class, tier,
+    )
+
+
 async def handle_hitl_callback(ctx: Any, update: dict[str, Any]) -> bool:
     """Xử lý callback ``hitl:*``. Trả True nếu đã tiêu thụ update (kể cả lỗi).
 
@@ -210,8 +310,12 @@ async def handle_hitl_callback(ctx: Any, update: dict[str, Any]) -> bool:
             await repo.record_hitl_decision(
                 pending_id=pending_id, decision=decision, actor=actor, channel="telegram",
             )
-        except Exception as exc:  # noqa: BLE001 — ledger phụ trợ, CRAT mới là chain
-            logger.warning("hitl: ledger persist fail id=%s err=%s", pending_id, exc)
+        except Exception as exc:  # noqa: BLE001 — ledger phụ trợ, CRAT mới là chain fail-closed
+            # Fail LOUD ở mức ERROR: CRAT ở trên đã ghi thành công nên quyết định của
+            # người vẫn có hiệu lực — nhưng 0-row ở đây nghĩa là pending không tồn tại
+            # trong hitl_decision (producer thiếu create_hitl_pending() hoặc pending đã
+            # hết hạn), một bất thường thật cần biết, không phải nhiễu WARNING thường lệ.
+            logger.error("hitl: ledger persist FAILED id=%s err=%s", pending_id, exc)
 
     # ── Sổ ca: phán quyết của NGƯỜI là tín hiệu học mạnh nhất ───────────────
     # Trước đây approve/reject chỉ vào CRAT rồi bị vứt — không gì đọc lại để biết

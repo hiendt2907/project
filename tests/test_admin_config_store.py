@@ -191,8 +191,20 @@ class _FakeConn:
         if "UPDATE omni_admin.tenant_api_key SET status='revoked'" in sql:
             s.api_key[args[0]].update(status="revoked")
             return "UPDATE 1"
+        if "INSERT INTO omni_admin.hitl_decision" in sql:
+            pid, tenant, tool, risk, tier, channel = args
+            if pid in s.hitl:  # ON CONFLICT DO NOTHING — idempotent
+                return "INSERT 0 0"
+            s.hitl[pid] = {
+                "pending_id": pid, "tenant_id": tenant, "tool_name": tool,
+                "risk_class": risk, "tier_at_time": tier, "decision": "PENDING",
+                "channel": channel, "actor": None, "created_at": None, "decided_at": None,
+            }
+            return "INSERT 0 1"
         if "UPDATE omni_admin.hitl_decision SET decision=$2" in sql:
             pid, decision, actor, channel = args
+            if pid not in s.hitl:
+                return "UPDATE 0"
             s.hitl[pid].update(decision=decision, actor=actor, channel=channel)
             return "UPDATE 1"
         if sql.strip().startswith("RAISE"):
@@ -578,3 +590,58 @@ async def test_decide_hitl_rejects_unknown_pending(pool, redis):
     repo = AdminConfigRepo(pool, redis=redis)
     with pytest.raises(ValueError, match="không tồn tại"):
         await repo.decide_hitl(pending_id="ghost", decision="APPROVED", actor="op")
+
+
+# ── #27: create_hitl_pending phải là INSERT gốc còn thiếu; record_hitl_decision
+# phải fail loud (không còn UPDATE 0-row im lặng) ────────────────────────────
+
+
+async def test_create_hitl_pending_inserts_pending_row(pool, redis):
+    """Trước bản vá: không nơi nào INSERT — bảng hitl_decision vĩnh viễn trống dù
+    CRAT ghi HITL_ESCALATION_EMITTED thật. Đây là INSERT gốc còn thiếu."""
+    repo = AdminConfigRepo(pool, redis=redis)
+    await repo.create_hitl_pending(
+        pending_id="mut-trace-1", tenant_id="acme", tool_name="k8s_delete_pod",
+        risk_class="HIGH", tier_at_time="auto",
+    )
+    row = pool.store.hitl["mut-trace-1"]
+    assert row["decision"] == "PENDING"
+    assert row["tool_name"] == "k8s_delete_pod"
+    assert row["tenant_id"] == "acme"
+
+
+async def test_create_hitl_pending_idempotent_on_retry(pool, redis):
+    """Escalation-emit có thể lặp lại (retry Kafka) với cùng pending_id — không
+    được ghi đè trạng thái đã có (vd đã APPROVED) bằng PENDING mới."""
+    repo = AdminConfigRepo(pool, redis=redis)
+    await repo.create_hitl_pending(
+        pending_id="mut-trace-2", tenant_id="acme", tool_name="k8s_delete_pod",
+        risk_class="HIGH", tier_at_time="auto",
+    )
+    await repo.decide_hitl(pending_id="mut-trace-2", decision="APPROVED", actor="op", tenant_id="acme")
+    # Retry của producer (CRAT/Kafka at-least-once) không được ghi đè APPROVED.
+    await repo.create_hitl_pending(
+        pending_id="mut-trace-2", tenant_id="acme", tool_name="k8s_delete_pod",
+        risk_class="HIGH", tier_at_time="auto",
+    )
+    assert pool.store.hitl["mut-trace-2"]["decision"] == "APPROVED"
+
+
+async def test_record_hitl_decision_updates_existing_pending(pool, redis):
+    repo = AdminConfigRepo(pool, redis=redis)
+    await repo.create_hitl_pending(
+        pending_id="tg-1", tenant_id="default", tool_name="k8s_rollout_restart",
+        risk_class="MEDIUM", tier_at_time="assist",
+    )
+    await repo.record_hitl_decision(pending_id="tg-1", decision="APPROVED", actor="sre")
+    assert pool.store.hitl["tg-1"]["decision"] == "APPROVED"
+    assert pool.store.hitl["tg-1"]["actor"] == "sre"
+
+
+async def test_record_hitl_decision_fails_loud_on_missing_pending(pool, redis):
+    """Trước bản vá: UPDATE 0-row bị except Exception: logger.warning nuốt ở
+    hitl_telegram.py — pipeline trông như chạy tốt trong khi chết 100%. Giờ phải
+    raise để caller fail loud (log ERROR) thay vì im lặng."""
+    repo = AdminConfigRepo(pool, redis=redis)
+    with pytest.raises(ValueError, match="không tồn tại"):
+        await repo.record_hitl_decision(pending_id="ghost-2", decision="APPROVED", actor="sre")

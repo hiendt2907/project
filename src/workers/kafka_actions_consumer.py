@@ -542,6 +542,7 @@ async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: di
     # một action của tenant A không thể dùng policy của tenant B.
     from workers.tier_gate import (
         ALLOW as _TG_ALLOW,
+        HITL as _TG_HITL,
         gate_decision_for_tool,
         effective_tier,
         resolve_tier,
@@ -594,6 +595,18 @@ async def _handle_execute_mutate(ctx: WorkerHandlerContext, trace: str, data: di
             "[%s] EXECUTE_MUTATE tier-gated tenant=%s tier=%s decision=%s risk=%s confidence=%s origin=%s tool=%s",
             trace, tenant_id, _tier, _decision, _risk, confidence_score, _origin, tool_name,
         )
+        if _decision == _TG_HITL:
+            # Trước đây HITL == từ chối im lặng, không nơi nào tạo cơ hội cho người
+            # duyệt (#27). Mở pending thật — không đổi hành vi mặc định (mutate vẫn
+            # không tự chạy ở đây), chỉ thêm đường Telegram để người chủ động duyệt.
+            from workers.hitl_telegram import open_hitl_pending_for_mutate
+            try:
+                await open_hitl_pending_for_mutate(
+                    ctx, trace=trace, tenant_id=tenant_id, tool_name=tool_name,
+                    args=args, risk_class=_risk, tier=_tier,
+                )
+            except Exception:  # noqa: BLE001 — best-effort; skip+feedback ở trên đã fail-safe
+                logger.exception("[%s] open_hitl_pending_for_mutate failed tool=%s", trace, tool_name)
         return
 
     if await _is_rate_limited(ctx, tool_name, args):

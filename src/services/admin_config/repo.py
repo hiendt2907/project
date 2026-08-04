@@ -508,6 +508,38 @@ class AdminConfigRepo:
                 )
         return {"tenant_id": tenant_id, "telegram_chat_id": chat_id}
 
+    async def create_hitl_pending(
+        self,
+        *,
+        pending_id: str,
+        tenant_id: str,
+        tool_name: str,
+        risk_class: str,
+        tier_at_time: str,
+        channel: str = "telegram",
+    ) -> None:
+        """INSERT dòng PENDING gốc cho 1 mutate cần người duyệt.
+
+        Trước khi có hàm này, KHÔNG nơi nào trong repo từng INSERT vào
+        ``hitl_decision`` — chỉ có UPDATE (record_hitl_decision/decide_hitl), nên
+        UPDATE luôn no-op 0-row và bảng vĩnh viễn trống dù CRAT ghi
+        HITL_ESCALATION_EMITTED thật. ON CONFLICT DO NOTHING: idempotent nếu
+        escalation-emit lặp lại (retry Kafka) với cùng pending_id.
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO omni_admin.hitl_decision "
+                "(pending_id, tenant_id, tool_name, risk_class, tier_at_time, "
+                "decision, channel) VALUES ($1, $2, $3, $4, $5, 'PENDING', $6) "
+                "ON CONFLICT (pending_id) DO NOTHING",
+                pending_id,
+                tenant_id,
+                tool_name,
+                risk_class,
+                tier_at_time,
+                channel,
+            )
+
     async def record_hitl_decision(
         self,
         *,
@@ -517,15 +549,28 @@ class AdminConfigRepo:
         channel: str = "telegram",
         tenant_id: str = "default",
     ) -> None:
-        """Cập nhật hitl_decision ledger (UI query nhanh; CRAT vẫn là chain bất biến)."""
+        """Cập nhật hitl_decision ledger (UI query nhanh; CRAT vẫn là chain bất biến).
+
+        Raises ValueError nếu pending_id không tồn tại (UPDATE 0-row). Trước đây
+        call site nuốt mọi Exception ở mức WARNING nên 0-row trông y hệt DB tạm
+        thời chậm — giờ create_hitl_pending() đã đóng vòng producer, một 0-row ở
+        đây là bất thường thật (pending bị xoá/hết hạn trước khi người bấm, hoặc
+        producer không gọi create_hitl_pending) và phải nổi rõ cho caller quyết
+        định log mức nào.
+        """
         async with self._pool.acquire() as conn:
-            await conn.execute(
+            status = await conn.execute(
                 "UPDATE omni_admin.hitl_decision SET decision=$2, actor=$3, "
                 "channel=$4, decided_at=now() WHERE pending_id=$1",
                 pending_id,
                 decision,
                 actor,
                 channel,
+            )
+        if status == "UPDATE 0":
+            raise ValueError(
+                f"hitl_decision pending_id={pending_id!r} không tồn tại (UPDATE 0-row) — "
+                "pending có thể chưa từng được create_hitl_pending() hoặc đã hết hạn"
             )
 
     async def record_advisory_acknowledgment(
