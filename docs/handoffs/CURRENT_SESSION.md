@@ -1,6 +1,6 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-04 (Đ29 — Sửa 3 root cause #38/#39/#40 tìm được ở Đ28, deploy sống, phát hiện thêm `#41`, đang chạy lại drill lần 2 để xác nhận /goal.) · **Branch:** `main` · **HEAD:** `43fcfa8` (**ĐÃ PUSH**) · **Working tree:** sạch
+**Cập nhật:** 2026-08-04 (Đ30 — 🎉 `/goal` ĐẠT ĐƯỢC THẬT: 1 sự cố đi trọn từ phát hiện → chẩn đoán → tự khắc phục có xác minh, KHÔNG cần người. + dọn Redis 317K→6K key.) · **Branch:** `main` · **HEAD:** `43fcfa8` (**ĐÃ PUSH**) · **Working tree:** sạch
 
 ## 🔧 Đ29 — "Xử lý luôn đi": sửa #38/#39/#40, deploy, chạy lại drill lần 2
 
@@ -47,14 +47,77 @@ Baseline reset: `orb -m cust-app sudo systemctl start payment-api` (active) → 
 + chẩn đoán + (hy vọng) tự khắc phục với 3 fix mới. **Đây là bằng chứng cuối cùng cho `/goal`** — có
 đủ để LLM hoàn tất 8 turn (hoặc ít hơn) mà không bị timeout/quá tải như lần 1 không.
 
-### Next step (nếu session bị ngắt giữa chừng)
-1. Kiểm tra kết quả drill lần 2: `kubectl -n multi-agent logs <pod omni-fullstack> --since=30m | grep -i payment-api` +
-   `orb -m cust-app systemctl is-active payment-api` (nếu `active` = tự khắc phục THÀNH CÔNG).
-2. Nếu vẫn treo/timeout: kiểm tra thêm có phải do quá nhiều tenant `tier=auto` cùng lúc vẫn gây
-   nghẽn dù đã giảm `OMNI_LLM_NUM_PARALLEL=1` (giảm concurrency KHÔNG giảm được tổng số request cần
-   xử lý, chỉ giảm số chạy song song — hàng đợi vẫn có thể rất sâu nếu traffic tổng quá lớn).
-3. Quyết định `#41` (manifest vs override tay).
-4. `#33`–`#36` (Smart SIEM merge) vẫn chưa bắt đầu, độc lập với nhánh này.
+---
+
+## 🎉 Đ30 — `/goal` ĐẠT ĐƯỢC THẬT: 1 sự cố đi trọn đời, tự khắc phục có xác minh
+
+User: "dừng 2 task running, xóa queue trong kafka, redis, sau đó chạy test lại. được thì cleanup dữ
+liệu luôn" — rồi tiếp tục theo dõi qua nhiều lượt drill.
+
+### Dọn dữ liệu (đã làm, xác nhận an toàn)
+
+- **Kafka**: kiểm `kafka-consumer-groups.sh --describe --all-groups` — **LAG=0 ở MỌI consumer
+  group**. Không có hàng đợi nào kẹt cần xoá. "Nhiều dữ liệu" user thấy là log tích luỹ theo
+  retention nhiều tuần, không phải nghẽn.
+- **Redis**: DBSIZE 317.056 → root cause **`omni:onboarding:diagram:{tenant}:v{N}` rò rỉ 310.939
+  key** (đúng bug đã log sẵn ở `#22`: không TTL, version tự tăng vô hạn — `staging-sim` 188.781
+  bản, `tenant-replay-01` 122.153 bản, 98% toàn bộ DBSIZE). Đã dọn: giữ 50 bản gần nhất/tenant, xoá
+  310.832 key qua UNLINK theo batch. **DBSIZE sau: 6.270** (giảm 98%). Xác nhận KHÔNG đụng: RAG SOP
+  (HLEN 1019), audit_chain (seq 2964 global / 219 staging-sim), tier config (`auto`), 3sigma
+  confidence (100), con trỏ `diagram:*:latest`. `#22` CHƯA fix code (vẫn sẽ rò rỉ lại) — chỉ dọn
+  dữ liệu 1 lần, đã ghi rõ trong task.
+
+### Drill lần 3 — THÀNH CÔNG HOÀN TOÀN, có bằng chứng đầu-cuối
+
+Sau khi lần 1 (chưa fix) và lần 2 (đã fix #38/#39/#40 nhưng Ollama vẫn timeout đúng 120s ở CẢ 2
+lượt) đều thất bại, phát hiện: `OMNI_LLM_TIMEOUT_SEC` (env `OMNI_LLM_TIMEOUT_SEC`, field
+`llm_chat_timeout_sec`, max cho phép 300) mặc định 120 không đủ cho tải thật hiện tại → nâng lên
+**240**. Đồng thời phát hiện lý do "chờ mãi không thấy trace mới": dedup theo nội dung fact
+(`payment-api: inactive`) **không có TTL** (`TTL=-1`) — thiết kế đúng (tránh spam khi trạng thái
+không đổi), phải tạo transition mới (`start` rồi `stop` lại) mới có evidence mới.
+
+**Kết quả trace `ra-3176e7d9f3cb`** (04:43:09Z):
+```
+turn=1: duration_ms=349501.7 outcome=ok   (vượt 240s NHƯNG thành công — read-timeout httpx tính
+turn=2: duration_ms=434657.9 outcome=ok    theo khoảng lặng giữa chunk, không phải tổng thời lượng,
+[diag-loop] COMPLETE turn=2 confidence=0.75                nên stream có dữ liệu đều KHÔNG bị cắt)
+case_ledger mở ca (#28) → CRAT ADVISORY_DECISION (seq=221) → Telegram gửi
+→ CRAT ADVISORY_DISPATCHED (seq=222)
+→ auto_recovery_bridge: event=auto_recovery_dispatched unit=payment-api.service
+  command_id=cmd-b8b46c2f88e64c6f state=QUEUED http=200
+```
+
+**Xác nhận cuối — Postgres `agent_command_outcome`**:
+```json
+{"state": "COMPLETED", "outcome": {"rc": 0, "status": "recovered", "verified": true,
+ "evidence": ["before=inactive", "service_health=ok", "dependents=n/a"]}}
+```
+**`orb -m cust-app systemctl is-active payment-api` → `active`.** Sự cố được chẩn đoán ĐÚNG và xử
+lý HOÀN TẤT, hoàn toàn tự động, có xác minh ở mọi bước — không một khâu nào là suy đoán.
+
+### Ý nghĩa: chuỗi nhân quả Đ28→Đ30 đã đóng vòng tròn
+
+Mọi finding từ Đ28 (`#38` Ollama `-np 1`, `#39` max_retries ẩn, `#40` silent skip) đều được sửa và
+**verify bằng chính kết quả cuối cùng**, không chỉ bằng unit test: `#39` xác nhận qua log `outcome=
+ok` dù duration vượt cấu hình (hiểu đúng semantics httpx read-timeout); `#40` không còn liên quan
+vì lần này suggested_recovery CÓ giá trị thật; `#38` giảm nhẹ nhờ `OMNI_LLM_NUM_PARALLEL=1` + nâng
+`OMNI_LLM_TIMEOUT_SEC=240` — nhưng gốc rễ năng lực Ollama (`-np 1`) vẫn còn, chỉ đang được bù bằng
+config, chưa giải quyết triệt để (xem `#38`).
+
+### Env cuối cùng đang sống trên `omni-fullstack` (đã verify qua API/exec, KHÔNG phải file)
+`OMNI_LLM_NUM_PARALLEL=1` · `OMNI_MIN_DISPATCH_CONFIDENCE=0.3` · `OMNI_LLM_TIMEOUT_SEC=240` ·
+`OMNI_EXECUTOR_FORCE_NSENTER=false` · `OMNI_LAB_AUTO_EXECUTE_AGENTS` gồm cả `tenant-replay-01_*`.
+**Không có commit code mới ở Đ30** — toàn bộ là data cleanup + config tuning trên cluster.
+
+### Next step
+1. `#38` vẫn CHƯA giải quyết triệt để — mới đang bù bằng `OMNI_LLM_TIMEOUT_SEC=240` +
+   `OMNI_LLM_NUM_PARALLEL=1`, không phải tăng năng lực thật. Ollama `-np 1` là giới hạn phần cứng/
+   host-config ngoài phạm vi repo — cần user quyết định có tăng `-np` trên máy host không.
+2. `#41` (manifest reset `OMNI_EXECUTOR_FORCE_NSENTER`) vẫn chưa quyết định thay mặt user.
+3. `#22` mới dọn dữ liệu 1 lần — code CHƯA fix, sẽ rò rỉ lại nếu không thêm bound/TTL.
+4. `#33`–`#36` (Smart SIEM merge, plan Đ25) vẫn chưa bắt đầu, độc lập với nhánh này.
+5. Case `ra-3176e7d9f3cb` trong `case_ledger` vẫn `UNJUDGED` — chờ người bấm nút Telegram (đúng
+   thiết kế #28, không phải lỗi) để hoàn tất vòng học.
 
 ## 🔬 Đ28 — Commit/push/deploy Đ27 + drill sự cố thật, soi qua Loki/Tempo — TÌM THÊM 2 BUG THẬT
 
