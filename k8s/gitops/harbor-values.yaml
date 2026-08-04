@@ -5,7 +5,11 @@
 #
 # ClusterIP only, no public ingress — explicit request 2026-08-04: only ArgoCD
 # stays public from the GitOps toolchain, everything else moves back to
-# cluster-internal. Reach it via `kubectl port-forward -n harbor svc/harbor-portal 8080:80`.
+# cluster-internal. Reach it via `kubectl port-forward -n harbor svc/harbor 8080:80` —
+# that's the chart's nginx reverse-proxy Service (fronts core+portal, routes
+# /v2, /api, /service to harbor-core). `svc/harbor-portal` only backs the
+# static web console and does NOT proxy the registry API — port-forwarding to
+# it directly breaks `docker login`/push/pull.
 expose:
   type: clusterIP
   tls:

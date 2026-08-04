@@ -24,6 +24,12 @@ Sự thật đã khảo sát, không suy diễn (2026-08-04):
   public `136.85.2.181`) chạy k3s single-node, đã verify sống: 6 domain HTTPS thật
   (`gateway/provider/tenant/dex/registry/argocd/grafana/prometheus/vault.omnisre.xyz`),
   cert Let's Encrypt thật qua cert-manager, không phải self-signed lab CA.
+  **Lỗi thời từ commit `a31aeb0` (cùng ngày, sau ADR này)**: `registry.omnisre.xyz` và
+  `vault.omnisre.xyz` đã rút ingress công khai, quay lại ClusterIP-only theo yêu cầu
+  "chỉ ArgoCD public" — chỉ còn `argocd.omnisre.xyz` cùng
+  `gateway/provider/tenant/dex/grafana/prometheus.omnisre.xyz` là public thật. Truy cập
+  Harbor/Vault UI nay qua `kubectl port-forward` (xem comment trong
+  `k8s/gitops/harbor-values.yaml`).
 - Toàn bộ pipeline CI/CD (Gitea + Jenkins, 13 lần build) là **reproducible từ đầu**
   qua Jenkinsfile — không phải trạng thái vá tay một lần không lặp lại được.
 - `app.omnisre.xyz` (Cloudflare Tunnel từ ADR 0001) **vẫn đang chạy song song**
