@@ -230,6 +230,24 @@ pipeline {
       }
     }
 
+    stage('Deploy OrbStack-parity gaps (alertmanager/backup/CRAT/tempo)') {
+      steps {
+        sh '''
+          set -e
+          # Ported from the OrbStack lab so GCP has full parity before the lab is
+          # retired (task: tắt OrbStack hẳn luôn) — without these, turning OrbStack
+          # off would silently lose Postgres backups and CRAT audit-chain integrity
+          # checks, both compliance/durability-relevant, not just nice-to-have.
+          kubectl apply -f k8s/chaos-test/alertmanager.yaml
+          kubectl apply -f k8s/deployments/omni-postgres-backup-cronjob.yaml
+          kubectl apply -f k8s/monitor/tempo.yaml
+          # GCP variant only differs in serviceAccountName (omni-fullstack, not
+          # omni-worker — the lab SA name doesn't exist in omni-fullstack-rbac.yaml).
+          kubectl apply -f k8s/jobs/crat-integrity-check-cronjob.gcp.yaml
+        '''
+      }
+    }
+
     stage('Deploy Vaultwarden + monitoring BasicAuth') {
       steps {
         sh '''
