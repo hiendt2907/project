@@ -1,6 +1,193 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-04 (Đ24 — Triển khai Phase A+B của plan Đ23: #27/#28/#29/#30 code+test+deploy xong. User đi vắng, tự chủ thực thi có ghi rõ mọi quyết định phạm vi.) · **Branch:** `main` · **HEAD:** `7618d2e` (CHƯA PUSH) · **Working tree:** sạch (4 commit mới, xem dưới)
+**Cập nhật:** 2026-08-04 (Đ27 — Sửa vòng học chỉ nhận nhãn THÀNH CÔNG + đưa ngưỡng confidence ra env.) · **Branch:** `main` · **HEAD:** `61d94fe` (**CHƯA PUSH — 5 commit**) · **Working tree:** 5 file chưa commit (xem Đ27)
+
+## 🔁 Đ27 — "Mọi lỗi đều mới, phải chạy thật/sai thật để học"
+
+User chỉ ra mâu thuẫn cấu trúc: **độ tin cậy đến TỪ kinh nghiệm, kinh nghiệm đến TỪ hành động** —
+chặn hành động bằng ngưỡng tin cậy là khoá vĩnh viễn vòng học ở trạng thái chưa từng học.
+
+### Phát hiện: ngưỡng 0.75 chỉ là triệu chứng, bệnh nằm sâu hơn
+
+`remote_command_outcome_loop.py` (dòng ~274 cũ):
+```python
+if ok:
+    await _upsert_action_experience_on_success(...)
+```
+**Hệ thống chỉ học khi THÀNH CÔNG.** Thất bại chỉ `mark_stage("fail")` rồi vứt — tên hàm nói thẳng
+`..._on_success`. ⇒ Nếu chỉ hạ ngưỡng thì kết quả là *hành động nhiều hơn, sai nhiều hơn, học thêm
+bằng 0*. Cùng lớp bug với memory `project_learning_loop_broken_labels` ("vòng học chỉ nhận nhãn KHEN").
+
+Bằng chứng định lượng (`omni_admin.agent_command_outcome`): **3/15 outcome gần nhất là FAILED** với
+lý do rất giàu thông tin — `unsupported_capability: không có operator cho ('failed_state_stale','systemd')`,
+`capability_authorized: failure_mode/substrate ngoài capability agent`, `payload_hash_mismatch` —
+tất cả biến mất không dấu vết.
+
+### 2 thay đổi code
+
+**1. Học từ thất bại** (`src/workers/remote_command_outcome_loop.py`)
+`_upsert_action_experience_on_success` → `_upsert_action_experience(..., ok: bool)`, gọi cho CẢ hai
+chiều. Nhánh hỏng ghi `exec_outcome="fail"`, `auto_execute=False`, `verification_result="fail"`,
+thêm `failure_reason`.
+
+⚠️ **Vì sao an toàn** (test cũ khẳng định "thất bại KHÔNG được ghi gì", lý do chính đáng: đừng dạy
+lặp lại cách sửa sai): `known_fix_resolver.find_known_fix_candidate` (~dòng 146) **vốn đã lọc**
+`exec_outcome != "success"`, nên bài học hỏng KHÔNG BAO GIỜ thành ứng viên sửa lỗi — nó chỉ vào ngữ
+cảnh RAG cho LLM đọc. `auto_execute=False` là lớp chặn thứ hai. Thiết kế vốn đã lường trước điều
+này: `execution/experience.py` ghi `exec_outcome:"fail"` ở đường khác, `redis_vector_store` còn đếm
+`unique_fail_patterns`. Chỉ riêng đường remote bỏ sót.
+
+Test đổi hợp đồng: 2 test cũ (`..._does_not_upsert_...`) thay bằng 3 test mới, trong đó
+`test_failed_experience_is_never_returned_as_a_fix_candidate` chứng minh **trực tiếp** tính an toàn
+thay vì gián tiếp bằng "không ghi gì".
+
+**2. Ngưỡng confidence ra env** (`src/workers/auto_recovery_bridge.py`)
+`_MIN_DISPATCH_CONFIDENCE = 0.75` hardcode → hàm `min_dispatch_confidence()` đọc env
+`OMNI_MIN_DISPATCH_CONFIDENCE`. Đọc thẳng `os.environ` theo đúng quy ước `lab_auto_execute_agents()`
+(không qua WorkerSettings, để test/harness không vượt qua được). **Mặc định vẫn 0.75**; giá trị
+rác/ngoài `[0,1]` → về mặc định (fail-safe, không ngầm mở toang). Log rõ khi skip vì ngưỡng.
+
+**CHƯA hạ ngưỡng** — chỉ làm nó chỉnh được. Chờ user chốt con số (advisory thật hiện có confidence
+0.0 / 0.3 / 0.75 ⇒ đặt 0.3 sẽ cho thử hầu hết sự cố mới).
+
+### Files changed (chưa commit)
+```
+ M src/workers/remote_command_outcome_loop.py
+ M src/workers/auto_recovery_bridge.py
+ M tests/test_remote_command_outcome_learning.py
+ M tests/test_auto_recovery_bridge.py
+?? plans/finguard-to-smart-siem-merge-2026-08-04.md   (từ Đ25)
+```
+
+### Verify
+Full suite **7340 passed**, 11 deselected (+6 test mới so với 7334 ở Đ24). `make lint-imports`:
+2 kept, 0 broken. **Chưa deploy** — thay đổi code này chưa lên cluster.
+
+### Blast radius vẫn còn nguyên 4 lớp (không đụng tới)
+`_SUPPORTED_CAPABILITIES` (chỉ vài lệnh systemd) · `lab_auto_execute_agents()` (3 VM lab) ·
+verify sau thực thi phía agent · rollback tự động (`OMNI_AUTO_ROLLBACK_ENABLED=true`).
+
+### Next step
+1. **User chốt giá trị `OMNI_MIN_DISPATCH_CONFIDENCE`** (đề xuất 0.3 cho lab) rồi
+   `kubectl set env deployment/omni-fullstack OMNI_MIN_DISPATCH_CONFIDENCE=<x>`.
+2. `make deploy-fullstack` để đưa 2 thay đổi code này lên cluster + verify sống.
+3. Push 5 commit Đ24 + commit Đ25/Đ27.
+4. Bắt đầu `#33` (S0 — dọn FinGuard).
+
+---
+
+
+## 🔓 Đ26 — Mở quyền thực thi (full mutate) trên lab
+
+User tách rõ 2 việc: Smart SIEM là *tính năng* (plan Đ25, task `#33`–`#36`); còn *policy/limit chặn
+thực thi* thì "tạm tắt hoặc chuyển qua chế độ full mutate để hệ thống có thể xử lý được sự cố".
+
+### Đã tìm ra 2 mặt phẳng thực thi, cổng khác nhau hoàn toàn
+
+**Plane A — K8s in-cluster** (`omni-actions` → `kafka_actions_consumer` → `run_execute_mutate_tool`)
+**Plane B — VM khách** (`auto_recovery_bridge.dispatch_if_eligible` → gateway command channel → agent)
+
+Trước khi mở, Plane A **deadlock hoàn toàn**: tier `default`=shadow ⇒ mọi mutate → SUGGEST; và kể cả
+nếu tier=auto thì `OMNI_EXECUTOR_FORCE_NSENTER=true` (`autonomous_execute.py:156`) chặn cứng MỌI
+mutate tool trừ `kubectl_cluster`, mà `kubectl_cluster` là BREAK_GLASS ⇒ luôn HITL. Tức **không
+mutate nào có thể tự chạy in-cluster**, bằng bất kỳ đường nào.
+
+### 5 thay đổi đã thực hiện (config/DB, KHÔNG đụng code)
+
+| # | Thay đổi | Đường thực hiện | Trước → Sau |
+|---|---|---|---|
+| 1 | Tier `default` | `POST /autonomy/tier` (audited, CRAT) | shadow → **auto** |
+| 2 | Tier `staging-sim`, `tenant-replay-01` | như trên | shadow/assist → **auto** |
+| 3 | `aoip_mutation_enabled` cho `default`, `tenant-replay-01` | `POST /autonomy/mutation` (audited) | false → **true** (staging-sim vốn đã true) |
+| 4 | `OMNI_EXECUTOR_FORCE_NSENTER` | `kubectl set env` + rollout | true → **false** |
+| 5 | `tenant_plan.autonomy_ceiling` 3 tenant | **UPDATE thẳng PG** (không có endpoint gateway) | assist → **auto** |
+
+⚠️ **Điểm #5 là cái bẫy tinh vi nhất**: `resolve_tier` áp `_apply_plan_ceiling` (`tier_gate.py:196`)
+**SAU** khi đọc Redis/PG. Đã set tier=auto ở cả Redis lẫn PG mà API vẫn trả `assist`, vì
+`tenant_plan.autonomy_ceiling='assist'` ép xuống. Ai debug tier trong tương lai phải kiểm bảng
+`tenant_plan` TRƯỚC, không chỉ Redis cache.
+
+### Verify sống sau khi mở
+- `GET /autonomy/tier` trả `auto` cho **cả 3 tenant** (kiểm qua API, không đọc config)
+- Pod mới: `OMNI_EXECUTOR_FORCE_NSENTER=False` hiệu lực trong `WorkerSettings`, `auto_execute=True`,
+  `shadow_os_mode=False`, `siem_suggest_only=False`; **Restart Count=0**, 0 traceback/CRITICAL
+
+### CỐ Ý KHÔNG tắt (vì không phải cổng chặn thực thi)
+- **CRAT fail-closed** — không chặn hành động; nó chỉ bắt *ghi audit trước khi hành động*. Tắt đi
+  không mở thêm được gì, mà mất luôn nguồn nhãn của vòng học vừa dựng ở Đ24.
+- **HIGH-risk → HITL** — nay là đường *hoạt động thật* (nhờ `#27`): có nút Telegram, bấm là chạy.
+  Trước Đ24 nó là ngõ cụt im lặng, giờ là 1 chạm.
+- **blast-radius** — `omni_blast_radius_enabled` mặc định `False`, vốn đã không bật.
+
+### Limit CÒN LẠI (hardcode trong source → task `#37`)
+`_MIN_DISPATCH_CONFIDENCE = 0.75` (`auto_recovery_bridge.py:37`). Audit CRAT cho thấy chẩn đoán thật
+của `staging-sim` có confidence 0.0 / 0.3 / 0.75 ⇒ **phần lớn vẫn dưới ngưỡng, không dispatch** dù mọi
+cổng khác đã mở. Không tự hạ: đây là ngưỡng chống hành động dựa trên chẩn đoán ảo (audit đã bắt được
+`confidence_inflation` thật 0.0→0.65). Cần user quyết: đưa ra env? hạ còn bao nhiêu?
+
+### Cách revert (nếu cần)
+`POST /autonomy/tier` về `shadow` · `POST /autonomy/mutation` `enabled=false` ·
+`kubectl set env deployment/omni-fullstack OMNI_EXECUTOR_FORCE_NSENTER=true` ·
+`UPDATE omni_admin.tenant_plan SET autonomy_ceiling='assist'`.
+
+### Next step
+1. Quyết `#37` (ngưỡng confidence) — đây là thứ duy nhất còn chặn tự khắc phục sự cố VM khách.
+2. Push 5 commit Đ24 + commit plan Đ25.
+3. Bắt đầu `#33` (S0 — dọn FinGuard).
+
+---
+
+
+## 🎯 Đ25 — Gộp FinGuard thành Smart SIEM nội bộ: khảo sát + plan (chưa code)
+
+User: "FinGuard giờ là 1 tính năng smart siem của hệ thống. Gộp nó lại cho đúng đi. /goal mọi sự cố
+đều phải được xử lý, bỏ qua mọi policy đang cấm nó xử lý, cái gì còn thiếu hay chưa rõ thì hỏi lại
+rồi lên plan trước cho tôi."
+
+### ⚠️ Phát hiện làm đổi bản chất yêu cầu — SIEM không bị policy chặn, nó KHÔNG CÓ DỮ LIỆU VÀO
+
+| Thành phần | Trạng thái thật (đã kiểm cluster/Kafka/Redis) |
+|---|---|
+| Namespace `finguard-customer` | **KHÔNG TỒN TẠI** |
+| `omni-siem-bridge`/`omni-hitl-dispatcher`/`omni-evidence-adapter` | **0/0 replicas**, cả 3, 109 ngày |
+| Redis `corr:*` | **0 key** — correlation engine chưa từng chạy với dữ liệu thật |
+| Topic `omni-siem-raw` | Tồn tại; producer duy nhất là `siem_bridge` (scaled-0, đọc Redis namespace đã xoá) |
+| Topic `omni-siem-incidents` | **Không tồn tại** dù `kafka_ensure_omni_topics.sh:82` có khai |
+| Collector security trên Remote Agent | **Không có file nào** — không auth.log/lastb/sshd/audit |
+
+Engine xử lý đã đủ và tốt (`siem_correlation` parity PASS → `omni-siem-chains` → `ChainConsumer` →
+advisory → `PlaybookMatcher` → CRAT) nhưng chờ một đầu vào không bao giờ đến. Đây là lý do domain
+`security` trong bảng 9-domain vẫn ❌. **Gỡ policy sẽ KHÔNG làm thêm sự cố nào được xử lý.**
+
+### 4 quyết định user đã chốt (qua AskUserQuestion, đều chọn phương án đề xuất)
+
+1. **Nguồn SIEM** = security collector trên Remote Agent (không phải HTTP ingress cho SIEM ngoài).
+2. **Phạm vi bỏ policy** = CHỈ policy legacy-FinGuard. **GIỮ** CRAT fail-closed, blast-radius,
+   `INV_NAMESPACE_ISOLATION`, HITL HIGH-risk. Lý do kỹ thuật đã trình bày: CRAT là nguồn nhãn duy
+   nhất của vòng học vừa dựng ở Đ24 — bỏ nó là mất chính khả năng tự học mà `/goal` đòi.
+3. **3 deployment chết** = xoá hẳn, gộp vào `omni-fullstack`.
+4. **Residency** = giữ `INV_DATA_RESIDENCY`, chỉ metadata + entity allowlist.
+
+### Deliverable: `plans/finguard-to-smart-siem-merge-2026-08-04.md` (CHƯA COMMIT)
+
+4 phase, tasks `#33`–`#36`: **S0** dọn (xoá 3 deployment + `hitl_dispatcher`/`siem_bridge`, sửa
+`gateway/routes/playbooks.py` đang gọi API chết → 502 chắc chắn, bỏ gate `siem_source=="finguard"` ở
+`matcher.py:102` + `OMNI_SIEM_SUGGEST_ONLY`) → **S1** `collectors/security.py` → **S2** rẽ
+`domain=security` sang `omni-siem-raw` tại `agent_webhook.py` → **S3** drill SSH brute-force thật
+trên `cust-edge`, nghiệm thu bằng truy vấn từng mắt xích.
+
+Hai điểm thiết kế đáng chú ý: (a) `omni-hitl-dispatcher` nay **thừa thật** vì HITL nội bộ `#27` đã
+deploy sống — xoá không mất năng lực nào; (b) giữ residency mà **không phải sửa engine**: agent
+chuẩn hoá `key=value` khớp allowlist sẵn có (`entities.py:36`) ngay trên host khách, `raw_log` rỗng,
+nên `extract_entities()` chạy nguyên vẹn.
+
+### Next step
+
+1. **Quyết định push**: 5 commit Đ24 (`d9f7278`→`61d94fe`) vẫn chưa push, cộng plan Đ25 chưa commit.
+2. Bắt đầu `#33` (S0) — độc lập, không rủi ro, không chờ gì.
+
+---
+
 
 ## 🎯 Đ24 — Triển khai #27/#28/#29/#30 (Phase A+B), deploy sống, chưa push
 
