@@ -407,9 +407,25 @@ EXPLORE → PLAN → VERIFY → GIT. CI/CD loop tự động trong Lab.
 
 **Standing authorization (2026-08-04, GCP VM, full CI/CD có sẵn):** với hạ tầng đã có CI/CD đầy đủ
 (Gitea → Jenkins build/rollout, ArgoCD drift-detect, rollback được qua `kubectl rollout undo` /
-revert commit), **mỗi thay đổi code/docs được quyền tự `git commit` + `git push origin main`**
+revert commit), **mỗi thay đổi code/docs được quyền tự `git commit` + push lên CẢ HAI remote**
 ngay sau khi verify xong (test/lint pass, hoặc với doc/comment-only change: đọc lại diff cho khớp
 ý), KHÔNG cần hỏi lại xác nhận commit mỗi lần — vì lỗi triển khai đã có đường rollback an toàn.
 Vẫn áp dụng nguyên Git Safety Protocol ở system prompt cho các thao tác phá hoại/khó đảo ngược
-(force-push, reset --hard, xoá branch, sửa lịch sử) — những thao tác đó vẫn phải hỏi trước. `#` để
-ghi rule mới vào đây.
+(force-push, reset --hard, xoá branch, sửa lịch sử) — những thao tác đó vẫn phải hỏi trước.
+
+**Hai remote, hai mục đích khác nhau (2026-08-04, Đ34) — PHẢI push cả hai, không phải chọn một:**
+- `git push gitea main` → Gitea nội bộ (`http://100.67.117.19:30300/hiendang/project.git`,
+  namespace `cicd` TRÊN CHÍNH VM GCP) — đây là nguồn Jenkins/ArgoCD build & deploy thật.
+- `git push origin main` → GitHub (`git@github.com:hiendt2907/project.git`) — bản lưu trữ ĐỘC LẬP
+  khỏi GCP, sống sót nếu VM/credit GCP mất. Gitea chạy trong chính cluster đang được deploy nên
+  KHÔNG thể coi là backup của chính nó.
+- Gotcha đã xảy ra thật: 21 commit (toàn bộ quá trình migrate GCP — Harbor/ArgoCD/Vault/
+  Vaultwarden/Istio/Dex/monitoring) chỉ được push `gitea`, GitHub bị bỏ quên suốt — nếu GCP mất
+  trước khi phát hiện, GitHub sẽ chỉ còn bản rất cũ. Luôn `git push gitea main && git push origin
+  main` cùng lúc, không chỉ push một bên.
+- Submodule `smart-siem`: `.gitmodules` trỏ Gitea nội bộ (để ArgoCD repo-server clone được không
+  cần token GitHub — repo GitHub gốc là private, gây `ComparisonError` cho app `omni-core` trước
+  Đ34) nhưng repo GitHub `hiendt2907/smart-siem` vẫn giữ song song làm backup, cũng cần push cả
+  hai khi sửa code trong `smart-siem/`.
+
+`#` để ghi rule mới vào đây.
