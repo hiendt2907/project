@@ -36,12 +36,24 @@ pipeline {
         sh '''
           set -e
           kubectl apply -f k8s/deployments/namespace.yaml
+          # Single-tenant GCP node: omni-fullstack legitimately needs hostPID/privileged/SYS_ADMIN
+          # for its nsenter-based mutate path (OMNI_EXECUTOR_FORCE_NSENTER). The repo's namespace.yaml
+          # enforces "baseline" for the shared OrbStack lab; that blocks pod admission here, so this
+          # GCP-only pipeline relaxes enforcement on top of the applied manifest.
+          kubectl label namespace multi-agent pod-security.kubernetes.io/enforce=privileged --overwrite
           kubectl apply -f k8s/deployments/omni-postgres.yaml
           kubectl apply -f k8s/deployments/redis-standalone.yaml
           kubectl apply -f k8s/kafka/kafka-single.yaml
           kubectl apply -f k8s/deployments/omni-fullstack-rbac.yaml
           kubectl apply -f k8s/deployments/omni-worker-configmap.yaml
           kubectl apply -f k8s/deployments/omni-chaos-secret.yaml
+
+          # telegram-bot is not wired up in this environment; chat-id must still be a
+          # valid integer or WorkerSettings fails pydantic validation at startup.
+          kubectl create secret generic telegram-bot -n multi-agent \
+            --from-literal=bot-token='' --from-literal=chat-id='0' \
+            --dry-run=client -o yaml | kubectl apply -f -
+
           kubectl apply -f k8s/deployments/omni-gateway.yaml
           kubectl apply -f k8s/deployments/omni-fullstack.yaml
           kubectl apply -f k8s/deployments/omni-onboarding.yaml
