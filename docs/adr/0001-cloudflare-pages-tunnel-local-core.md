@@ -1,6 +1,9 @@
 # ADR 0001 — Cloudflare Pages + Tunnel, core giữ nguyên trên MacBook
 
-- **Trạng thái**: Accepted
+- **Trạng thái**: Superseded bởi [ADR 0002](0002-gcp-k3s-full-migration.md) (2026-08-04)
+  — core đã di dời sang GCP k3s, đúng lộ trình "Đường ra khi rời MacBook" ở cuối
+  ADR này. Nội dung bên dưới giữ nguyên làm ghi chép lịch sử, không phản ánh kiến
+  trúc đang chạy.
 - **Ngày**: 2026-07-29
 - **Người quyết định**: danghien2907@gmail.com
 - **Phạm vi**: mặt public của Omni. Không đụng kiến trúc core.
