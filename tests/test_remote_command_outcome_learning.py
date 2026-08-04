@@ -8,8 +8,13 @@ bền thành công — KHÔNG bao giờ upsert `action_experience`. Reflex mới
 đọc đúng collection đó nhưng collection trống cho capability class
 `systemd.*` — không có gì để nhớ lại. Test này khoá lại: một remote recovery
 verified thành công PHẢI ghi một điểm mà `find_known_fix_candidate` đọc lại
-được nguyên vẹn (round-trip write→read), và một remote recovery thất bại thì
-KHÔNG được ghi gì (không dạy hệ thống lặp lại một cách sửa đã biết là sai).
+được nguyên vẹn (round-trip write→read).
+
+Cập nhật 2026-08-04: thất bại nay CŨNG phải ghi (``exec_outcome="fail"``,
+``auto_execute=False``) — hệ thống chỉ học từ lần đúng thì không bao giờ biết
+cái gì KHÔNG dùng được. Tính an toàn "không lặp lại cách sửa đã sai" được chứng
+minh trực tiếp bằng `test_failed_experience_is_never_returned_as_a_fix_candidate`
+thay vì bằng việc không ghi gì cả.
 """
 from __future__ import annotations
 
@@ -173,18 +178,58 @@ async def test_upserted_point_round_trips_through_known_fix_resolver(ctx, audit_
     assert candidate.args == {"unit": "payment-api.service"}
 
 
-# ── 2. Failure must never teach a wrong fix ─────────────────────────────────
+# ── 2. Failure PHẢI được ghi lại — nhưng không bao giờ được đem ra áp dụng ───
+#
+# Đổi hợp đồng 2026-08-04. Bản cũ khẳng định thất bại "KHÔNG được ghi gì", với
+# lý do đúng: không dạy hệ thống lặp lại một cách sửa đã biết là sai. Nhưng cách
+# bảo đảm đó quá tay — nó cũng vứt luôn bài học. Đo thật: 3/15 outcome gần nhất
+# là FAILED với lý do rất giàu thông tin ("không có operator cho
+# ('failed_state_stale','systemd')") và tất cả biến mất không dấu vết, nên hệ
+# thống sẽ thử lại đúng cách sai đó mãi mãi.
+#
+# Tính an toàn nay được chứng minh TRỰC TIẾP thay vì bằng sự vắng mặt:
+# `find_known_fix_candidate` lọc `exec_outcome != "success"` (known_fix_resolver
+# ~dòng 146), nên điểm thất bại KHÔNG BAO GIỜ trở thành ứng viên sửa lỗi. Nó chỉ
+# nằm trong kho cho LLM đọc: "đã thử cách này, hỏng vì X".
 
-async def test_failed_command_does_not_upsert_action_experience(ctx, audit_ok):
+
+async def test_failed_command_upserts_experience_marked_as_failure(ctx, audit_ok):
     _seed(ctx, state="FAILED", rc=1)
     assert await rcol.reconcile_one(ctx, "t1", "cmd-1") == "done"
-    assert ctx.vector_store.upserts == []
+
+    assert len(ctx.vector_store.upserts) == 1, "thất bại phải để lại bài học"
+    payload = ctx.vector_store.upserts[0]["points"][0].payload
+    assert payload["exec_outcome"] == "fail"
+    assert payload["auto_execute"] is False, "bài học hỏng không được phép tự chạy lại"
+    assert payload["verification_result"] == "fail"
+    assert payload["failure_reason"], "phải giữ lý do hỏng để lần sau tránh"
 
 
-async def test_expired_command_does_not_upsert_action_experience(ctx, audit_ok):
+async def test_failed_experience_is_never_returned_as_a_fix_candidate(ctx, audit_ok):
+    """Bằng chứng an toàn cốt lõi: ghi bài học thất bại KHÔNG mở đường cho reflex
+    đem chính cách sửa đã hỏng ra dùng lại."""
+    _seed(ctx, state="FAILED", rc=1)
+    assert await rcol.reconcile_one(ctx, "t1", "cmd-1") == "done"
+
+    candidate, reason = await find_known_fix_candidate(
+        ctx,
+        query_text="payment-api service down on host cust-app",
+        score_threshold=0.5,
+        host_scope=frozenset({"payment-api.service"}),
+        valid_tools=arb._SUPPORTED_CAPABILITIES,
+    )
+    assert candidate is None, "cách sửa đã thất bại bị đem ra dùng lại"
+    assert reason != "ok"
+
+
+async def test_expired_command_upserts_experience_marked_as_failure(ctx, audit_ok):
     _seed(ctx, state="EXPIRED", rc=1)
     assert await rcol.reconcile_one(ctx, "t1", "cmd-1") == "done"
-    assert ctx.vector_store.upserts == []
+
+    assert len(ctx.vector_store.upserts) == 1
+    payload = ctx.vector_store.upserts[0]["points"][0].payload
+    assert payload["exec_outcome"] == "fail"
+    assert payload["auto_execute"] is False
 
 
 # ── 3. Learning write is best-effort, never breaks the outcome path ─────────

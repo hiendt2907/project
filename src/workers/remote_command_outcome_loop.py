@@ -127,25 +127,38 @@ def _args_hash(args: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
-async def _upsert_action_experience_on_success(
+async def _upsert_action_experience(
     ctx: Any, *, trace_id: str, command_id: str, capability: str, unit: str,
-    outcome: dict[str, Any],
+    outcome: dict[str, Any], ok: bool,
 ) -> None:
     """Teach the reflex (``remote_known_fix.try_remote_known_fix`` /
     ``known_fix_resolver.find_known_fix_candidate``) from a REAL, CRAT-audited
-    remote recovery. Without this, ``_try_known_fix_reflex`` in
-    ``knowledge_pipeline.py`` has no data for capability class ``systemd.*`` —
-    it can only ever fire once at least one success has been recorded here.
+    remote recovery — **thành công HAY thất bại**.
+
+    Vì sao phải ghi cả thất bại (2026-08-04): hàm này trước đây chỉ chạy khi
+    ``ok`` và tên nó là ``..._on_success``. Hệ quả đo được: 3/15 outcome gần nhất
+    là FAILED với lý do rất giàu thông tin (``unsupported_capability: không có
+    operator cho ('failed_state_stale','systemd')``, ``capability_authorized:
+    failure_mode/substrate ngoài capability agent``) — tất cả bị vứt. Một hệ
+    thống chỉ học từ lần đúng thì không bao giờ biết cái gì KHÔNG dùng được, nên
+    lặp lại đúng sai lầm cũ mãi mãi.
+
+    An toàn: ``known_fix_resolver.find_known_fix_candidate`` (dòng ~146) bỏ qua
+    mọi memory có ``exec_outcome != "success"``, nên bài học thất bại KHÔNG bao
+    giờ bị đem ra áp dụng lại như một cách sửa. Nó chỉ vào ngữ cảnh RAG cho LLM
+    đọc — "đã thử cách này, hỏng vì X". ``auto_execute`` cũng để ``False`` cho
+    nhánh hỏng như một lớp chặn thứ hai.
 
     Best-effort by design: a learning-write failure must not turn an already
-    CRAT-audited, already-published success into a retry."""
+    CRAT-audited, already-published outcome into a retry."""
     try:
         from execution.memory_normalize import canonical_symptom_text
         from rag.pgvector_store import COLLECTION_ACTION_EXPERIENCE, EMBED_DIM, PointStruct
 
         reason = str(outcome.get("reason") or "")[:500]
         evidence = "; ".join(str(e) for e in (outcome.get("evidence") or []))[:800]
-        lesson = f"[remote recovery success] capability={capability} unit={unit} {reason}".strip()
+        tag = "success" if ok else "FAILED"
+        lesson = f"[remote recovery {tag}] capability={capability} unit={unit} {reason}".strip()
         symptom_raw = f"{capability} on unit {unit}: {reason}\n{evidence}".strip()
         strip_pods = bool(getattr(ctx.settings, "memory_canonical_strip_pods", True))
         symptom_text = canonical_symptom_text(symptom_raw[:4000], strip_pods=strip_pods)
@@ -168,12 +181,17 @@ async def _upsert_action_experience_on_success(
             "tool": capability,
             "args": args,
             "args_hash": args_hash,
-            "auto_execute": True,
+            # Chỉ lần THÀNH CÔNG mới được phép tái dùng tự động. Bài học thất bại
+            # vào kho để đọc, không để chạy.
+            "auto_execute": bool(ok),
             "match_text": symptom_text[:2000],
             "trace_id": trace_id,
             "command_id": command_id,
-            "exec_outcome": "success",
-            "verification_result": "pass" if outcome.get("verified") else "unverified",
+            "exec_outcome": "success" if ok else "fail",
+            "verification_result": (
+                ("pass" if outcome.get("verified") else "unverified") if ok else "fail"
+            ),
+            "failure_reason": "" if ok else reason,
             "safety_flag": "normal",
             "ts": str(int(time.time())),
         }
@@ -271,12 +289,14 @@ async def reconcile_one(ctx: Any, tenant_id: str, command_id: str) -> str:
                f"reason={str(outcome.get('reason') or '')[:120]}",
     )
 
-    if ok:
-        await _upsert_action_experience_on_success(
-            ctx, trace_id=trace_id, command_id=command_id,
-            capability=str(meta.get("capability") or "systemd.restart_unit"),
-            unit=str(unit), outcome=outcome,
-        )
+    # Ghi bài học cho CẢ hai chiều. Trước 2026-08-04 chỗ này là `if ok:` — hệ
+    # thống chỉ học từ lần đúng, nên mọi thất bại (kể cả loại giàu thông tin như
+    # "không có operator cho capability này") biến mất không dấu vết và sẽ bị lặp lại.
+    await _upsert_action_experience(
+        ctx, trace_id=trace_id, command_id=command_id,
+        capability=str(meta.get("capability") or "systemd.restart_unit"),
+        unit=str(unit), outcome=outcome, ok=ok,
+    )
 
     # Mark the trace terminal BEFORE publishing. handle_action_feedback_envelope
     # marks the FEEDBACK stage and then short-circuits on this key, so the outcome
