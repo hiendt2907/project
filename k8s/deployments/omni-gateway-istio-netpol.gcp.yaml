@@ -1,10 +1,16 @@
 # Additive NetworkPolicy for the GCP cluster only — omni-gateway.yaml's existing
-# omni-gateway-netpol only allow-lists kafka:9092 + redis:6379 egress. That's fine
-# without a mesh, but once the istio-proxy sidecar is injected (GCP-only, see task
-# "Cài Istio service mesh") it also needs to reach istiod (XDS/CA) and DNS, or the
-# sidecar hangs at Init with "connection refused" to istiod:15012 forever.
+# omni-gateway-netpol only allow-lists kafka:9092 + redis:6379 egress, and only
+# port 8000 ingress. Once the istio-proxy sidecar is injected (GCP-only, see task
+# "Cài Istio service mesh") it also needs to reach istiod (XDS/CA) and DNS on the
+# egress side, or the sidecar hangs at Init with "connection refused" to
+# istiod:15012 forever — AND Prometheus needs ingress to port 15020 (Istio's
+# merged-metrics endpoint, what prometheus.io/port gets rewritten to once a
+# sidecar is injected) or every gateway scrape target shows down with
+# "connection refused" (confirmed live: Grafana panels reading
+# omni_gateway_requests_total showed "No data" for exactly this reason — `up`
+# for that target was 0, instance 10.42.0.183:15020).
 # NetworkPolicies for the same pod selector are additive (union of all matching
-# policies), so this only ever adds allowed egress — it never narrows what
+# policies), so this only ever adds allowed traffic — it never narrows what
 # omni-gateway.yaml's own policy already permits, and is a no-op anywhere Istio
 # isn't installed.
 apiVersion: networking.k8s.io/v1
@@ -17,7 +23,12 @@ spec:
     matchLabels:
       app: omni-gateway
   policyTypes:
+    - Ingress
     - Egress
+  ingress:
+    - from: []
+      ports:
+        - {protocol: TCP, port: 15020}
   egress:
     - to:
         - namespaceSelector:
