@@ -13,6 +13,9 @@ import pytest
 
 from workers.advisory_ack import (
     ACKNOWLEDGED,
+    VERDICT_CORRECT,
+    VERDICT_INCORRECT,
+    VERDICT_PARTIAL,
     build_advisory_ack_keyboard,
     emit_advisory_suggestion,
     handle_advisory_ack_callback,
@@ -139,3 +142,78 @@ class TestHandleAdvisoryAckCallback:
         monkeypatch.setattr("workers.advisory_ack.write_audit_block", AsyncMock())
         update = {"callback_query": {"id": "cq1", "data": "advack:trace-1", "from": {"id": 1}}}
         assert await handle_advisory_ack_callback(ctx, update) is True
+
+
+@pytest.mark.asyncio
+class TestKpiRecordingByVerdict:
+    """#29/#30 — KPI phải phản ánh ĐÚNG phán quyết, không chỉ "đã bấm gì đó"."""
+
+    @staticmethod
+    def _ctx_with_fake_redis(**overrides):
+        import fakeredis.aioredis
+
+        ctx = MagicMock()
+        ctx.settings.kafka_topic_advisory_suggestions = "omni-advisory-suggestions"
+        ctx.settings.kafka_topic_audit_chain = "omni-audit-chain"
+        ctx.kafka = AsyncMock()
+        ctx.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        ctx.telegram = AsyncMock()
+        ctx.admin_repo = AsyncMock()
+        ctx.admin_pool = None  # sổ ca bỏ qua best-effort, chỉ test nhánh KPI
+        ctx.current_tenant_id = "default"
+        for k, v in overrides.items():
+            setattr(ctx, k, v)
+        return ctx
+
+    async def test_correct_verdict_records_accepted(self, monkeypatch):
+        from workers.kpi_metrics import kpi_outcome_key
+
+        ctx = self._ctx_with_fake_redis()
+        monkeypatch.setattr("workers.advisory_ack.write_audit_block", AsyncMock())
+        update = {"callback_query": {"id": "cq1", "data": "advack:ok:trace-c", "from": {"id": 1}}}
+
+        await handle_advisory_ack_callback(ctx, update)
+
+        assert await ctx.redis.zscore(kpi_outcome_key("default", "accepted"), "trace-c") is not None
+        assert await ctx.redis.zscore(kpi_outcome_key("default", "false_positive"), "trace-c") is None
+
+    async def test_partial_verdict_records_accepted(self, monkeypatch):
+        """PARTIAL = chẩn đoán đúng, khuyến nghị thiếu — vẫn tính accepted, giữ ý định gốc."""
+        from workers.kpi_metrics import kpi_outcome_key
+
+        ctx = self._ctx_with_fake_redis()
+        monkeypatch.setattr("workers.advisory_ack.write_audit_block", AsyncMock())
+        update = {"callback_query": {"id": "cq1", "data": "advack:part:trace-p", "from": {"id": 1}}}
+
+        await handle_advisory_ack_callback(ctx, update)
+
+        assert await ctx.redis.zscore(kpi_outcome_key("default", "accepted"), "trace-p") is not None
+
+    async def test_incorrect_verdict_records_false_positive_not_accepted(self, monkeypatch):
+        """#29: trước bản vá, nút '❌ Sai' chỉ bị bỏ qua — không ghi tín hiệu âm nào.
+        omni:kpi:z:*:false_positive mãi trống dù operator từ chối advisory nhiều lần."""
+        from workers.kpi_metrics import kpi_outcome_key
+
+        ctx = self._ctx_with_fake_redis()
+        monkeypatch.setattr("workers.advisory_ack.write_audit_block", AsyncMock())
+        update = {"callback_query": {"id": "cq1", "data": "advack:bad:trace-i", "from": {"id": 1}}}
+
+        await handle_advisory_ack_callback(ctx, update)
+
+        assert await ctx.redis.zscore(kpi_outcome_key("default", "false_positive"), "trace-i") is not None
+        assert await ctx.redis.zscore(kpi_outcome_key("default", "accepted"), "trace-i") is None
+
+    async def test_legacy_single_button_callback_records_nothing(self, monkeypatch):
+        """#30: callback cũ 1-nút (không token verdict) KHÔNG được coi là đồng ý.
+        Trước bản vá: `verdict != VERDICT_INCORRECT` coi None là accepted — tái tạo
+        đúng lớp bug "đọc = đồng ý" cho tin nhắn cũ còn đọng lại trong chat."""
+        from workers.kpi_metrics import kpi_outcome_key
+
+        ctx = self._ctx_with_fake_redis()
+        monkeypatch.setattr("workers.advisory_ack.write_audit_block", AsyncMock())
+        update = {"callback_query": {"id": "cq1", "data": "advack:trace-legacy", "from": {"id": 1}}}
+
+        await handle_advisory_ack_callback(ctx, update)
+
+        assert await ctx.redis.zscore(kpi_outcome_key("default", "accepted"), "trace-legacy") is None
+        assert await ctx.redis.zscore(kpi_outcome_key("default", "false_positive"), "trace-legacy") is None

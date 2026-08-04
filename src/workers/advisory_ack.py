@@ -302,15 +302,26 @@ async def handle_advisory_ack_callback(ctx: Any, update: dict[str, Any]) -> bool
         except Exception as exc:  # noqa: BLE001 — ledger phụ trợ, CRAT mới là chain
             logger.warning("advisory_ack: ledger persist fail trace=%s err=%s", trace_id, exc)
 
-    # G2 — ack là mẫu KPI acceptance. Không có nguồn nào khác điền `omni:kpi:z:*:accepted`
-    # trong shadow mode, và đó chính là bằng chứng dùng để xét nâng tier sau này.
-    # "Sai" KHÔNG phải một mẫu acceptance — cộng nó vào acceptance-rate là tự thổi điểm
-    # bằng chính lời chê của operator.
-    if redis is not None and verdict != VERDICT_INCORRECT:
+    # G2 — ack là mẫu KPI acceptance/false-positive. Không có nguồn nào khác điền
+    # `omni:kpi:z:*` trong shadow mode, và đó chính là bằng chứng dùng để xét nâng
+    # tier sau này. CORRECT và PARTIAL đều tính accepted (PARTIAL nói về độ đầy đủ
+    # của khuyến nghị, không phải chẩn đoán sai — giữ nguyên ý định gốc).
+    # #30: verdict=None (callback 1-nút cũ, tin nhắn đọng lại trong lịch sử chat
+    # trước khi có 3 nút) KHÔNG mang phán quyết nào — trước đây điều kiện
+    # `verdict != VERDICT_INCORRECT` coi None là "đồng ý", tái tạo đúng lớp bug
+    # "đọc = đồng ý". Giờ None không ghi gì cả, tường minh.
+    # #29: "Sai" (INCORRECT) trước đây chỉ bị *bỏ qua* — không ghi tín hiệu âm nào,
+    # nên omni:kpi:z:*:false_positive mãi trống dù operator từ chối advisory nhiều
+    # lần. Giờ verdict=INCORRECT ghi record_false_positive() thay vì im lặng.
+    if redis is not None and verdict is not None:
         try:
             from workers.kpi_metrics import KPIStore
 
-            await KPIStore(redis).record_accepted(trace_id, tenant_id=tenant_id)
+            store = KPIStore(redis)
+            if verdict == VERDICT_INCORRECT:
+                await store.record_false_positive(trace_id, tenant_id=tenant_id)
+            else:  # CORRECT hoặc PARTIAL
+                await store.record_accepted(trace_id, tenant_id=tenant_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("advisory_ack: kpi record fail trace=%s err=%s", trace_id, exc)
 
