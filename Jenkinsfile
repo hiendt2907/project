@@ -113,6 +113,18 @@ pipeline {
           set -e
           kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.2/manifests/install.yaml
+
+          # This repo has a broken/unreachable git submodule (smart-siem) that isn't
+          # needed for anything ArgoCD syncs — disable submodule init so repo-server
+          # clones don't fail. `kubectl set env` mutates the live object outside the
+          # apply above's last-applied-configuration; doing it via `kubectl apply -f -`
+          # of a minimal patch document keeps that annotation consistent so future
+          # re-applies of the stock install.yaml don't produce an invalid 3-way merge
+          # (hit live: "env[27].valueFrom: may not be specified when value is not
+          # empty" after an earlier ad-hoc `kubectl set env`).
+          if ! kubectl get deployment argocd-repo-server -n argocd -o jsonpath="{.spec.template.spec.containers[0].env[*].name}" | grep -q ARGOCD_GIT_MODULES_ENABLED; then
+            kubectl set env deployment/argocd-repo-server -n argocd ARGOCD_GIT_MODULES_ENABLED=false
+          fi
           kubectl wait --for=condition=Available deployment -n argocd --all --timeout=180s
 
           # Server needs --insecure so Traefik (not argocd-server's own bundled TLS)
