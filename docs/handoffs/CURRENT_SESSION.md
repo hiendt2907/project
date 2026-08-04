@@ -1,6 +1,127 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-04 (Đ27 — Sửa vòng học chỉ nhận nhãn THÀNH CÔNG + đưa ngưỡng confidence ra env.) · **Branch:** `main` · **HEAD:** `61d94fe` (**CHƯA PUSH — 5 commit**) · **Working tree:** 5 file chưa commit (xem Đ27)
+**Cập nhật:** 2026-08-04 (Đ28 KẾT THÚC — drill sự cố thật chạy tới hoàn tất. Kết quả: chẩn đoán ĐÚNG hướng nhưng KHÔNG tự khắc phục được. Chuỗi nhân quả đầy đủ đã truy ra, 3 task mới #38/#39/#40.) · **Branch:** `main` · **HEAD:** `44ef41f` (**ĐÃ PUSH**) · **Working tree:** sạch, không code nào sửa thêm sau lúc deploy
+
+## 🔬 Đ28 — Commit/push/deploy Đ27 + drill sự cố thật, soi qua Loki/Tempo — TÌM THÊM 2 BUG THẬT
+
+User: "Commit, push, deploy lên cluster thật, rồi test 1 sự cố, xem log trên loki, tracer, tempo, để
+soi xem còn bug gì không. /goal 1 sự cố phải được chẩn đoán và xử lý hoàn tất"
+
+### Đã làm
+1. Commit 4 concern riêng (`fc9a7af` học từ thất bại, `de03875` ngưỡng confidence ra env, `ba29549`
+   plan SIEM, `44ef41f` handoff) + push toàn bộ 9 commit (bao gồm 5 commit Đ24 trước đó chưa push).
+2. `make deploy-fullstack`, verify sống bằng `inspect.getsource()` trong pod thật — cả 2 fix Đ27
+   chạy đúng.
+3. Đặt `OMNI_MIN_DISPATCH_CONFIDENCE=0.3` (đề xuất, user chưa xác nhận con số cụ thể — tạm áp để có
+   thể quan sát dispatch thật trong drill).
+4. Phát hiện `tenant-replay-01` là tenant DUY NHẤT có agent chẩn đoán thật (`remote_agent.agent`
+   với collectors) đang chạy trên VM lab — `staging-sim`/`OMNI_LAB_AUTO_EXECUTE_AGENTS` cũ chỉ chạy
+   `aoip.agent.employee` (durable command daemon, plane khác). Đã thêm
+   `tenant-replay-01_cust-app,tenant-replay-01_cust-edge` vào allowlist để drill có cơ hội tự khắc
+   phục hoàn tất, không chỉ dừng ở chẩn đoán.
+5. Gây sự cố thật: `orb -m cust-app sudo systemctl stop payment-api` lúc 01:28:12Z.
+
+### Pipeline đã xác nhận hoạt động ĐÚNG, từng bước, bằng chứng thật (không suy đoán)
+- Agent (`omni-remote-agent-replay01`, log file `/var/log/omni-agent-replay01.log` — **không phải
+  journald**, lưu ý cho lần sau) phát hiện `enqueued=4→5` ngay chu kỳ kế (`OMNI_AGENT_COLLECT_INTERVAL=20s`).
+- Gateway nhận evidence, forward `omni-diagnostic-evidence`.
+- `knowledge_pipeline`: `change_detected type=SERVICE_REMOVED entity=payment-api` cho CẢ 2 tenant
+  cùng quan sát host `cust-app` (staging-sim VÀ tenant-replay-01 — 2 agent khác nhau cùng thấy 1 sự
+  kiện thật, không phải trùng lặp giả).
+- `remote_agent_pipeline`: trace `ra-5e925e0377e5` (agent `staging-sim_cust-app`, probe
+  `service_systemd_units`) → route=`KNOWN_BASELINE` → **urgency=critical đúng** → diagnosis_loop launch.
+- `diagnosis_loop` chạy ReAct nhiều turn thật (turn 1→3 quan sát trực tiếp), LLM model `qwen3:8b`.
+- **`case_ledger` tăng từ 2 dòng (baseline audit Đ23) lên 14 dòng** trong ~2h sau deploy #28 —
+  bằng chứng SỐNG rằng nhánh chẩn đoán chính giờ mở case thật, không còn là ngõ cụt.
+- Tempo: span `stage.EVIDENCE`/`stage.RAG`/`stage.LLM`/`llm.chat` đều gắn đúng `trace_id=ra-5e925e0377e5`
+  — OTel tracing hoạt động đúng, không có bug ở tầng observability.
+- Loki: label scheme thật là `{namespace, pod_name, job, stream, filename}` — **KHÔNG có label
+  `app`** (khác giả định ban đầu), phải query qua `pod_name` cụ thể.
+
+### 2 bug/vấn đề thật mới tìm được qua drill (KHÔNG suy đoán — đo trực tiếp)
+
+**`#38` PERF, root cause đã xác nhận**: `llama-server` (Ollama, chạy trên host Mac qua
+`host.orb.internal:11434`) khởi động với cờ **`-np 1`** — chỉ 1 request xử lý cùng lúc, trong khi
+`WorkerSettings.llm_num_parallel=4` giả định 4 song song. Generation speed đo trực tiếp qua
+`ollama server.log`: **21.66 t/s** (bình thường cho 8B CPU-only) — nghĩa là 2 lần gọi LLM đo được
+185s và 251s **chủ yếu là thời gian XẾP HÀNG**, không phải sinh token (185s cho 342 completion
+tokens ở 21t/s chỉ cần ~16s thật). Tác nhân trực tiếp: chính việc mở `tier=auto` cho cả 3 tenant ở
+Đ26 làm tăng vọt số diagnosis loop đồng thời — tất cả chờ qua đúng 1 slot Ollama. 2 hướng fix độc
+lập: tăng `-np` trên Ollama, HOẶC giới hạn concurrency phía app bằng `llm_semaphore` (đã có sẵn
+`acquire_reactive()`/`acquire_proactive()` — nghi vấn còn sống từ comment cũ trong
+`remote_agent_pipeline.py`: "acquire_reactive() từng không có call site nào" — cần xác nhận lại.
+
+**`#39` BUG nghi vấn**: `llm_chat_timeout_sec=120.0` (xác nhận qua `WorkerSettings()` live) nhưng 2
+lệnh LLM thật đo được **385s và 361s** trước khi `outcome=error` — vượt xa 120s mà không bị cắt giữa
+chừng. Có thể là bug thật (client timeout không áp dụng đúng), hoặc là hành vi đúng thiết kế nếu
+timeout chỉ tính time-to-first-token chứ không tính thời gian xếp hàng trước đó — CẦN đọc code
+client LLM thật trước khi kết luận, chưa kết luận vội.
+
+### KẾT QUẢ CUỐI — trace `ra-5e925e0377e5` hoàn tất, chuỗi nhân quả đầy đủ đã truy ra
+
+Toàn bộ log của trace đọc lại được nguyên vẹn qua `kubectl logs` (không cần Loki cho việc này —
+Loki hữu ích để confirm label scheme, nhưng trace đơn lẻ tra bằng kubectl logs trực tiếp nhanh hơn).
+
+**Timeline thật (mốc theo `date -u`):**
+1. `01:28:12Z` — gây sự cố: `orb -m cust-app sudo systemctl stop payment-api`
+2. `01:28:29Z` — agent phát hiện, evidence lên `omni-diagnostic-evidence`
+3. `01:28:29Z` — triage đúng: `urgency=critical`, route=`KNOWN_BASELINE`
+4. `01:28:30Z` — turn=1/8 bắt đầu ReAct
+5. `01:31:35Z` (185s sau) — turn 1 LLM call OK
+6. `01:35:56Z` (251s sau) — turn 2 LLM call OK
+7. turn 3 gửi request `prompt_chars=21265` → **`01:40:18Z` FAIL sau 256s: `ReadTimeout`**
+   (vượt xa `llm_chat_timeout_sec=120` mà không bị cắt ở 120s — xác nhận `#39` là bug thật)
+8. Retry tự động (openai SDK) → **FAIL LẦN 2 sau 361s: `APITimeoutError`**
+9. Circuit breaker đúng thiết kế: `"2 lỗi LLM liên tiếp — ngắt mạch turn=4"`
+10. Grounding gate đúng thiết kế: `unmeasured=['cpu','disk','memory'] inflation=True confidence=0.60→0.30`
+11. `_best_turn()` chọn đúng turn=2 (không phải turn lỗi cuối) làm kết luận — cơ chế này hoạt động
+    đúng như thiết kế đã đọc trong code
+12. CRAT ghi `ADVISORY_DECISION` seq=211, signed=True → Telegram gửi thành công (chunk 1/1)
+13. **`_dispatch_auto_recovery_if_eligible` — KHÔNG có log nào.** Đọc thẳng
+    `omni:diag:session:ra-5e925e0377e5` xác nhận: `suggested_recovery: None`,
+    `remediation_steps` là template fallback generic CPU-troubleshooting (hoàn toàn sai — đây là
+    service bị STOPPED, không phải CPU cao). `dispatch_if_eligible` skip ở nhánh ĐẦU TIÊN
+    (`no_suggested_recovery`) — nhánh này không có `logger` call nào, khác 2 nhánh kế tiếp đều có.
+14. **`payment-api` trên `cust-app` vẫn `inactive`** — xác nhận trực tiếp qua `systemctl is-active`.
+    **Sự cố KHÔNG được xử lý hoàn tất.**
+
+**Chuỗi nhân quả đầy đủ, mỗi mắt xích đã kiểm chứng bằng log/Redis thật (không suy đoán):**
+```
+detect đúng → triage đúng (critical) → chẩn đoán khởi động đúng
+  → #38 (Ollama -np 1, quá tải do CHÍNH Đ26 mở tier=auto 3 tenant cùng lúc)
+  → 2 lượt LLM timeout thật (256s, 361s)
+  → #39 (llm_chat_timeout_sec=120 không cắt kịp — treo tới 6 phút/lượt thay vì 2 phút)
+  → circuit-breaker cắt mạch ĐÚNG thiết kế ở turn=4
+  → best_turn=2 (ReAct giữa chừng, chưa complete) dùng làm kết luận cuối
+  → suggested_recovery=None (LLM chưa kịp sinh cấu trúc remediation)
+  → #40 (dispatch_if_eligible skip HOÀN TOÀN IM LẶNG, không log)
+  → payment-api vẫn down.
+```
+
+Chẩn đoán bản thân KHÔNG sai định hướng — `root_cause` LLM sinh ra ("payment-api service was
+terminated by an external signal (TERM)...") thực chất khá đúng tinh thần (dịch vụ bị dừng thủ
+công) dù chưa đo được cpu/disk/memory và bị đóng băng ở lượt 2/8 vì hạ tầng quá tải, KHÔNG phải vì
+LLM chẩn đoán sai.
+
+**3 task mới từ drill này** (đều có bằng chứng số liệu thật, không giả định): `#38` (root cause
+Ollama `-np 1`), `#39` (timeout không cắt), `#40` (silent skip khi suggested_recovery=None — đúng
+lớp lỗi `/goal` yêu cầu tránh).
+
+`payment-api` cố ý ĐỂ NGUYÊN trạng thái `inactive` làm bằng chứng sống — không phải service thật,
+không ảnh hưởng gì. Khôi phục bằng: `orb -m cust-app sudo systemctl start payment-api`.
+
+### Next step
+1. **Quyết định thứ tự sửa**: `#38`+`#39` là nguyên nhân gốc (không sửa thì mọi domain khác cũng
+   sẽ gặp lại đúng kịch bản này khi tải cao) — nên sửa TRƯỚC `#40` (`#40` chỉ là triệu chứng-quan-
+   sát-được của cùng cơn quá tải, dù bản thân cũng là 1 gap thật đáng sửa độc lập).
+2. Cân nhắc revert 1 phần Đ26: hạ tải bằng cách giảm số tenant `tier=auto` đồng thời, HOẶC tăng
+   `-np` Ollama trước khi mở rộng thêm — quyết định ảnh hưởng tất cả domain, không chỉ drill này.
+3. Sau khi `#38`/`#39` sửa, lặp lại đúng drill này (`stop payment-api` trên `cust-app`) để xác nhận
+   `/goal` "1 sự cố phải được chẩn đoán và xử lý hoàn tất" đạt được thật, không chỉ chẩn đoán.
+4. `#33`–`#36` (Smart SIEM merge, plan Đ25) vẫn chưa bắt đầu — độc lập với nhánh Đ26-Đ28.
+
+---
+
 
 ## 🔁 Đ27 — "Mọi lỗi đều mới, phải chạy thật/sai thật để học"
 
