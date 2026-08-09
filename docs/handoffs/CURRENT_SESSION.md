@@ -1,7 +1,74 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-09 (Đ36 — chẩn đoán "không vào được provider/dex GCP". Xem Đ36 ngay dưới.) ·
-**Branch:** `main` · **HEAD:** `b22b36e` · **Working tree:** có thay đổi CHƯA COMMIT — xem Đ35.
+**Cập nhật:** 2026-08-09 (Đ37 — 4 nút "Test lại" trang /diagnostics trả 400. ĐÃ FIX + DEPLOY +
+VERIFY TRÊN GCP.) · **Branch:** `main` · **HEAD:** `66373c5`
+
+## 🚨 Đ37 — /diagnostics: cả 4 nút "Test lại" trả 400 → ĐÃ FIX, đã deploy GCP
+
+### Nguyên nhân (tái hiện thật trên GCP, không suy đoán)
+`ui/apps/provider-portal/app/api/gateway/diagnostics/test/route.ts` map kịch bản
+(service/network/disk/cpu) sang chuỗi `"state"`/`"resource"` rồi gọi `POST /simulate/{lane}`.
+Đó là **`proof_lane` (trục B** trong `pkg/domain/taxonomy.py`), KHÔNG phải lane key của simulator
+(**trục A**: `sys_resource|sys_hard_fail|app_http|siem_security`). Đúng lớp bẫy "lane là BA trục
+khác nhau cùng tên" đã ghi ở CLAUDE.md.
+
+Đo từ chính pod `aoip-provider-web` trên GCP (cùng đường mạng route.ts đi):
+```
+GET  /simulate/lanes        -> sys_resource, sys_hard_fail, app_http, siem_security
+POST /simulate/state        -> 400 unknown lane 'state'
+POST /simulate/resource     -> 400 unknown lane 'resource'
+POST /simulate/sys_resource -> 200   (đối chứng)
+```
+
+### Cách sửa (sửa gốc, không remap)
+Remap 4 kịch bản sang 4 lane cũ sẽ khiến nút "Đĩa gần đầy" bơm payload CPU 96% và "Mất cổng lắng
+nghe" bơm `mysql.service failed` — nội dung nói dối nhãn. Thay vào đó: **simulator nhận thẳng kịch
+bản và tự khai `domain`**, portal không đoán lane nữa.
+- `POST /simulate/scenario/{scenario}` + `GET /simulate/scenarios` (catalog).
+- 4 kịch bản, payload đúng triệu chứng, domain tường minh: `service→service`, `network→network`,
+  `disk→storage`, `cpu→os_host`.
+- Domain khai tường minh **thắng** `lane_to_domain()`: `SYS_HARD_FAIL` cố ý trả `unknown`, để nó
+  thắng thì service/network mất lĩnh vực ngay Stage 1.
+- Tách `_remote_envelope()` dùng chung; đường `/simulate/{lane}` giữ nguyên hành vi.
+
+### Files changed (Đ37) — commit `66373c5`, đã push gitea + origin
+- `src/gateway/routes/simulate.py` — `SCENARIO_KEYS`/`_SCENARIO_SPEC`, `_remote_envelope()`,
+  `_build_scenario_envelopes()`, 2 route mới.
+- `ui/apps/provider-portal/app/api/gateway/diagnostics/test/route.ts` — bỏ `SCENARIO_LANE`, gọi
+  `/simulate/scenario/{scenario}`.
+- `tests/test_gateway_simulate_scenarios.py` — **MỚI**, 8 test, gồm hồi quy khoá lại việc
+  `state`/`resource` phải VẪN 400 (thêm alias vào `LANE_KEYS` sẽ làm kịch bản chạy sai domain im lặng).
+
+### Verify trên GCP sau khi deploy (Jenkins build #15 SUCCESS)
+```
+GET /simulate/scenarios -> service/service, network/network, disk/storage, cpu/os_host
+POST scenario service -> 200 domain=service   sim-service-9cc8825afb01
+POST scenario network -> 200 domain=network   sim-network-c57664ad1666
+POST scenario disk    -> 200 domain=storage   sim-disk-fddb1493e6e5
+POST scenario cpu     -> 200 domain=os_host   sim-cpu-36023c01229b
+POST /simulate/state|resource -> 400  (hồi quy giữ nguyên)
+```
+Pipeline thật đã nuốt: log `omni-fullstack` có đủ 4 trace (25-29 dòng/trace), **domain worker phán
+đúng từng cái** (`domain=service|network|storage|os_host`), Redis có
+`omni:trace:stages:sim-{service,network,disk,cpu}-*`, `/trace/recent` trả đủ 4, `current_stage=LLM`.
+Unit: 256 test gateway/simulate xanh.
+
+### ⚠️ Phát hiện kèm (CHƯA sửa, phạm vi rộng hơn lỗi 400)
+`/trace/recent` **không trả trường `domain` cho BẤT KỲ trace nào** — đo trên GCP: 30/30 trace
+`domain` undefined. Nguyên nhân: `mark_stage()` (`src/pkg/observability/pipeline_stages.py`) chỉ
+lưu `lane`, không có tham số `domain`. Hệ quả trên trang /diagnostics: cột "Lĩnh vực" rơi về
+`scopeVI(t.lane)` ⇒ `service` và `network` cùng hiện nhãn của `SYS_HARD_FAIL`, `disk` và `cpu` cùng
+nhãn `SYS_RESOURCE` — mất đúng sự phân biệt vừa khôi phục. Đây là lỗi **có sẵn, ảnh hưởng mọi sự cố
+thật**, không phải do Đ37; sửa phải chạm `mark_stage` + trace index nên tách riêng.
+
+### Next step
+1. Thêm `domain` vào `mark_stage()` + trace index để cột "Lĩnh vực" nói thật (xem phát hiện trên).
+2. Rotate token Cloudflare `117fb433…` — user thao tác tay (token thiếu scope `User:API Tokens:Edit`).
+3. Cân nhắc Dex `storage.type` `memory` → `kubernetes`/`postgres` (session mất mỗi lần restart pod).
+4. Seeder tạo kèm 4 tài khoản demo có role nhưng KHÔNG có mật khẩu Dex — xoá nếu không cần.
+5. Audit SRE Pha A vẫn dở dang (xem Next step của Đ35).
+
+---
 
 ## 🚨 Đ36 — provider/dex GCP không truy cập được: DNS sai IP + Dex không có user nào → ĐÃ FIX
 
