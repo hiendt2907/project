@@ -1,10 +1,194 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-04 (Đ33 — security sweep: rotate Postgres/Dex secret plaintext trong git,
-migrate Dex GCP sang Vault, gỡ static test password khỏi Dex public, retire Cloudflare Tunnel
-`app.omnisre.xyz` sang GCP trực tiếp. Xem chi tiết ở mục Đ33 bên dưới.) · **Branch:** `main` ·
-**HEAD:** commit rebase sau `3442493` (**ĐÃ PUSH**) · **Working tree:** sạch (trừ
-`docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` untracked, cố ý không commit)
+**Cập nhật:** 2026-08-09 (Đ36 — chẩn đoán "không vào được provider/dex GCP". Xem Đ36 ngay dưới.) ·
+**Branch:** `main` · **HEAD:** `b22b36e` · **Working tree:** có thay đổi CHƯA COMMIT — xem Đ35.
+
+## 🚨 Đ36 — provider/dex GCP không truy cập được: DNS sai IP + Dex không có user nào → ĐÃ FIX
+
+**Đã sửa xong và verify sống.** Tóm tắt việc đã làm ở cuối mục này ("Đã khắc phục").
+
+### Files changed (Đ36)
+- `k8s/gitops/aoip-dex-external-secret.yaml` — thêm `staticPasswords` (1 tài khoản operator, chỉ
+  bcrypt hash, nguồn Vault) + 4 `data` ref mới (`admin_email/hash/username/user_id`). **Đã apply
+  lên GCP trước khi commit.**
+- `scripts/cf_update_gcp_dns.sh` — **MỚI**. Đồng bộ A record `*.omnisre.xyz` theo IP thật của VM
+  (`gcloud describe`, không hardcode), bỏ qua record proxied (Pages), mặc định dry-run.
+- `docs/handoffs/CURRENT_SESSION.md` — file này.
+- KHÔNG commit: `docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` (untracked cố ý),
+  `~/.config/omni/dex-admin.json` (ngoài repo, chmod 600).
+
+### Phát hiện 1 — DNS trỏ IP chết (nguyên nhân chặn tất cả)
+- `dig provider|dex|gateway|app.omnisre.xyz` ở **cả 1.1.1.1 / 8.8.8.8 / 9.9.9.9 + NS
+  Cloudflare (rafe/rocky)** đều trả **`136.85.2.181`** → `http=000`, không phản hồi.
+- `gcloud compute instances list` → `omni-k3s-vm` **`34.87.96.251` RUNNING**.
+- Bypass DNS (`curl --resolve <host>:443:34.87.96.251`) thì **mọi thứ sống**: provider `200` ·
+  app `200` · dex `/.well-known/openid-configuration` trả JSON đúng issuer ·
+  gateway `/healthz` = `{"status":"ok","rate_limit_tps":1000}`.
+- ⚠️ `gcloud compute addresses list` = **0 items**, accessConfig = `external-nat` ⇒ IP ngoài là
+  **ephemeral**, stop/start VM là drift lại. Phải reserve static trước khi sửa A record.
+- Cluster khỏe: 12 pod Running (`aoip-dex`, `aoip-provider-*`, `aoip-tenant-*`, `omni-fullstack`,
+  `omni-gateway`, `omni-onboarding`, `omni-postgres-0`, `redis-0`, `kafka`), cronjob
+  `omni-postgres-backup` + `crat-integrity-check` Completed.
+
+### Phát hiện 2 — Dex GCP không có ĐƯỜNG ĐĂNG NHẬP cho người
+Đọc Secret `aoip-dex-secret` (20 dòng, in cấu trúc không in giá trị):
+```
+storage: type: memory     ← password DB nằm RAM, restart là sạch
+enablePasswordDB: true    ← bật nhưng DB rỗng
+staticPasswords:  0       ← đã gỡ ở Đ33 (security sweep)
+connectors:       0       ← không có IdP ngoài
+staticClients:    2       ← chỉ aoip-provider-portal + aoip-tenant-portal
+```
+⇒ Dex chỉ còn luồng OIDC client-credential. Không tài khoản người nào tồn tại.
+
+### Phát hiện 3 — Portal chưa seed identity trên GCP
+Redis GCP **không có** key user/role/membership nào (`*membership*`, `aoip:*` rỗng). Bản ghi duy
+nhất ở `portal:auth_audit`:
+`{"event":"DENIED","subject":"owner@aoip.dev","detail":"login provider: no role/membership"}` —
+`2026-08-04 10:36:22 UTC`. Chặn tại `src/aoip/console/app.py:171`. Seeder có sẵn nhưng chưa từng
+chạy trên GCP: `src/aoip/console/seed_identity.py` (ghi PG + mirror Redis khi có `OMNI_ADMIN_PG_DSN`).
+
+### Phát hiện 4 — Vault SEALED sau khi VM restart (dây chuyền, chưa ai thấy)
+`vault-0` `0/1 Running`, `vault status` → `Sealed true`. Hệ quả: ClusterSecretStore `vault-backend`
+= `InvalidProviderConfig`, **cả 2 ExternalSecret** (`aoip-dex-secret`, `omni-gateway-secret`) ở
+`SecretSyncedError`, last sync **2d22h** trước. Hệ thống vẫn chạy chỉ vì k8s Secret cũ còn nằm đó —
+**mọi thay đổi secret sẽ im lặng không tới nơi**. Cơ chế Jenkins tự unseal (ghi ở
+`GCP_CREDENTIALS`) **đã không chạy**.
+
+### Đã khắc phục (thực thi thật trên GCP + Cloudflare, đã verify)
+1. **DNS**: `bash scripts/cf_update_gcp_dns.sh --apply` → 9 A record (`app/argocd/bitwarden/dex/
+   gateway/grafana/prometheus/provider/tenant`) `136.85.2.181` → `34.87.96.251`, tất cả `✓`.
+   `dig @1.1.1.1` xác nhận. Token DNS lưu ở `~/.config/cloudflare/omnisre-dns.token` (600).
+   ⚠️ Token này user dán trong chat ⇒ **nên rotate**.
+2. **Unseal Vault** bằng k8s Secret `vault-unseal-bootstrap` (key `unseal_key`) → `Sealed false`,
+   pod `1/1`. Restart `deploy/external-secrets` để reconcile → store `Valid/True`, cả 2
+   ExternalSecret `SecretSynced True`.
+3. **Tạo admin thật**: mật khẩu 24 ký tự + bcrypt cost 12 (sinh local, không qua argv).
+   Vault: `kv patch secret/aoip-dex-secret` (`admin_email/admin_hash/admin_username/admin_user_id`)
+   + `kv put secret/aoip-dex-admin` (email/username/user_id/password/bcrypt_hash — bản khôi phục).
+   Bản local: `~/.config/omni/dex-admin.json` (600). **Không có plaintext nào trong git.**
+4. **ExternalSecret render `staticPasswords`** → restart `deploy/aoip-dex`. Log pod mới:
+   `config connector: local passwords enabled`, `listening (http) on 0.0.0.0:5556`.
+5. **Seed identity** trong pod `aoip-provider-portal`:
+   `AOIP_SEED_PROVIDER_OWNER=danghien2907@gmail.com python -m aoip.console.seed_identity`
+   → `seeded PG+Redis: 2 provider, 3 tenant users`, `danghien2907@gmail.com → platform_owner`.
+6. **Verify đăng nhập đầu-cuối bằng curl thật**: `/auth/login` → Dex login form →
+   POST `/dex/auth/local/login` → landed `https://provider.omnisre.xyz/` **http=200**.
+   Redis: `portal:auth_audit` có `{"event":"LOGIN","subject":"danghien2907@gmail.com",
+   "detail":"kind=provider"}`, `portal:session:a170b788…` tồn tại, `portal:proles:…` =
+   `platform_owner`.
+
+### Next step
+1. **Reserve static IP** — vẫn CHƯA làm, IP còn ephemeral, restart VM là đứt lại:
+   `gcloud compute addresses create omni-k3s-ip --addresses 34.87.96.251 --region asia-southeast1`.
+2. **Sửa auto-unseal Vault** — cơ chế hiện tại không chạy khi VM reboot (Phát hiện 4). Đây là lỗi
+   hệ thống, không phải sự cố một lần.
+3. **Đưa secret vào Vaultwarden** — `bw` CLI chưa cài trên máy, và Vaultwarden mã hoá đầu-cuối nên
+   phải có master password của user; chưa làm được tự động.
+4. Cân nhắc `storage.type` `memory` → `kubernetes`/`postgres` cho Dex (hiện refresh token/session
+   Dex mất mỗi lần restart pod).
+5. Seeder tạo kèm 4 tài khoản demo (`support@aoip.dev`, `sre@acme.dev`, `approver@acme.dev`,
+   `sre@globex.dev`) **có role nhưng KHÔNG có mật khẩu Dex** ⇒ không đăng nhập được. Nếu không cần,
+   nên xoá khỏi identity store.
+6. Audit SRE Pha A vẫn dở dang — xem Next step của Đ35 (F-014 chưa viết, bảng năng lực A1-A4/B4/B8
+   chưa điền, 3 mục cuối file chưa có).
+
+Ghi chú môi trường: Tailscale trên MacBook đang **stopped** ⇒ `kubectl` local timeout tới
+`100.67.117.19:6443`. Đường vòng đã dùng: `gcloud compute ssh omni-k3s-vm --zone asia-southeast1-c
+--tunnel-through-iap --command="sudo kubectl ..."` — không cần Tailscale.
+
+---
+
+## 🔎 Đ35 — Dọn lab OrbStack, trỏ agent sang GCP, mở Audit SRE Pha A
+
+### Working tree hiện tại (CHƯA commit, CHƯA push)
+- `docs/audit/SRE_READINESS_2026-08.md` — **MỚI**, sổ audit Pha A đang viết dở.
+- `docs/handoffs/CURRENT_SESSION.md` — file này.
+- `docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` — untracked, **cố ý không commit** (không đổi).
+
+### Đã làm (hạ tầng — đã thực thi thật, không đảo ngược được)
+1. **Xoá hẳn k3s trong OrbStack**: `orb config set k8s.enable false`, unmount
+   `/var/lib/rancher/k3s` + `/var/lib/kubelet` + `/etc/rancher/node`, rồi
+   `btrfs subvolume delete` subvolume `k8s/default` (ID 258, 6.2 GB). Subvolume còn lại: `docker`
+   (256) + 3 subvol máy ảo (259/260/261). **Mất toàn bộ 14 PVC lab** (Postgres/Redis lab,
+   Grafana/Loki/Mimir/Prometheus/Tempo, 130 ngày) — user yêu cầu rõ, không khôi phục được.
+2. **Hạ tài nguyên OrbStack**: cpu 8→2, memory_mib 10240→4096. 3 VM thấy `cpu=2 mem=3988MiB`.
+3. **Dọn Docker**: `docker system prune -a -f --volumes` → giải phóng **10.73 GB** (disk VM
+   14.8 GB → 4.6 GB).
+4. **Xoá context kubectl `orbstack`** khỏi kubeconfig. `current-context` = `temp-k8s` (GCP).
+5. **3 VM lab chạy lại**: `cust-app` .237 · `cust-db` .225 · `cust-edge` .87.
+6. **Trỏ agent sang GCP** (thay vì lab đã xoá):
+   - Tạo tenant `staging-sim` trên GCP qua `POST /autonomy/tenants` (trước đó GCP chỉ có `default`).
+   - Enroll 3 agent đúng cơ chế one-time token → per-agent key, **chạy enroll từ chính VM**. PG
+     `omni_admin.agent_credential` có 3 dòng `active` (prefix `IL3TMNuE`/`cbdVocfL`/`3ZlmiyBf`).
+   - Sửa `/opt/omni-remote-agent/run.env` trên cả 3 VM: `OMNI_AGENT_GATEWAY_URL=
+     https://gateway.omnisre.xyz`, key mới, `UPDATE_ALLOWED_HOSTS=gateway.omnisre.xyz`. Bản cũ giữ
+     ở `run.env.bak-lab`.
+   - Xác nhận dữ liệu tới Omni: Redis GCP có `omni:remote_agent:registry:staging-sim_cust-*`,
+     `omni:evcluster:*`, `omni:onboarding:diagram:staging-sim:v31`.
+   - `systemctl enable --now` cả 3 → tự chạy khi boot.
+
+### Audit SRE Pha A — ĐANG CHẠY
+Sổ: `docs/audit/SRE_READINESS_2026-08.md`. Quy tắc bằng chứng ghi ngay đầu file (cấm dùng
+CLAUDE.md/MEMORY/docs làm bằng chứng cuối; mỗi ô phải có mức tin cậy).
+
+**Đã có 6 phát hiện, trong đó 4 CRITICAL:**
+- **F-002 CRITICAL (đo-thật)** — 13 alert rule SLO/KPI **không cái nào kêu được**: 5 metric nền
+  `omni_kpi_*` có **0 series** (không phải lỗi scrape — 25/25 target up, 116 metric `omni_*` khác
+  vẫn có). Gốc: `src/workers/kpi_metrics.py:216` xuất mẫu số **bên trong** handler message feedback,
+  mà Kafka `omni-action-feedback` tổng offset = **0**.
+- **F-003 CRITICAL (đo-thật)** — Alertmanager GCP chạy bằng ConfigMap `alertmanager-chaos-config`,
+  receiver duy nhất là webhook **ngược vào chính Omni**. Omni chết = alert chết theo. Grafana có
+  đường Telegram (secret đầy đủ) nhưng **chưa chứng minh giao được tin**.
+- **F-004 CRITICAL (đo-thật)** — rò chéo tenant **xác nhận sống**: key agent `staging-sim` gọi
+  `GET /autonomy/tenants/default/agent-credentials` và `GET /autonomy/tier?tenant_id=default` đều
+  **http=200**. Gốc: `src/gateway/routes/autonomy.py` thiếu `_require_admin_ctx` ở dòng **367, 379,
+  451, 510** (+ nhóm GET 50/127/153/243/291) trong khi route hàng xóm cùng resource CÓ. Không có
+  RLS ở Postgres. Nhánh GHI (`POST .../status`, `DELETE .../api-keys`) **cố ý chưa thử** vì audit
+  read-only.
+- **F-005 CRITICAL (chỉ-đọc-code)** — fleet thật chạy `aoip-agent.service` **root, không hardening
+  systemd**, trong khi `scripts/omni-agent.service` (User riêng, ProtectSystem, NoNewPrivileges)
+  tồn tại nhưng không dùng. Chống RCE chỉ bằng regex/allowlist trong-tiến-trình; đã từng bị xuyên
+  thủng (PoC RCE root 3/3 qua `awk`, ghi trong `validator.py:171-186`).
+- **F-006 CRITICAL (chỉ-đọc-code)** — mọi workload `replicas: 1`; Kafka RF=1 kể cả
+  `omni-audit-chain` (SOX/PCI); backup chỉ có Postgres; **chưa tìm được bằng chứng test restore**.
+- **F-001 HIGH (đo-thật)** — agent mất **~26 batch evidence/5 phút** dù `systemctl` xanh; ba VM ra
+  con số trùng khít (43 failed / 26 drop / 11 spool) ⇒ lỗi hệ thống. Đã loại trừ DNS/IPv6/kết nối
+  tuần tự-song song. **Chưa xác định nguyên nhân.**
+
+**Điểm đã chấm:** B1=15 ❌ · B2=35 ❌ · B3=35 ❌ · B5=30 ❌ · B6=62 ⚠️ · B7=48 ⚠️
+
+### ⚠️ Cảnh báo về chất lượng bằng chứng
+Subagent audit B3/B5/B6/B7 **chạy trong môi trường không có Bash** → kết quả của nó là
+**chỉ-đọc-code**, không phải đo-thật. Đã tự xác minh lại phần B5 bằng request thật (thành F-004).
+**B3 và B7 vẫn cần kiểm trên runtime/VM thật** trước khi coi là kết luận.
+
+### Next step
+1. Chờ 3 subagent còn lại (A1-A4 năng lực phối hợp · B4 bảo mật · B8 chất lượng+drift) trả kết quả,
+   tổng hợp vào `docs/audit/SRE_READINESS_2026-08.md`. Điền nốt bảng năng lực A1-A4, B4, B8 và ba
+   mục bắt buộc ở cuối file (DOC DRIFT · "Những gì KHÔNG kiểm được" · "Cần bật gì mới đo được").
+2. Kiểm lại B3/B7 bằng lệnh thật (subagent trước không có Bash):
+   `kubectl -n multi-agent get cronjob,job -o wide` (backup có chạy không) ·
+   `kafka-topics.sh --describe` (RF/partition THẬT trên broker) ·
+   `orb -m cust-app -u root systemctl show omni-remote-agent.service -p User -p NoNewPrivileges
+   -p ProtectSystem` (giải quyết drift 3 tên unit: `omni-remote-agent` vs `aoip-agent` vs
+   `omni-agent`).
+3. Xong Pha A → báo cáo ≤25 dòng, chờ user duyệt rồi mới sang Pha B (blueprint roadmap).
+   **User đã chốt: audit bằng Opus, khắc phục bằng Sonnet.**
+4. Commit khi Pha A đóng (standing authorization cho phép, nhớ push CẢ `gitea` lẫn `origin`).
+
+**KHÔNG tự sửa code trong Pha A** — audit là read-only, kể cả với F-004 (2 dòng thiếu
+`_require_admin_ctx`). Sửa là việc của Pha B.
+
+---
+
+## 🩹 Đ33 (cũ) — security sweep + retire Cloudflare Tunnel
+
+Rotate Postgres/Dex secret plaintext trong git, migrate Dex GCP sang Vault, gỡ static test password
+khỏi Dex public, retire Cloudflare Tunnel `app.omnisre.xyz` sang GCP trực tiếp. Trạng thái tại thời
+điểm Đ33: HEAD = commit rebase sau `3442493` (đã push), working tree sạch (trừ
+`docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` untracked, cố ý không commit). Chi tiết ở mục Đ33 bên
+dưới.
 
 ## 🩹 Đ32 — commit/push fix Đ31 (Harbor comment + ADR 0002 stale) + standing authorization
 
