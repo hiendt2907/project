@@ -46,3 +46,36 @@ def test_alert_context_domain_left_empty_not_guessed():
     src = inspect.getsource(dd)
     i = src.index('"probe": "alert_context"')
     assert '"domain": ""' in src[i : i + 600]
+
+
+def test_coerce_keeps_both_axes_not_only_domain():
+    """`coerce_evidence_dict` là CỬA HẸP mọi evidence phải qua — whitelist thiếu là rơi im lặng.
+
+    Đã trả giá hai lần: `domain` từng bị bỏ quên ở đây (xem comment trong schema.py),
+    và `signal_kind` lặp lại y hệt — gắn ở dispatcher lẫn evidence_consumer rồi vẫn
+    rỗng, mất hai lượt deploy mới truy ra.
+    """
+    from pkg.reasoning import coerce_evidence_dict
+
+    out = coerce_evidence_dict({
+        "trace_id": "t1", "probe": "k8s_clinical_pod_status",
+        "domain": "kubernetes", "signal_kind": "diagnostic",
+    })
+    assert out["domain"] == "kubernetes"
+    assert out["signal_kind"] == "diagnostic"
+
+
+def test_coerce_drops_nothing_the_dispatcher_writes():
+    """Mọi khoá dispatcher ghi vào envelope phải sống sót qua cửa hẹp."""
+    from pkg.reasoning import coerce_evidence_dict
+
+    written = {
+        "kind": "diagnostic_evidence", "trace_id": "t2", "symptom_group": "workload_resource",
+        "layer": "workload", "probe": "k8s_clinical_pod_status", "domain": "kubernetes",
+        "signal_kind": "diagnostic", "result": "PASSED", "raw": "x", "ts": "1",
+        "alert_rule": "IngressPrometheus", "alert_hint": "h",
+        "canonical_query_snippet": "{}", "namespace": "multi-agent", "evidence_source": "K8s_SDK",
+    }
+    out = coerce_evidence_dict(written)
+    missing = [k for k in ("domain", "signal_kind", "probe", "result", "namespace") if k not in out]
+    assert not missing, f"cửa hẹp nuốt mất: {missing}"

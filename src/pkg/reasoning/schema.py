@@ -128,6 +128,13 @@ def coerce_evidence_dict(obj: Any) -> DiagnosticEvidenceDict:
         # MỌI evidence đi qua trước khi vào reasoning. Thiếu nó thì domain do gateway
         # ghi bị rơi im lặng và cả pipeline lại rơi về suy từ lane.
         "domain",
+        # `signal_kind` rơi vào ĐÚNG cái bẫy mà comment trên vừa mô tả cho `domain`:
+        # dispatcher/gateway ghi nó vào envelope, nhưng whitelist này không có nên nó
+        # bị bỏ im lặng và trace meta luôn rỗng. Đo được 2026-08-09: sau khi đã gắn
+        # signal_kind ở cả dispatcher lẫn evidence_consumer, 100% trace sống vẫn hiện
+        # rỗng — mất hai lượt deploy mới truy ra chỗ này. Whitelist là cửa hẹp: thêm
+        # trường ở hai đầu mà quên đây thì không bao giờ tới nơi.
+        "signal_kind",
         "lane",        # Bug fix: lane was missing — caused empty lane badge in Telegram
         "namespace",
         "probe",
