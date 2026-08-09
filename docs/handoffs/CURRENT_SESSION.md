@@ -1,7 +1,78 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-09 (Đ38 — mark_stage mang domain. Đ37 — /diagnostics 400.) ·
-**Branch:** `main` · **HEAD:** `dc3664c`
+**Cập nhật:** 2026-08-09 (Đ39 — gỡ hẳn `lane`. Đ38 — mark_stage mang domain. Đ37 — /diagnostics 400.) ·
+**Branch:** `main` · **HEAD:** `ae4ee98`
+
+## Đ39 — GỠ HẲN `lane` khỏi tầng trace → `domain` + `signal_kind`. ĐÃ DEPLOY + VERIFY GCP
+
+Commit `1ddc73a` (gỡ lane) + `ae4ee98` (fix mimir chặn deploy). Jenkins build **#19 SUCCESS**.
+
+### Vì sao gỡ — một trường gánh BỐN nghĩa
+Đếm trực tiếp từ call site `mark_stage(lane=...)`:
+```
+23  lane=lane             → lane trục A từ envelope agent
+ 7  lane=_adv_lane        → resolve_proof_lane()   ← TRỤC B, không phải lĩnh vực
+ 5  lane="siem"           → trục B
+ 3  lane="resource"       → trục B
+ 1  lane="ONBOARDING_..." → LOẠI TÍN HIỆU, cũng không phải lĩnh vực
+ 4  lane=""               → không nghĩa gì
+```
+Portal render thẳng trường này ở cột "Lĩnh vực" ⇒ hiện sai nhãn.
+
+### Thay bằng HAI trục tách bạch (đều last-non-empty-wins)
+- `domain` — 9 domain canonical.
+- `signal_kind` — `diagnostic|learning`. **Bắt buộc phải có trục riêng**: portal đang phân biệt
+  sự cố vs tín hiệu học hỏi (`INV_KNOWLEDGE_NOT_ALERT`) bằng chính chuỗi `lane`, gỡ lane mà không
+  thay thế là mất luôn split đó.
+
+Phạm vi: `mark_stage` · `emit_stage_span` · trace meta · `omni:trace:events` · `/trace/recent` ·
+`/trace/{id}/pipeline` · `/trace/{id}/session` · `/trace/stream` · session doc + prompt LLM
+(`Lane: X` → `Lĩnh vực: X`) · portal (`LANE_VI` xoá, `isDiagnosticLane`→`isDiagnosticSignal` đọc
+`signal_kind`, `learningLaneVI`→`learningSignalVI`).
+
+### GIỮ NGUYÊN — hai thứ KHÔNG phải trục A, cấm gộp
+- **`proof_lane` (trục B)** `resource|state|app_log` — vẫn ở `meta["proof_lane"]` của evidence,
+  vẫn lái `ERR_REA_NO_PHYSICAL_PROOF`, sigma gate vẫn dùng `_adv_lane`.
+- **`envelope.lane` trên dây** từ agent bản cũ ĐANG CHẠY trên VM khách — `lane_to_domain()` giữ
+  nguyên, nay chỉ còn là hàng chót cascade `detect_domain()`. Gỡ phía producer sẽ vỡ mọi agent
+  đã cài.
+
+### Verify trên GCP (sau build #19)
+```
+4 pod đều lên image mới (fullstack/gateway/onboarding/provider-web)
+sim-service  domain=service  signal_kind=diagnostic  stage=LLM
+sim-network  domain=network  signal_kind=diagnostic  stage=LLM
+sim-disk     domain=storage  signal_kind=diagnostic  stage=LLM
+sim-cpu      domain=os_host  signal_kind=diagnostic  stage=LLM
+số trace còn khoá `lane` trong /trace/recent = 0
+/trace/{id}/pipeline keys = found,trace_id,domain,signal_kind,started_at,updated_at,verdict
+```
+Full suite **7363 passed** (8 failure `test_track2a_k8s_sdk.py` cần cluster sống, có sẵn từ trước).
+`tsc --noEmit` provider-portal sạch.
+
+### Sự cố kèm theo: mimir chặn toàn bộ deploy (đã xử lý)
+- Build #17/#18 FAIL ở stage monitoring: `rollout status deployment/mimir` timeout. Hậu quả **im
+  lặng và nguy hiểm**: stage `Rollout` (omni-fullstack/onboarding) nằm SAU nên bị skip — build đỏ
+  vì monitoring nhưng thực chất là **deploy nửa vời**, gateway có image mới còn worker thì không.
+- Nguyên nhân: `k8s/monitor/mimir.yaml` thiếu `strategy: Recreate` trong khi ghi TSDB vào PVC RWO.
+  RollingUpdate dựng pod mới trước khi pod cũ tắt ⇒ hai tiến trình cùng ghi một thư mục blocks.
+  loki/tempo/grafana cùng thư mục đều đã `Recreate` từ trước — mimir là chỗ duy nhất bị sót.
+- Việc ghi song song đó đã **làm hỏng TSDB head** (`out-of-order series added`), mimir không khởi
+  động lại được. Khôi phục **không xoá dữ liệu**: scale 0 → `mv wal` và `chunks_head` sang
+  `*.corrupt-20260809-0600` → scale 1. **9 block lịch sử giữ nguyên**, chỉ mất phần head chưa flush.
+  Thư mục hỏng vẫn nằm đó nếu cần khám nghiệm — nên dọn tay sau khi chắc chắn không cần.
+
+### Next step
+1. Xoá `wal.corrupt-*` / `chunks_head.corrupt-*` trong PVC `mimir-data` khi đã chắc không cần
+   (đang chiếm chỗ trong 10Gi).
+2. Chọn một trong hai cài đặt trùng nhau cho nút Test: `/simulate/scenario/*` (đang dùng, đã verify)
+   vs `POST /api/gateway/diagnostics/test` của gateway (`src/gateway/routes/diagnostic.py`, đăng ký
+   nhưng không bao giờ được gọi vì Next.js có route trùng đường dẫn).
+3. Nhánh `evidence_consumer` (sự cố in-cluster) mới unit test, chưa quan sát được domain trên GCP.
+4. Rotate token Cloudflare `117fb433…` — user thao tác tay.
+5. Audit SRE Pha A vẫn dở dang (xem Next step của Đ35).
+
+---
 
 ## Đ38 — `mark_stage` mang thêm `domain`; cột "Lĩnh vực" thôi suy từ lane → ĐÃ FIX + VERIFY GCP
 
