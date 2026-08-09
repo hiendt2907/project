@@ -15,23 +15,45 @@
 
 | # | Chỉ số | TRƯỚC GOM (bae4df8) | TẠI MỐC ĐÓNG BĂNG | SAU GIGO |
 |---|---|---|---|---|
-| 1 | Nguồn khởi phát chẩn đoán ở tầng loop | **10** (5 reactive + 5 proactive) | | |
+| 1 | Nguồn khởi phát chẩn đoán ở tầng loop | **10** (5 reactive + 5 proactive) | 10 (chưa gom — S5/S6 chưa làm) | |
 | 2 | Trong đó kết thúc bằng vòng chẩn đoán thật | **4** + 1 vòng ReAct riêng không qua `run_diagnostic_pipeline` | | |
 | 3 | Điểm vào HTTP độc lập bơm cùng topic | **6 route** | | |
-| 4 | Call site quyết định urgency/severity | **28** (16 Omni + 12 collector trên host khách) | | |
-| 5 | Cặp cài đặt trùng lặp | **6** (D1–D6) | | |
+| 4 | Call site quyết định urgency/severity | **28** (16 Omni + 12 collector trên host khách) | 27 (−1: `_classify_item` đã xoá) | |
+| 5 | Cặp cài đặt trùng lặp | **6** (D1–D6) | 5 (D6 đóng: nửa gateway đã xoá) | |
 | 6 | LLM call/giờ — tổng | **6,73/h** (30 call / 4,459h) | | |
 | 7 | LLM call/giờ — steady-state | **3,36/h**, nhịp ~630s | | |
 | 8 | Thời lượng 1 call LLM min/trung vị/max | **10,5s / 34,4s / 120,0s** | | |
-| 9 | Trace khởi nguồn PROACTIVE trong cửa sổ 4,459h | **0** | | |
+| 9 | Trace khởi nguồn PROACTIVE trong cửa sổ 4,459h | **0** | **≥1 trong vài phút** (`proact-fa61b272dae7`, rule `replicas_unavailable`) | |
 | 10 | Trace khởi nguồn ALERT trong cùng cửa sổ | **26** (`gw-prom-*`) | | |
-| 11 | Trace có `domain` khác rỗng (traffic sống) | **0 / 100%** | | |
-| 12 | Trace có `signal_kind` khác rỗng (traffic sống) | **0 / 100%** | | |
+| 11 | Trace có `domain` khác rỗng (traffic sống) | **0 / 100%** | **8/24** (chỉ trace sinh sau deploy; trace cũ giữ meta cũ tới hết TTL) | |
+| 12 | Trace có `signal_kind` khác rỗng (traffic sống) | **0 / 100%** | **3/24** (sinh sau deploy cuối) | |
 | 13 | Call site `detect_domain()` thiếu `domain_hint` | **0 / 2** | | |
 | 14 | Ngưỡng cắt bằng chứng đưa vào LLM | **~10 000 chars, giữ ĐUÔI** | | |
-| 15 | MTTD | **KHÔNG ĐO ĐƯỢC** | | |
-| 16 | Tổng dòng Python trong `src/` | **98 587** (474 file) | | |
+| 15 | MTTD | **KHÔNG ĐO ĐƯỢC** | **ĐO ĐƯỢC** — `omni_kpi_mttd_seconds` có series; kiểm bằng alert thật: startsAt−75s→75s, −90s→90,6s, −120s→120,4s | |
+| 16 | Tổng dòng Python trong `src/` | **98 587** (474 file) | **96 405** (451 file) — xoá 2 182 dòng động cơ aoip chết | |
 | 17 | Dòng của 21 file thuộc đường xử lý sự cố | **15 217** (≈15,4%) | | |
+
+---
+
+## Nhật ký thay đổi tới mốc đóng băng (mỗi mục đã deploy + verify trên GCP)
+
+| Bước | Nội dung | Bằng chứng sống |
+|---|---|---|
+| S0 | MTTD đo được — gắn call site cho `observe_kpi_mttd` (code chết, 0 call site), mang `startsAt` bằng `gigo_metadata` (dict đang có) | `event=kpi_mttd_observed ... mttd_sec=90.6` với `startsAt` đặt 90s trước; histogram 0 series → có series |
+| — | Xoá động cơ sự cố mô phỏng của aoip (23 module, 2 182 dòng) + 10 file test chỉ phủ chúng | 10 entrypoint sống import sạch; suite 7 324 passed |
+| S1 | Sinh bằng chứng không còn nằm sau cờ ReAct | `run_diagnostic_pipeline` nay dưới `if ws.diagnostic_dictionary_enabled` (kiểm bằng `inspect` trong pod) |
+| S2 | Token LLM chỉ bao đúng vòng ReAct | `_process_proactive_message` không còn `acquire_proactive`; token nằm sau guard ReAct |
+| — | Cổng 3σ: fail-OPEN → fail-closed thật | `advisory_sigma_stale` 0 lần sau deploy; `_adv_snap_raw = None` đã biến mất khỏi code |
+| S4 | Trigger proactive: hậu quả → tín hiệu sớm (config thuần, 3 rule) | `proactive_event_pushed rule=replicas_unavailable metric=2.0` — **lần đầu proactive bắn** |
+| S8 | Xoá thang điểm chất lượng chết, thay bằng trường `domain` thật | `_classify_item` đã gỡ khỏi pod; envelope agent mang `domain` |
+| — | Đường alert mang `domain` + `signal_kind` | meta trace sống: `{"domain": "os_host"}`, `{"domain": "kubernetes"}` |
+| — | `signal_kind` rơi im lặng ở `coerce_evidence_dict` (whitelist) | 3/24 trace có `signal_kind` sau lượt deploy cuối |
+
+**Bài học đắt nhất của đợt này:** ba lần liên tiếp một trường mới bị **rơi im lặng** mà
+không có lỗi nào được ném — `domain` (từng bị quên ở `coerce_evidence_dict`),
+`signal_kind` (lặp lại y hệt, mất 2 lượt deploy mới truy ra), và `_domain` (được tính
+đúng rồi ghi vào khoá không ai đọc). Cửa hẹp whitelist + khoá đặt sai tên là lớp lỗi
+riêng của hệ này; thêm trường ở hai đầu mà quên khúc giữa thì không bao giờ tới nơi.
 
 ---
 

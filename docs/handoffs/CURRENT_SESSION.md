@@ -1,7 +1,57 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-09 (Đ39 — gỡ hẳn `lane`. Đ38 — mark_stage mang domain. Đ37 — /diagnostics 400.) ·
-**Branch:** `main` · **HEAD:** `ae4ee98`
+**Cập nhật:** 2026-08-09 (Đ40 — proactive-first P1+S0/S1/S2/S4/S8, dọn aoip. Đ39 — gỡ `lane`.) ·
+**Branch:** `main` · **HEAD:** `e512eed`
+
+## Đ40 — PROACTIVE-first: P1 đo xong, S0/S1/S2/S4/S8 xong; dọn động cơ aoip chết
+
+**Trạng thái:** 7 commit, tất cả đã deploy GCP (build #20→#24 SUCCESS) và verify bằng
+**sự cố thật**, không chỉ pytest. Bảng đo: `docs/audit/PROACTIVE_FREEZE_2026-08-09.md`.
+
+### Đã xong + verify sống
+| Bước | Việc | Bằng chứng |
+|---|---|---|
+| S0 | MTTD từ **KHÔNG ĐO ĐƯỢC** → đo được | alert thật `startsAt` −75/−90/−120s → `mttd_sec` 75/90,6/120,4 |
+| — | Xoá động cơ sự cố mô phỏng aoip: 23 module (2 182 dòng) + 10 test | 10 entrypoint sống import sạch |
+| S1 | Sinh bằng chứng thoát khỏi cờ ReAct | kiểm `inspect` trong pod |
+| S2 | Token LLM chỉ bao vòng ReAct (điều kiện tiên quyết của S6) | `_process_proactive_message` hết `acquire_proactive` |
+| — | Cổng 3σ fail-OPEN → fail-closed thật | `advisory_sigma_stale` 0 lần sau deploy |
+| S4 | Trigger proactive: hậu quả → tín hiệu sớm | **`proactive_event_pushed rule=replicas_unavailable`** — lần đầu proactive bắn |
+| S8 | Xoá thang điểm chết, thay bằng `domain` thật | `_classify_item` đã gỡ khỏi pod |
+| — | `domain`+`signal_kind` chảy trên đường alert | meta trace sống có `os_host`/`kubernetes` |
+
+### CHƯA XONG — nêu rõ, không được coi là đã gom
+- **S3** tắt `OMNI_PROACTIVE_FALLBACK_ENABLED` · **S5** thêm cờ
+  `alert_direct_diagnostic_enabled` · **S6** flip alert→collector · **S7** gom 27 call
+  site urgency về 1 · **S9** điểm không quay lại.
+- **Số đường khởi phát vẫn là 10** — CHƯA gom. Đừng đọc Đ40 thành "đã proactive-first".
+- **P6 (cột SAU GIGO) còn trống**: theo thiết kế mỗi rule proactive phải quan sát ≥24h
+  trước khi mở tiếp; không nén được trong một phiên.
+- **Rule z-drift cố ý chưa bật**: `omni:node_iops:z` đang 3,398 > ngưỡng 3 ⇒ bật là bắn
+  ngay, mất cửa sổ quan sát và có thể vượt trần LLM 6,73 call/h.
+- `systemd_kill_unit/disk_cleanup/config_rollback` (1 153 dòng): capability viết xong
+  **chưa nối** vào `command_bridge._CAPABILITY_ADAPTERS` — cần quyết định nối hay bỏ.
+
+### Lớp lỗi cần nhớ: TRƯỜNG RƠI IM LẶNG
+Ba lần liên tiếp trong đợt này một trường mới biến mất mà không lỗi nào được ném:
+`domain` (từng bị quên ở whitelist `coerce_evidence_dict`), `signal_kind` (lặp y hệt,
+mất 2 lượt deploy mới truy ra), `_domain` (tính đúng rồi ghi vào khoá không ai đọc).
+`pkg/reasoning/schema.py::coerce_evidence_dict` là **cửa hẹp** mọi evidence phải qua —
+thêm trường ở hai đầu mà quên khúc giữa thì không bao giờ tới nơi.
+
+### Cảnh báo phương pháp: phân tích khả-đạt của aoip đã SAI HAI LẦN
+Suýt xoá `aoip.recovery` (826 dòng, code SỐNG). Đếm một-bậc và bỏ sót cạnh
+`from aoip.capabilities import X` đều cho kết quả sai. Đúng phải là bao đóng bắc cầu
+với **ba** nhóm entrypoint: console (deploy) · workers/gateway/services · `aoip.agent`
+chạy trên VM khách. Đừng tin phép đếm một-bậc khi định xoá.
+
+### Next step
+1. S5 (thêm cờ, default `True` = no-op) → S3 → quan sát 24h → S6.
+2. Điền cột SAU GIGO bằng ĐÚNG những lệnh của cột TRƯỚC.
+3. Chỉ mở rule z-drift sau khi có 24h dữ liệu nhiễu của đợt 1.
+4. Rotate token Cloudflare `117fb433…` (vẫn treo từ Đ36).
+
+---
 
 ## Đ39 — GỠ HẲN `lane` khỏi tầng trace → `domain` + `signal_kind`. ĐÃ DEPLOY + VERIFY GCP
 
