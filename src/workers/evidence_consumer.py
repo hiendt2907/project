@@ -2359,9 +2359,13 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         # "unknown": rỗng còn được lấp bởi call site sau (last-non-empty-wins),
         # còn "unknown" thì hiện lên UI như một nhãn có thật.
         _ev_domain = normalize_domain(ev_doc.get("domain"))
+        # `signal_kind` do nguồn khai; chỉ nhận đúng hai giá trị hợp lệ, giá trị lạ ⇒
+        # rỗng (last-non-empty-wins sẽ để call site sau lấp) chứ không ghi bừa.
+        _ev_kind = str(ev_doc.get("signal_kind") or "")
         await mark_stage(
             ctx.redis, trace, "EVIDENCE", "ok",
             domain="" if _ev_domain == _DOMAIN_UNKNOWN else _ev_domain,
+            signal_kind=_ev_kind if _ev_kind in ("diagnostic", "learning") else "",
         )
         # MTTD early registration: persist detection timestamp before analysis begins.
         # kpi_metrics.py reads this key to compute accurate MTTD (vs. receiving it from feedback).

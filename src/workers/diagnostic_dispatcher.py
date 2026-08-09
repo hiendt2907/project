@@ -8,7 +8,7 @@ from typing import Any
 from workers.diagnostic_evidence import evidence_from_probe
 from workers.diagnostic_mapping import alertname_from_anomaly_event, classify_event, load_diagnostic_matrix
 from workers.diagnostic_pod_plan import get_smart_diagnostic_plan, snapshot_from_structured_hint
-from workers.diagnostic_probe_registry import run_probe
+from workers.diagnostic_probe_registry import PROBE_DOMAINS, run_probe
 from workers.diagnostic_resource import (
     is_kube_pod_container_state_alert,
     is_workload_resource_alert,
@@ -74,6 +74,13 @@ async def _publish_diagnostic_evidence(
         "symptom_group": symptom_group,
         "layer": layer,
         "probe": ev_obj.probe_name,
+        # Lĩnh vực canonical theo REGISTRY của chính probe — nguồn tự khai, không suy
+        # đoán. `evidence_consumer` đọc `ev_doc["domain"]` ở mark_stage EVIDENCE;
+        # envelope của đường alert trước đây không có khoá này nên 100% trace sống
+        # hiện `domain=""` (đo tại P1, mục #11). PROBE_DOMAINS có bất biến kiểm mọi
+        # probe đều được phân loại (diagnostic_probe_registry.py:512-523).
+        "domain": PROBE_DOMAINS.get(pid, ""),
+        "signal_kind": "diagnostic",
         "result": ev_obj.result,
         "extracted_fact": ev_obj.extracted_fact,
         "raw": redact(ev_obj.raw_output)[:4000],
@@ -139,6 +146,8 @@ async def _publish_siem_synthetic_evidence(
         "symptom_group": "siem_incident",
         "layer": "security",
         "probe": "siem_incident_context",
+        "domain": "security",
+        "signal_kind": "diagnostic",
         "result": "SIEM_INCIDENT",
         "extracted_fact": incident_facts,
         "raw": redact(ev.error_hint)[:4000],
@@ -196,6 +205,11 @@ async def _publish_syshardtail_synthetic_evidence(
         "symptom_group": "infra_hard_fail",
         "layer": "os_baremetal",
         "probe": "alert_context",
+        # Ngữ cảnh alert thô chưa gắn probe nào ⇒ chưa biết lĩnh vực. Để RỖNG chứ
+        # không đoán: rỗng còn được call site sau lấp (last-non-empty-wins), còn một
+        # giá trị sai thì đứng nguyên và hiện lên portal như lĩnh vực có thật.
+        "domain": "",
+        "signal_kind": "diagnostic",
         "result": "FAILED",
         "extracted_fact": facts,
         "raw": redact(ev.error_hint or "")[:4000],
