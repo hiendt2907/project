@@ -1,7 +1,52 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-09 (Đ37 — 4 nút "Test lại" trang /diagnostics trả 400. ĐÃ FIX + DEPLOY +
-VERIFY TRÊN GCP.) · **Branch:** `main` · **HEAD:** `66373c5`
+**Cập nhật:** 2026-08-09 (Đ38 — mark_stage mang domain. Đ37 — /diagnostics 400.) ·
+**Branch:** `main` · **HEAD:** `dc3664c`
+
+## Đ38 — `mark_stage` mang thêm `domain`; cột "Lĩnh vực" thôi suy từ lane → ĐÃ FIX + VERIFY GCP
+
+Đây là lỗi phát hiện kèm ở Đ37, nay đã sửa. Commit `dc3664c`, Jenkins build #16 SUCCESS.
+
+### Vấn đề
+`mark_stage()` chỉ lưu `lane` trong trace meta ⇒ `/trace/recent` trả `domain` rỗng cho **30/30
+trace** (đo thật). Portal rơi về `scopeVI(t.lane)`, nên `service` và `network` (chung lane
+`SYS_HARD_FAIL`) hiện **cùng một nhãn**, `disk` và `cpu` (chung `SYS_RESOURCE`) cũng vậy.
+
+### Cách sửa
+`domain` là tham số mới của `mark_stage()`, **last-non-empty-wins** giống `lane` — vì domain chỉ
+biết sau `detect_domain()` trong khi INGEST đã mark trước đó. Nhờ tính chất này chỉ cần khai ở
+**một call site sớm nhất mỗi pipeline**, không phải sửa cả 89 chỗ gọi.
+- `domain` vào cả trace meta lẫn stream `omni:trace:events`; `/trace/recent` và
+  `/trace/{id}/pipeline` trả trường này.
+- Nối dây: `remote_agent_pipeline` (ngay sau `detect_domain`), `evidence_consumer` (domain nguồn
+  tự khai, chuẩn hoá), `simulate` scenario, `diagnostic.py` (chuẩn hoá alias services/net/disk/host).
+- Quy ước: không chuẩn hoá được ⇒ ghi **RỖNG**, không ghi `"unknown"` — rỗng còn được lấp về sau,
+  `"unknown"` thì hiện lên UI như một nhãn có thật.
+
+### Verify trên GCP sau deploy
+```
+4 trace bắt đầu SAU deploy : 4/4 có domain
+   sim-service | lane=SYS_HARD_FAIL | domain=service
+   sim-network | lane=SYS_HARD_FAIL | domain=network   ← chung lane, khác lĩnh vực
+   sim-disk    | lane=SYS_RESOURCE  | domain=storage
+   sim-cpu     | lane=SYS_RESOURCE  | domain=os_host
+26 trace có từ TRƯỚC deploy: 0/26 có domain (meta cũ, sẽ hết theo TTL 3600s)
+```
+Test: 7 test mới `tests/test_pipeline_stage_domain.py` + 1 test `/trace/recent`. Full suite
+**7363 passed**; 8 failure còn lại thuộc `test_track2a_k8s_sdk.py` (cần cluster sống), có sẵn từ
+trước, đã xác nhận bằng `git stash`.
+
+### ⚠️ Chưa verify sống + drift phát hiện kèm
+- Nhánh `evidence_consumer` (sự cố in-cluster) mới chỉ **unit test**, chưa quan sát được trên GCP
+  vì không ép được một alert in-cluster thật trong phiên. Nhánh remote-agent đã verify sống.
+- **Trùng lặp endpoint**: gateway đã có sẵn `POST /api/gateway/diagnostics/test`
+  (`src/gateway/routes/diagnostic.py`, ĐÃ đăng ký ở `api.py:490`) với đúng 4 kịch bản và alias
+  domain đúng. Nó **không bao giờ được gọi** vì Next.js có route trùng y hệt đường dẫn
+  `/api/gateway/diagnostics/test` chặn trước rồi proxy sang `/simulate/*`. Nay tồn tại HAI cài đặt
+  song song cho cùng một việc. Cần chọn giữ một — chưa làm vì là quyết định sản phẩm, không phải
+  lỗi 400.
+
+---
 
 ## 🚨 Đ37 — /diagnostics: cả 4 nút "Test lại" trả 400 → ĐÃ FIX, đã deploy GCP
 
@@ -62,7 +107,7 @@ nhãn `SYS_RESOURCE` — mất đúng sự phân biệt vừa khôi phục. Đâ
 thật**, không phải do Đ37; sửa phải chạm `mark_stage` + trace index nên tách riêng.
 
 ### Next step
-1. Thêm `domain` vào `mark_stage()` + trace index để cột "Lĩnh vực" nói thật (xem phát hiện trên).
+1. ~~Thêm `domain` vào `mark_stage()`~~ — ĐÃ LÀM ở Đ38 (xem đầu file).
 2. Rotate token Cloudflare `117fb433…` — user thao tác tay (token thiếu scope `User:API Tokens:Edit`).
 3. Cân nhắc Dex `storage.type` `memory` → `kubernetes`/`postgres` (session mất mỗi lần restart pod).
 4. Seeder tạo kèm 4 tài khoản demo có role nhưng KHÔNG có mật khẩu Dex — xoá nếu không cần.
