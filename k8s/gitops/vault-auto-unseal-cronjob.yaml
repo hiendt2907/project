@@ -1,0 +1,79 @@
+# Tự unseal Vault sau khi pod/VM restart.
+#
+# Vì sao cần: `vault-bootstrap.sh` chỉ unseal khi PIPELINE JENKINS chạy. Job
+# `omni-gcp-deploy` không có trigger tự động, nên khi VM GCP reboot thì vault-0
+# quay lại trạng thái sealed và nằm im cho tới lần ai đó bấm Build Now. Đo được
+# ngày 2026-08-09: Vault sealed suốt **2 ngày 22 giờ** — ClusterSecretStore
+# `vault-backend` InvalidProviderConfig, cả hai ExternalSecret SecretSyncedError,
+# và không ai phát hiện vì k8s Secret cũ vẫn còn nên ứng dụng vẫn chạy: mọi thay
+# đổi secret chỉ im lặng không tới nơi.
+#
+# CronJob này biến unseal từ "việc một lần lúc bootstrap" thành vòng reconcile
+# liên tục. `vault status` trả exit code 2 khi sealed, 0 khi đã mở — nên vòng lặp
+# này idempotent, chạy mỗi 2 phút gần như luôn là no-op.
+#
+# GIỚI HẠN CÓ CHỦ ĐÍCH: unseal key nằm trong k8s Secret cùng cluster ⇒ đây là
+# tiện lợi vận hành, KHÔNG phải ranh giới bảo mật. Ai đọc được Secret trong ns
+# `vault` thì đọc được key. Cách đúng cho production là GCP KMS auto-unseal
+# (bỏ hẳn Shamir key), nhưng chuyển đổi cần `vault operator unseal -migrate` —
+# xem ghi chú cùng nội dung ở đầu `vault-bootstrap.sh`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-auto-unseal
+  namespace: vault
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 120
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: unseal
+              image: hashicorp/vault:2.0.3
+              env:
+                - name: VAULT_ADDR
+                  value: http://vault.vault.svc.cluster.local:8200
+                - name: UNSEAL_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: vault-unseal-bootstrap
+                      key: unseal_key
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -u
+                  vault status >/dev/null 2>&1
+                  rc=$?
+                  # 0 = đã unseal, 2 = sealed, còn lại = chưa với tới được Vault
+                  # (pod đang khởi động) — im lặng thoát để lần chạy sau thử lại.
+                  if [ "$rc" -eq 0 ]; then exit 0; fi
+                  if [ "$rc" -ne 2 ]; then
+                    echo "vault chưa sẵn sàng (vault status rc=$rc), bỏ qua vòng này"
+                    exit 0
+                  fi
+                  echo "vault đang SEALED — unseal"
+                  vault operator unseal "$UNSEAL_KEY" >/dev/null
+                  vault status | grep -E '^Sealed'
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 100
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi

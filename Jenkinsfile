@@ -198,6 +198,12 @@ pipeline {
           kubectl wait --for=condition=PodScheduled pod/vault-0 -n vault --timeout=90s
           bash k8s/gitops/vault-bootstrap.sh
 
+          # Unseal phải tiếp tục sống sau khi pipeline kết thúc: job này không có
+          # trigger tự động, nên nếu chỉ dựa vào vault-bootstrap.sh ở trên thì một
+          # lần VM reboot là Vault nằm sealed tới lần Build Now kế tiếp (đã xảy ra
+          # thật, 2d22h — xem đầu file cronjob).
+          kubectl apply -f k8s/gitops/vault-auto-unseal-cronjob.yaml
+
           kubectl apply -f k8s/gitops/vault-clustersecretstore.yaml
           kubectl apply -f k8s/gitops/omni-gateway-external-secret.yaml
         '''
