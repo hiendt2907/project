@@ -420,10 +420,13 @@ def _ensure_metrics() -> None:
         ["check_name"],
     )
     # KPI metrics
+    # Label là `domain` (9 canonical), KHÔNG phải `lane`: trục lane đã gỡ khỏi tầng trace
+    # 2026-08-09. Đổi tên an toàn vì histogram này chưa từng có một series nào (đo tại P1)
+    # và 2 alert rule trong k8s/monitor/prometheus.yaml đều aggregate, không select theo label.
     _kpi_mttd = Histogram(
         "omni_kpi_mttd_seconds",
         "Mean Time To Detect — seconds from incident start to first advisory",
-        ["lane"],
+        ["domain"],
         buckets=[5, 15, 30, 60, 120, 300, 600, 1800],
     )
     _kpi_mttr = Histogram(
@@ -1073,9 +1076,10 @@ def observe_chain_cohesion_degraded() -> None:
 
 # ── KPI setters ────────────────────────────────────────────────────────────────
 
-def observe_kpi_mttd(lane: str, seconds: float) -> None:
+def observe_kpi_mttd(domain: str, seconds: float) -> None:
+    """Ghi một mẫu MTTD. Gọi từ `omni_worker._process_stream_entry` khi alert có `startsAt`."""
     _ensure_metrics()
-    _kpi_mttd.labels(lane=(lane or "unknown")[:48]).observe(max(0.0, float(seconds)))
+    _kpi_mttd.labels(domain=(domain or "unknown")[:48]).observe(max(0.0, float(seconds)))
 
 
 def observe_kpi_mttr(lane: str, seconds: float) -> None:

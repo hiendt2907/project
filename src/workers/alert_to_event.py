@@ -13,6 +13,33 @@ from workers.proactive_models import AnomalyEvent
 
 logger = logging.getLogger(__name__)
 
+# Alertmanager dùng giá trị "không" này cho endsAt/startsAt chưa đặt — KHÔNG phải một mốc thật.
+_ZERO_TIME_PREFIX = "0001-01-01"
+
+# Mốc "sự cố bắt đầu" chỉ nằm trong payload Alertmanager và trước 2026-08-09 chưa bao giờ được
+# giữ lại, nên MTTD không tính được (đo tại P1: histogram `omni_kpi_mttd_seconds` 0 series,
+# `observe_kpi_mttd` 0 call site). Mang nó đi bằng `gigo_metadata` — dict ĐANG CÓ trên
+# AnomalyEvent, không phải trường/khoá/topic mới.
+GIGO_KEY_ALERT_STARTS_AT = "alert_starts_at"
+
+
+def parse_alert_starts_at(value: str | None) -> float | None:
+    """ISO-8601 của Alertmanager → epoch giây. Không hợp lệ/không có ⇒ ``None``.
+
+    Trả ``None`` thay vì 0.0 có chủ đích: 0.0 sẽ lặng lẽ biến thành một MTTD khổng lồ,
+    còn ``None`` buộc call site phải bỏ qua phép đo — thà không có số còn hơn số sai.
+    """
+    s = (value or "").strip()
+    if not s or s.startswith(_ZERO_TIME_PREFIX):
+        return None
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
 def _stringify_labels(raw: dict[str, Any] | None) -> dict[str, str]:
     out: dict[str, str] = {}
     if not isinstance(raw, dict):
@@ -163,6 +190,8 @@ def build_anomaly_event_from_alert_payload(payload: dict[str, Any]) -> AnomalyEv
         cq = _prometheus_canonical_document(labels, annot)
         trigger = str(annot.get("query") or annot.get("promql") or payload.get("trigger_promql") or "")[:2000]
         gigo = build_gigo_metadata(labels, annot)
+        if parse_alert_starts_at(str(a0.get("startsAt") or "")) is not None:
+            gigo[GIGO_KEY_ALERT_STARTS_AT] = str(a0["startsAt"])
         return AnomalyEvent(
             trace_id=trace_id,
             rule_name="IngressPrometheus",

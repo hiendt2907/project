@@ -24,7 +24,11 @@ from services.playbook.store import PlaybookStore
 from workers.autonomous_decider import autonomous_decider_loop
 from workers.baseline_snapshot import baseline_snapshot_loop
 from workers.forecast_autonomous_loop import autonomous_forecast_loop
-from workers.alert_to_event import build_anomaly_event_from_alert_payload
+from workers.alert_to_event import (
+    GIGO_KEY_ALERT_STARTS_AT,
+    build_anomaly_event_from_alert_payload,
+    parse_alert_starts_at,
+)
 from workers.autonomous_feedback_loop import kafka_action_feedback_loop
 from workers.dlq_archiver import dlq_archiver_loop, dlq_rollup_flush_loop
 from workers.diagnostic_dispatcher import run_diagnostic_pipeline
@@ -47,6 +51,7 @@ from workers.metrics_exporter import (
     inc_dlq_published,
     inc_rag_empty_result,
     observability_metrics_loop,
+    observe_kpi_mttd,
     set_kafka_consumer_lag,
     set_last_scout_timestamp,
     start_prometheus_server,
@@ -465,6 +470,34 @@ async def _process_stream_entry(
             except Exception:
                 logger.warning("[%s] evidence_reply context not stored", trace)
         ev = build_anomaly_event_from_alert_payload(payload)
+
+        # MTTD = từ lúc sự cố BẮT ĐẦU (Alertmanager `startsAt`) tới lúc Omni cầm được nó.
+        # Trước 2026-08-09 `observe_kpi_mttd` không có call site nào trong toàn repo — histogram
+        # `omni_kpi_mttd_seconds` chưa từng có một series, nên mọi so sánh "phát hiện nhanh hơn"
+        # đều không kiểm chứng được. Đây là chỗ SỚM NHẤT trên đường alert mà cả hai mốc cùng có mặt.
+        # Không có `startsAt` hợp lệ ⇒ BỎ QUA, không ghi số đoán.
+        try:
+            _started = parse_alert_starts_at(
+                (ev.gigo_metadata or {}).get(GIGO_KEY_ALERT_STARTS_AT)
+            )
+            if _started is not None:
+                _mttd = time.time() - _started
+                # Chặn giá trị vô lý: đồng hồ lệch, hoặc alert cũ được replay từ đầu topic
+                # (`auto_offset_reset="earliest"`) sẽ tạo MTTD hàng ngày và bóp méo histogram.
+                if 0.0 <= _mttd <= 86400.0:
+                    _kpi_domain = str((ev.gigo_metadata or {}).get("domain") or "kubernetes")
+                    observe_kpi_mttd(_kpi_domain, _mttd)
+                    logger.info(
+                        "event=kpi_mttd_observed trace=%s domain=%s mttd_sec=%.1f",
+                        trace, _kpi_domain, _mttd,
+                    )
+                else:
+                    logger.debug(
+                        "event=kpi_mttd_rejected trace=%s mttd_sec=%.1f reason=out_of_range",
+                        trace, _mttd,
+                    )
+        except Exception as _mttd_err:  # noqa: BLE001 — đo đạc không bao giờ chặn chẩn đoán
+            logger.debug("event=kpi_mttd_skip trace=%s err=%r", trace, _mttd_err)
 
         # S3.1: Assign alert to incident cluster (best-effort, non-blocking).
         try:
