@@ -801,18 +801,33 @@ async def _proactive_event_pipeline(
                 except Exception as e:
                     logger.warning("[%s] proactive telegram deny: %s", trace, e)
             return
-        if ws.proactive_fallback_enabled:
-            if ws.diagnostic_dictionary_enabled:
-                try:
-                    from workers.diagnostic_dispatcher import run_diagnostic_pipeline
+        # S1 — Sinh bằng chứng KHÔNG còn nằm sau cờ `proactive_fallback_enabled`.
+        # Trước đây tắt cờ đó là tắt luôn `run_diagnostic_pipeline`, tức mất cả bằng
+        # chứng chứ không chỉ mất vòng ReAct. Muốn engine chủ động thành đường duy
+        # nhất thì bằng chứng phải LUÔN được sinh; chỉ vòng ReAct 6 lượt (đắt, tốn
+        # LLM) mới là thứ đáng bật/tắt.
+        if ws.diagnostic_dictionary_enabled:
+            try:
+                from workers.diagnostic_dispatcher import run_diagnostic_pipeline
 
-                    await run_diagnostic_pipeline(ctx, ev)
-                except Exception:
-                    logger.exception("[%s] diagnostic pipeline failed", trace)
-            await run_proactive_react_fallback(
-                ctx, ev, trace=trace, pattern_key=pattern_key, msg_id=msg_id
-            )
+                await run_diagnostic_pipeline(ctx, ev)
+            except Exception:
+                logger.exception("[%s] diagnostic pipeline failed", trace)
         if ws.proactive_fallback_enabled:
+            # S2 — Token LLM chỉ bao ĐÚNG vòng ReAct, không bao cả pipeline.
+            # Lý do: `LLMSemaphore` chia làn khi num_parallel>=2 ⇒ làn proactive có
+            # đúng 1 token, `acquire_proactive` timeout 120s rồi ném, và exception
+            # đó đẩy thẳng message vào DLQ. Nếu giữ token suốt cả pipeline (kể cả
+            # giai đoạn chạy probe không cần LLM) thì sau khi gom alert về đây, sự
+            # cố thứ hai trở đi sẽ timeout → MẤT CẢNH BÁO THẬT, mà log lại chỉ hiện
+            # "proactive handler error". Đây là điều kiện tiên quyết của bước gom.
+            _tok = await ctx.semaphore.acquire_proactive()
+            try:
+                await run_proactive_react_fallback(
+                    ctx, ev, trace=trace, pattern_key=pattern_key, msg_id=msg_id
+                )
+            finally:
+                await ctx.semaphore.release(_tok)
             return
         if ctx.telegram and ws.telegram_admin_chat_id:
             try:
@@ -889,7 +904,9 @@ async def _process_proactive_message(
         prev_trace = getattr(ctx, "inbound_trace_id", "")
         ctx.inbound_proactive = True
         ctx.inbound_trace_id = trace
-        token = await ctx.semaphore.acquire_proactive()
+        # S2 — KHÔNG giữ token LLM ở đây nữa. Token nay chỉ bao đúng vòng ReAct
+        # trong `_proactive_event_pipeline`; giai đoạn chạy probe/sinh bằng chứng
+        # không cần LLM nên không được chiếm slot. Xem chú thích S2 ở chỗ acquire.
         t0_incident = time.monotonic()
         try:
             with proactive_trace_span(trace):
@@ -930,7 +947,6 @@ async def _process_proactive_message(
                     )
         finally:
             observe_proactive_incident_duration(time.monotonic() - t0_incident)
-            await ctx.semaphore.release(token)
             ctx.inbound_proactive = prev_proactive
             ctx.inbound_trace_id = prev_trace
         if not timed_out:

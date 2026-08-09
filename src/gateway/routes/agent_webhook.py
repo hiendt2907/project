@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from gateway.tenant_context import get_tenant_ctx, is_admin_ctx, require_agent_tenant
-from pkg.reasoning.domain_signals import assess_domain_severity, detect_domain
+from pkg.reasoning.domain_signals import detect_domain
 from pkg.reasoning.evidence_fingerprint import fingerprint_evidence
 from pkg.reasoning.sanitize import sanitize_evidence_field
 
@@ -237,52 +237,28 @@ async def _check_dedup(redis: Any, agent_id: str, fp: str) -> tuple[int, bool]:
     return count, skip_kafka
 
 
-def _classify_item(item: EvidenceItem) -> dict[str, Any]:
-    """Compute quality metadata for injection into evidence envelope."""
-    lane = item.lane
-    # Xem ghi chú ở `remote_agent_pipeline`: domain collector tự khai phải thắng suy đoán.
-    domain = detect_domain(
-        item.probe, item.alert_hint, item.raw, lane,
+def _resolve_item_domain(item: EvidenceItem) -> str:
+    """Lĩnh vực canonical của một mẩu bằng chứng, để gắn vào envelope.
+
+    Thay cho `_classify_item` cũ (gỡ 2026-08-09). Hàm đó tính thêm
+    `_quality_tier`/`_quality_score`/`_severity`/`_lm_eligible`/`_archive_eligible`
+    và bơm vào envelope, nhưng **không consumer nào đọc** — grep toàn repo (src, ui,
+    k8s) chỉ ra đúng một nơi tham chiếu là test của chính nó. Nó cũng chấm điểm theo
+    `LANE_SCORE` dựa trên `envelope.lane`, tức trục A đã gỡ khỏi tầng trace.
+
+    Cái DUY NHẤT trong đó có giá trị là `detect_domain` — và trớ trêu là kết quả bị
+    đặt vào khoá `_domain` mà không ai đọc, trong khi `evidence_consumer` lại đọc
+    `ev_doc["domain"]`. Envelope trước đây KHÔNG có khoá đó, nên bằng chứng từ agent
+    tới worker luôn rỗng lĩnh vực (đo tại P1: 0/100% trace có `domain`). Nay trả
+    thẳng vào `domain`.
+
+    `domain_hint` do collector tự khai vẫn thắng mọi suy đoán — xem ghi chú cùng nội
+    dung ở `remote_agent_pipeline`.
+    """
+    return detect_domain(
+        item.probe, item.alert_hint, item.raw, item.lane,
         domain_hint=getattr(item, "domain", "") or None,
     )
-    severity = assess_domain_severity(
-        domain, item.alert_hint, item.raw,
-        item.extracted_fact if isinstance(item.extracted_fact, dict) else {},
-    )
-
-    SEVERITY_SCORE = {"critical": 0.9, "high": 0.7, "medium": 0.5, "baseline": 0.15, "none": 0.05}
-    # OBSERVED = 0.15 như PASSED: một mẫu đo tự nó không mang tin hiệu sự cố. Việc
-    # phán lệch là của Omni (knowledge_pipeline), không phải của thang điểm này.
-    RESULT_SCORE = {
-        "FAILED": 1.0, "INCONCLUSIVE": 0.5, "PASSED": 0.15, "SKIPPED": 0.0, "OBSERVED": 0.15,
-    }
-    LANE_SCORE = {"SIEM_SECURITY": 1.0, "SYS_HARD_FAIL": 0.9, "APP_HTTP": 0.8, "SYS_RESOURCE": 0.6}
-
-    score = (
-        SEVERITY_SCORE.get(severity, 0.05) * 0.5
-        + RESULT_SCORE.get(item.result, 0.15) * 0.3
-        + LANE_SCORE.get(lane, 0.5) * 0.2
-    )
-
-    tier = (
-        "critical" if severity == "critical" and score >= 0.6 else
-        "high"     if severity in ("critical", "high") and score >= 0.4 else
-        "medium"   if score >= 0.3 else
-        "baseline" if severity == "baseline" else
-        "noise"
-    )
-
-    lm_eligible = tier in ("critical", "high") or tier == "medium"
-    archive_eligible = tier != "noise"
-
-    return {
-        "_quality_tier": tier,
-        "_quality_score": round(score, 3),
-        "_domain": domain,
-        "_severity": severity,
-        "_lm_eligible": lm_eligible,
-        "_archive_eligible": archive_eligible,
-    }
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
@@ -426,8 +402,8 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
             # Still update side-channel metrics (EPS, metrics snapshot, logs) — done below
             # but skip Kafka publish
         else:
-            # ── Quality classification ───────────────────────────────────────
-            quality_meta = _classify_item(item)
+            # Lĩnh vực canonical — worker đọc `ev_doc["domain"]` ở mark_stage EVIDENCE.
+            item_domain = _resolve_item_domain(item)
 
             envelope: dict[str, Any] = {
                 "trace_id": item.trace_id,
@@ -442,6 +418,7 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
                 },
                 "raw": sanitize_evidence_field(item.raw),
                 "symptom_group": item.symptom_group,
+                "domain": item_domain,
                 "lane": item.lane,
                 "stream_tags": item.stream_tags or [item.lane],
                 "namespace": item.namespace or body.hostname,
@@ -458,7 +435,6 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
                 "_fingerprint": fp,
                 "_dedup_count": dedup_count,
                 "signal_type": item.signal_type,
-                **quality_meta,
             }
 
             payload = json.dumps(

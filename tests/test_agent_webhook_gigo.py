@@ -163,7 +163,7 @@ class TestHardBlock:
 
 class TestQualityMetadata:
     @pytest.mark.asyncio
-    async def test_critical_evidence_tagged_correctly(self):
+    async def test_evidence_carries_canonical_domain(self):
         redis = FakeRedis(decode_responses=True)
         kafka = _KafkaCapture()
         app = _make_app(redis, kafka)
@@ -177,15 +177,18 @@ class TestQualityMetadata:
             await c.post("/webhook/agent/evidence", json=body)
         assert len(kafka.messages) == 1
         env = kafka.decoded()[0]
-        assert env["_quality_tier"] in ("critical", "high")
-        assert env["_lm_eligible"] is True
         # remote_log_errors → nhánh container/pod log; giá trị nay là canonical
         # `kubernetes` (`container_logs` cũ) — xem pkg/domain/taxonomy.py.
-        assert env["_domain"] == "kubernetes"
-        assert env["_archive_eligible"] is True
+        assert env["domain"] == "kubernetes"
+        # Thang điểm chất lượng (`_quality_tier`/`_lm_eligible`/`_archive_eligible`)
+        # đã gỡ 2026-08-09: producer không có consumer nào ngoài chính test này, và
+        # nó chấm điểm theo `LANE_SCORE` dựa trên trục lane đã bỏ.
+        for gone in ("_quality_tier", "_quality_score", "_domain", "_severity",
+                     "_lm_eligible", "_archive_eligible"):
+            assert gone not in env, f"{gone} đã gỡ, không được quay lại"
 
     @pytest.mark.asyncio
-    async def test_baseline_metrics_tagged_correctly(self):
+    async def test_baseline_sample_also_carries_domain(self):
         redis = FakeRedis(decode_responses=True)
         kafka = _KafkaCapture()
         app = _make_app(redis, kafka)
@@ -199,9 +202,9 @@ class TestQualityMetadata:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             await c.post("/webhook/agent/evidence", json=body)
         env = kafka.decoded()[0]
-        assert env["_quality_tier"] == "baseline"
-        assert env["_lm_eligible"] is False
-        assert env["_archive_eligible"] is True  # baseline still archived
+        # Mẫu đo nền vẫn phải mang lĩnh vực canonical để worker đọc được.
+        assert env["domain"] == "os_host"
+        assert "_quality_tier" not in env
 
     @pytest.mark.asyncio
     async def test_fingerprint_and_dedup_count_injected(self):

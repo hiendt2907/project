@@ -2683,16 +2683,41 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             if _adv_lane == "resource":
                 _adv_snap_raw = await ctx.redis.get(REDIS_KEY_SNAPSHOT)
                 _adv_snap_ts = await ctx.redis.get(REDIS_KEY_TS)
-                if _adv_snap_raw and _adv_snap_ts:
+                _adv_no_ground_truth = ""
+                if not _adv_snap_raw or not _adv_snap_ts:
+                    _adv_no_ground_truth = "baseline snapshot chưa có"
+                else:
                     import time as _time
                     _adv_snap_age = _time.time() - float(_adv_snap_ts)
                     if _adv_snap_age > 300:
-                        logger.warning(
-                            "event=advisory_sigma_stale trace=%s age_sec=%.0f — fail closed",
-                            trace,
-                            _adv_snap_age,
-                        )
-                        _adv_snap_raw = None
+                        _adv_no_ground_truth = f"baseline snapshot quá hạn ({_adv_snap_age:.0f}s > 300s)"
+
+                # FAIL-CLOSED THẬT (sửa 2026-08-09). Trước đây chỗ này đặt
+                # `_adv_snap_raw = None` rồi rơi xuống `if _adv_snap_raw:` — tức khối
+                # chứa `return ""` bị bỏ qua và advisory VẪN CHẠY. Log ghi "fail closed"
+                # nhưng hành vi là fail-OPEN, ngược hẳn. Đo tại P1 khớp chính xác:
+                # `advisory_sigma_stale` 14 lần trên đúng 15 lần gọi LLM advisory — gần
+                # như mọi advisory đều sinh ra từ lúc mất nền so sánh.
+                # Với lane resource, 3σ baseline LÀ sự thật nền; không có nó thì không có
+                # cơ sở nào để nói alert đúng hay sai, nên không được phép gọi LLM.
+                # Suppression này CỐ Ý ồn ào (warning + 12 stage hiện trên dashboard) để
+                # không biến thành im lặng ngược — nếu `baseline_snapshot_loop` chết, nó
+                # phải đập vào mắt operator chứ không âm thầm nuốt mọi sự cố tài nguyên.
+                if _adv_no_ground_truth:
+                    logger.warning(
+                        "event=advisory_sigma_no_ground_truth trace=%s reason=%s — fail closed, no advisory",
+                        trace, _adv_no_ground_truth,
+                    )
+                    _gt_detail = f"3σ gate FAIL-CLOSED: {_adv_no_ground_truth} — không có nền so sánh, không gọi LLM"
+                    await mark_stage(ctx.redis, trace, "RAG", "skip", detail="sigma_gate_no_ground_truth")
+                    await mark_stage(ctx.redis, trace, "LLM", "skip", detail=_gt_detail)
+                    await mark_stage(ctx.redis, trace, "SCHEMA", "skip", detail="no advisory (no ground truth)")
+                    await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no advisory to verify")
+                    await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="no dispatch (no ground truth)")
+                    await mark_stage(ctx.redis, trace, "CRAT", "skip", detail="no dispatch — nothing to audit")
+                    await mark_stage(ctx.redis, trace, "DISPATCH", "skip", detail="fail-closed — no alert sent")
+                    await _mark_suggest_only_terminal(ctx, trace)
+                    return ""
                 if _adv_snap_raw:
                     try:
                         _adv_snap = json.loads(
