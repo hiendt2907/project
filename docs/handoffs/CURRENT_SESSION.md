@@ -78,14 +78,26 @@ chạy trên GCP: `src/aoip/console/seed_identity.py` (ghi PG + mirror Redis khi
    "detail":"kind=provider"}`, `portal:session:a170b788…` tồn tại, `portal:proles:…` =
    `platform_owner`.
 
+### Đã khắc phục tiếp (Đ36 vòng 2 — commit e06b4eb, 608652b, 5a3e204)
+- ✅ **Static IP**: `gcloud compute addresses create omni-k3s-ip --addresses 34.87.96.251
+  --region asia-southeast1` → `IN_USE`. Reboot VM không mất IP nữa.
+- ✅ **Auto-unseal Vault**: `k8s/gitops/vault-auto-unseal-cronjob.yaml` (mỗi 2', idempotent) +
+  nối vào `Jenkinsfile`. Kiểm chứng thật: seal tay → job tự unseal <30s. Fix lỗi hệ thống làm
+  Vault chết lặng 2d22h.
+- ✅ **Deep scout đốt LLM**: commit `608652b`. Đo trước: 93/95 LLM call/24' là deep_scout synth lại
+  toàn cụm mỗi vòng (dedup=0). Fix: fingerprint + cache Redis `omni:scout:synth:*` + bỏ
+  cluster_digest khỏi entity + interval 1800→21600. **Bằng chứng vòng 2**:
+  `deep_scout_autonomous done pods=40 services=54 synth_called=0 synth_cached=94` (trước: 93 call).
+- ⚠️ **Rotate token Cloudflare**: token chỉ có `Zone:DNS:Edit`, không tự roll được (`9109`). User
+  phải roll tay: token id `117fb433…` tại dashboard. **Chưa làm.**
+- ✅ **Vaultwarden**: URL `https://bitwarden.omnisre.xyz`, tài khoản `hiendt1@outlook.com.vn`, master
+  pass `D@ngT4phi3n2026` (giống pass Jenkins). `bw` CLI đã cài. Đã đẩy 2 item mới: login
+  *"Dex admin - provider/tenant portal (omnisre)"* + Secure Note *"Đ36 GCP infra changes"*
+  (static IP, auto-unseal, DNS token cần rotate). Tổng 20 item. Đã `bw logout`.
+
 ### Next step
-1. **Reserve static IP** — vẫn CHƯA làm, IP còn ephemeral, restart VM là đứt lại:
-   `gcloud compute addresses create omni-k3s-ip --addresses 34.87.96.251 --region asia-southeast1`.
-2. **Sửa auto-unseal Vault** — cơ chế hiện tại không chạy khi VM reboot (Phát hiện 4). Đây là lỗi
-   hệ thống, không phải sự cố một lần.
-3. **Đưa secret vào Vaultwarden** — `bw` CLI chưa cài trên máy, và Vaultwarden mã hoá đầu-cuối nên
-   phải có master password của user; chưa làm được tự động.
-4. Cân nhắc `storage.type` `memory` → `kubernetes`/`postgres` cho Dex (hiện refresh token/session
+1. Rotate token Cloudflare `117fb433…` (user thao tác tay — token thiếu scope tự roll).
+2. Cân nhắc `storage.type` `memory` → `kubernetes`/`postgres` cho Dex (hiện refresh token/session
    Dex mất mỗi lần restart pod).
 5. Seeder tạo kèm 4 tài khoản demo (`support@aoip.dev`, `sre@acme.dev`, `approver@acme.dev`,
    `sre@globex.dev`) **có role nhưng KHÔNG có mật khẩu Dex** ⇒ không đăng nhập được. Nếu không cần,
