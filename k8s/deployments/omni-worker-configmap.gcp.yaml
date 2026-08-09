@@ -24,9 +24,38 @@ data:
   OMNI_AUTONOMOUS_FORECAST_THRESHOLD: "0.95"
   OMNI_AUTONOMOUS_FORECAST_DURATION: "24h"
   OMNI_AUTONOMOUS_FORECAST_ALERT_COOLDOWN_SEC: "3600"
+  # S4 — Điều kiện kích hoạt proactive: từ HẬU QUẢ sang TÍN HIỆU SỚM.
+  #
+  # Đo tại P1 (docs/audit/PROACTIVE_FREEZE_2026-08-09.md): trong 4,459h vận hành có
+  # 26 trace từ alert và ĐÚNG 0 trace proactive. Nguyên nhân không phải thiếu code —
+  # 5 vòng proactive đều chạy — mà là điều kiện kích hoạt duy nhất bên dưới
+  # (`CrashLoopBackOff > 0`) vốn đã là hậu quả, không phải dấu hiệu sớm.
+  # Đo trực tiếp trên Prometheus GCP 2026-08-09: truy vấn đó trả **0 series** khi
+  # không có pod nào crash-loop ⇒ `_instant_scalar` không có gì để đọc ⇒ không bao
+  # giờ bắn. Đó là bằng chứng cuối cùng.
+  #
+  # `OMNI_PROACTIVE_PROMQL`/`_TRIGGER_THRESHOLD` GIỮ NGUYÊN làm lưới cuối và làm
+  # đường lùi: `proactive_promql_rules` rỗng hoặc không parse được ⇒ tự rơi về rule
+  # đơn này (backward-compat, không breaking).
   OMNI_PROACTIVE_PROMQL: 'sum(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"})'
   OMNI_PROACTIVE_TRIGGER_THRESHOLD: "0"
   OMNI_PROACTIVE_EVAL_INTERVAL_SEC: "300"
+  # Bật THEO ĐỢT, không bật cả bộ một lúc. Đợt 1 chỉ gồm rule mà giá trị hiện tại
+  # ĐANG BẰNG 0 (đo thật: restart_accel=0, replicas_unavailable=0) — bật lên không
+  # bắn ngay, nên quan sát được nhiễu thật trong 24h trước khi mở tiếp.
+  # CỐ Ý CHƯA BẬT ở đợt này: cpu/mem/iops z-drift. Lý do đo được, không phải phỏng
+  # đoán: `omni:node_iops:z` hiện là 3,398 (> ngưỡng 3) nên bật là bắn tức thì, mất
+  # cửa sổ quan sát và có nguy cơ vượt trần LLM 6,73 call/h của bảng BEFORE.
+  # Mọi biểu thức BẮT BUỘC thu về đúng 1 series (`max`/`sum`) vì `_instant_scalar`
+  # chỉ đọc `res[0]` — nhiều series thì nó chọn bừa. Đã kiểm từng cái trên Prometheus
+  # GCP: cả 3 đều trả đúng series=1.
+  # Trần ngân sách: cooldown 3600s/rule ⇒ tối đa 1 sự cố/rule/giờ.
+  OMNI_PROACTIVE_PROMQL_RULES: |
+    [
+      {"name":"restart_accel","promql":"sum(increase(kube_pod_container_status_restarts_total{namespace=\"multi-agent\"}[15m]))","threshold":2},
+      {"name":"replicas_unavailable","promql":"sum(kube_deployment_status_replicas_unavailable{namespace=\"multi-agent\"})","threshold":0},
+      {"name":"crashloop_last_resort","promql":"sum(kube_pod_container_status_waiting_reason{reason=\"CrashLoopBackOff\"})","threshold":0}
+    ]
   OMNI_BASELINE_SNAPSHOT_ENABLED: "true"
   OMNI_BASELINE_SNAPSHOT_INTERVAL_SEC: "600"
   OMNI_BASELINE_SNAPSHOT_REDIS_TTL_SEC: "600"
