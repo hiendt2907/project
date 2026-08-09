@@ -91,6 +91,16 @@ metadata:
     app: mimir
 spec:
   replicas: 1
+  # Recreate, KHÔNG RollingUpdate: mimir ghi TSDB vào PVC `mimir-data` (RWO,
+  # blocks-storage.backend=filesystem). RollingUpdate dựng pod mới TRƯỚC khi
+  # pod cũ tắt ⇒ hai tiến trình mimir cùng ghi một thư mục blocks, pod mới chết
+  # ngay ("failed services", readiness 503) và không bao giờ Ready ⇒ rollout
+  # treo tới hết timeout. Đo thật ở Jenkins build #17 (2026-08-09): stage
+  # monitoring `rollout status deployment/mimir --timeout=180s` FAIL, kéo theo
+  # cả build đỏ và **stage rollout omni-fullstack/onboarding phía sau không
+  # chạy** — nên bản build mới chỉ lên tới gateway, worker vẫn chạy image cũ.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: mimir
