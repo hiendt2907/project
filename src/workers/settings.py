@@ -1279,6 +1279,18 @@ class WorkerSettings(BaseSettings):
         default=True,
         description="SRE Diagnostic Dictionary: deterministic probes + Kafka evidence topic.",
     )
+    alert_direct_diagnostic_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OMNI_ALERT_DIRECT_DIAGNOSTIC_ENABLED"),
+        description=(
+            "S5/S6 — công tắc biến alert từ ĐƯỜNG KHỞI PHÁT thành NGUỒN THU THẬP. "
+            "True (mặc định, hành vi hiện tại): alert gọi thẳng run_diagnostic_pipeline. "
+            "False: alert chỉ publish AnomalyEvent vào kafka_topic_proactive_incidents, "
+            "để engine chủ động là đường khởi phát duy nhất. Mặc định True nên deploy cờ "
+            "này là NO-OP — flip chỉ được làm sau khi có ≥24h dữ liệu proactive (xem "
+            "docs/audit/PROACTIVE_FREEZE_2026-08-09.md)."
+        ),
+    )
     diagnostic_matrix_path: str = Field(
         default="/app/config/diagnostic_matrix.yaml",
         validation_alias=AliasChoices("OMNI_DIAGNOSTIC_MATRIX_PATH"),

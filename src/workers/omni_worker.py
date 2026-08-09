@@ -516,14 +516,34 @@ async def _process_stream_entry(
         except Exception as _ce:
             logger.debug("event=cluster_assign_skip trace=%s err=%s", trace, _ce)
 
-        await run_diagnostic_pipeline(ctx, ev)
-        await emit_transition(
-            ctx,
-            trace_id=trace,
-            transition=TRANSITION_DIAGNOSED,
-            component="omni_worker_stream_consumer",
-            detail="diagnostic_pipeline_completed",
-        )
+        # `getattr` có chủ đích (cùng idiom với `alert_qos_normal_cap` phía trên): ctx
+        # trong một số đường gọi mang settings tối giản, thiếu trường sẽ ném
+        # AttributeError và bị `except` bao ngoài nuốt thành "alert lỗi, retry" — tức
+        # cờ vắng mặt sẽ làm HỎNG đường alert chứ không phải no-op. Mặc định True =
+        # giữ nguyên hành vi hiện tại.
+        if not getattr(ctx.settings, "alert_direct_diagnostic_enabled", True):
+            # S6 — alert thôi làm ĐƯỜNG KHỞI PHÁT, chỉ còn là NGUỒN THU THẬP: đẩy nguyên
+            # AnomalyEvent sang topic proactive để engine chủ động là cửa vào duy nhất.
+            # Cùng shape với `proactive_observer._push_incident` nên consumer không đổi.
+            # Không emit TRANSITION_DIAGNOSED ở đây: chưa chẩn đoán gì, ghi nhận sai sẽ
+            # làm KPI "đã chẩn đoán" tự khen — đúng cái bẫy bùa số đang muốn tránh.
+            assert ctx.kafka is not None
+            await ctx.kafka.send_envelope_inner(
+                ctx.settings.kafka_topic_proactive_incidents, ev.model_dump()
+            )
+            logger.info(
+                "event=alert_forwarded_to_proactive trace=%s rule=%s topic=%s",
+                trace, ev.rule_name, ctx.settings.kafka_topic_proactive_incidents,
+            )
+        else:
+            await run_diagnostic_pipeline(ctx, ev)
+            await emit_transition(
+                ctx,
+                trace_id=trace,
+                transition=TRANSITION_DIAGNOSED,
+                component="omni_worker_stream_consumer",
+                detail="diagnostic_pipeline_completed",
+            )
         dur_ms = (time.perf_counter() - t0) * 1000.0
         log_end_request(
             trace,

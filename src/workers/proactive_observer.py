@@ -367,10 +367,23 @@ async def _instant_scalar(ctx: WorkerHandlerContext, promql: str) -> float | Non
     except Exception as e:
         logger.warning("proactive promql fail: %s", e)
         return None
+    # Ba trường hợp dưới đây đều trả None nhưng KHÁC HẲN nhau về ý nghĩa vận hành.
+    # Trước 2026-08-09 cả ba im lặng như nhau, nên một rule gõ sai PromQL sẽ không bao
+    # giờ bắn mà không để lại dấu vết nào — kiểu hỏng tệ nhất: hệ thống trông vẫn khoẻ.
     if data.get("status") != "success":
+        # Rule HỎNG (sai cú pháp, sai tên metric có ký tự lạ...). Phải ồn ào: nó sẽ
+        # không bao giờ bắn nữa và không ai biết.
+        logger.warning(
+            "event=proactive_promql_rejected promql=%s status=%s error=%s",
+            promql[:200], data.get("status"), str(data.get("error") or "")[:200],
+        )
         return None
     res = (data.get("data") or {}).get("result") or []
     if not res:
+        # Vector rỗng là BÌNH THƯỜNG với metric chỉ tồn tại lúc có sự cố (ví dụ
+        # `kube_pod_container_status_waiting_reason` — kube-state-metrics chỉ sinh
+        # series khi thật sự có container đang waiting). KHÔNG phải rule chết.
+        logger.debug("event=proactive_promql_empty promql=%s", promql[:200])
         return None
     v = res[0].get("value")
     if v and len(v) >= 2:
