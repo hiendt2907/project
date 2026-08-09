@@ -1,7 +1,49 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-09 (Đ40 — proactive-first P1+S0/S1/S2/S4/S8, dọn aoip. Đ39 — gỡ `lane`.) ·
-**Branch:** `main` · **HEAD:** `e512eed`
+**Cập nhật:** 2026-08-09 (Đ41 — S5 + lỗi im lặng PromQL + 2 đính chính. Đ40 — proactive-first
+P1+S0/S1/S2/S4/S8. Đ39 — gỡ `lane`.) · **Branch:** `main` · **HEAD:** `9b863dc`
+
+## Đ41 — Việc làm trong lúc chờ cửa sổ quan sát 24h
+
+Build Jenkins **#25 SUCCESS**, verify bằng alert thật trên GCP (không chỉ pytest).
+
+### Xong
+| Việc | Bằng chứng sống |
+|---|---|
+| **S5** — cờ `alert_direct_diagnostic_enabled`, default `True` = NO-OP | pod: cờ `True`, nhánh có trong `_process_stream_entry`; bắn alert thật `sim-sys_resource-f4314ee97d72` → `alert_forwarded_to_proactive` = **0**, vẫn chạy `diagnostic_dispatcher_plan`, `kpi_mttd_observed mttd_sec=0.6`, payload có `domain=kubernetes signal_kind=diagnostic` |
+| `_instant_scalar` thôi gộp 3 ca vào 1 `None` | rule sai cú pháp nay ném WARNING `proactive_promql_rejected`; vector rỗng vẫn im (debug) |
+| Chốt 3 capability chưa nối: **KHÔNG nối, KHÔNG xoá** | `docs/audit/PROACTIVE_FREEZE_2026-08-09.md` mục cuối |
+
+`getattr(..., True)` chứ không truy cập thẳng thuộc tính: `test_track1b_worker_kafka` bắt được
+rằng ctx ở một số đường gọi mang settings tối giản — thiếu trường sẽ ném AttributeError và bị
+`except` bao ngoài nuốt thành "alert lỗi, retry", tức cờ vắng mặt làm HỎNG đường alert chứ không
+phải no-op.
+
+### HAI ĐÍNH CHÍNH — tôi ghi sai ở Đ40
+1. **S7 không tồn tại.** "27 call site urgency" là số lần XUẤT HIỆN CHUỖI, không phải số nơi ra
+   quyết định. Đường quyết định đã là một: `_assess_urgency` → `assess_domain_severity`. Không
+   có gì để gom. **Bỏ S7 khỏi kế hoạch.**
+2. **Rule CrashLoopBackOff không chết.** Đo trên Prometheus GCP: `kube_pod_container_status_waiting`
+   có 65 series, `..._waiting_reason` có 0, kube-state-metrics `up=1` — KSM chỉ sinh series khi
+   thật sự có container waiting. Rỗng = cụm khoẻ. Ghi "trả 0 series ⇒ không bao giờ khớp gì" là
+   SAI VỀ CƠ CHẾ; kết luận thiết kế vẫn đúng nhưng vì lý do khác: nó chỉ có series SAU KHI
+   crashloop thành hình — đo hậu quả, không phải tín hiệu sớm.
+
+### Còn treo
+- **S3** tắt `OMNI_PROACTIVE_FALLBACK_ENABLED` → **S6** flip cờ S5 → **S9**. Vẫn chờ ≥24h.
+- Cửa sổ quan sát ĐANG chạy đúng: rule đã vào ConfigMap thật (**tên là `omni-worker-config`,
+  KHÔNG phải `omni-worker-configmap`** — dễ sửa nhầm file), lần bắn gần nhất cách 49', cooldown
+  3600s nên im lặng là đúng chu kỳ chứ không phải loop chết.
+- `wal.corrupt-*`/`chunks_head.corrupt-*` (640MB) — đã verify đủ điều kiện xoá (12 block nguyên,
+  mimir khoẻ, 3 block mới ghi sau sự cố) nhưng `rm -rf` qua ssh bị classifier chặn. Lệnh sẵn ở
+  cuối Đ41 để chạy tay.
+- Rotate token Cloudflare `117fb433…` (treo từ Đ36).
+
+```bash
+gcloud compute ssh omni-k3s-vm --zone=asia-southeast1-c --tunnel-through-iap --command='D=/var/lib/rancher/k3s/storage/pvc-2451ee38-fd8c-4c8f-823a-852dd07c00b7_monitor_mimir-data/tsdb/anonymous; sudo rm -rf $D/wal.corrupt-20260809-0600 $D/chunks_head.corrupt-20260809-0600; sudo du -sh $D'
+```
+
+---
 
 ## Đ40 — PROACTIVE-first: P1 đo xong, S0/S1/S2/S4/S8 xong; dọn động cơ aoip chết
 
