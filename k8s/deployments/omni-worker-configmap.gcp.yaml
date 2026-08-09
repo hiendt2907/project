@@ -97,7 +97,12 @@ data:
   OMNI_DIAG_EVIDENCE_LLM_MODEL: "qwen3:8b"
   OMNI_AUTONOMOUS_DECIDER_MODEL: "qwen3:8b"
   OMNI_EMBED_MODEL: "nomic-embed-text"
-  OMNI_DEEP_SCOUT_INTERVAL_SEC: "1800"
+  # 1800 (30') đo được là quá dày: mỗi vòng synth lại TOÀN BỘ pod+service bằng LLM
+  # (93 entity × ~9.5s tuần tự vì Ollama num_parallel=1 ≈ 15' LLM chạy liên tục cho
+  # mỗi chu kỳ 30') và tranh hàng đợi với advisory thật. Dedup theo fingerprint đã
+  # cắt gần hết call; 6h là nhịp quét phát hiện entity MỚI, không phải nhịp synth.
+  OMNI_DEEP_SCOUT_INTERVAL_SEC: "21600"
+  OMNI_AUTONOMOUS_SYNTH_REFRESH_SEC: "86400"
   OMNI_METRICS_LISTEN_PORT: "9090"
   OMNI_OPENSANDBOX_ENABLED: "false"
   OMNI_OPENSANDBOX_BASE_URL: "http://opensandbox-shim.opensandbox.svc.cluster.local:8888"

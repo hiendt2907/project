@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,6 +41,8 @@ class AutonomousScoutSummary:
     pods_processed: int = 0
     services_processed: int = 0
     bigbang_chunks: int = 0
+    synth_cached: int = 0  # entity không đổi ⇒ bỏ qua cả LLM synth lẫn embed
+    synth_called: int = 0  # entity mới/đã đổi/quá hạn refresh ⇒ có gọi LLM
     errors: list[str] = field(default_factory=list)
 
 
@@ -137,6 +140,71 @@ def _pod_ports(p: Any) -> list[dict[str, Any]]:
 
 def _pod_containers(p: Any) -> list[dict[str, str]]:
     return [{"name": c.name or "", "image": (c.image or "")[:120]} for c in (p.spec.containers or [])][:12]
+
+
+# Trường KHÔNG được đưa vào fingerprint: chúng đổi mỗi vòng quét dù hạ tầng
+# đứng yên, nên nếu tính vào hash thì dedup vô tác dụng — mọi entity luôn "đổi".
+# Vẫn truyền vào prompt để bản synth có số liệu baseline khi thật sự phải viết lại.
+_VOLATILE_ENTITY_FIELDS = ("namespace_cpu_rate_sample", "namespace_mem_sample")
+
+_SYNTH_CACHE_PREFIX = "omni:scout:synth:"
+
+
+def _entity_fingerprint(entity_json: dict[str, Any]) -> str:
+    """Hash phần CẤU TRÚC của entity (bỏ số đo biến thiên).
+
+    Deep scout trước đây gọi LLM cho MỌI pod/service ở MỌI vòng, kể cả khi không
+    có gì đổi: 93 entity × ~9.5s tuần tự (Ollama num_parallel=1) ≈ 15 phút LLM
+    liên tục mỗi chu kỳ 30 phút, và tranh hàng đợi với advisory thật.
+    """
+    stable = {k: v for k, v in entity_json.items() if k not in _VOLATILE_ENTITY_FIELDS}
+    canonical = json.dumps(stable, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8", errors="replace")).hexdigest()
+
+
+async def _cached_summary(redis: Any, point_id: str, fingerprint: str, max_age_sec: int) -> str | None:
+    """Bản tóm tắt còn dùng được, hoặc None nếu phải synth lại.
+
+    Trả None khi: không có Redis, chưa từng cache, entity đã đổi, hoặc bản cache
+    quá cũ (`autonomous_synth_refresh_sec`) — mốc tuổi giữ baseline khỏi đóng băng
+    vĩnh viễn ở lần quét đầu tiên.
+    """
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(f"{_SYNTH_CACHE_PREFIX}{point_id}")
+    except Exception as e:
+        logger.warning("autonomous synth cache read %s: %s", point_id, e)
+        return None
+    if not raw:
+        return None
+    try:
+        rec = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if rec.get("fingerprint") != fingerprint:
+        return None
+    if (time.time() - float(rec.get("ts") or 0.0)) > max_age_sec:
+        return None
+    text = rec.get("summary")
+    return text if isinstance(text, str) and text else None
+
+
+async def _store_summary(redis: Any, point_id: str, fingerprint: str, summary: str) -> None:
+    if redis is None or not summary:
+        return
+    try:
+        await redis.set(
+            f"{_SYNTH_CACHE_PREFIX}{point_id}",
+            json.dumps({"fingerprint": fingerprint, "summary": summary, "ts": time.time()}),
+            ex=_SYNTH_CACHE_TTL_SEC,
+        )
+    except Exception as e:
+        logger.warning("autonomous synth cache write %s: %s", point_id, e)
+
+
+# TTL rộng hơn hẳn refresh window — cache hết hạn chỉ là mất dedup, không sai dữ liệu.
+_SYNTH_CACHE_TTL_SEC = 30 * 24 * 3600
 
 
 async def _synthesize_one(
@@ -305,7 +373,7 @@ async def run_deep_scout_autonomous(ctx: Any, *, periodic: bool = False) -> Auto
     try:
         llm = local_llm
         return await _run_deep_scout_autonomous_body(
-            periodic=periodic, summary=summary, ws=ws, vector_store=vector_store, llm=llm
+            ctx=ctx, periodic=periodic, summary=summary, ws=ws, vector_store=vector_store, llm=llm
         )
     finally:
         await local_llm.aclose()
@@ -313,12 +381,28 @@ async def run_deep_scout_autonomous(ctx: Any, *, periodic: bool = False) -> Auto
 
 async def _run_deep_scout_autonomous_body(
     *,
+    ctx: Any,
     periodic: bool,
     summary: AutonomousScoutSummary,
     ws: WorkerSettings,
     vector_store: Any,
     llm: VLLMClient,
 ) -> AutonomousScoutSummary:
+    redis = getattr(ctx, "redis", None)
+    refresh_sec = int(ws.autonomous_synth_refresh_sec)
+
+    async def _summary_for(entity: dict[str, Any], point_id: str) -> tuple[str, bool]:
+        """(text, đã_gọi_LLM). Cache hit ⇒ bỏ qua luôn embed+upsert ở call site."""
+        fp = _entity_fingerprint(entity)
+        cached = await _cached_summary(redis, point_id, fp, refresh_sec)
+        if cached is not None:
+            summary.synth_cached += 1
+            return cached, False
+        text = await _synthesize_one(llm, ws, entity, sem)
+        summary.synth_called += 1
+        await _store_summary(redis, point_id, fp, text)
+        return text, True
+
     sem = asyncio.Semaphore(ws.autonomous_synth_concurrency)
     series_ok, vm_ns = await _vm_namespace_baselines(ws)
     if not series_ok:
@@ -361,19 +445,12 @@ async def _run_deep_scout_autonomous_body(
             continue
         svc_by_ns.setdefault(ns, []).append(name)
 
-    cluster_digest = {
-        "nodes": len(nodes_raw),
-        "ingress_count": len(ingress_raw),
-        "services_total": len(svcs_raw),
-        "pods_total": len(pods_raw),
-        "vm_series_ok": series_ok,
-        "vm_namespace_cpu": vm_ns.get("namespaces_cpu"),
-        "vm_namespace_mem": vm_ns.get("namespaces_mem"),
-        "vm_errors": (vm_ns.get("raw_errors") or [])[:5],
-    }
+    # `cluster_digest` (nodes/pods_total/vm_*) từng được nhét vào payload của TỪNG
+    # entity. Nó đổi mỗi vòng quét dù pod/service đứng yên, nên mọi entity luôn
+    # trông như "đã thay đổi" — dedup bên dưới sẽ vô tác dụng nếu giữ lại. Số liệu
+    # cấp cụm vẫn còn ở `_run_bigbang_cluster_ingest`, nơi nó thực sự thuộc về.
 
     # Index/schema do RedisVectorStore.ensure_ready() tạo (pgvector đã gỡ 2026).
-    pass
 
     for p in pods_raw:
         ns = p.metadata.namespace or ""
@@ -391,12 +468,14 @@ async def _run_deep_scout_autonomous_body(
             "ports": ports,
             "containers": containers,
             "services_same_namespace": svc_by_ns.get(ns, [])[:20],
-            "cluster_digest": cluster_digest,
             "namespace_cpu_rate_sample": (vm_ns.get("namespaces_cpu") or {}).get(ns),
             "namespace_mem_sample": (vm_ns.get("namespaces_mem") or {}).get(ns),
         }
-        text = await _synthesize_one(llm, ws, entity, sem)
         pid = _point_id_autonomous("pod", ns, pn)
+        text, did_synth = await _summary_for(entity, pid)
+        if not did_synth:
+            summary.pods_processed += 1
+            continue
         pay = {
             "entity_type": "pod",
             "pod_name": pn,
@@ -430,12 +509,14 @@ async def _run_deep_scout_autonomous_body(
             "cluster_ip": cluster_ip,
             "type": spec.type or "",
             "ports": prts,
-            "cluster_digest": cluster_digest,
             "namespace_cpu_rate_sample": (vm_ns.get("namespaces_cpu") or {}).get(ns),
             "namespace_mem_sample": (vm_ns.get("namespaces_mem") or {}).get(ns),
         }
-        text = await _synthesize_one(llm, ws, entity, sem)
         pid = _point_id_autonomous("svc", ns, sn)
+        text, did_synth = await _summary_for(entity, pid)
+        if not did_synth:
+            summary.services_processed += 1
+            continue
         pay = {
             "entity_type": "service",
             "service_name": sn,
@@ -469,11 +550,15 @@ async def _run_deep_scout_autonomous_body(
         except Exception as e:
             summary.errors.append(f"probe:{e!s}")
 
-    if not periodic:
-        logger.info(
-            "deep_scout_autonomous done pods=%s services=%s errors=%s",
-            summary.pods_processed,
-            summary.services_processed,
-            len(summary.errors),
-        )
+    # Log CẢ vòng periodic: trước đây nhánh periodic im lặng nên không ai thấy nó
+    # đang đốt LLM. synth_called/synth_cached là số để phát hiện dedup hỏng.
+    logger.info(
+        "deep_scout_autonomous done pods=%s services=%s synth_called=%s synth_cached=%s errors=%s periodic=%s",
+        summary.pods_processed,
+        summary.services_processed,
+        summary.synth_called,
+        summary.synth_cached,
+        len(summary.errors),
+        periodic,
+    )
     return summary

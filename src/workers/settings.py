@@ -1222,6 +1222,15 @@ class WorkerSettings(BaseSettings):
     autonomous_scout_max_pods: int = Field(default=40, ge=5, le=500)
     autonomous_scout_max_services: int = Field(default=80, ge=10, le=500)
     autonomous_synth_concurrency: int = Field(default=2, ge=1, le=8)
+    autonomous_synth_refresh_sec: int = Field(
+        default=86400,
+        ge=600,
+        le=2_592_000,
+        description=(
+            "Tuổi tối đa của bản tóm tắt deep-scout trước khi synth lại DÙ entity không đổi. "
+            "Dedup theo fingerprint cắt gần hết call; mốc này giữ baseline không quá cũ."
+        ),
+    )
     autonomous_probe_enabled: bool = Field(
         default=False,
         description="Bật probe shell qua OpenSandbox sau synthesis (cần opensandbox_enabled).",
