@@ -272,3 +272,45 @@ lực trong pod GCP:
   (gateway theo item, worker theo z-score) — chỉ đọc code không kết luận được.
 - **Tỉ lệ LLM chọn ĐÚNG bộ công cụ chẩn đoán.** Chưa có tập sự cố mẫu có nhãn để chấm. Đây là
   chỉ số GIGO cốt lõi ở P6 — phải dựng tập mẫu trước, nếu không thì "GIGO tốt hơn" là lời nói suông.
+
+---
+
+## Món treo đã điều tra xong: 3 capability chưa nối (1 153 dòng) — KẾT LUẬN: KHÔNG NỐI, KHÔNG XOÁ
+
+Handoff Đ40 ghi món này là "cần quyết định nối hay bỏ". Đã truy hết cả hai đầu; nó **không phải
+đồ bỏ quên**, mà là nửa dưới của một cơ chế chặn blast-radius có chủ đích.
+
+Ba tầng đăng ký, đo trực tiếp trong code:
+
+| Tầng | Nơi | Số capability |
+|---|---|---|
+| Thi hành (agent trên VM khách) | `aoip/recovery.py::OPERATORS` | **6** |
+| Phát lệnh (Omni) | `aoip/command_bridge.py::_CAPABILITY_ADAPTERS` | **3** |
+| Cổng tự dispatch | `workers/auto_recovery_bridge.py::_SUPPORTED_CAPABILITIES` | **3** |
+
+Agent CÓ THỂ làm `resource_runaway` (kill_unit), `disk_pressure_tmp` (disk_cleanup),
+`config_drifted` (config_rollback) — `OPERATORS` đã có đủ cả 6 cặp. Nhưng `command_bridge` là
+**đường phát lệnh DUY NHẤT** (grep `issue_capability_command`: không caller nào khác), nên 3 cái
+thiếu adapter là **không phát được từ bất kỳ đâu — kể cả đường người duyệt tay**.
+
+Vì sao KHÔNG nối trong đợt đóng băng:
+- Chính comment tại `_SUPPORTED_CAPABILITIES` khai nó là một trong bốn lớp chặn blast-radius
+  ("chỉ vài lệnh systemd"). Nối thêm là **nới blast-radius**, tức thêm tính năng — đúng thứ
+  lệnh đóng băng cấm.
+- Ba capability này phá hoại hơn hẳn ba cái đang bật: `kill_unit` giết tiến trình,
+  `disk_cleanup` xoá file, `config_rollback` thay file cấu hình. Ba cái đang bật chỉ
+  restart / reset-failed / vacuum journal.
+- Chưa có dữ liệu để tin: ngưỡng `OMNI_MIN_DISPATCH_CONFIDENCE` tồn tại vì độ tin cậy phải đến
+  TỪ kinh nghiệm; ta chưa có một lần thực thi có kiểm chứng nào cho ba loại này.
+
+Vì sao KHÔNG xoá: có test đầy đủ cho cả ba, và phía thi hành đã nối sẵn. Xoá là vứt nửa việc đã
+làm đúng, rồi sẽ phải viết lại khi mở blast-radius có kiểm soát.
+
+**Trạng thái đúng: đóng băng nguyên trạng, có chủ đích, đã ghi lý do.** Mở khi và chỉ khi có
+quyết định blast-radius riêng, không phải như một bước dọn dẹp.
+
+Điểm cần biết kèm theo (dễ hiểu nhầm): agent `remote_agent` (chẩn đoán) **không bao giờ** chạy
+được các lệnh này — `WRITE_VERBS` ở `pkg/diagnostics/command_catalog.py` chặn `restart`/`kill`/
+`reset-failed` độc lập với catalogue, và `remote_agent/emitter.poll_commands()` chỉ hỏi kênh
+chẩn đoán. Mutate đi bằng agent KHÁC (`aoip.agent`, kênh durable `/webhook/agent/rt/commands/*`).
+Hai agent, hai kênh, hai chính sách — đừng đọc gộp.
