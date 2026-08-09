@@ -46,6 +46,54 @@ _LANE_LABEL: dict[str, str] = {
 # Lanes ingested as Prometheus alerts (omni-alerts) vs evidence batches.
 _ALERT_LANES = frozenset({"sys_resource", "sys_hard_fail"})
 
+# --- Kịch bản theo DOMAIN (trục sự thật hiện tại) --------------------------------
+# Nút trên trang /diagnostics đặt tên theo triệu chứng người đọc hiểu ("Dịch vụ dừng",
+# "Mất cổng lắng nghe", ...), tức theo 9 domain canonical — KHÔNG theo 4 lane cũ.
+# Trước đây portal tự map kịch bản sang chuỗi "state"/"resource" rồi gọi `/simulate/{lane}`;
+# đó là `proof_lane` (trục B trong pkg/domain/taxonomy.py), không phải lane key của
+# simulator (trục A) ⇒ gateway trả 400 "unknown lane" cho cả 4 nút. Sửa đúng gốc:
+# simulator nhận thẳng kịch bản và tự khai `domain`, thay vì để portal đoán lane.
+#
+# `lane`/`lane_label` vẫn giữ trong payload vì đường vào production còn agent bản cũ
+# chỉ gửi lane; nhưng `domain` khai tường minh ở đây LUÔN thắng suy đoán từ lane
+# (đặc biệt SYS_HARD_FAIL → lane_to_domain() trả `unknown` một cách cố ý).
+SCENARIO_KEYS: tuple[str, ...] = ("service", "network", "disk", "cpu")
+
+_SCENARIO_SPEC: dict[str, dict[str, Any]] = {
+    "service": {
+        "lane": "sys_hard_fail",
+        "domain": "service",
+        "probe": "remote_systemd_units",
+        "alert_hint": "nginx.service chuyển inactive (dead) — dịch vụ dừng đột ngột",
+        "raw": "● nginx.service - A high performance web server\n   Active: inactive (dead)\n   Main PID: 812 (code=exited, status=0/SUCCESS)",
+        "fact": {"failed_unit": "nginx.service", "unit_state": "inactive", "severity": "critical"},
+    },
+    "network": {
+        "lane": "sys_hard_fail",
+        "domain": "network",
+        "probe": "remote_port_check",
+        "alert_hint": "cổng tcp/80 vừa đóng — mất cổng lắng nghe",
+        "raw": "ss -ltn | grep ':80 ' -> (no output)\nprev_scan: LISTEN 0 511 0.0.0.0:80",
+        "fact": {"port": 80, "protocol": "tcp", "listener_state": "closed", "severity": "critical"},
+    },
+    "disk": {
+        "lane": "sys_resource",
+        "domain": "storage",
+        "probe": "remote_disk_usage",
+        "alert_hint": "phân vùng / dùng 97% — đĩa gần đầy",
+        "raw": "Filesystem  Size  Used Avail Use% Mounted on\n/dev/sda1    50G   48G  1.2G  97% /",
+        "fact": {"disk_percent": 97.0, "mount": "/", "severity": "critical"},
+    },
+    "cpu": {
+        "lane": "sys_resource",
+        "domain": "os_host",
+        "probe": "remote_system_metrics",
+        "alert_hint": "CPU 96% liên tục 5 phút — bão hoà tải",
+        "raw": "load avg 18.2; top: pid 4112 99%cpu",
+        "fact": {"cpu_percent": 96.0, "severity": "critical"},
+    },
+}
+
 
 def _get_redis(request: Request) -> Any:
     r = getattr(request.app.state, "redis", None)
@@ -273,6 +321,73 @@ def _build_evidence_envelopes(
     return [primary, companion]
 
 
+def _remote_envelope(
+    *,
+    lane: str,
+    trace_id: str,
+    tenant_id: str,
+    agent_id: str,
+    hostname: str,
+    probe: str,
+    alert_hint: str,
+    raw: str,
+    fact: dict[str, Any],
+    domain: str,
+) -> dict[str, Any]:
+    """Một envelope RemoteAgent hoàn chỉnh.
+
+    `domain` truyền vào tường minh, KHÔNG suy ra từ lane ở đây: kịch bản theo domain
+    tự khai lĩnh vực của mình, còn đường lane cũ gọi vào với `lane_to_domain(...)`.
+    """
+    lane_label = _LANE_LABEL[lane]
+    return {
+        "trace_id": trace_id,
+        "probe": probe,
+        "alert_rule": f"RemoteAgent_{lane_label}",
+        "alert_hint": f"[SIM/{hostname}] {alert_hint}",
+        "result": "FAILED",
+        # result also inside extracted_fact: assess_domain_severity Priority 1 reads
+        # extracted_fact.result == "FAILED" → critical/high urgency → diagnosis loop runs.
+        "extracted_fact": {**fact, "result": "FAILED", "agent_id": agent_id, "hostname": hostname},
+        # Nonce in raw → unique fingerprint per run, so each simulation is a fresh
+        # incident (no stale cached cluster/representative, no spurious RAG self-hit).
+        "raw": f"{raw}\n# sim-run {trace_id}",
+        "symptom_group": f"remote_{lane}",
+        "domain": domain,
+        "lane": lane_label,
+        "stream_tags": [lane_label],
+        "namespace": hostname,
+        "tenant_id": tenant_id,
+        "ts": str(int(time.time())),
+        "evidence_source": "RemoteAgent",
+        "canonical_query_snippet": json.dumps(
+            {"labels": {"agent_id": agent_id, "hostname": hostname, "probe": probe}}
+        ),
+        "kind": "diagnostic_evidence",
+    }
+
+
+def _build_scenario_envelopes(
+    scenario: str, trace_id: str, *, tenant_id: str, agent_id: str, hostname: str
+) -> list[dict[str, Any]]:
+    """Envelope cho một kịch bản theo domain (nút trên trang /diagnostics)."""
+    spec = _SCENARIO_SPEC[scenario]
+    return [
+        _remote_envelope(
+            lane=str(spec["lane"]),
+            trace_id=trace_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            hostname=hostname,
+            probe=str(spec["probe"]),
+            alert_hint=str(spec["alert_hint"]),
+            raw=str(spec["raw"]),
+            fact=dict(spec["fact"]),
+            domain=str(spec["domain"]),
+        )
+    ]
+
+
 def _build_remote_agent_envelopes(
     lane: str, trace_id: str, *, tenant_id: str, agent_id: str, hostname: str
 ) -> list[dict[str, Any]]:
@@ -286,35 +401,21 @@ def _build_remote_agent_envelopes(
 
     Two distinct probes per lane so the evidence aggregator flushes immediately.
     """
-    now_ts = str(int(time.time()))
     lane_label = _LANE_LABEL[lane]
 
     def base(probe: str, alert_hint: str, raw: str, fact: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "trace_id": trace_id,
-            "probe": probe,
-            "alert_rule": f"RemoteAgent_{lane_label}",
-            "alert_hint": f"[SIM/{hostname}] {alert_hint}",
-            "result": "FAILED",
-            # result also inside extracted_fact: assess_domain_severity Priority 1 reads
-            # extracted_fact.result == "FAILED" → critical/high urgency → diagnosis loop runs.
-            "extracted_fact": {**fact, "result": "FAILED", "agent_id": agent_id, "hostname": hostname},
-            # Nonce in raw → unique fingerprint per run, so each simulation is a fresh
-            # incident (no stale cached cluster/representative, no spurious RAG self-hit).
-            "raw": f"{raw}\n# sim-run {trace_id}",
-            "symptom_group": f"remote_{lane}",
-            "domain": lane_to_domain(lane_label),
-            "lane": lane_label,
-            "stream_tags": [lane_label],
-            "namespace": hostname,
-            "tenant_id": tenant_id,
-            "ts": now_ts,
-            "evidence_source": "RemoteAgent",
-            "canonical_query_snippet": json.dumps(
-                {"labels": {"agent_id": agent_id, "hostname": hostname, "probe": probe}}
-            ),
-            "kind": "diagnostic_evidence",
-        }
+        return _remote_envelope(
+            lane=lane,
+            trace_id=trace_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            hostname=hostname,
+            probe=probe,
+            alert_hint=alert_hint,
+            raw=raw,
+            fact=fact,
+            domain=lane_to_domain(lane_label),
+        )
 
     # One probe per lane: the remote-agent pipeline processes each evidence message
     # individually (no batch aggregation), so a single probe = one clean trace.
@@ -344,6 +445,89 @@ async def list_lanes() -> JSONResponse:
                 {"key": k, "label": _LANE_LABEL[k], "ingress": "alert" if k in _ALERT_LANES else "evidence"}
                 for k in LANE_KEYS
             ]
+        }
+    )
+
+
+@router.get("/scenarios")
+async def list_scenarios() -> JSONResponse:
+    """Catalog kịch bản theo domain — nguồn duy nhất cho các nút trang /diagnostics."""
+    return JSONResponse(
+        {
+            "scenarios": [
+                {"key": k, "domain": _SCENARIO_SPEC[k]["domain"], "lane": _SCENARIO_SPEC[k]["lane"]}
+                for k in SCENARIO_KEYS
+            ]
+        }
+    )
+
+
+@router.post("/scenario/{scenario}")
+async def simulate_scenario(scenario: str, request: Request) -> JSONResponse:
+    """Đẩy một sự cố mẫu theo KỊCH BẢN (domain), không theo lane.
+
+    Luôn đi đường RemoteAgent (`omni-diagnostic-evidence`) vì đây là đường sinh vòng
+    chẩn đoán đa lượt mà trang /diagnostics muốn cho người dùng xem.
+    """
+    if scenario not in SCENARIO_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown scenario '{scenario}'; valid: {', '.join(SCENARIO_KEYS)}",
+        )
+
+    try:
+        body_in = await request.json()
+        if not isinstance(body_in, dict):
+            body_in = {}
+    except Exception:
+        body_in = {}
+    tenant_id = str(body_in.get("tenant_id") or "default").strip()[:128] or "default"
+    agent_id = str(body_in.get("agent_id") or "").strip()[:128] or f"sim-agent-{secrets.token_hex(3)}"
+
+    redis = _get_redis(request)
+    kafka = _get_kafka(request)
+    spec = _SCENARIO_SPEC[scenario]
+    lane = str(spec["lane"])
+    lane_label = _LANE_LABEL[lane]
+    trace_id = _new_trace(scenario)
+    topic = _evidence_topic(request)
+
+    messages = [
+        json.dumps({"data": json.dumps(env, ensure_ascii=False)}, ensure_ascii=False).encode("utf-8")
+        for env in _build_scenario_envelopes(
+            scenario, trace_id, tenant_id=tenant_id, agent_id=agent_id, hostname=agent_id
+        )
+    ]
+    try:
+        for env in messages:
+            await kafka.send_and_wait(topic, value=env)
+    except Exception as exc:
+        log.error("[simulate] kafka send failed scenario=%s trace=%s err=%s", scenario, trace_id, exc)
+        raise HTTPException(status_code=502, detail="kafka send failed") from exc
+
+    await mark_stage(
+        redis,
+        trace_id,
+        "INGEST",
+        "ok",
+        detail=f"simulator scenario={scenario} domain={spec['domain']} topic={topic} tenant={tenant_id} agent={agent_id}",
+        lane=lane_label,
+    )
+    log.info("[simulate] injected scenario=%s domain=%s trace=%s tenant=%s agent=%s",
+             scenario, spec["domain"], trace_id, tenant_id, agent_id)
+    return JSONResponse(
+        {
+            "status": "injected",
+            "target": "remote",
+            "scenario": scenario,
+            "domain": spec["domain"],
+            "lane": lane,
+            "lane_label": lane_label,
+            "trace_id": trace_id,
+            "topic": topic,
+            "tenant_id": tenant_id,
+            "agent_id": agent_id,
+            "ingress": "remote_agent",
         }
     )
 
