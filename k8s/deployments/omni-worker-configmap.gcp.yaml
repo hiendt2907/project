@@ -30,9 +30,13 @@ data:
   # 26 trace từ alert và ĐÚNG 0 trace proactive. Nguyên nhân không phải thiếu code —
   # 5 vòng proactive đều chạy — mà là điều kiện kích hoạt duy nhất bên dưới
   # (`CrashLoopBackOff > 0`) vốn đã là hậu quả, không phải dấu hiệu sớm.
-  # Đo trực tiếp trên Prometheus GCP 2026-08-09: truy vấn đó trả **0 series** khi
-  # không có pod nào crash-loop ⇒ `_instant_scalar` không có gì để đọc ⇒ không bao
-  # giờ bắn. Đó là bằng chứng cuối cùng.
+  # ĐÍNH CHÍNH 2026-08-09 (bản trước ở đây ghi SAI cơ chế): truy vấn đó trả 0 series
+  # khi không có pod nào crash-loop, nhưng đó là hành vi ĐÚNG của kube-state-metrics
+  # chứ không phải rule chết — đo cùng lúc: `kube_pod_container_status_waiting` có
+  # 65 series, KSM `up=1`; họ metric `..._waiting_reason` chỉ sinh series khi thật sự
+  # có container đang waiting. Nên khi crashloop xảy ra, rule NÀY VẪN BẮN.
+  # Vấn đề thật nằm ở chỗ khác và vẫn là lý do S4: nó chỉ có series SAU KHI crashloop
+  # đã thành hình — đo hậu quả, không phải tín hiệu sớm.
   #
   # `OMNI_PROACTIVE_PROMQL`/`_TRIGGER_THRESHOLD` GIỮ NGUYÊN làm lưới cuối và làm
   # đường lùi: `proactive_promql_rules` rỗng hoặc không parse được ⇒ tự rơi về rule
@@ -56,6 +60,22 @@ data:
       {"name":"replicas_unavailable","promql":"sum(kube_deployment_status_replicas_unavailable{namespace=\"multi-agent\"})","threshold":0},
       {"name":"crashloop_last_resort","promql":"sum(kube_pod_container_status_waiting_reason{reason=\"CrashLoopBackOff\"})","threshold":0}
     ]
+  # S3 — tắt vòng ReAct riêng của proactive. KHÔNG phải "tắt proactive".
+  #
+  # Sau S1, việc sinh bằng chứng đã thoát khỏi cờ này: `_proactive_event_pipeline`
+  # luôn gọi `run_diagnostic_pipeline`, evidence vẫn lên `omni-diagnostic-evidence`
+  # và `evidence_consumer` vẫn suy luận. Cờ này giờ chỉ điều khiển ĐÚNG vòng ReAct
+  # 6 lượt đắt tiền — một engine suy luận THỨ HAI chạy song song với analyst.
+  #
+  # Bằng chứng thật để tắt (trace `proact-s3probe-1786282369`, GCP 2026-08-09): cùng
+  # một incident, cổng 3σ của analyst CHẶN advisory (z_cpu=-0,46 z_mem=-1,26 < 3 —
+  # quyết định đúng, không đủ cơ sở để suy luận), nhưng vòng ReAct vẫn tiêu 2 lượt
+  # LLM (27,5s + 11,8s = 39,3s) trên chính incident đó. Tức engine thứ hai KHÔNG đi
+  # qua cổng mà engine thứ nhất phải qua — chi tiêu LLM đúng vào những ca đã được
+  # quyết định là không nên suy luận.
+  #
+  # Đảo lại: sửa "false" -> "true" ở đây rồi deploy. Không mất dữ liệu.
+  OMNI_PROACTIVE_FALLBACK_ENABLED: "false"
   OMNI_BASELINE_SNAPSHOT_ENABLED: "true"
   OMNI_BASELINE_SNAPSHOT_INTERVAL_SEC: "600"
   OMNI_BASELINE_SNAPSHOT_REDIS_TTL_SEC: "600"
