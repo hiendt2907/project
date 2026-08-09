@@ -48,7 +48,7 @@ async def accumulate_discovery_evidence(ctx: WorkerHandlerContext, ev_doc: dict[
         return
 
     if trace:
-        await mark_stage(ctx.redis, trace, "EVIDENCE", "ok", detail=f"onboarding_accumulated probe={probe}", lane="ONBOARDING_DISCOVERY")
+        await mark_stage(ctx.redis, trace, "EVIDENCE", "ok", detail=f"onboarding_accumulated probe={probe}", signal_kind="learning")
 
     await _detect_gaps_and_ask(ctx, tenant_id, probe, discovery_data)
     try:
@@ -110,7 +110,7 @@ async def _project_into_system_model(
         await mark_stage(
             ctx.redis, trace, "SYSTEM_MODEL", "ok",
             detail=f"aoip_fact_projected probe={ev_doc.get('probe')} contradictions={len(contradictions)}",
-            lane="ONBOARDING_DISCOVERY",
+            signal_kind="learning",
         )
     if contradictions:
         logger.warning(

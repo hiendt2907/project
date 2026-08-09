@@ -3,7 +3,7 @@ import { Card } from "@aoip/ui-kit";
 import { PageIntro } from "@/components/PageIntro";
 import {
   fetchRecentTraces,
-  isDiagnosticLane,
+  isDiagnosticSignal,
   scopeVI,
   STAGE_VI,
   type RecentTrace,
@@ -39,7 +39,7 @@ function Intro() {
 export default async function DiagnosticsPage() {
   const result = await fetchRecentTraces();
   const traces: RecentTrace[] = result.data?.traces ?? [];
-  const incidents = traces.filter((t) => isDiagnosticLane(t.lane));
+  const incidents = traces.filter(isDiagnosticSignal);
 
   return (
     <>
@@ -82,7 +82,7 @@ export default async function DiagnosticsPage() {
                 return (
                   <tr key={t.trace_id}>
                     <td>{timeVI(t.updated_at)}</td>
-                    <td>{scopeVI(t.domain ?? t.lane)}</td>
+                    <td>{scopeVI(t.domain)}</td>
                     <td>{STAGE_VI[t.current_stage]?.name ?? t.current_stage ?? "—"}</td>
                     <td>
                       <span className={`aoip-diag-badge ${b.cls}`}>{b.label}</span>

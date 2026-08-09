@@ -38,7 +38,7 @@ def emit_stage_span(
     status: str,
     *,
     detail: str = "",
-    lane: str = "",
+    domain: str = "",
 ) -> None:
     """Emit a point-in-time span ``stage.<STAGE>`` under the trace_id-derived trace.
 
@@ -78,8 +78,8 @@ def emit_stage_span(
                 span.set_attribute("trace_id", trace_id)
                 span.set_attribute("pipeline.stage", str(stage))
                 span.set_attribute("pipeline.status", str(status))
-                if lane:
-                    span.set_attribute("pipeline.lane", str(lane))
+                if domain:
+                    span.set_attribute("pipeline.domain", str(domain))
                 if detail:
                     span.set_attribute("pipeline.detail", str(detail)[:256])
                 if status == "fail":

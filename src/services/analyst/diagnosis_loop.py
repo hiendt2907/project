@@ -599,7 +599,7 @@ def _build_initial_context(
     # Initial evidence — highlight extracted facts so LLM uses them as primary evidence
     alert_hint = ev_doc.get("alert_hint", "")
     probe = ev_doc.get("probe", "")
-    lane = ev_doc.get("lane", "")
+    domain = ev_doc.get("domain", "")
     extracted_raw = ev_doc.get("extracted_fact", {})
     if isinstance(extracted_raw, str):
         try:
@@ -623,7 +623,7 @@ def _build_initial_context(
 
     parts.append(
         f"[INITIAL EVIDENCE]\n"
-        f"Probe: {probe} | Lane: {lane}\n"
+        f"Probe: {probe} | Lĩnh vực: {domain}\n"
         f"Alert: {alert_hint[:500]}\n"
         f"{metrics_block}\n"
         f"Raw facts JSON: {json.dumps(extracted, ensure_ascii=False)[:600]}\n"
@@ -1076,7 +1076,7 @@ async def run_diagnosis_loop(
         "trace_id": trace_id,
         "agent_id": agent_id,
         "probe": ev_doc.get("probe", ""),
-        "lane": ev_doc.get("lane", ""),
+        "domain": ev_doc.get("domain", ""),
         "alert_hint": ev_doc.get("alert_hint", ""),
         "turns": turns,
         "total_turns": len(turns),

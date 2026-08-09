@@ -3,9 +3,9 @@ import { Card } from "@aoip/ui-kit";
 import { PageIntro } from "@/components/PageIntro";
 import {
   fetchRecentTraces,
-  isDiagnosticLane,
+  isDiagnosticSignal,
   scopeVI,
-  learningLaneVI,
+  learningSignalVI,
   STAGE_VI,
   type RecentTrace,
 } from "@/lib/pipeline";
@@ -35,8 +35,8 @@ export default async function PipelinePage() {
 
   // Tách theo bản chất: sự cố (12 bước chẩn đoán) vs tín hiệu học hỏi (1 bước,
   // xong là hoàn thành — không phải "đang xử lý", không phải kẹt).
-  const incidents = result.data.traces.filter((t) => isDiagnosticLane(t.lane));
-  const learning = result.data.traces.filter((t) => !isDiagnosticLane(t.lane));
+  const incidents = result.data.traces.filter(isDiagnosticSignal);
+  const learning = result.data.traces.filter((t) => !isDiagnosticSignal(t));
 
   return (
     <>
@@ -66,7 +66,7 @@ export default async function PipelinePage() {
               {incidents.map((t) => (
                 <tr key={t.trace_id}>
                   <td>{timeVI(t.updated_at)}</td>
-                  <td>{scopeVI(t.domain ?? t.lane)}</td>
+                  <td>{scopeVI(t.domain)}</td>
                   <td>{STAGE_VI[t.current_stage]?.name ?? t.current_stage ?? "—"}</td>
                   <td>{t.verdict || "đang xử lý"}</td>
                   <td>
@@ -110,7 +110,7 @@ function LearningRow({ trace }: { trace: RecentTrace }) {
     <li className="aoip-learning-row">
       <span className="aoip-learning-check" aria-hidden>✓</span>
       <span>
-        {learningLaneVI(trace.lane)} — đã ghi nhận vào kho hiểu biết
+        {learningSignalVI()} — đã ghi nhận vào kho hiểu biết
         <span className="aoip-muted"> · {timeVI(trace.updated_at)}</span>
       </span>
       <Link

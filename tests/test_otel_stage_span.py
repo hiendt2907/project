@@ -26,7 +26,7 @@ def test_non_hex_trace_id_falls_back_to_sha256() -> None:
 
 def test_emit_stage_span_no_provider_is_noop() -> None:
     # Act / Assert — must never raise even with no TracerProvider configured
-    emit_stage_span("sim-xyz", "RAG", "ok", detail="recall=0.81", lane="resource")
+    emit_stage_span("sim-xyz", "RAG", "ok", detail="recall=0.81", domain="storage")
     emit_stage_span("", "RAG", "ok")  # empty trace → silent return
 
 
@@ -48,12 +48,12 @@ def test_emit_stage_span_exports_under_derived_trace() -> None:
     except Exception:
         pytest.skip("global tracer provider already set by another test")
 
-    sim_trace = "sim-lane-resource-001"
+    sim_trace = "sim-domain-storage-001"
     expected_tid = _trace_id_int_from_string(sim_trace)
 
     # Act — emit a couple of stage spans for the same pipeline trace
-    emit_stage_span(sim_trace, "EVIDENCE", "ok", lane="resource")
-    emit_stage_span(sim_trace, "CRAT", "fail", detail="audit_chain_write_failed", lane="resource")
+    emit_stage_span(sim_trace, "EVIDENCE", "ok", domain="storage")
+    emit_stage_span(sim_trace, "CRAT", "fail", detail="audit_chain_write_failed", domain="storage")
     provider.force_flush()
 
     # Assert — both spans share the trace_id derived from the application trace_id

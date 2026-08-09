@@ -84,12 +84,12 @@ class TestMarkStage:
         ttl = await redis.ttl("omni:trace:stages:trace-ttl")
         assert ttl > 0
 
-    async def test_lane_stored_in_meta(self) -> None:
+    async def test_domain_stored_in_meta(self) -> None:
         redis = FakeRedis(decode_responses=True)
-        await mark_stage(redis, "trace-lane", "EVIDENCE", "ok", lane="SYS_RESOURCE")
-        raw = await redis.hget("omni:trace:stages:trace-lane", "__meta__")
+        await mark_stage(redis, "trace-domain", "EVIDENCE", "ok", domain="os_host")
+        raw = await redis.hget("omni:trace:stages:trace-domain", "__meta__")
         meta = json.loads(raw)
-        assert meta["lane"] == "SYS_RESOURCE"
+        assert meta["domain"] == "os_host"
 
 
 # ── /trace/{id}/pipeline route tests ─────────────────────────────────────────
@@ -153,7 +153,7 @@ class TestTracePipelineRoute:
         key = f"omni:trace:stages:{trace_id}"
         started_at = time.time() - 1.0  # 1 second ago
         stage_ts = started_at + 0.5     # 500ms after start
-        meta = {"started_at": started_at, "updated_at": stage_ts, "trace_id": trace_id, "lane": ""}
+        meta = {"started_at": started_at, "updated_at": stage_ts, "trace_id": trace_id, "domain": ""}
         entry = {"status": "ok", "ts": stage_ts, "detail": ""}
         await redis.hset(key, "__meta__", json.dumps(meta))
         await redis.hset(key, "EVIDENCE", json.dumps(entry))

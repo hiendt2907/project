@@ -79,25 +79,33 @@ async def mark_stage(
     status: str = "ok",
     *,
     detail: str = "",
-    lane: str = "",
     domain: str = "",
+    signal_kind: str = "",
 ) -> None:
     """Record a pipeline stage transition for trace_id.
 
     Best-effort: swallows Redis errors with a warning log.
     Validates inputs silently — invalid stage or trace_id is a no-op.
 
-    ``lane`` uses last-non-empty-wins: an empty lane never clears an existing
-    one, so callers that learn the lane late (after resolve_proof_lane) can
-    enrich the trace meta without earlier empty marks wiping it.
+    ``domain`` là một trong 9 domain canonical (`pkg/domain/taxonomy.py`) — trục
+    phân loại sự cố duy nhất ở tầng trace.
 
-    ``domain`` là một trong 9 domain canonical (`pkg/domain/taxonomy.py`) — trục sự
-    thật hiện tại, KHÁC hẳn ``lane``. Cũng last-non-empty-wins, vì domain chỉ biết
-    sau `detect_domain()` trong khi INGEST đã mark trước đó; nhờ vậy chỉ cần một call
-    site trên mỗi pipeline khai domain là cả trace có domain, không phải sửa 89 chỗ.
-    Thiếu trường này chính là lý do `/trace/recent` từng trả `domain` rỗng cho 100%
-    trace và cột "Lĩnh vực" trên portal phải rơi về nhãn lane (2 domain khác nhau
-    hiện cùng một tên).
+    ``signal_kind`` = ``diagnostic`` | ``learning``. Trục ĐỘC LẬP với domain: nó trả
+    lời "tín hiệu này có phải sự cố không", còn domain trả lời "thuộc lĩnh vực nào".
+    Tín hiệu học hỏi (discovery/knowledge, `INV_KNOWLEDGE_NOT_ALERT`) chỉ chạm đúng
+    một bước EVIDENCE rồi rẽ; hiển thị chúng như sự cố "đang xử lý" là sai bản chất.
+
+    Cả hai đều **last-non-empty-wins**: giá trị rỗng không bao giờ xoá giá trị đã có.
+    Cần vậy vì domain chỉ biết sau `detect_domain()` trong khi INGEST đã mark trước
+    đó — nhờ đó chỉ cần MỘT call site sớm nhất mỗi pipeline khai domain.
+
+    Trường ``lane`` đã bị gỡ (2026-08-09). Nó từng gánh BỐN nghĩa khác nhau cùng lúc:
+    lane trục A (`SYS_RESOURCE`…), `proof_lane` trục B (`"state"`/`"resource"`/
+    `"siem"` — đây mới là chỗ 7 call site truyền `resolve_proof_lane()` vào), loại tín
+    hiệu (`ONBOARDING_DISCOVERY`), và chuỗi rỗng. Portal render thẳng nó ở cột "Lĩnh
+    vực" nên hiện sai nhãn. `proof_lane` vẫn sống nguyên ở `meta["proof_lane"]` của
+    evidence — KHÔNG gộp vào domain; lane trục A vẫn đọc được từ payload agent bản cũ
+    qua `lane_to_domain()`.
     """
     if not trace_id or len(trace_id) > 128:
         log.debug("pipeline_stages: skipping invalid trace_id len=%s", len(trace_id or ""))
@@ -128,8 +136,8 @@ async def mark_stage(
 
         new_meta: dict[str, Any] = {
             **existing_meta,
-            "lane": lane or existing_meta.get("lane", ""),
             "domain": domain or existing_meta.get("domain", ""),
+            "signal_kind": signal_kind or existing_meta.get("signal_kind", ""),
             "trace_id": trace_id,
             "updated_at": ts,
         }
@@ -147,11 +155,11 @@ async def mark_stage(
                 "trace_id": trace_id,
                 "stage": stage,
                 "status": status,
-                "lane": lane,
-                # Consumer SSE đọc thẳng từ stream nên cần domain ở đây; giá trị rỗng
+                # Consumer SSE đọc thẳng từ stream nên cần cả hai ở đây; giá trị rỗng
                 # là hợp lệ (mark trước khi detect_domain chạy) — bên đọc phải lấy
                 # meta của trace làm nguồn cuối cùng, không phải một event lẻ.
                 "domain": domain,
+                "signal_kind": signal_kind,
                 "ts": str(ts),
             },
             maxlen=_STREAM_MAXLEN,
@@ -166,7 +174,7 @@ async def mark_stage(
         # Mirror the stage transition into OpenTelemetry → Tempo, grouped under a
         # trace whose id is derived from trace_id (no-op if OTEL disabled/absent).
         try:
-            emit_stage_span(trace_id, stage, status, detail=detail, lane=lane)
+            emit_stage_span(trace_id, stage, status, detail=detail, domain=domain)
         except Exception:  # noqa: BLE001 — telemetry never breaks stage tracking
             pass
     except Exception as exc:

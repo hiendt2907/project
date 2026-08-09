@@ -26,24 +26,23 @@ def redis() -> FakeRedis:
 
 @pytest.mark.asyncio
 async def test_domain_persisted_in_meta(redis):
-    await mark_stage(redis, "t1", "INGEST", "ok", lane="SYS_HARD_FAIL", domain="network")
+    await mark_stage(redis, "t1", "INGEST", "ok", domain="network")
     assert (await _meta(redis, "t1"))["domain"] == "network"
 
 
 @pytest.mark.asyncio
 async def test_domain_defaults_empty_not_missing(redis):
     """Callers cũ không truyền domain vẫn phải ghi được — trường có mặt, giá trị rỗng."""
-    await mark_stage(redis, "t2", "INGEST", "ok", lane="SYS_RESOURCE")
+    await mark_stage(redis, "t2", "INGEST", "ok")
     meta = await _meta(redis, "t2")
     assert meta["domain"] == ""
-    assert meta["lane"] == "SYS_RESOURCE"
 
 
 @pytest.mark.asyncio
 async def test_late_domain_fills_earlier_empty(redis):
     """INGEST mark chạy TRƯỚC detect_domain ⇒ domain phải lấp được về sau."""
-    await mark_stage(redis, "t3", "INGEST", "ok", lane="SYS_HARD_FAIL")
-    await mark_stage(redis, "t3", "EVIDENCE", "ok", lane="SYS_HARD_FAIL", domain="service")
+    await mark_stage(redis, "t3", "INGEST", "ok")
+    await mark_stage(redis, "t3", "EVIDENCE", "ok", domain="service")
     assert (await _meta(redis, "t3"))["domain"] == "service"
 
 
@@ -52,31 +51,42 @@ async def test_empty_domain_never_clears_existing(redis):
     """last-non-empty-wins: mark sau không truyền domain không được xoá domain đã có."""
     await mark_stage(redis, "t4", "EVIDENCE", "ok", domain="storage")
     await mark_stage(redis, "t4", "LLM", "ok")
-    await mark_stage(redis, "t4", "CRAT", "ok", lane="SYS_RESOURCE")
+    await mark_stage(redis, "t4", "CRAT", "ok")
     assert (await _meta(redis, "t4"))["domain"] == "storage"
 
 
 @pytest.mark.asyncio
-async def test_domain_does_not_disturb_lane(redis):
-    await mark_stage(redis, "t5", "INGEST", "ok", lane="APP_HTTP")
-    await mark_stage(redis, "t5", "LLM", "ok", domain="application")
+async def test_signal_kind_is_independent_of_domain(redis):
+    """Hai trục tách nhau: tín hiệu học hỏi không có lĩnh vực, và ngược lại."""
+    await mark_stage(redis, "t5", "EVIDENCE", "ok", signal_kind="learning")
     meta = await _meta(redis, "t5")
-    assert meta["lane"] == "APP_HTTP"
-    assert meta["domain"] == "application"
+    assert meta["signal_kind"] == "learning"
+    assert meta["domain"] == ""
+
+    await mark_stage(redis, "t5b", "EVIDENCE", "ok", domain="application", signal_kind="diagnostic")
+    meta_b = await _meta(redis, "t5b")
+    assert (meta_b["domain"], meta_b["signal_kind"]) == ("application", "diagnostic")
 
 
 @pytest.mark.asyncio
 async def test_domain_published_on_event_stream(redis):
-    await mark_stage(redis, "t6", "INGEST", "ok", lane="SYS_RESOURCE", domain="os_host")
+    await mark_stage(redis, "t6", "INGEST", "ok", domain="os_host")
     entries = await redis.xrevrange("omni:trace:events", count=1)
     assert entries[0][1]["domain"] == "os_host"
 
 
 @pytest.mark.asyncio
-async def test_two_scenarios_same_lane_keep_distinct_domains(redis):
-    """Chính cái mà cột "Lĩnh vực" từng làm mất: service và network chung lane."""
-    await mark_stage(redis, "svc", "EVIDENCE", "ok", lane="SYS_HARD_FAIL", domain="service")
-    await mark_stage(redis, "net", "EVIDENCE", "ok", lane="SYS_HARD_FAIL", domain="network")
+async def test_lane_field_is_gone(redis):
+    """`lane` đã gỡ hẳn khỏi tầng trace — không nhận tham số, không ghi vào meta.
+
+    Trước đây `service` và `network` chung lane `SYS_HARD_FAIL` nên portal hiện cùng
+    một nhãn; nay chỉ còn `domain` nên hai cái tách bạch.
+    """
+    with pytest.raises(TypeError):
+        await mark_stage(redis, "svc", "EVIDENCE", "ok", lane="SYS_HARD_FAIL")
+
+    await mark_stage(redis, "svc", "EVIDENCE", "ok", domain="service")
+    await mark_stage(redis, "net", "EVIDENCE", "ok", domain="network")
     assert (await _meta(redis, "svc"))["domain"] == "service"
     assert (await _meta(redis, "net"))["domain"] == "network"
-    assert (await _meta(redis, "svc"))["lane"] == (await _meta(redis, "net"))["lane"]
+    assert "lane" not in await _meta(redis, "svc")

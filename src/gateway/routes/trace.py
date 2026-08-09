@@ -106,7 +106,7 @@ async def trace_session(trace_id: str, request: Request) -> JSONResponse:
         "trace_id": session.get("trace_id", trace_id),
         "agent_id": session.get("agent_id", ""),
         "probe": session.get("probe", ""),
-        "lane": session.get("lane", ""),
+        "domain": session.get("domain", ""),
         "alert_hint": session.get("alert_hint", ""),
         "total_turns": session.get("total_turns", 0),
         "degraded": bool(session.get("degraded", False)),
@@ -164,7 +164,8 @@ async def trace_stream(request: Request) -> StreamingResponse:
                                     "trace_id": fields.get("trace_id", ""),
                                     "stage": fields.get("stage", ""),
                                     "status": fields.get("status", ""),
-                                    "lane": fields.get("lane", ""),
+                                    "domain": fields.get("domain", ""),
+                                    "signal_kind": fields.get("signal_kind", ""),
                                     "ts": fields.get("ts", ""),
                                 },
                                 ensure_ascii=False,
@@ -189,7 +190,7 @@ async def trace_recent(request: Request) -> JSONResponse:
     """Return the most recently active traces, derived from omni:trace:events.
 
     Reads the tail of the global event stream, de-duplicates by trace_id (newest
-    first), and enriches each with lane + current stage/verdict from its stage hash.
+    first), and enriches each with domain + current stage/verdict from its stage hash.
     Replaces the UI mock list with real live data.
     """
     redis = _get_redis(request)
@@ -208,10 +209,10 @@ async def trace_recent(request: Request) -> JSONResponse:
             continue
         seen[tid] = {
             "trace_id": tid,
-            "lane": fields.get("lane", "") or "",
             # Event lẻ có thể được ghi TRƯỚC khi detect_domain() chạy (vd INGEST) nên
             # giá trị ở đây chỉ là mồi; meta của trace bên dưới mới là nguồn cuối.
             "domain": fields.get("domain", "") or "",
+            "signal_kind": fields.get("signal_kind", "") or "",
             "current_stage": fields.get("stage", "") or "",
             "verdict": "",
             "started_at": 0.0,
@@ -232,8 +233,8 @@ async def trace_recent(request: Request) -> JSONResponse:
         if raw_all.get("__meta__"):
             try:
                 meta = json.loads(raw_all["__meta__"])
-                rec["lane"] = meta.get("lane", "") or rec["lane"]
                 rec["domain"] = meta.get("domain", "") or rec["domain"]
+                rec["signal_kind"] = meta.get("signal_kind", "") or rec["signal_kind"]
                 rec["started_at"] = float(meta.get("started_at") or 0)
                 rec["updated_at"] = float(meta.get("updated_at") or rec["updated_at"])
             except Exception:
@@ -348,7 +349,8 @@ async def trace_pipeline(trace_id: str, request: Request) -> JSONResponse:
             {
                 "found": False,
                 "trace_id": trace_id,
-                "lane": "",
+                "domain": "",
+                "signal_kind": "",
                 "started_at": 0,
                 "updated_at": 0,
                 "verdict": "",
@@ -407,8 +409,8 @@ async def trace_pipeline(trace_id: str, request: Request) -> JSONResponse:
         {
             "found": True,
             "trace_id": trace_id,
-            "lane": meta.get("lane", ""),
             "domain": meta.get("domain", ""),
+            "signal_kind": meta.get("signal_kind", ""),
             "started_at": started_at,
             "updated_at": float(meta.get("updated_at") or 0),
             "verdict": verdict,

@@ -288,7 +288,7 @@ export const TECHNICAL_DIAGRAMS: TechnicalDiagram[] = [
     end
 
     subgraph TRAP["Ba trục KHÁC NHAU cùng tên 'lane' — không được gộp"]
-        LA["A · envelope.lane<br/>SYS_RESOURCE · SYS_HARD_FAIL<br/>APP_HTTP · SIEM_SECURITY<br/>ĐANG BỎ — chỉ đọc dữ liệu cũ"]
+        LA["A · envelope.lane<br/>SYS_RESOURCE · SYS_HARD_FAIL<br/>APP_HTTP · SIEM_SECURITY<br/>ĐÃ GỠ khỏi tầng trace 2026-08-09<br/>chỉ còn đọc payload agent bản cũ"]
         LB["B · proof_lane<br/>resource · state · app_log<br/>= cần bằng chứng VẬT LÝ loại nào<br/>lái ERR_REA_NO_PHYSICAL_PROOF"]
         LC["C · proactive / reactive<br/>= pool đồng thời LLM<br/>không liên quan gì"]
     end

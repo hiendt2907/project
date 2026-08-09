@@ -511,8 +511,8 @@ async def simulate_scenario(scenario: str, request: Request) -> JSONResponse:
         "INGEST",
         "ok",
         detail=f"simulator scenario={scenario} domain={spec['domain']} topic={topic} tenant={tenant_id} agent={agent_id}",
-        lane=lane_label,
         domain=str(spec["domain"]),
+        signal_kind="diagnostic",
     )
     log.info("[simulate] injected scenario=%s domain=%s trace=%s tenant=%s agent=%s",
              scenario, spec["domain"], trace_id, tenant_id, agent_id)
@@ -606,7 +606,8 @@ async def simulate_lane(lane: str, request: Request) -> JSONResponse:
     _ingest_detail = f"simulator target={target} lane={lane_label} topic={topic}"
     if target == "remote":
         _ingest_detail += f" tenant={tenant_id} agent={agent_id}"
-    await mark_stage(redis, trace_id, "INGEST", "ok", detail=_ingest_detail, lane=lane_label)
+    await mark_stage(redis, trace_id, "INGEST", "ok", detail=_ingest_detail,
+                     domain=lane_to_domain(lane_label), signal_kind="diagnostic")
 
     log.info("[simulate] injected target=%s lane=%s trace=%s topic=%s tenant=%s agent=%s",
              target, lane, trace_id, topic, tenant_id, agent_id or "-")

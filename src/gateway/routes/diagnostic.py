@@ -166,7 +166,7 @@ async def diagnostic_test(request: Request) -> JSONResponse:
     # trước khi ghi vào meta, nếu không cột "Lĩnh vực" hiện tên không thuộc 9 domain.
     await mark_stage(
         redis, trace_id, "INGEST", "ok", detail=_ingest_detail,
-        lane=domain_hint_alias, domain=normalize_domain(domain_hint_alias),
+        domain=normalize_domain(domain_hint_alias), signal_kind="diagnostic",
     )
 
     log.info(

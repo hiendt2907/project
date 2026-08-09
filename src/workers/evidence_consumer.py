@@ -1138,9 +1138,9 @@ async def _emit_suggest_remediation(
                 "event=crat_fail_closed_abort trace=%s source=%s err=%r — suggest dispatch aborted",
                 tid, source, _audit_err,
             )
-            await mark_stage(ctx.redis, tid, "CRAT", "fail", detail="audit_chain_write_failed", lane=lane or "")
+            await mark_stage(ctx.redis, tid, "CRAT", "fail", detail="audit_chain_write_failed")
             return
-        await mark_stage(ctx.redis, tid, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane=lane or "")
+        await mark_stage(ctx.redis, tid, "CRAT", "ok", detail="ADVISORY_DISPATCHED")
     if _shadow_os_mode(ctx) and suggested_tool in MUTATE_TOOL_ALLOWLIST:
         commands = _derive_shadow_os_commands(
             tool_name=suggested_tool,
@@ -1182,7 +1182,7 @@ async def _emit_suggest_remediation(
             tid,
             source,
         )
-        await mark_stage(ctx.redis, tid, "DISPATCH", "ok", detail="SUGGEST_REMEDIATION", lane=lane or "")
+        await mark_stage(ctx.redis, tid, "DISPATCH", "ok", detail="SUGGEST_REMEDIATION")
     except Exception as e:
         logger.warning("action_emit skip: %s", e)
 
@@ -1227,9 +1227,9 @@ async def _emit_suggest_os_runbook(
                 "event=crat_fail_closed_abort trace=%s source=%s mode=os_runbook err=%r — dispatch aborted",
                 tid, source, _audit_err,
             )
-            await mark_stage(ctx.redis, tid, "CRAT", "fail", detail="audit_chain_write_failed", lane="")
+            await mark_stage(ctx.redis, tid, "CRAT", "fail", detail="audit_chain_write_failed")
             return False
-        await mark_stage(ctx.redis, tid, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane="")
+        await mark_stage(ctx.redis, tid, "CRAT", "ok", detail="ADVISORY_DISPATCHED")
     body = build_suggest_os_runbook_body(
         tid,
         diagnosis=diagnosis,
@@ -2180,7 +2180,6 @@ async def _crat_for_deterministic_advisory(
     ctx: WorkerHandlerContext,
     *,
     trace: str,
-    lane: str,
     source: str,
     diagnosis: str,
 ) -> bool:
@@ -2191,16 +2190,16 @@ async def _crat_for_deterministic_advisory(
     bypass the LLM advisory block, so they must honour the CRAT fail-closed
     invariant themselves — exactly like the SIEM short-circuit. Returns False
     (caller MUST abort dispatch) if the audit write fails."""
-    await mark_stage(ctx.redis, trace, "RAG", "skip", detail="deterministic contrast — no second-brain RAG", lane=lane)
-    await mark_stage(ctx.redis, trace, "LLM", "skip", detail="deterministic contrast — no LLM", lane=lane)
-    await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no LLM advisory to verify (deterministic)", lane=lane)
-    await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=source, lane=lane)
-    await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="suggest-only — no mutate path", lane=lane)
+    await mark_stage(ctx.redis, trace, "RAG", "skip", detail="deterministic contrast — no second-brain RAG")
+    await mark_stage(ctx.redis, trace, "LLM", "skip", detail="deterministic contrast — no LLM")
+    await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no LLM advisory to verify (deterministic)")
+    await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=source)
+    await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="suggest-only — no mutate path")
     try:
         await write_audit_block(
             event_type="ADVISORY_DISPATCHED",
             trace_id=trace,
-            payload={"source": source, "lane": lane, "diagnosis": diagnosis[:2000], "mode": "deterministic_contrast"},
+            payload={"source": source, "diagnosis": diagnosis[:2000], "mode": "deterministic_contrast"},
             redis=ctx.redis,
             kafka=ctx.kafka,
             kafka_topic=ctx.settings.kafka_topic_audit_chain,
@@ -2210,9 +2209,9 @@ async def _crat_for_deterministic_advisory(
             "event=crat_fail_closed_abort trace=%s source=%s err=%r — dispatch aborted",
             trace, source, _audit_err,
         )
-        await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed", lane=lane)
+        await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed")
         return False
-    await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane=lane)
+    await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="ADVISORY_DISPATCHED")
     return True
 
 
@@ -2240,13 +2239,13 @@ async def _handle_meta_self_alert(ctx: WorkerHandlerContext, *, trace: str) -> s
     cooldown_sec = int(getattr(ctx.settings, "meta_self_alert_cooldown_sec", 1800) or 1800)
     ck = f"omni:meta_self:cooldown:{alertname}"
     if await ctx.redis.get(ck):
-        await mark_stage(ctx.redis, trace, "RAG", "skip", detail="meta_self — deduped, no RAG", lane="")
-        await mark_stage(ctx.redis, trace, "LLM", "skip", detail="meta_self — deduped, no LLM", lane="")
+        await mark_stage(ctx.redis, trace, "RAG", "skip", detail="meta_self — deduped, no RAG")
+        await mark_stage(ctx.redis, trace, "LLM", "skip", detail="meta_self — deduped, no LLM")
         await mark_stage(
             ctx.redis, trace, "DISPATCH", "skip",
-            detail=f"meta_self alert {alertname} suppressed — cooldown active", lane="",
+            detail=f"meta_self alert {alertname} suppressed — cooldown active",
         )
-        await _mark_suggest_only_terminal(ctx, trace, "")
+        await _mark_suggest_only_terminal(ctx, trace)
         logger.info("event=meta_self_alert_deduped trace=%s alertname=%s", trace, alertname)
         return "[META_SELF DEDUPED] self-monitoring alert suppressed within cooldown window"
 
@@ -2257,7 +2256,7 @@ async def _handle_meta_self_alert(ctx: WorkerHandlerContext, *, trace: str) -> s
         "(VD: acceptance_rate có thể =0% do thiếu mẫu/cold-start, không hẳn là regressions)."
     )
     if not await _crat_for_deterministic_advisory(
-        ctx, trace=trace, lane="", source="META_SELF_DETERMINISTIC", diagnosis=diagnosis,
+        ctx, trace=trace, source="META_SELF_DETERMINISTIC", diagnosis=diagnosis,
     ):
         return "[ADVISORY MODE FAIL_CLOSED] meta_self audit_chain_write_failed — dispatch aborted"
     await _emit_suggest_remediation(
@@ -2269,13 +2268,13 @@ async def _handle_meta_self_alert(ctx: WorkerHandlerContext, *, trace: str) -> s
         suggested_tool="inspect_kpi_dashboard",
         audit=False,  # CRAT written by _crat_for_deterministic_advisory above
     )
-    await _mark_suggest_only_terminal(ctx, trace, "")
+    await _mark_suggest_only_terminal(ctx, trace)
     await ctx.redis.setex(ck, cooldown_sec, "1")
     logger.info("event=meta_self_alert_dispatched trace=%s alertname=%s cooldown=%ds", trace, alertname, cooldown_sec)
     return "[META_SELF] self-monitoring advisory dispatched (deterministic, no LLM)"
 
 
-async def _mark_suggest_only_terminal(ctx: WorkerHandlerContext, trace: str, lane: str) -> None:
+async def _mark_suggest_only_terminal(ctx: WorkerHandlerContext, trace: str) -> None:
     """Resolve the terminal stages for a suggest-only advisory: there is no HITL
     approval, executor mutation, or feedback loop on this path, so mark them skip
     instead of leaving them perpetually pending on the operator dashboard."""
@@ -2284,7 +2283,7 @@ async def _mark_suggest_only_terminal(ctx: WorkerHandlerContext, trace: str, lan
         ("EXECUTOR", "suggest-only — no mutate"),
         ("FEEDBACK", "suggest-only — terminal"),
     ):
-        await mark_stage(ctx.redis, trace, _stage, "skip", detail=_detail, lane=lane)
+        await mark_stage(ctx.redis, trace, _stage, "skip", detail=_detail)
 
 
 async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dict[str, str]) -> str:
@@ -2361,7 +2360,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         # còn "unknown" thì hiện lên UI như một nhãn có thật.
         _ev_domain = normalize_domain(ev_doc.get("domain"))
         await mark_stage(
-            ctx.redis, trace, "EVIDENCE", "ok", lane="",
+            ctx.redis, trace, "EVIDENCE", "ok",
             domain="" if _ev_domain == _DOMAIN_UNKNOWN else _ev_domain,
         )
         # MTTD early registration: persist detection timestamp before analysis begins.
@@ -2486,10 +2485,9 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
         if contrast is not None:
             contrast_st = contrast.strip()
             diagnosis_rich = build_contrast_diagnosis_for_action(by_probe, contrast_st)
-            _c_lane, _ = resolve_proof_lane(batch)
             # CRAT fail-closed: audit MUST be written before the Telegram emit below.
             if not await _crat_for_deterministic_advisory(
-                ctx, trace=trace, lane=_c_lane or "", source="STATE_MACHINE_CONTRAST", diagnosis=diagnosis_rich,
+                ctx, trace=trace, source="STATE_MACHINE_CONTRAST", diagnosis=diagnosis_rich,
             ):
                 return "[ADVISORY MODE FAIL_CLOSED] state_machine_contrast audit_chain_write_failed — dispatch aborted"
             await _emit_suggest_remediation(
@@ -2543,7 +2541,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 component="evidence_consumer",
                 detail="state_machine_contrast_suggested",
             )
-            await _mark_suggest_only_terminal(ctx, trace, _c_lane or "")
+            await _mark_suggest_only_terminal(ctx, trace)
             return contrast
 
         # Lane 2 (state/SYS_HARD_FAIL): iterative OS diagnostic loop.
@@ -2560,7 +2558,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             os_diagnosis_rich = build_contrast_diagnosis_for_action(by_probe, os_contrast_st)
             # CRAT fail-closed: audit MUST be written before the Telegram emit below.
             if not await _crat_for_deterministic_advisory(
-                ctx, trace=trace, lane="state", source="OS_STATE_CONTRAST", diagnosis=os_diagnosis_rich,
+                ctx, trace=trace, source="OS_STATE_CONTRAST", diagnosis=os_diagnosis_rich,
             ):
                 return "[ADVISORY MODE FAIL_CLOSED] os_state_contrast audit_chain_write_failed — dispatch aborted"
             await _emit_suggest_remediation(
@@ -2591,7 +2589,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 component="evidence_consumer",
                 detail="os_state_contrast_suggested",
             )
-            await _mark_suggest_only_terminal(ctx, trace, "state")
+            await _mark_suggest_only_terminal(ctx, trace)
             return os_contrast
 
         # Lane 4 (SIEM): canonical DETERMINISTIC kill-chain card — runs for EVERY SIEM
@@ -2612,11 +2610,11 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
             if len(batch) == 1:
                 _siem_text = format_sanitized_analyst_user_text(batch[0])
             _siem_diag = _siem_diagnosis_from_batch(batch, _siem, _siem_text)
-            await mark_stage(ctx.redis, trace, "RAG", "skip", detail="siem deterministic — no second-brain RAG", lane="siem")
-            await mark_stage(ctx.redis, trace, "LLM", "skip", detail="siem kill-chain — deterministic, no LLM", lane="siem")
-            await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no LLM advisory to verify (deterministic)", lane="siem")
-            await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"siem_category={_siem.get('siem_category', 'unknown')}", lane="siem")
-            await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="siem — no in-cluster mutate path (firewall/NetworkPolicy is HITL)", lane="siem")
+            await mark_stage(ctx.redis, trace, "RAG", "skip", detail="siem deterministic — no second-brain RAG")
+            await mark_stage(ctx.redis, trace, "LLM", "skip", detail="siem kill-chain — deterministic, no LLM")
+            await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no LLM advisory to verify (deterministic)")
+            await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"siem_category={_siem.get('siem_category', 'unknown')}")
+            await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="siem — no in-cluster mutate path (firewall/NetworkPolicy is HITL)")
             # CRAT Fail-Closed Gate: audit write MUST succeed before any Telegram emit.
             try:
                 await write_audit_block(
@@ -2638,9 +2636,9 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     "event=audit_chain_write_failed phase=evidence_consumer lane=siem trace=%s err=%s FAIL_CLOSED",
                     trace, _siem_audit_err,
                 )
-                await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed", lane="siem")
+                await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed")
                 return "[ADVISORY MODE FAIL_CLOSED] siem audit_chain_write_failed — dispatch aborted"
-            await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane="siem")
+            await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="ADVISORY_DISPATCHED")
             await _emit_suggest_remediation(
                 ctx,
                 trace=trace,
@@ -2660,7 +2658,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 ("EXECUTOR", "siem — no in-cluster mutate"),
                 ("FEEDBACK", "siem — terminal"),
             ):
-                await mark_stage(ctx.redis, trace, _term_stage, "skip", detail=_term_detail, lane="siem")
+                await mark_stage(ctx.redis, trace, _term_stage, "skip", detail=_term_detail)
             await emit_transition(
                 ctx,
                 trace_id=trace,
@@ -2725,16 +2723,16 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                                 f"3σ gate: z_cpu={_adv_z_cpu} z_mem={_adv_z_mem} "
                                 f"within ±{_adv_z_thr:.1f}σ — advisory suppressed (false positive)"
                             )
-                            await mark_stage(ctx.redis, trace, "RAG", "skip", detail="sigma_gate_suppressed", lane="resource")
-                            await mark_stage(ctx.redis, trace, "LLM", "skip", detail=_sigma_detail, lane="resource")
-                            await mark_stage(ctx.redis, trace, "SCHEMA", "skip", detail="no advisory (sigma gate)", lane="resource")
-                            await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no advisory to verify (sigma gate)", lane="resource")
-                            await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="no dispatch (sigma gate)", lane="resource")
-                            await mark_stage(ctx.redis, trace, "CRAT", "skip", detail="no dispatch — nothing to audit (sigma gate)", lane="resource")
-                            await mark_stage(ctx.redis, trace, "DISPATCH", "skip", detail="suppressed — no alert sent", lane="resource")
+                            await mark_stage(ctx.redis, trace, "RAG", "skip", detail="sigma_gate_suppressed")
+                            await mark_stage(ctx.redis, trace, "LLM", "skip", detail=_sigma_detail)
+                            await mark_stage(ctx.redis, trace, "SCHEMA", "skip", detail="no advisory (sigma gate)")
+                            await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="no advisory to verify (sigma gate)")
+                            await mark_stage(ctx.redis, trace, "KILLSWITCH", "skip", detail="no dispatch (sigma gate)")
+                            await mark_stage(ctx.redis, trace, "CRAT", "skip", detail="no dispatch — nothing to audit (sigma gate)")
+                            await mark_stage(ctx.redis, trace, "DISPATCH", "skip", detail="suppressed — no alert sent")
                             # Terminal stages (HITL/EXECUTOR/FEEDBACK) also do not apply on a
                             # suppressed path — resolve them so the trace shows 12/12, not "stuck".
-                            await _mark_suggest_only_terminal(ctx, trace, "resource")
+                            await _mark_suggest_only_terminal(ctx, trace)
                             return ""
                     except Exception as _adv_snap_err:
                         logger.debug("advisory_sigma_gate snap parse error trace=%s err=%s", trace, _adv_snap_err)
@@ -2834,7 +2832,6 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     await mark_stage(
                         ctx.redis, trace, "RAG", "ok",
                         detail=f"second-brain turns={_brain.turn_count} top={_brain.top_score:.3f} confident={_brain.confident}",
-                        lane=_adv_lane or "",
                     )
                     # S2.4: persist point_id so the feedback loop can downvote on failure.
                     if _brain.answer_point_id:
@@ -2847,13 +2844,13 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 else:
                     await mark_stage(
                         ctx.redis, trace, "RAG", "skip",
-                        detail=f"second-brain no_hit turns={_brain.turn_count}", lane=_adv_lane or "",
+                        detail=f"second-brain no_hit turns={_brain.turn_count}",
                     )
 
                 # Run advisory analyst (returns AnalystAdvisory schema)
                 import time as _llm_time
                 _llm_t0 = _llm_time.monotonic()
-                await mark_stage(ctx.redis, trace, "LLM", "ok", detail="advisory_analyst/start", lane=_adv_lane or "")
+                await mark_stage(ctx.redis, trace, "LLM", "ok", detail="advisory_analyst/start")
                 advisory = await run_advisory_analyst(
                     ctx,
                     payload={"chat_id": chat_id},
@@ -2861,12 +2858,12 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     evidence_text=sanitized_text,
                 )
                 _llm_elapsed_ms = int((_llm_time.monotonic() - _llm_t0) * 1000)
-                await mark_stage(ctx.redis, trace, "LLM", "ok", detail=f"advisory_analyst elapsed_ms={_llm_elapsed_ms}", lane=_adv_lane or "")
+                await mark_stage(ctx.redis, trace, "LLM", "ok", detail=f"advisory_analyst elapsed_ms={_llm_elapsed_ms}")
 
                 if advisory:
                     # Pipeline stage: advisory schema parsed/validated.
                     _adv_verdict = getattr(advisory, "verdict", "") or ""
-                    await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"verdict={_adv_verdict}", lane=_adv_lane or "")
+                    await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"verdict={_adv_verdict}")
 
                     # ── VERIFY stage — real diagnosis, not just doc lookup ──────────────
                     # Actually RUN the advisory's read-only verification_steps, then
@@ -2933,11 +2930,10 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                                 f"kb confirmed={_fb.get('confirmed', 0)} refuted={_fb.get('refuted', 0)} "
                                 f"stale={len(_fb.get('stale_marked', []))}"
                             ),
-                            lane=_adv_lane or "",
                         )
                     except Exception as _verr:  # best-effort — never block dispatch
                         logger.warning("event=kb_verify_failed trace=%s err=%s", trace, _verr)
-                        await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="verify error", lane=_adv_lane or "")
+                        await mark_stage(ctx.redis, trace, "VERIFY", "skip", detail="verify error")
                     # ────────────────────────────────────────────────────────────────────
 
                     from workers.advisory_mode_kill_switch import AdvisoryModeKillSwitch
@@ -2968,7 +2964,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                     )
                     # Pipeline stage: killswitch validated.
                     _ks_status = "ok" if _valid else "fail"
-                    await mark_stage(ctx.redis, trace, "KILLSWITCH", _ks_status, detail=_gate_reason or "", lane=_adv_lane or "")
+                    await mark_stage(ctx.redis, trace, "KILLSWITCH", _ks_status, detail=_gate_reason or "")
                     # CRAT Fail-Closed Gate: audit write MUST succeed before any Telegram emit.
                     _audit_blk: dict[str, Any] = {}
                     try:
@@ -2986,9 +2982,9 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                             trace,
                             _audit_err,
                         )
-                        await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed", lane=_adv_lane or "")
+                        await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed")
                         return "[ADVISORY MODE FAIL_CLOSED] audit_chain_write_failed — dispatch aborted"
-                    await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="ADVISORY_DISPATCHED", lane=_adv_lane or "")
+                    await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="ADVISORY_DISPATCHED")
                     # Emit advisory to Telegram — prefer request chat_id, fall back to admin chat_id
                     effective_cid = chat_id or getattr(ctx.settings, "telegram_admin_chat_id", None)
                     if effective_cid is not None:
@@ -3095,7 +3091,7 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                         component="evidence_consumer",
                         detail="advisory_analyst_generated",
                     )
-                    await _mark_suggest_only_terminal(ctx, trace, _adv_lane or "")
+                    await _mark_suggest_only_terminal(ctx, trace)
                     return f"[ADVISORY MODE] {advisory.verdict}: {advisory.root_cause}"
                 else:
                     # LLM returned None (parse failure) — FAIL-CLOSED, never fall through to planner.

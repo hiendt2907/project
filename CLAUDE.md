@@ -85,9 +85,14 @@ network/storage/database/service/hardware. Kế hoạch + bằng chứng:
 
 ⚠️ **"lane" là BA trục khác nhau cùng tên. Chỉ trục A bị bỏ.** Đọc khối cảnh báo trong
 `pkg/domain/taxonomy.py` trước khi chạm bất cứ gì có chữ `lane`:
-- **A** `envelope.lane` (`SYS_RESOURCE|SYS_HARD_FAIL|APP_HTTP|SIEM_SECURITY`) → đang bỏ,
-  chỉ giữ để đọc dữ liệu lịch sử qua `lane_to_domain()`. `SYS_HARD_FAIL` → `unknown` CỐ Ý
-  (nó gánh 4 domain).
+- **A** `envelope.lane` (`SYS_RESOURCE|SYS_HARD_FAIL|APP_HTTP|SIEM_SECURITY`) → **ĐÃ GỠ khỏi
+  tầng trace 2026-08-09** (Đ39): `mark_stage()`/trace meta/`omni:trace:events`/`/trace/*`/portal
+  không còn trường `lane`. Thay bằng HAI trục tách bạch: `domain` (9 domain canonical) và
+  `signal_kind` (`diagnostic|learning`). Lý do gỡ: một trường `lane` duy nhất đang gánh BỐN nghĩa
+  (lane trục A, `proof_lane` trục B, loại tín hiệu `ONBOARDING_DISCOVERY`, chuỗi rỗng) và portal
+  render thẳng nó ở cột "Lĩnh vực" nên hiện sai nhãn. `envelope.lane` **vẫn còn trên dây** để đọc
+  payload từ agent bản cũ đã cài trên VM khách — `lane_to_domain()` giữ nguyên, chỉ còn là hàng
+  chót của cascade `detect_domain()`. `SYS_HARD_FAIL` → `unknown` CỐ Ý (nó gánh 4 domain).
 - **B** `proof_lane` (`resource|state|app_log`, `VALID_PROOF_LANES`) = *cần bằng chứng vật
   lý loại nào để mở cổng*. Lái `ERR_REA_NO_PHYSICAL_PROOF` + `LANE_BADGE` Telegram.
   **KHÔNG gộp vào domain.**

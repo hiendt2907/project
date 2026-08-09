@@ -17,6 +17,7 @@ import json
 import logging
 from typing import Any
 
+from pkg.domain.taxonomy import UNKNOWN as _DOMAIN_UNKNOWN, normalize_domain
 from pkg.reasoning.domain_signals import detect_domain
 from pkg.reasoning.evidence_cluster import upsert_cluster
 from pkg.reasoning.evidence_fingerprint import fingerprint_evidence
@@ -54,6 +55,17 @@ def _track_bg_task(task: asyncio.Task) -> None:
             )
 
     task.add_done_callback(_on_done)
+
+def _domain_or_empty(value: Any) -> str:
+    """Domain canonical, hoặc RỖNG nếu không nhận ra.
+
+    Cố ý không trả ``unknown``: rỗng còn được call site sau lấp
+    (last-non-empty-wins trong ``mark_stage``), còn ``unknown`` thì đứng
+    nguyên và hiện lên portal như một lĩnh vực có thật.
+    """
+    d = normalize_domain(value if isinstance(value, str) else None)
+    return "" if d == _DOMAIN_UNKNOWN else d
+
 
 _NOTIFY_TIERS = frozenset({"critical", "high"})
 _RESEARCH_ROUTES = frozenset({"UNKNOWN_RESEARCH"})
@@ -112,16 +124,15 @@ async def handle_discovery_evidence(
     """
     tenant_id = str(ev_doc.get("tenant_id") or "default")
     probe = str(ev_doc.get("probe") or "unknown")
-    lane = "ONBOARDING_DISCOVERY"
 
     kafka = getattr(ctx, "kafka", None)
     if kafka is None:
         logger.warning("[RAP] discovery_evidence dropped trace=%s — no kafka bus", trace)
-        await mark_stage(ctx.redis, trace, "DISPATCH", "fail", detail="no_kafka_bus", lane=lane)
+        await mark_stage(ctx.redis, trace, "DISPATCH", "fail", detail="no_kafka_bus", signal_kind="learning")
         return ""
 
     topic = getattr(ctx.settings, "kafka_topic_discovery_evidence", _DISCOVERY_EVIDENCE_TOPIC_DEFAULT)
-    await mark_stage(ctx.redis, trace, "EVIDENCE", "ok", detail=f"probe={probe} tenant={tenant_id}", lane=lane)
+    await mark_stage(ctx.redis, trace, "EVIDENCE", "ok", detail=f"probe={probe} tenant={tenant_id}", signal_kind="learning")
     try:
         await kafka.send_dict(
             topic,
@@ -130,10 +141,10 @@ async def handle_discovery_evidence(
         )
     except Exception as exc:
         logger.warning("[RAP] discovery_evidence kafka send failed trace=%s err=%s", trace, exc)
-        await mark_stage(ctx.redis, trace, "DISPATCH", "fail", detail=f"kafka_send_failed: {exc}", lane=lane)
+        await mark_stage(ctx.redis, trace, "DISPATCH", "fail", detail=f"kafka_send_failed: {exc}", signal_kind="learning")
         return ""
 
-    await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail=f"forwarded topic={topic}", lane=lane)
+    await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail=f"forwarded topic={topic}", signal_kind="learning")
     logger.info(
         "[RAP] discovery_evidence forwarded trace=%s tenant=%s probe=%s topic=%s",
         trace, tenant_id, probe, topic,
@@ -160,7 +171,9 @@ async def handle_remote_agent_evidence(
     probe = str(ev_doc.get("probe") or "unknown")
     alert_hint = str(ev_doc.get("alert_hint") or "")
     raw = str(ev_doc.get("raw") or "")
-    lane = str(ev_doc.get("lane") or "")
+    # Domain nguồn TỰ KHAI, dùng cho các mark_stage chạy TRƯỚC detect_domain().
+    # Không nhận ra ⇒ rỗng (không ghi "unknown"): rỗng còn được lấp về sau.
+    _early_domain = _domain_or_empty(ev_doc.get("domain"))
     labels = {
         "alertname": str(ev_doc.get("alert_rule") or ""),
         "namespace": str(ev_doc.get("namespace") or ""),
@@ -213,8 +226,11 @@ async def handle_remote_agent_evidence(
     # đè nguồn: đã trả giá 2026-07-30 — `remote_log_errors` (collectors/logs.py khai
     # `application`) bị cascade nội dung suy thành `kubernetes`, nên sự cố ứng dụng
     # trên host khách bị gán sai lĩnh vực và gọi sai bộ chẩn đoán.
+    # `envelope.lane` (trục A) chỉ còn là HÀNG CHÓT của cascade và chỉ tồn tại để
+    # đọc payload từ agent bản cũ — không còn được lưu/hiển thị ở đâu nữa.
+    _legacy_envelope_lane = str(ev_doc.get("lane") or "")
     domain = detect_domain(
-        probe, alert_hint, raw, lane, labels=labels,
+        probe, alert_hint, raw, _legacy_envelope_lane, labels=labels,
         domain_hint=ev_doc.get("domain"),
     )
 
@@ -222,7 +238,7 @@ async def handle_remote_agent_evidence(
         cluster = await upsert_cluster(ctx.redis, agent_id, fp, ev_doc, domain)
     except Exception as exc:
         logger.warning("[RAP] cluster_upsert_failed trace=%s err=%s", trace, exc)
-        await mark_stage(ctx.redis, trace, "EVIDENCE", "fail", detail=f"cluster_upsert_failed: {exc}", lane=lane)
+        await mark_stage(ctx.redis, trace, "EVIDENCE", "fail", detail=f"cluster_upsert_failed: {exc}", domain=_early_domain, signal_kind="diagnostic")
         return ""
 
     # ── Repeat-cluster fast-path — skip RAG triage for non-urgent repeats ───
@@ -263,7 +279,7 @@ async def handle_remote_agent_evidence(
     await mark_stage(
         ctx.redis, trace, "EVIDENCE", "ok",
         detail=f"remote agent={agent_id} domain={domain} probe={probe}",
-        lane=lane, domain=domain,
+        domain=domain, signal_kind="diagnostic",
     )
 
     logger.info(
@@ -284,11 +300,11 @@ async def handle_remote_agent_evidence(
 
         if _recall_score:
             logger.info("[RAP] Marking RAG stage as ok for trace=%s with score=%s", trace, _recall_score)
-            await mark_stage(ctx.redis, trace, "RAG", "ok", detail=f"recall={_recall_score:.3f} route={triage.route}", lane=lane)
+            await mark_stage(ctx.redis, trace, "RAG", "ok", detail=f"recall={_recall_score:.3f} route={triage.route}", domain=_early_domain, signal_kind="diagnostic")
             logger.info("[RAP] Successfully marked RAG stage as ok for trace=%s", trace)
         else:
             logger.info("[RAP] Marking RAG stage as skip for trace=%s (no recall score)", trace)
-            await mark_stage(ctx.redis, trace, "RAG", "skip", detail=f"no_hit route={triage.route}", lane=lane)
+            await mark_stage(ctx.redis, trace, "RAG", "skip", detail=f"no_hit route={triage.route}", domain=_early_domain, signal_kind="diagnostic")
             logger.info("[RAP] Successfully marked RAG stage as skip for trace=%s", trace)
     except Exception as e:
         logger.error("[RAP] Error processing RAG stage for trace=%s: %s", trace, str(e), exc_info=True)
@@ -320,7 +336,7 @@ async def handle_remote_agent_evidence(
         num_ctx = int(getattr(getattr(ctx, "settings", None), "llm_num_ctx", 8192) or 8192)
 
         if llm is not None and chat_id is not None:
-            await mark_stage(ctx.redis, trace, "LLM", "ok", detail="multi-turn diagnosis loop launched", lane=lane)
+            await mark_stage(ctx.redis, trace, "LLM", "ok", detail="multi-turn diagnosis loop launched", domain=_early_domain, signal_kind="diagnostic")
             _track_bg_task(asyncio.create_task(
                 _run_diagnosis_and_notify(
                     ctx=ctx,
@@ -337,25 +353,25 @@ async def handle_remote_agent_evidence(
             diag_task_launched = True
             logger.info("[RAP] diagnosis_loop launched as background task trace=%s", trace)
         else:
-            await mark_stage(ctx.redis, trace, "LLM", "ok", detail="single-turn advisory", lane=lane)
+            await mark_stage(ctx.redis, trace, "LLM", "ok", detail="single-turn advisory", domain=_early_domain, signal_kind="diagnostic")
             advisory = await analyze_cluster(ctx, cluster, recall=triage.recall)
     elif triage.route in _RESEARCH_ROUTES:
-        await mark_stage(ctx.redis, trace, "LLM", "ok", detail="single-turn advisory", lane=lane)
+        await mark_stage(ctx.redis, trace, "LLM", "ok", detail="single-turn advisory", domain=_early_domain, signal_kind="diagnostic")
         advisory = await analyze_cluster(ctx, cluster, recall=triage.recall)
     else:
-        await mark_stage(ctx.redis, trace, "LLM", "skip", detail=f"route={triage.route} urgency={triage.urgency} — no advisory", lane=lane)
+        await mark_stage(ctx.redis, trace, "LLM", "skip", detail=f"route={triage.route} urgency={triage.urgency} — no advisory", domain=_early_domain, signal_kind="diagnostic")
 
     if advisory is not None:
         _v = getattr(advisory, "verdict", "") or ""
-        await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"verdict={_v}", lane=lane)
+        await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"verdict={_v}", domain=_early_domain, signal_kind="diagnostic")
         # Persist the advisory per trace so the UI can surface verification_steps,
         # impact_chain, remediation and forecast (deep-check report).
         try:
-            await _persist_trace_advisory(ctx.redis, trace, advisory, lane)
+            await _persist_trace_advisory(ctx.redis, trace, advisory, domain)
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.debug("[RAP] persist_advisory failed trace=%s err=%r", trace, exc)
     elif not diag_task_launched:
-        await mark_stage(ctx.redis, trace, "SCHEMA", "skip", detail="no advisory produced", lane=lane)
+        await mark_stage(ctx.redis, trace, "SCHEMA", "skip", detail="no advisory produced", domain=_early_domain, signal_kind="diagnostic")
 
     # ── Stage 5: Learn — write to RAG ────────────────────────────────────
     await write_lessons(ctx, cluster, triage, advisory)
@@ -371,12 +387,12 @@ async def handle_remote_agent_evidence(
                 if not hasattr(advisory, "trace_id") or not advisory.trace_id:
                     advisory = dataclasses.replace(advisory, trace_id=trace)
                 await render_advisory_to_telegram(ctx, advisory, int(chat_id))
-                await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail="SUGGEST_REMEDIATION (Telegram)", lane=lane)
+                await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail="SUGGEST_REMEDIATION (Telegram)", domain=_early_domain, signal_kind="diagnostic")
         except Exception as exc:
             logger.warning("[RAP] telegram_notify_failed trace=%s err=%s", trace, exc)
-            await mark_stage(ctx.redis, trace, "DISPATCH", "fail", detail=f"telegram_notify_failed: {exc}", lane=lane)
+            await mark_stage(ctx.redis, trace, "DISPATCH", "fail", detail=f"telegram_notify_failed: {exc}", domain=_early_domain, signal_kind="diagnostic")
     elif advisory is not None:
-        await mark_stage(ctx.redis, trace, "DISPATCH", "skip", detail=f"urgency={triage.urgency} — below notify tier", lane=lane)
+        await mark_stage(ctx.redis, trace, "DISPATCH", "skip", detail=f"urgency={triage.urgency} — below notify tier", domain=_early_domain, signal_kind="diagnostic")
 
     verdict = advisory.verdict if advisory else ("diagnosis_loop_launched" if diag_task_launched else "no_advisory")
     logger.info(
@@ -413,11 +429,11 @@ def _advisory_to_dict(advisory: Any) -> dict[str, Any]:
     return out
 
 
-async def _persist_trace_advisory(redis: Any, trace: str, advisory: Any, lane: str) -> None:
+async def _persist_trace_advisory(redis: Any, trace: str, advisory: Any, domain: str) -> None:
     """Store the advisory JSON at omni:trace:advisory:{trace} for the UI deep-check panel."""
     if redis is None or not trace:
         return
-    doc = {"trace_id": trace, "lane": lane, "advisory": _advisory_to_dict(advisory)}
+    doc = {"trace_id": trace, "domain": domain, "advisory": _advisory_to_dict(advisory)}
     await redis.setex(f"{_TRACE_ADVISORY_KEY}{trace}", _TRACE_ADVISORY_TTL, json.dumps(doc, ensure_ascii=False, default=str))
 
 
@@ -464,7 +480,7 @@ async def _run_diagnosis_and_notify_inner(
     from services.analyst.diagnosis_loop import run_diagnosis_loop
     from workers.archivist import recall_knowledge_context
 
-    _lane = str(ev_doc.get("lane") or "")
+    _early_domain = _domain_or_empty(ev_doc.get("domain"))
     tenant_id = str(ev_doc.get("tenant_id") or ev_doc.get("tenant") or "default")
 
     # D3 (2026-07-31): nạp kiến thức RAG (SOP + kinh nghiệm) để NHÉT vào prompt chẩn
@@ -501,7 +517,7 @@ async def _run_diagnosis_and_notify_inner(
         _turns = getattr(session, "total_turns", None)
         if _turns is None and isinstance(session, dict):
             _turns = session.get("total_turns")
-        await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"diagnosis session stored turns={_turns}", lane=_lane)
+        await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"diagnosis session stored turns={_turns}", domain=_early_domain, signal_kind="diagnostic")
 
         # CRAT fail-closed (AGENTS.md INVARIANT: write_audit_block() MUST succeed
         # before Telegram emit / action dispatch — applies to this lane too, not
@@ -521,14 +537,14 @@ async def _run_diagnosis_and_notify_inner(
             )
             await mark_stage(
                 ctx.redis, trace, "DISPATCH", "skip",
-                detail="no real finding — observed, not alarmed", lane=_lane,
+                detail="no real finding — observed, not alarmed", domain=_early_domain, signal_kind="diagnostic",
             )
             return
 
         audit_payload = {
             "agent_id": agent_id,
             "probe": ev_doc.get("probe", ""),
-            "lane": _lane,
+            "domain": _early_domain,
             "root_cause": (_final or {}).get("root_cause", ""),
             "confidence": (_final or {}).get("confidence", 0.0),
             "affected_components": (_final or {}).get("affected_components", []),
@@ -556,20 +572,20 @@ async def _run_diagnosis_and_notify_inner(
                 "event=audit_chain_write_failed phase=remote_agent_diagnosis trace=%s err=%s FAIL_CLOSED",
                 trace, _audit_err,
             )
-            await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed", lane=_lane)
+            await mark_stage(ctx.redis, trace, "CRAT", "fail", detail="audit_chain_write_failed", domain=_early_domain, signal_kind="diagnostic")
             return  # fail-closed: do NOT emit Telegram without a successful audit block
 
-        await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="diagnosis audit block written", lane=_lane)
+        await mark_stage(ctx.redis, trace, "CRAT", "ok", detail="diagnosis audit block written", domain=_early_domain, signal_kind="diagnostic")
         await emit_diagnosis_to_telegram(ctx, session, chat_id, tenant_id=tenant_id)
-        await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail="diagnosis emitted (Telegram)", lane=_lane)
-        await _dispatch_auto_recovery_if_eligible(ctx, _final, agent_id, tenant_id, trace, _lane)
+        await mark_stage(ctx.redis, trace, "DISPATCH", "ok", detail="diagnosis emitted (Telegram)", domain=_early_domain, signal_kind="diagnostic")
+        await _dispatch_auto_recovery_if_eligible(ctx, _final, agent_id, tenant_id, trace, _early_domain)
     except RuntimeError as exc:
         # INV_DIAG_STORED violated — do NOT emit Telegram
         logger.error("[RAP] diagnosis_aborted INV_DIAG_STORED trace=%s err=%s", trace, exc)
-        await mark_stage(ctx.redis, trace, "SCHEMA", "fail", detail=f"diagnosis aborted: {exc}", lane=_lane)
+        await mark_stage(ctx.redis, trace, "SCHEMA", "fail", detail=f"diagnosis aborted: {exc}", domain=_early_domain, signal_kind="diagnostic")
     except Exception as exc:
         logger.error("[RAP] diagnosis_loop_error trace=%s err=%s", trace, exc)
-        await mark_stage(ctx.redis, trace, "LLM", "fail", detail=f"diagnosis_loop_error: {exc}", lane=_lane)
+        await mark_stage(ctx.redis, trace, "LLM", "fail", detail=f"diagnosis_loop_error: {exc}", domain=_early_domain, signal_kind="diagnostic")
 
 
 async def _dispatch_auto_recovery_if_eligible(
@@ -578,7 +594,7 @@ async def _dispatch_auto_recovery_if_eligible(
     agent_id: str,
     tenant_id: str,
     trace: str,
-    lane: str,
+    domain: str,
 ) -> None:
     """Phase 4 (0-6 roadmap): the closed loop's last hop. Runs AFTER CRAT and
     Telegram emit succeed — auto-recovery is best-effort on top of an already
@@ -611,7 +627,7 @@ async def _dispatch_auto_recovery_if_eligible(
             )
     except Exception as exc:
         logger.error("[RAP] auto_recovery_dispatch_error trace=%s err=%s", trace, exc)
-        await mark_stage(ctx.redis, trace, "AUTO_RECOVERY", "fail", detail=f"dispatch_error: {exc}", lane=lane)
+        await mark_stage(ctx.redis, trace, "AUTO_RECOVERY", "fail", detail=f"dispatch_error: {exc}", domain=domain, signal_kind="diagnostic")
         return
 
     # Lý do "không đủ điều kiện", KHÔNG phải lỗi. Trước đây nhánh này `return` câm —
@@ -629,7 +645,7 @@ async def _dispatch_auto_recovery_if_eligible(
     if reason in _SKIP_REASONS:
         await mark_stage(
             ctx.redis, trace, "AUTO_RECOVERY", "skip",
-            detail=f"reason={reason}", lane=lane,
+            detail=f"reason={reason}", domain=domain, signal_kind="diagnostic",
         )
         return
 
@@ -637,5 +653,5 @@ async def _dispatch_auto_recovery_if_eligible(
     await mark_stage(
         ctx.redis, trace, "AUTO_RECOVERY", status,
         detail=f"reason={result.get('reason')} command_id={result.get('command_id')} state={result.get('state')}",
-        lane=lane,
+        domain=domain, signal_kind="diagnostic",
     )

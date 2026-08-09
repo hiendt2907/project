@@ -3,9 +3,9 @@ import { Card, KeyVal } from "@aoip/ui-kit";
 import { PageIntro } from "@/components/PageIntro";
 import {
   fetchTracePipeline,
-  isDiagnosticLane,
+  isDiagnosticSignal,
   scopeVI,
-  learningLaneVI,
+  learningSignalVI,
   STAGE_VI,
   stageStatusVI,
 } from "@/lib/pipeline";
@@ -25,7 +25,7 @@ export default async function TraceDetailPage({
 }) {
   const { traceId } = await params;
   // Ba nguồn độc lập — gọi song song, tránh waterfall (session/advisory chỉ
-  // dùng khi lane là sự cố chẩn đoán thật, nhưng biết lane cần đợi pipeline
+  // dùng khi đây là sự cố chẩn đoán thật và cần đợi pipeline
   // trả về trước; gọi song song rẻ hơn round-trip nối tiếp cho trang chi tiết
   // vận hành nội bộ này).
   const [result, sessionResult, advisoryResult] = await Promise.all([
@@ -54,12 +54,12 @@ export default async function TraceDetailPage({
               : `Nguồn dữ liệu (${result.error ?? "không phản hồi"}). Thử tải lại trang.`}
           </div>
         </Card>
-      ) : !isDiagnosticLane(result.data.lane) ? (
+      ) : !isDiagnosticSignal(result.data) ? (
         // Tín hiệu học hỏi (INV_KNOWLEDGE_NOT_ALERT): theo thiết kế chỉ có 1 bước —
         // KHÔNG vẽ 12 bước chẩn đoán, tránh cảm giác "kẹt ở bước 2" sai bản chất.
         <Card>
           <KeyVal label="Mã lượt xử lý">{result.data.trace_id}</KeyVal>
-          <KeyVal label="Loại tín hiệu">{learningLaneVI(result.data.lane)}</KeyVal>
+          <KeyVal label="Loại tín hiệu">{learningSignalVI()}</KeyVal>
           <KeyVal label="Thời điểm">{timeVI(result.data.updated_at)}</KeyVal>
           <KeyVal label="Trạng thái" testid="learning-status">
             ✓ Đã ghi nhận vào kho hiểu biết — hoàn thành
@@ -77,7 +77,7 @@ export default async function TraceDetailPage({
         <>
           <Card>
             <KeyVal label="Mã lượt xử lý">{result.data.trace_id}</KeyVal>
-            <KeyVal label="Lĩnh vực">{scopeVI(result.data.domain ?? result.data.lane ?? "")}</KeyVal>
+            <KeyVal label="Lĩnh vực">{scopeVI(result.data.domain)}</KeyVal>
             <KeyVal label="Bắt đầu">{timeVI(result.data.started_at)}</KeyVal>
             <KeyVal label="Cập nhật gần nhất">{timeVI(result.data.updated_at)}</KeyVal>
             <KeyVal label="Kết luận">{result.data.verdict || "đang xử lý"}</KeyVal>
