@@ -209,6 +209,9 @@ async def trace_recent(request: Request) -> JSONResponse:
         seen[tid] = {
             "trace_id": tid,
             "lane": fields.get("lane", "") or "",
+            # Event lẻ có thể được ghi TRƯỚC khi detect_domain() chạy (vd INGEST) nên
+            # giá trị ở đây chỉ là mồi; meta của trace bên dưới mới là nguồn cuối.
+            "domain": fields.get("domain", "") or "",
             "current_stage": fields.get("stage", "") or "",
             "verdict": "",
             "started_at": 0.0,
@@ -230,6 +233,7 @@ async def trace_recent(request: Request) -> JSONResponse:
             try:
                 meta = json.loads(raw_all["__meta__"])
                 rec["lane"] = meta.get("lane", "") or rec["lane"]
+                rec["domain"] = meta.get("domain", "") or rec["domain"]
                 rec["started_at"] = float(meta.get("started_at") or 0)
                 rec["updated_at"] = float(meta.get("updated_at") or rec["updated_at"])
             except Exception:
@@ -404,6 +408,7 @@ async def trace_pipeline(trace_id: str, request: Request) -> JSONResponse:
             "found": True,
             "trace_id": trace_id,
             "lane": meta.get("lane", ""),
+            "domain": meta.get("domain", ""),
             "started_at": started_at,
             "updated_at": float(meta.get("updated_at") or 0),
             "verdict": verdict,

@@ -144,3 +144,20 @@ async def test_lane_route_still_works_unchanged(app_ctx):
     assert env["lane"] == "SYS_RESOURCE"
     assert env["probe"] == "remote_system_metrics"
     assert env["evidence_source"] == "RemoteAgent"
+
+
+@pytest.mark.asyncio
+async def test_recent_traces_expose_domain(app_ctx):
+    """/trace/recent phải trả domain thật — trước đây 100% trace trả rỗng."""
+    app, redis, _k = app_ctx
+    from gateway.routes.trace import router as trace_router
+
+    app.include_router(trace_router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        await c.post("/simulate/scenario/network", json={"tenant_id": "default"})
+        await c.post("/simulate/scenario/service", json={"tenant_id": "default"})
+        recent = (await c.get("/trace/recent")).json()["traces"]
+
+    by_domain = {t["domain"] for t in recent if t["trace_id"].startswith("sim-")}
+    # Hai kịch bản chung lane SYS_HARD_FAIL nhưng phải giữ hai lĩnh vực khác nhau.
+    assert {"network", "service"} <= by_domain

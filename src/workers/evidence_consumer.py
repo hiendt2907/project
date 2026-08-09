@@ -12,6 +12,7 @@ import logging
 import re
 from typing import Any
 
+from pkg.domain.taxonomy import UNKNOWN as _DOMAIN_UNKNOWN, normalize_domain
 from pkg.rag.gate import evaluate_rag_gate
 from pkg.reasoning import coerce_evidence_dict
 from pkg.reasoning.evidence_signals import critical_evidence_present
@@ -2354,7 +2355,15 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
     try:
         ctx.inbound_trace_id = trace
         # Pipeline stage: evidence received — fire-and-forget, best-effort.
-        await mark_stage(ctx.redis, trace, "EVIDENCE", "ok", lane="")
+        # Domain do nguồn tự khai (nếu có) đi kèm ngay từ đây để trace có lĩnh vực
+        # thật thay vì phải suy từ lane. Không chuẩn hoá được ⇒ để RỖNG, không ghi
+        # "unknown": rỗng còn được lấp bởi call site sau (last-non-empty-wins),
+        # còn "unknown" thì hiện lên UI như một nhãn có thật.
+        _ev_domain = normalize_domain(ev_doc.get("domain"))
+        await mark_stage(
+            ctx.redis, trace, "EVIDENCE", "ok", lane="",
+            domain="" if _ev_domain == _DOMAIN_UNKNOWN else _ev_domain,
+        )
         # MTTD early registration: persist detection timestamp before analysis begins.
         # kpi_metrics.py reads this key to compute accurate MTTD (vs. receiving it from feedback).
         import time as _mttd_time

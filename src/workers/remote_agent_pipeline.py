@@ -257,9 +257,13 @@ async def handle_remote_agent_evidence(
         )
         return f"remote_agent:{triage.route}:repeat_suppressed"
 
+    # Điểm SỚM NHẤT của đường remote-agent mà domain đã có (ngay sau detect_domain).
+    # `domain` last-non-empty-wins trong meta ⇒ khai một lần ở đây là cả trace có
+    # domain, không cần rải vào mọi mark_stage phía sau.
     await mark_stage(
         ctx.redis, trace, "EVIDENCE", "ok",
-        detail=f"remote agent={agent_id} domain={domain} probe={probe}", lane=lane,
+        detail=f"remote agent={agent_id} domain={domain} probe={probe}",
+        lane=lane, domain=domain,
     )
 
     logger.info(

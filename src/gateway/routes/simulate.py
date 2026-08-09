@@ -512,6 +512,7 @@ async def simulate_scenario(scenario: str, request: Request) -> JSONResponse:
         "ok",
         detail=f"simulator scenario={scenario} domain={spec['domain']} topic={topic} tenant={tenant_id} agent={agent_id}",
         lane=lane_label,
+        domain=str(spec["domain"]),
     )
     log.info("[simulate] injected scenario=%s domain=%s trace=%s tenant=%s agent=%s",
              scenario, spec["domain"], trace_id, tenant_id, agent_id)

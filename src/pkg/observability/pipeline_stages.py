@@ -80,6 +80,7 @@ async def mark_stage(
     *,
     detail: str = "",
     lane: str = "",
+    domain: str = "",
 ) -> None:
     """Record a pipeline stage transition for trace_id.
 
@@ -89,6 +90,14 @@ async def mark_stage(
     ``lane`` uses last-non-empty-wins: an empty lane never clears an existing
     one, so callers that learn the lane late (after resolve_proof_lane) can
     enrich the trace meta without earlier empty marks wiping it.
+
+    ``domain`` là một trong 9 domain canonical (`pkg/domain/taxonomy.py`) — trục sự
+    thật hiện tại, KHÁC hẳn ``lane``. Cũng last-non-empty-wins, vì domain chỉ biết
+    sau `detect_domain()` trong khi INGEST đã mark trước đó; nhờ vậy chỉ cần một call
+    site trên mỗi pipeline khai domain là cả trace có domain, không phải sửa 89 chỗ.
+    Thiếu trường này chính là lý do `/trace/recent` từng trả `domain` rỗng cho 100%
+    trace và cột "Lĩnh vực" trên portal phải rơi về nhãn lane (2 domain khác nhau
+    hiện cùng một tên).
     """
     if not trace_id or len(trace_id) > 128:
         log.debug("pipeline_stages: skipping invalid trace_id len=%s", len(trace_id or ""))
@@ -120,6 +129,7 @@ async def mark_stage(
         new_meta: dict[str, Any] = {
             **existing_meta,
             "lane": lane or existing_meta.get("lane", ""),
+            "domain": domain or existing_meta.get("domain", ""),
             "trace_id": trace_id,
             "updated_at": ts,
         }
@@ -138,6 +148,10 @@ async def mark_stage(
                 "stage": stage,
                 "status": status,
                 "lane": lane,
+                # Consumer SSE đọc thẳng từ stream nên cần domain ở đây; giá trị rỗng
+                # là hợp lệ (mark trước khi detect_domain chạy) — bên đọc phải lấy
+                # meta của trace làm nguồn cuối cùng, không phải một event lẻ.
+                "domain": domain,
                 "ts": str(ts),
             },
             maxlen=_STREAM_MAXLEN,

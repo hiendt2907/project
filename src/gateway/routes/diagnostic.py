@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from pkg.domain.taxonomy import normalize_domain
 from pkg.observability.pipeline_stages import mark_stage
 
 log = logging.getLogger(__name__)
@@ -161,7 +162,12 @@ async def diagnostic_test(request: Request) -> JSONResponse:
 
     # Mark INGEST stage for the trace
     _ingest_detail = f"diagnostic test scenario={scenario} target=remote lane=sys_resource topic={topic}"
-    await mark_stage(redis, trace_id, "INGEST", "ok", detail=_ingest_detail, lane=domain_hint_alias)
+    # `domain_hint_alias` là ALIAS ("services"/"net"/"disk"/"host") — phải chuẩn hoá
+    # trước khi ghi vào meta, nếu không cột "Lĩnh vực" hiện tên không thuộc 9 domain.
+    await mark_stage(
+        redis, trace_id, "INGEST", "ok", detail=_ingest_detail,
+        lane=domain_hint_alias, domain=normalize_domain(domain_hint_alias),
+    )
 
     log.info(
         "[diagnostic-test] injected scenario=%s trace_id=%s topic=%s tenant_id=%s agent_id=%s",
