@@ -26,3 +26,45 @@ của `CLAUDE.md`.
   `MUTATE_TOOL_ALLOWLIST`, các gate autonomy tier...) trong lượt B0 này —
   phạm vi giữ đúng 8 invariant chính đã liệt kê tường minh trong CLAUDE.md
   mục INVARIANTS để không lan man ngoài blueprint gốc.
+
+---
+
+## B1 — `hitl_decision` dead path: verify sống trên GCP UAT (2026-08-10)
+
+Root-cause commit đã merge vào `main` từ lâu (`d9f7278` #27, `b802a66` #28,
+`383cc1a` #29/#30 — cả 3 xác nhận `git merge-base --is-ancestor` đều nằm
+trong lịch sử HEAD hiện tại, không còn "local-only" như memory 2026-08-04
+ghi).
+
+**Verify sống qua `kubectl exec omni-postgres-0` (schema `omni_admin`, 32
+bảng xác nhận đúng số lượng CLAUDE.md ghi):**
+
+| Bảng | Số dòng | Ghi chú |
+|---|---|---|
+| `hitl_decision` | **0** | `min(created_at)`/`max(created_at)` đều NULL — 0 dòng tuyệt đối, không phải do lọc thời gian |
+| `case_ledger` | 0 | |
+| `advisory_acknowledgment` | 0 | |
+| `agent_command_outcome` | 0 | |
+| `autonomy_tier_history` | 0 | |
+| `config_change_log` | 7 | có hoạt động portal thật |
+| `crat_outbox` | 7 | |
+| `portal_auth_audit` | 5 | |
+| `tenant` | 2 | |
+
+**Đánh giá:** Không thể kết luận "vẫn chết" hay "đã hết chết" — DB có hoạt
+động portal thật (login/config change) nhưng KHÔNG có dòng nào ở 5 bảng
+liên quan diagnostic/mutation/HITL. Log `omni-fullstack` (pod mới restart
+2026-08-10T10:23Z do build #49, chỉ còn ~2 phút log) cho thấy 1 sự kiện
+`advisory_escalation_tier tier=L2_SUGGEST verdict=INVESTIGATE` — tức có
+traffic thật đi qua tầng advisory, nhưng tier quan sát được chỉ dừng ở
+L2_SUGGEST, chưa từng thấy `L3_HITL` trong log hiện có (log quá ngắn để
+kết luận chắc — pod vừa restart).
+
+**Kết luận thận trọng:** Nhiều khả năng đây là "chưa có sự cố nào chạm
+đúng ngưỡng L3_HITL kể từ khi hạ tầng chuyển sang GCP (2026-08-04)" chứ
+không chắc là "code vẫn nuốt tín hiệu" — 2 giả thuyết này KHÔNG phân biệt
+được chỉ bằng đọc dữ liệu tĩnh, cần 1 sự kiện HITL thật (qua Admin
+Simulator `/simulate/{lane}` đã có sẵn, không phải tính năng mới) để xác
+nhận dứt điểm. Đây là next step cụ thể, chưa thực hiện trong lượt này vì
+sinh ra 1 lần escalation thật sẽ gửi Telegram thật tới admin — cần user
+xác nhận trước khi kích hoạt trên UAT.
