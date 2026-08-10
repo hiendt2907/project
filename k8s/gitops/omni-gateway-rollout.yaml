@@ -65,8 +65,8 @@ spec:
         fsGroup: 10001
       containers:
         - name: gateway
-          image: omni-gateway:latest
-          imagePullPolicy: IfNotPresent
+          image: 10.43.239.205/library/omni-gateway:latest
+          imagePullPolicy: Always
           command: ["uvicorn", "gateway.api:app", "--host", "0.0.0.0", "--port", "8000"]
           ports:
             - containerPort: 8000

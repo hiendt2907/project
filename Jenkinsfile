@@ -3,12 +3,19 @@
 // + monitoring + provider/tenant portals + Dex, all on the real public domain
 // omnisre.xyz (decided 2026-08-04 — replaces the lab's ai-agent.local, same
 // subdomain names). hitl-dispatcher is still deferred to a later pipeline.
+//
+// Jenkins itself moved from the VM's systemd service into a pod in this same
+// k3s cluster 2026-08-10 (k8s/gitops/jenkins-incluster.yaml, namespace cicd) —
+// no more KUBECONFIG file override here, `kubectl` auto-detects the in-cluster
+// ServiceAccount (bound cluster-admin, same trust level the VM's kubeconfig
+// already had). Image delivery changed to match: build via the pod's DinD
+// sidecar, push to Harbor over real cluster DNS
+// (harbor.harbor.svc.cluster.local), and let containerd pull it — no more
+// `sudo k3s ctr images import`, which only ever worked because Jenkins used to
+// run directly on the node with hostPath access to containerd; a pod has
+// neither `sudo` nor that access.
 pipeline {
   agent any
-
-  environment {
-    KUBECONFIG = '/var/lib/jenkins/.kube/config'
-  }
 
   stages {
     stage('Test (pytest gate)') {
@@ -98,15 +105,16 @@ pipeline {
       steps {
         sh '''
           set -e
-          docker build -t multi-agent-system:latest -f Dockerfile .
-          docker build -t omni-gateway:latest -f Dockerfile.gateway .
+          HARBOR=harbor.harbor.svc.cluster.local/library
+          docker build -t $HARBOR/multi-agent-system:latest -f Dockerfile .
+          docker build -t $HARBOR/omni-gateway:latest -f Dockerfile.gateway .
 
           # Build-speed fix 2026-08-10: the two Next.js portal images were
           # rebuilt (docker build, the single slowest step in this whole
           # pipeline) on EVERY push regardless of whether ui/ changed — a
           # pure-Python commit paid the full Next.js build cost for nothing.
-          # Marker file (`.build_ui`) read by the "Import into k3s containerd"
-          # and "Deploy portals + Dex" stages below — separate `sh` steps don't
+          # Marker file (`.build_ui`) read by the "Push images to Harbor" and
+          # "Deploy portals + Dex" stages below — separate `sh` steps don't
           # share shell state, only the persistent workspace filesystem does
           # (same pattern as `.rollout_started`). `git diff` against HEAD~1
           # falls back to "changed" on any error (shallow clone / first-ever
@@ -114,12 +122,12 @@ pipeline {
           rm -f .build_ui
           if git diff --name-only HEAD~1 HEAD -- ui/ 2>/dev/null | grep -q . || \
              ! git rev-parse HEAD~1 >/dev/null 2>&1 || \
-             ! docker image inspect aoip-provider-web:latest >/dev/null 2>&1 || \
-             ! docker image inspect aoip-tenant-web:latest >/dev/null 2>&1; then
+             ! docker image inspect $HARBOR/aoip-provider-web:latest >/dev/null 2>&1 || \
+             ! docker image inspect $HARBOR/aoip-tenant-web:latest >/dev/null 2>&1; then
             touch .build_ui
-            docker build -t aoip-provider-web:latest -f ui/apps/provider-portal/Dockerfile \
+            docker build -t $HARBOR/aoip-provider-web:latest -f ui/apps/provider-portal/Dockerfile \
               --build-arg AOIP_BACKEND_URL=http://aoip-provider-portal:8081 ui
-            docker build -t aoip-tenant-web:latest -f ui/apps/tenant-portal/Dockerfile \
+            docker build -t $HARBOR/aoip-tenant-web:latest -f ui/apps/tenant-portal/Dockerfile \
               --build-arg AOIP_BACKEND_URL=http://aoip-tenant-portal:8082 ui
           else
             echo "[skip] ui/ unchanged since HEAD~1 and both portal images already exist locally — skipping Next.js build"
@@ -128,17 +136,41 @@ pipeline {
       }
     }
 
-    stage('Import into k3s containerd') {
+    stage('Push images to Harbor') {
       steps {
         sh '''
           set -e
-          docker save multi-agent-system:latest | sudo k3s ctr images import -
-          docker save omni-gateway:latest | sudo k3s ctr images import -
+          HARBOR=harbor.harbor.svc.cluster.local/library
+          # Pushed here by DNS name (this pod's own network namespace resolves it
+          # fine via CoreDNS), but the k8s manifests below pull by ClusterIP
+          # (10.43.239.205) instead — the node's own containerd only has an
+          # insecure-registry mirror entry for the IP in
+          # /etc/rancher/k3s/registries.yaml, not the DNS name, and adding the
+          # DNS entry would mean a second disruptive `systemctl restart k3s`
+          # (containerd restart = brief outage for every pod on the node) just
+          # to avoid two strings referring to the same registry. Harbor stores
+          # repository content by path+tag regardless of which hostname a
+          # client used to reach it, so push-by-DNS / pull-by-IP against the
+          # same repo works correctly — verified live 2026-08-10.
+          # No Jenkins-stored Harbor credential needed — this pod's ServiceAccount
+          # can already read the harbor namespace's own bootstrap Secret directly.
+          # `docker login` isn't used here (confirmed live 2026-08-10: it always
+          # attempts HTTPS regardless of the daemon's insecure-registry config,
+          # a different code path from push/pull) — writing ~/.docker/config.json
+          # directly is the working pattern.
+          HARBOR_PW=$(kubectl get secret harbor-admin-bootstrap -n harbor -o jsonpath='{.data.password}' | base64 -d)
+          mkdir -p ~/.docker
+          AUTH=$(printf "admin:%s" "$HARBOR_PW" | base64)
+          cat > ~/.docker/config.json <<EOF
+{"auths":{"harbor.harbor.svc.cluster.local":{"auth":"$AUTH"}}}
+EOF
+          docker push $HARBOR/multi-agent-system:latest
+          docker push $HARBOR/omni-gateway:latest
           if [ -f .build_ui ]; then
-            docker save aoip-provider-web:latest | sudo k3s ctr images import -
-            docker save aoip-tenant-web:latest | sudo k3s ctr images import -
+            docker push $HARBOR/aoip-provider-web:latest
+            docker push $HARBOR/aoip-tenant-web:latest
           else
-            echo "[skip] portal images unchanged this build — already imported from a prior run"
+            echo "[skip] portal images unchanged this build — already pushed from a prior run"
           fi
         '''
       }

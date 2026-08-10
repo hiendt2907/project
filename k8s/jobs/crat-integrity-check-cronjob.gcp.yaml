@@ -30,8 +30,8 @@ spec:
             runAsUser: 10001
           containers:
             - name: crat-check
-              image: multi-agent-system:latest
-              imagePullPolicy: Never
+              image: 10.43.239.205/library/multi-agent-system:latest
+              imagePullPolicy: IfNotPresent
               command:
                 - python3
                 - /app/scripts/crat_integrity_check.py
