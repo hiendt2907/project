@@ -455,6 +455,25 @@ def _check_numeric_thresholds(domain: str, fact: dict[str, Any]) -> str | None:
             return "critical"
         if p99 is not None and p99 > 1000:
             return "high"
+        # Producer thật `remote_agent/collectors/logs.py` (remote_log_errors) phát
+        # `failed_file_count`/`files_scanned`, KHÔNG phát `error_rate`/`p99_ms` —
+        # cùng lớp lệch bí danh đã trả giá ở domain OS (xem _METRIC_ALIASES phía
+        # trên). Thiếu nhánh này khiến domain_severity luôn "none" cho probe log
+        # thật, urgency chỉ còn dựa vào failed_ratio > 0.2 → mãi mãi kẹt ở
+        # "medium" dù bao nhiêu file lỗi đi nữa.
+        failed_files = fact.get("failed_file_count")
+        total_files = fact.get("files_scanned")
+        try:
+            failed_files = float(failed_files) if failed_files is not None else None
+            total_files = float(total_files) if total_files else None
+        except (TypeError, ValueError):
+            failed_files = total_files = None
+        if failed_files is not None and total_files:
+            file_error_ratio = failed_files / total_files
+            if file_error_ratio > 0.5:
+                return "critical"
+            if file_error_ratio > 0.2:
+                return "high"
 
     return None
 

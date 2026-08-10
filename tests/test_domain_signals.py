@@ -281,6 +281,33 @@ class TestAssessSeverityApplication:
         sev = assess_domain_severity(DOMAIN_APPLICATION, "", "", {"request_rate": 500})
         assert sev == "baseline"
 
+    def test_remote_log_errors_schema_reaches_critical(self):
+        """Đ49 B5 — producer thật remote_agent/collectors/logs.py phát
+        failed_file_count/files_scanned, không phát error_rate/p99_ms. Trước fix,
+        domain_severity luôn "none" cho payload này (mọi nhánh keyword/numeric/
+        baseline đều miss), urgency chỉ còn dựa vào failed_ratio nên kẹt mãi ở
+        "medium" — cùng lớp bug bí danh cpu_pct/cpu_percent đã trả giá ở domain OS.
+        """
+        sev = assess_domain_severity(
+            DOMAIN_APPLICATION, "", "",
+            {"files_scanned": 10, "failed_file_count": 8, "threshold": 5},
+        )
+        assert sev == "critical"
+
+    def test_remote_log_errors_schema_reaches_high(self):
+        sev = assess_domain_severity(
+            DOMAIN_APPLICATION, "", "",
+            {"files_scanned": 10, "failed_file_count": 3, "threshold": 5},
+        )
+        assert sev == "high"
+
+    def test_remote_log_errors_schema_low_ratio_no_false_escalation(self):
+        sev = assess_domain_severity(
+            DOMAIN_APPLICATION, "", "",
+            {"files_scanned": 100, "failed_file_count": 1, "threshold": 5},
+        )
+        assert sev == "none"
+
 
 # ── assess_domain_severity: Container ──────────────────────────────────────
 

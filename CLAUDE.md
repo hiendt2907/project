@@ -120,7 +120,7 @@ network/storage/database/service/hardware. Kế hoạch + bằng chứng:
 | `service` | `collectors/services.py` | ✅ unit `failed` **và** unit vừa chuyển active→inactive (dừng sạch) |
 | `kubernetes` | `os_state_validator.py`, probe K8s | ✅ |
 | `storage` | `collectors/storage.py` · metric `disk_percent` | ✅ ngưỡng: 95% critical / 90% warn (94% ra `INCONCLUSIVE` là ĐÚNG thiết kế, không phải bug) |
-| `application` | `collectors/logs.py`, `log_surge_probe.py` | ⚠️ chỉ đạt urgency `medium` |
+| `application` | `collectors/logs.py`, `log_surge_probe.py` | ✅ ĐÃ VÁ 2026-08-10 (Đ49 B5) — root cause: `assess_domain_severity` đọc `error_rate`/`latency_p99_ms` nhưng producer thật phát `failed_file_count`/`files_scanned` (lệch bí danh, cùng lớp bug đã trả giá ở domain OS `cpu_pct`/`cpu_percent`), khiến `domain_severity` luôn `"none"` và urgency kẹt ở `medium` qua nhánh `failed_ratio` dự phòng. Thêm nhánh đọc đúng field thật vào `_check_numeric_thresholds`, nay lên đúng `critical`/`high` theo tỉ lệ file lỗi. |
 | `network` | `collectors/network.py` (MỚI) | ✅ cổng lắng nghe vừa đóng → `NetworkListenerLost`; verified `tcp/80` trên VM |
 | `security` | `siem_reasoning.py`, FinGuard | ❌ chưa kiểm được trong lab |
 | `hardware` | — | ❌ giới hạn kiến trúc, không phải gap môi trường — xác nhận 2026-08-10: KHÔNG có collector nào cho domain này (0 file trong `src/remote_agent/collectors/`), và cả agent lẫn Omni đều chạy containerized (K8s pod) nên không có đường truy cập `/sys/class/hwmon`/cảm biến vật lý dù chạy trên OrbStack hay GCP VM. Chuyển hạ tầng sang GCP KHÔNG giải quyết được domain này — cần chạy trực tiếp trên host (systemd, không container) mới có, đó là quyết định kiến trúc riêng, không phải nợ kỹ thuật cần "làm nốt". |
