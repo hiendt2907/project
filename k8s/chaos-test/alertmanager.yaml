@@ -34,6 +34,14 @@ data:
             send_resolved: false
             http_config:
               follow_redirects: true
+              # Gateway fail-closed 2026-08-10 (P0 #1, docs/audit/BACKEND_AUDIT_PLAN_2026-08-10.md):
+              # /webhook/prometheus is also reachable publicly via gateway.omnisre.xyz, so it now
+              # requires auth in prod. Alertmanager webhook_configs can't compute an HMAC body
+              # signature itself, only a static bearer token — credentials_file (not inline
+              # credentials:) so the real value lives only in the mounted Secret, never in this
+              # git-tracked ConfigMap.
+              authorization:
+                credentials_file: /etc/alertmanager-webhook-token/OMNI_ALERTMANAGER_WEBHOOK_TOKEN
             max_alerts: 5
 ---
 apiVersion: apps/v1
@@ -93,12 +101,31 @@ spec:
               mountPath: /etc/alertmanager
             - name: data
               mountPath: /alertmanager
+            - name: webhook-token
+              mountPath: /etc/alertmanager-webhook-token
+              readOnly: true
       volumes:
         - name: config
           configMap:
             name: alertmanager-chaos-config
         - name: data
           emptyDir: {}
+        # NOT omni-gateway-secret directly — that Secret lives in namespace
+        # multi-agent, this pod runs in monitor, and K8s Secrets can't be
+        # referenced cross-namespace. `alertmanager-webhook-token` is a
+        # separate ExternalSecret (k8s/gitops/alertmanager-webhook-token-
+        # external-secret.yaml) synced from the SAME Vault property, so the
+        # value stays a single source of truth even though it lands in two
+        # different namespace-local Secrets (learned live 2026-08-10: first
+        # attempt referenced omni-gateway-secret here and every alertmanager
+        # pod sat in ContainerCreating forever — "secret omni-gateway-secret
+        # not found", because Secrets don't cross namespaces).
+        - name: webhook-token
+          secret:
+            secretName: alertmanager-webhook-token
+            items:
+              - key: OMNI_ALERTMANAGER_WEBHOOK_TOKEN
+                path: OMNI_ALERTMANAGER_WEBHOOK_TOKEN
 ---
 apiVersion: v1
 kind: Service

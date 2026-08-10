@@ -3,7 +3,7 @@
 Bối cảnh (audit 2026-08-10, docs/audit/BACKEND_AUDIT_PLAN_2026-08-10.md #1): mọi router
 khác dùng `_require_api_key`, đã fail-closed 503 khi thiếu key ở prod. Endpoint này trước
 đây chỉ log WARNING lúc khởi động khi thiếu OMNI_GATEWAY_WEBHOOK_SECRET rồi vẫn nhận request
-bình thường (`_verify_hmac_signature` trả True vô điều kiện) — nếu operator quên set secret
+bình thường (`_verify_webhook_auth` trả True vô điều kiện) — nếu operator quên set secret
 ở prod, endpoint mở hoàn toàn ra Internet cho "Prometheus alert" giả.
 
 Test gọi thẳng `_prometheus_webhook_body` (không khởi động lifespan/Kafka/Redis thật) với

@@ -136,7 +136,7 @@ def test_verify_hmac_when_lab_no_secret():
     from gateway import api as gw
 
     req = Request(_http_scope())
-    assert gw._verify_hmac_signature(req, b"any-body") is True
+    assert gw._verify_webhook_auth(req, b"any-body") is True
 
 
 def test_linear_forecast_single_point_and_horizon():

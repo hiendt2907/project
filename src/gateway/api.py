@@ -80,6 +80,8 @@ SILENCE_CHAOS_LAB = os.getenv("OMNI_GATEWAY_SILENCE_CHAOS_LAB", "false").strip()
 )
 # Zero-Trust: HMAC-SHA256 webhook signature (lab: empty = skip; prod: set via K8s Secret omni-gateway-secret)
 _WEBHOOK_SECRET: bytes = (os.getenv("OMNI_GATEWAY_WEBHOOK_SECRET") or "").strip().encode()
+# Bearer token tĩnh cho Alertmanager nội bộ — xem docstring _verify_webhook_auth().
+_ALERTMANAGER_WEBHOOK_TOKEN: bytes = (os.getenv("OMNI_ALERTMANAGER_WEBHOOK_TOKEN") or "").strip().encode()
 
 
 class PrometheusAlert(BaseModel):
@@ -151,20 +153,41 @@ def _resolve_prometheus_trace_id(request: Request) -> str:
     return tid
 
 
-def _verify_hmac_signature(request: Request, raw_body: bytes) -> bool:
-    """Verify X-Hub-Signature-256 header against OMNI_GATEWAY_WEBHOOK_SECRET.
-    Returns True unconditionally when secret is not configured (lab mode).
+def _verify_webhook_auth(request: Request, raw_body: bytes) -> bool:
+    """True nếu request qua được MỘT trong hai cơ chế xác thực webhook.
+
+    Hai cơ chế, không phải một, vì hai loại caller khác nhau về khả năng:
+    (a) HMAC chữ ký body (X-Hub-Signature-256) — cho nguồn CÓ khả năng tự tính
+        HMAC-SHA256 trên toàn bộ payload (relay/Prometheus tuỳ biến, khách hàng).
+    (b) Static bearer token — cho Alertmanager THẬT đang chạy trong cluster này
+        (`k8s/chaos-test/alertmanager.yaml`, `omni-webhook` receiver): Alertmanager
+        `webhook_configs` KHÔNG có khả năng tự ký HMAC body, chỉ hỗ trợ
+        `http_config.authorization` (Bearer token tĩnh) — nếu chỉ đòi HMAC thì
+        chính self-monitoring alert (meta_self) của Omni cũng bị chặn theo, đã
+        xảy ra thật ngay sau khi P0 #1 (fail-closed) triển khai 2026-08-10.
+
+    Fail-closed đúng ý P0 #1: nếu ÍT NHẤT MỘT cơ chế đã cấu hình mà request không
+    thoả cơ chế nào → False. True vô điều kiện CHỈ khi CẢ HAI đều chưa cấu hình
+    (lab mode, không đổi hành vi cũ).
     """
-    if not _WEBHOOK_SECRET:
+    if _WEBHOOK_SECRET:
+        sig_header = (
+            _str_header(request, "x-hub-signature-256")
+            or _str_header(request, "x-omni-signature")
+        )
+        if sig_header and sig_header.startswith("sha256="):
+            expected = _hmac.new(_WEBHOOK_SECRET, raw_body, hashlib.sha256).hexdigest()
+            if _hmac.compare_digest(sig_header[7:], expected):
+                return True
+    if _ALERTMANAGER_WEBHOOK_TOKEN:
+        auth_header = _str_header(request, "authorization") or ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip().encode()
+            if _hmac.compare_digest(token, _ALERTMANAGER_WEBHOOK_TOKEN):
+                return True
+    if not _WEBHOOK_SECRET and not _ALERTMANAGER_WEBHOOK_TOKEN:
         return True
-    sig_header = (
-        _str_header(request, "x-hub-signature-256")
-        or _str_header(request, "x-omni-signature")
-    )
-    if not sig_header or not sig_header.startswith("sha256="):
-        return False
-    expected = _hmac.new(_WEBHOOK_SECRET, raw_body, hashlib.sha256).hexdigest()
-    return _hmac.compare_digest(sig_header[7:], expected)
+    return False
 
 
 _bearer = HTTPBearer(auto_error=False)
@@ -418,7 +441,16 @@ async def lifespan(app: FastAPI):
     install_gateway_trace_logging()
     if not _WEBHOOK_SECRET:
         logger.warning(
-            "omni-gateway: OMNI_GATEWAY_WEBHOOK_SECRET not set — webhook signature verification DISABLED (lab mode)"
+            "omni-gateway: OMNI_GATEWAY_WEBHOOK_SECRET not set — HMAC signature check disabled"
+        )
+    if not _ALERTMANAGER_WEBHOOK_TOKEN:
+        logger.warning(
+            "omni-gateway: OMNI_ALERTMANAGER_WEBHOOK_TOKEN not set — bearer token check disabled"
+        )
+    if not _WEBHOOK_SECRET and not _ALERTMANAGER_WEBHOOK_TOKEN:
+        logger.warning(
+            "omni-gateway: NO webhook auth mechanism configured — /webhook/prometheus is "
+            "open in non-prod, and will 503 in prod (OMNI_ENV_MODE=prod fail-closed)"
         )
     _redis = _build_redis_client()
     await _redis.initialize()
@@ -673,26 +705,33 @@ async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONRespo
         # Fail-closed ở prod: khác mọi router khác (dùng _require_api_key, đã fail-closed
         # 503 khi thiếu key ở prod — dòng ~208), endpoint này trước đây CHỈ log WARNING lúc
         # khởi động khi thiếu OMNI_GATEWAY_WEBHOOK_SECRET rồi vẫn nhận request bình thường
-        # (_verify_hmac_signature trả True vô điều kiện). Nếu operator quên set secret ở
-        # prod, endpoint nhận "Prometheus alert" mở hoàn toàn ra Internet — alert giả đi
-        # thẳng vào pipeline LLM/mutate (docs/audit/BACKEND_AUDIT_PLAN_2026-08-10.md #1).
-        if not _WEBHOOK_SECRET and os.getenv("OMNI_ENV_MODE", "prod").strip().lower() == "prod":
+        # (_verify_webhook_auth trả True vô điều kiện). Nếu operator quên cấu hình CẢ HAI
+        # cơ chế auth, endpoint nhận "Prometheus alert" mở hoàn toàn ra Internet — alert giả
+        # đi thẳng vào pipeline LLM/mutate (docs/audit/BACKEND_AUDIT_PLAN_2026-08-10.md #1).
+        # Chỉ 1 trong 2 cơ chế cần cấu hình là đủ (không đòi cả hai) — Alertmanager nội bộ
+        # chỉ dùng được bearer token, không tự ký HMAC được (xem _verify_webhook_auth).
+        if (
+            not _WEBHOOK_SECRET
+            and not _ALERTMANAGER_WEBHOOK_TOKEN
+            and os.getenv("OMNI_ENV_MODE", "prod").strip().lower() == "prod"
+        ):
             logger.error(
-                "[GATEWAY][%s] OMNI_GATEWAY_WEBHOOK_SECRET không được set ở prod — "
-                "từ chối webhook (fail-closed).", trace_id,
+                "[GATEWAY][%s] Chưa cấu hình OMNI_GATEWAY_WEBHOOK_SECRET lẫn "
+                "OMNI_ALERTMANAGER_WEBHOOK_TOKEN ở prod — từ chối webhook (fail-closed).",
+                trace_id,
             )
             gw_requests.labels(status="503_webhook_secret_missing").inc()
             return _json_with_trace(
                 {
                     "error": "Service Unavailable",
-                    "detail": "Webhook secret not configured.",
+                    "detail": "Webhook auth not configured.",
                     "trace_id": trace_id,
                 },
                 trace_id=trace_id,
                 status_code=503,
             )
 
-        if not _verify_hmac_signature(request, raw_body):
+        if not _verify_webhook_auth(request, raw_body):
             logger.warning("[GATEWAY][%s] Webhook signature verification failed — rejecting.", trace_id)
             gw_requests.labels(status="401_invalid_signature").inc()
             return _json_with_trace(
