@@ -48,7 +48,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: omni-onboarding
-          image: 10.43.239.205/library/multi-agent-system:a3dc845
+          image: 10.43.239.205/library/multi-agent-system:e03d29b
           imagePullPolicy: Always
           ports:
             - name: metrics
