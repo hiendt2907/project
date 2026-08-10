@@ -1,7 +1,47 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-09 (Đ41 — S5 + lỗi im lặng PromQL + 2 đính chính. Đ40 — proactive-first
-P1+S0/S1/S2/S4/S8. Đ39 — gỡ `lane`.) · **Branch:** `main` · **HEAD:** `9b863dc`
+**Cập nhật:** 2026-08-10 (Đ42 — S3 xong + phát hiện & vá lỗi thật do chính S3 lộ ra. Đ41 — S5 +
+lỗi im lặng PromQL. Đ40 — proactive-first P1+S0/S1/S2/S4/S8. Đ39 — gỡ `lane`.) · **Branch:** `main`
+· **HEAD:** `7393bf8` · Build Jenkins **#27 SUCCESS**.
+
+## Đ42 — S3 xong, verify bằng incident thật; lộ + vá một bug fail-closed thật
+
+### S3 — tắt vòng ReAct riêng của proactive (KHÔNG phải tắt proactive)
+Sau S1, sinh bằng chứng đã thoát khỏi cờ này từ trước. `OMNI_PROACTIVE_FALLBACK_ENABLED: "false"`
+chỉ còn tắt vòng ReAct 6 lượt — một engine suy luận THỨ HAI chạy song song với analyst, không đi
+qua cổng 3σ.
+
+**Bằng chứng để tắt** (bơm incident thật vào topic proactive, `proact-s3probe-1786282369`): cùng
+một incident, cổng 3σ CHẶN advisory (z_cpu=-0,46 z_mem=-1,26 < 3 — đúng), nhưng ReAct vẫn tiêu
+**2 lượt LLM / 39,3s** trên chính incident đó.
+
+**Verify sau deploy** (`proact-s3fresh-1786283080`, incident MỚI không trùng cache trí nhớ): vẫn
+`diagnostic_evidence_publish` → `evidence_consumer` DIAGNOSED như cũ, nhưng LLM call = **0**.
+
+### Bug thật do chính S3 lộ ra — đã vá cùng đợt
+Trace `proact-s3fresh-1786283080` bị cổng 3σ chặn với lý do "snapshot quá hạn (388s > 300s)" dù
+`baseline_snapshot_loop` chạy đúng lịch. Nguyên nhân: ngưỡng tươi là **hằng số 300 gõ tay ở hai
+chỗ** trong `evidence_consumer`, độc lập với `OMNI_BASELINE_SNAPSHOT_INTERVAL_SEC` (=600 trên
+GCP) — theo đúng thiết kế, snapshot "quá hạn" trong NỬA mỗi chu kỳ. Vô hại khi cổng còn fail-OPEN
+(trước Đ41); ngay sau khi Đ41 vá cho fail-closed thật, lỗi này bắt đầu ăn mất khoảng nửa advisory
+lane resource.
+
+Fix: `baseline_snapshot.snapshot_freshness_budget_sec(settings)` = `max(300, interval * 2.5)`.
+Verify sống (`proact-freshfix-1786327120`): không còn `advisory_sigma_no_ground_truth`, cổng đọc
+`sigma_baseline_injected z_cpu=+5.73 (ANOMALY)` và **cho advisory chạy** đúng ý đồ ban đầu.
+
+**Bài học lặp lại lần thứ tư trong đợt này**: sửa lỗi A (fail-open→fail-closed) lộ lỗi B đã ẩn
+sau A (ngưỡng cứng lệch chu kỳ thật) mà không một dòng log nào tố cáo B trước đó — B chỉ hiện
+hình vì A đổi hành vi. `domain`, `signal_kind`, `_domain`, và nay `snapshot_freshness` — tất cả
+cùng một hình dạng: một giá trị đúng ở một tầng bị một tầng khác đọc sai âm thầm.
+
+### Còn treo
+- **S6** flip cờ S5 (`alert_direct_diagnostic_enabled=False`) → **S9**. Chờ ≥24h quan sát S3+S4.
+- `wal.corrupt-*`/`chunks_head.corrupt-*` mimir — lệnh sẵn ở Đ41, cần chạy tay (classifier chặn
+  `rm -rf` qua ssh từ phía tôi).
+- Rotate token Cloudflare `117fb433…` (treo từ Đ36).
+
+---
 
 ## Đ41 — Việc làm trong lúc chờ cửa sổ quan sát 24h
 
