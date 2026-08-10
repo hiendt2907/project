@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: portal
-          image: 10.43.239.205/library/multi-agent-system:e2afaf7
+          image: 10.43.239.205/library/multi-agent-system:3428f7f
           imagePullPolicy: Always
           command: ["uvicorn", "aoip.console.server:provider_app", "--host", "0.0.0.0", "--port", "8081"]
           ports: [{containerPort: 8081}]
@@ -68,7 +68,7 @@ spec:
     spec:
       containers:
         - name: portal
-          image: 10.43.239.205/library/multi-agent-system:e2afaf7
+          image: 10.43.239.205/library/multi-agent-system:3428f7f
           imagePullPolicy: Always
           command: ["uvicorn", "aoip.console.server:tenant_app", "--host", "0.0.0.0", "--port", "8082"]
           ports: [{containerPort: 8082}]
