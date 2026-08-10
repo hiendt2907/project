@@ -33,6 +33,13 @@ pipeline {
           # Covered separately post-deploy against the real cluster, not as a
           # pre-deploy gate on a container with no cluster access.
           #
+          # --deselect test_emit_agentic_mutate_if_any_passes_attempt_count_to_emit:
+          # same reason as above (needs a real kube-config to reach
+          # kubernetes_asyncio's ConfigException path — build #36 confirmed:
+          # "Config not found: /home/ciuser/.kube/config"), but it's the only
+          # cluster-dependent test in its file so deselecting just this one node
+          # instead of --ignoring the whole file keeps the other 9 tests running.
+          #
           # procps: provides `ps`, which remote_agent's trusted-binary sandbox
           # tests need on PATH to resolve — python:3.11-slim doesn't ship it,
           # so those tests were BLOCKED (not exercising real logic) every build
@@ -48,14 +55,22 @@ pipeline {
           # recursively chowning it here would leak out and could break the
           # next build's own git/file ops on the host. pytest only needs to
           # READ /repo (world-readable by default) and writes its own tmp_path
-          # fixtures under container-local /tmp, so no chown is needed there.
-          mkdir -p .pip-cache
+          # fixtures under container-local /tmp for MOST tests — the one
+          # exception is dist/ (git-ignored, never checked out by git, so
+          # chowning it here can't affect the host's next `git checkout`):
+          # test_release_tar_deterministic_and_manifest_has_tar_hash legitimately
+          # writes scratch build artifacts there (build #36 confirmed: this test
+          # broke the moment pytest stopped running as root, PermissionError on
+          # /repo/dist/.tar-hash-check — root had silently bypassed the missing
+          # write grant before).
+          mkdir -p .pip-cache dist
           docker run --rm -v "$(pwd):/repo" -v "$(pwd)/.pip-cache:/root/.cache/pip" -w /repo python:3.11-slim bash -c "
             apt-get update -qq && apt-get install -y -qq procps >/dev/null &&
             useradd -m ciuser &&
             chmod -R a+r /root/.cache/pip &&
+            chown -R ciuser:ciuser /repo/dist &&
             pip install -q -r requirements.txt -r requirements-gateway.txt &&
-            su ciuser -c 'PYTHONPATH=src python -m pytest tests/ --ignore=tests/integration --ignore=tests/real_services --ignore=tests/test_track2a_k8s_sdk.py --ignore=tests/test_track2b_diagnostic_proactive.py -q'
+            su ciuser -c 'PYTHONPATH=src python -m pytest tests/ --ignore=tests/integration --ignore=tests/real_services --ignore=tests/test_track2a_k8s_sdk.py --ignore=tests/test_track2b_diagnostic_proactive.py --deselect tests/test_feedback_full_agentic_planner.py::test_emit_agentic_mutate_if_any_passes_attempt_count_to_emit -q'
           "
         '''
       }
