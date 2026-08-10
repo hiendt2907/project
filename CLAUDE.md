@@ -123,7 +123,7 @@ network/storage/database/service/hardware. Kế hoạch + bằng chứng:
 | `application` | `collectors/logs.py`, `log_surge_probe.py` | ⚠️ chỉ đạt urgency `medium` |
 | `network` | `collectors/network.py` (MỚI) | ✅ cổng lắng nghe vừa đóng → `NetworkListenerLost`; verified `tcp/80` trên VM |
 | `security` | `siem_reasoning.py`, FinGuard | ❌ chưa kiểm được trong lab |
-| `hardware` | — | ❌ không kiểm được trên OrbStack (không có cảm biến) |
+| `hardware` | — | ❌ giới hạn kiến trúc, không phải gap môi trường — xác nhận 2026-08-10: KHÔNG có collector nào cho domain này (0 file trong `src/remote_agent/collectors/`), và cả agent lẫn Omni đều chạy containerized (K8s pod) nên không có đường truy cập `/sys/class/hwmon`/cảm biến vật lý dù chạy trên OrbStack hay GCP VM. Chuyển hạ tầng sang GCP KHÔNG giải quyết được domain này — cần chạy trực tiếp trên host (systemd, không container) mới có, đó là quyết định kiến trúc riêng, không phải nợ kỹ thuật cần "làm nốt". |
 
 **Ai phán "bất thường": OMNI, không phải agent.** Agent gửi `METRIC_SAMPLE`
 (`result="OBSERVED"`), Omni dựng baseline và quyết định trong
