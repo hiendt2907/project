@@ -1,6 +1,56 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ44 — audit backend 5-agent, P0 3 CRITICAL + P1 4 HIGH đã code+test
+**Cập nhật:** 2026-08-10 (Đ45 — CI/CD giờ do phiên này đảm nhận hoàn toàn (user đã tắt phiên
+CI/CD kia), tối ưu tốc độ Jenkinsfile + vá 3 lỗi pytest-gate/security-scan lộ ra khi build lần
+đầu chạy hết tới đó. Đ44 — audit backend 5-agent, P0 3 CRITICAL + P1 4 HIGH đã code+test
+
+## Đ45 — CI/CD full ownership + tối ưu tốc độ build + vá 3 lỗi lộ ra khi build chạy xa hơn
+
+**Bối cảnh chuyển giao:** phiên CI/CD trước (Đ43) và phiên này từng chạy CÙNG LÚC trên cùng
+`/Users/hiendang/project` (race điều kiện thư mục dùng chung — xem Đ44). User đã tắt phiên kia
+và giao toàn bộ việc CI/CD cho phiên này ("giờ bạn đảm nhận việc đó luôn").
+
+**Vấn đề đo được:** pipeline Jenkins chạy lại TOÀN BỘ hạ tầng (Istio/Harbor/ArgoCD/Vault/Argo
+Rollouts/cert-manager cài từ đầu, build lại 2 image Next.js portal, restart+chờ 180s cho 5
+portal + 4 monitoring deployment) trên MỌI push, kể cả push chỉ sửa Python backend — user complaint
+"nó đang phải làm quá nhiều trong lúc build".
+
+**Đã sửa (commit `9e51517`):**
+- 6 stage hạ tầng: skip khi component đã healthy (bootstrap cluster mới vẫn chạy đủ).
+- Build images: chỉ build 2 image Next.js khi `ui/` đổi so với HEAD~1 (marker `.build_ui`).
+- aoip-dex + 4 component monitoring: chỉ `rollout restart` khi `kubectl apply` báo thay đổi
+  thật, không phải "unchanged" cho mọi resource.
+- Test (pytest gate): pip cache mount, loại 2 file test cần cluster sống, cài `procps`, chạy
+  pytest bằng non-root user.
+- Validate bằng Jenkins `/pipeline-model-converter/validate` (lint thật, không chỉ đọc mắt).
+
+**3 lỗi lộ ra khi build lần đầu chạy xa hơn** (build #35 dừng ở pytest gate cũ; #36/#37 là lần
+ĐẦU TIÊN pytest gate + security scan mới thực sự chạy hết — tất cả builds #28-35 trước đó chưa
+từng chạm tới các bước này):
+1. (commit `24f9fd3`) `test_release_tar_deterministic_and_manifest_has_tar_hash` ghi scratch vào
+   `/repo/dist/` — non-root user không có quyền ghi lên bind-mount từ host. Fix: chown riêng
+   `/repo/dist` (đã gitignore, chown trong container không ảnh hưởng git checkout build sau) cho
+   `ciuser`, KHÔNG chown toàn bộ `/repo`.
+2. (commit `24f9fd3`) `test_emit_agentic_mutate_if_any_passes_attempt_count_to_emit` cần
+   kube-config thật (`Config not found: /home/ciuser/.kube/config`) — cùng lý do với 2 file test
+   cluster đã loại trước, nhưng đây là test DUY NHẤT cần cluster trong file 10 test của nó nên
+   `--deselect` đúng 1 node thay vì `--ignore` cả file.
+3. (commit `b60e81c`) gitleaks flag stub bot-token giả (`0000000000:AAAA...`, placeholder cố ý
+   cho Grafana alerting initContainer) khớp đúng regex `omni-telegram-token` — thêm allowlist
+   regex khớp đúng literal này vào `.gitleaks.toml`. Verify local: `docker run gitleaks` với
+   config mới → "no leaks found" (trước đó "leaks found: 1").
+
+**Không phải regression từ P0/P1** — cả 3 lỗi trên đều do build LẦN ĐẦU chạm tới các stage đó
+(pytest-gate/security-scan mới thêm ở Đ43, chưa từng có build nào chạy qua trước đây), không
+liên quan file P0/P1 đã sửa (evidence_consumer.py, omni_worker.py, diagnosis_loop.py,
+gateway/api.py, remote_agent_pipeline.py, case_ledger/advocacy.py, collectors/system.py).
+
+**Còn treo — verify sống P0+P1 trên GCP CHƯA làm được**, đang đợi 1 build thật sự chạy hết
+(build #37 fail ở gitleaks, đã vá; build tiếp theo sau `b60e81c` chưa có kết quả lúc ghi dòng
+này). Next step: poll Jenkins tới khi build xanh hoặc fail ở lý do MỚI, xử lý tiếp nếu fail,
+verify sống bằng incident injection nếu SUCCESS.
+
+
 xong, commit+push ngay sau đoạn này. Đ43 — CI/CD full-sync local→GCP UAT DONE cho cơ chế + đã
 xóa 46 test nginx-test lỗi thời, verify xanh 7330/7330 local. Đ42 — S3 xong + phát hiện & vá lỗi
 thật do chính S3 lộ ra. Đ41 — S5 + lỗi im lặng PromQL. Đ40 — proactive-first
