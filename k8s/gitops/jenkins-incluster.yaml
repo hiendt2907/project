@@ -79,16 +79,11 @@ spec:
       hostPID: false
       containers:
         - name: jenkins
-          image: 10.43.239.205/library/jenkins-controller:v1
+          image: 10.43.239.205/library/jenkins-controller:v3
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
-              # hostPort 8081 (not 8080) while running in parallel with the VM's
-              # systemd Jenkins — that one still owns :8080 and is also this
-              # session's remote-execution channel (Script Console) until the
-              # migration is verified. Switch to 8080 only after cutover.
-              hostPort: 8081
             - name: agent
               containerPort: 50000
           env:
@@ -137,6 +132,15 @@ spec:
           # sidecar only, no host-level daemon.json edit needed anymore.
           args:
             - --host=tcp://0.0.0.0:2375
+            # Classic nested-network MTU mismatch, confirmed live 2026-08-10:
+            # this pod's own eth0 (flannel VXLAN overlay) is MTU 1410, but
+            # dockerd's internal docker0 bridge (for containers docker build
+            # spins up) defaults to 1500 — large packets crossing that
+            # boundary get silently dropped/fragmented, so DNS (small, UDP)
+            # resolved fine while `apt-get update`/pip installs hung forever
+            # with zero progress. Match the daemon's bridge MTU to a safe
+            # margin below the overlay's real MTU.
+            - --mtu=1400
             # Both forms needed: insecure-registry matching is a string/CIDR
             # match done BEFORE DNS resolution, so the ClusterIP and the DNS
             # name are two separate entries even though they resolve to the
@@ -148,6 +152,17 @@ spec:
           volumeMounts:
             - name: jenkins-dind-data
               mountPath: /var/lib/docker
+            # `docker build -v $(pwd):/repo` etc. in the Jenkinsfile bind-mounts
+            # a path from the WORKSPACE — but bind-mount sources are resolved on
+            # the daemon's own filesystem, not the client's. dind is a separate
+            # container/daemon from "jenkins", so without this mount the source
+            # path simply doesn't exist there — confirmed live 2026-08-10:
+            # `docker run -v $(pwd):/repo ... chown /repo/dist` failed with
+            # "No such file or directory" even though `mkdir -p dist` had just
+            # succeeded (in the OTHER container). Same PVC, same path, in both
+            # containers so bind-mount paths line up.
+            - name: jenkins-home
+              mountPath: /var/jenkins_home
           resources:
             requests:
               cpu: "250m"
@@ -162,18 +177,26 @@ spec:
           persistentVolumeClaim:
             claimName: jenkins-dind-data
 ---
+# NodePort (k8s-native, Service-managed) instead of hostPort (binds the pod
+# directly to the node's network stack, bypasses the Service layer entirely,
+# and only ever works for exactly one pod replica on exactly one node) — the
+# right way to keep reaching Jenkins at a stable node-level address without
+# tying the pod to host networking. 30080 (not 8080 — out of k3s's default
+# NodePort range 30000-32767) is the new URL: http://100.67.117.19:30080.
 apiVersion: v1
 kind: Service
 metadata:
   name: jenkins
   namespace: cicd
 spec:
+  type: NodePort
   selector:
     app: jenkins
   ports:
     - name: http
       port: 8080
       targetPort: http
+      nodePort: 30080
     - name: agent
       port: 50000
       targetPort: agent
