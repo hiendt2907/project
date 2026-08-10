@@ -308,17 +308,35 @@ pipeline {
           kubectl delete networkpolicy --all -n argocd --ignore-not-found
 
           kubectl apply -f k8s/gitops/argocd-ingress.yaml
+        '''
 
-          # Repo credentials: reuse the same Gitea token this Jenkinsfile pushes with,
-          # read from the git remote so it never needs to be typed into a manifest.
-          GITEA_TOKEN=$(git remote get-url gitea | sed -n "s#http://[^:]*:\\([^@]*\\)@.*#\\1#p")
-          kubectl create secret generic omni-gitea-repo -n argocd \
-            --from-literal=type=git \
-            --from-literal=url=http://gitea.cicd.svc.cluster.local:3000/hiendang/project.git \
-            --from-literal=username=hiendang \
-            --from-literal=password="$GITEA_TOKEN" \
-            --dry-run=client -o yaml | kubectl label --local -f - argocd.argoproj.io/secret-type=repository -o yaml | kubectl apply -f -
+        // Repo credentials for ArgoCD's own repo-server. This used to scrape a
+        // token out of `git remote get-url gitea` — that remote name is a LOCAL
+        // dev convention (dual-remote: gitea=deploy, origin=GitHub backup); the
+        // Jenkins job's own SCM checkout (config.xml) uses remote `origin` with
+        // credentialsId `gitea-hiendang` and does NOT embed the token in the URL
+        // at all, so that scrape always failed on Jenkins. Its empty stdout piped
+        // straight into `sed` (which exits 0 on no-match, no `pipefail`), so the
+        // failure was swallowed and this stage happily wrote an empty-password
+        // Secret every build. Result found live 2026-08-10: ArgoCD's omni-core
+        // Application sat in ComparisonError("authentication required") for over
+        // a day before being noticed and hand-patched. Fix: pull the credential
+        // straight from the Jenkins credential store Jenkins itself already uses
+        // to check this repo out — no parsing, nothing to silently break.
+        withCredentials([usernamePassword(credentialsId: 'gitea-hiendang', usernameVariable: 'GITEA_USER', passwordVariable: 'GITEA_TOKEN')]) {
+          sh '''
+            set -e
+            kubectl create secret generic omni-gitea-repo -n argocd \
+              --from-literal=type=git \
+              --from-literal=url=http://gitea.cicd.svc.cluster.local:3000/hiendang/project.git \
+              --from-literal=username="$GITEA_USER" \
+              --from-literal=password="$GITEA_TOKEN" \
+              --dry-run=client -o yaml | kubectl label --local -f - argocd.argoproj.io/secret-type=repository -o yaml | kubectl apply -f -
+          '''
+        }
 
+        sh '''
+          set -e
           kubectl apply -f k8s/gitops/argocd-application.yaml
         '''
       }
