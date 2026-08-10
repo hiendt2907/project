@@ -1,11 +1,11 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ48 — task #16 (việc gốc của cả phiên) **CODE XONG, validated cú pháp,
-CHƯA chạy build thật để verify sống** — Jenkins giờ CHỈ test/build/push Harbor + bump tag git-SHA
-+ commit-back; ArgoCD (`selfHeal: true, prune: true`, multi-source) là bên DUY NHẤT apply/rollout
-5 image app (`multi-agent-system`, `omni-gateway`, `aoip-provider-web`, `aoip-tenant-web`) —
-**KHÔNG còn `:latest` ở đâu cả**, theo đúng yêu cầu trực tiếp của user. Xem "Đ48" bên dưới để biết
-chi tiết + việc còn lại (trigger 1 build thật để verify end-to-end). Đ47 — migrate Jenkins từ VM
+**Cập nhật:** 2026-08-10 (Đ48 — task #16 (việc gốc của cả phiên) **XONG, VERIFY SỐNG bằng build
+thật #49 SUCCESS** — Jenkins giờ CHỈ test/build/push Harbor + bump tag git-SHA + commit-back;
+ArgoCD (`selfHeal: true, prune: true`, multi-source) là bên DUY NHẤT apply/rollout. Build #49 xác
+nhận trực tiếp qua `kubectl`: `omni-fullstack`/`omni-onboarding`/`aoip-provider-portal`/
+`aoip-tenant-portal`/`omni-gateway` đều chạy tag thật `e2afaf7`, ArgoCD `Synced Healthy`, commit
+tag-bump `d964e1a` do chính Jenkins tạo+push, đã fast-forward về cả 2 remote. Đ47 — migrate Jenkins từ VM
 systemd vào pod trong k3s ĐÃ CUTOVER XONG HOÀN TOÀN, build #48 SUCCESS, VM `jenkins.service` đã
 `stop`+`disable` hẳn. Đ46 — build #40 SUCCESS, P0+P1 verify sống bằng incident thật qua
 Alertmanager. Đ45 — CI/CD do phiên này đảm nhận hoàn toàn. Đ44 — audit backend 5-agent, P0+P1 đã
@@ -67,25 +67,34 @@ CI (Jenkins: test/build/push/tag) và CD (ArgoCD: deploy/rollout), không phải
    — ArgoCD tự hội tụ về tag tốt cuối cùng. aoip-dex + Prometheus/Loki/Mimir/Grafana (không do
    pipeline này tag) vẫn giữ `kubectl rollout undo` như cũ.
 
-### CHƯA verify sống — việc còn lại ngay đầu phiên sau (hoặc cuối phiên này nếu user cho phép)
+### VERIFY SỐNG — build #49, 2026-08-10, SUCCESS (~10.4 phút)
 
-- **Trigger 1 build thật qua Jenkins** (`POST /job/omni-gcp-deploy/build` hoặc bấm Build Now) và
-  theo dõi tới hết — đây là lần ĐẦU TIÊN cơ chế git-commit-back + `git revert` rollback + ArgoCD
-  multi-source selfHeal/prune thực sự chạy trên hạ tầng thật, chưa test qua bất kỳ đường nào khác
-  ngoài Groovy-syntax-validate (không kiểm tra logic shell bên trong) + `kubectl apply --dry-run`
-  (chỉ kiểm schema YAML, không kiểm hành vi sync/prune thật).
-- Cần xác nhận riêng: `prune: true` lần sync ĐẦU sau khi mở rộng include có xoá nhầm gì không (lý
-  thuyết an toàn — ArgoCD chỉ prune resource nó từng track, danh sách include hiện đúng khớp toàn
-  bộ resource đang chạy sống, không resource nào bị loại khỏi include so với thực tế) — vẫn nên
-  quan sát trực tiếp lần sync đầu.
-- 6 manifest hiện tại trong git VẪN còn ghi `:latest` cho tới khi build thật đầu tiên chạy xong
-  (không phải bug — sed chỉ chạy trong pipeline; ArgoCD sẽ không phá gì vì pod đang chạy không bị
-  restart chỉ vì string `:latest` không đổi, nhưng `:latest` cũng không còn được push lên Harbor
-  nữa kể từ giờ — nếu có ai `kubectl apply` tay file cũ trước khi build thật chạy, pod mới sẽ
-  ImagePullBackOff vì Harbor không còn tag đó).
-- Sau khi verify sống: cân nhắc xoá logic conditional-restart còn sót lại không liên quan (không
-  có, đã rà lại toàn file) và cập nhật `CLAUDE.md` phần Jenkins/CI-CD cho khớp kiến trúc mới
-  (Jenkins = CI-only, ArgoCD = CD).
+- `Update image tags in git`: sed bump đúng 5 manifest (`omni-fullstack.yaml`,
+  `omni-onboarding.yaml`, `aoip-portals.gcp.yaml`, `crat-integrity-check-cronjob.gcp.yaml`,
+  `omni-gateway-rollout.yaml`) sang `e2afaf7`, `git commit` (detached HEAD `d964e1a`) + push thẳng
+  lên `gitea.cicd.svc.cluster.local` bằng credential `gitea-hiendang` — log console xác nhận
+  `e2afaf7..d964e1a HEAD -> main`. `aoip-portals-web.yaml` ĐÚNG THIẾT KẾ không bump lần này (build
+  không đổi `ui/`, `.build_ui` không được tạo).
+- `Wait for ArgoCD rollout`: patch hard-refresh → poll 35 lần (175s, trong ngưỡng 300s) →
+  `sync=Synced health=Healthy`. Thấy rõ `health=Suspended` xen giữa (đúng dự đoán trong comment —
+  Argo Rollouts canary `pause: {duration: 60}` của `omni-gateway` báo trạng thái đó qua ArgoCD).
+- Verify trực tiếp qua `kubectl` (không suy đoán từ log): `omni-fullstack`, `omni-onboarding`,
+  `aoip-provider-portal`, `aoip-tenant-portal`, `omni-gateway` — cả 5 pod đang chạy đều có
+  `image: .../*:e2afaf7`, 0 restart. `kubectl get application omni-core` → `Synced Healthy`.
+  `kubectl get rollout omni-gateway` → `Healthy`, image đúng tag.
+- Local repo đã fetch+fast-forward `d964e1a` từ `gitea`, đã push tiếp sang `origin` (GitHub) —
+  cả 2 remote khớp nhau, đúng convention 2 remote của repo này.
+- `crat-integrity-check-cronjob.gcp.yaml` (không do ArgoCD track) — Jenkins tự `kubectl apply`
+  trực tiếp trong "Deploy OrbStack-parity gaps" như thiết kế, log xác nhận `configured`.
+
+### Còn lại (không chặn, việc phụ)
+
+- `aoip-provider-web`/`aoip-tenant-web` vẫn `:latest` trong git + trên cluster — chờ lần build kế
+  tiếp có đổi `ui/` mới chuyển sang tag thật (thiết kế cố ý, không phải nợ).
+- CHƯA có cơ hội test đường `post{failure{}}` git-revert thật (build #49 không fail) — để dành khi
+  có 1 build fail thật xảy ra tự nhiên, không nên cố tình phá build chỉ để test rollback.
+- `CLAUDE.md` phần Jenkins/CI-CD nên cập nhật ngắn cho khớp kiến trúc mới (Jenkins = CI-only,
+  ArgoCD = CD) — chưa làm, việc nhỏ.
 
 ## Đ47 — Migrate Jenkins vào k3s — ĐÃ CUTOVER XONG, production khoẻ
 
