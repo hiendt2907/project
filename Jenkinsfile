@@ -15,6 +15,10 @@ pipeline {
       steps {
         sh '''
           set -e
+          # Workspace persists across builds — clear any leftover marker from a
+          # previous run so a failure here can't be mistaken for "this build
+          # already started mutating the cluster" (see Apply manifests / post{failure{}}).
+          rm -f .rollout_started
           docker run --rm -v "$(pwd):/repo" -w /repo python:3.11-slim bash -c "
             pip install -q -r requirements.txt -r requirements-gateway.txt &&
             PYTHONPATH=src python -m pytest tests/ --ignore=tests/integration --ignore=tests/real_services -q
@@ -70,6 +74,11 @@ pipeline {
       steps {
         sh '''
           set -e
+          # Marks the point past which this build actually starts mutating cluster
+          # state — post{failure{}} checks this before attempting any rollback, so
+          # a build that fails at Test/Security/Build (never touched the cluster)
+          # doesn't undo a perfectly good deploy from a PREVIOUS successful build.
+          touch .rollout_started
           kubectl apply -f k8s/deployments/namespace.yaml
           # Single-tenant GCP node: omni-fullstack legitimately needs hostPID/privileged/SYS_ADMIN
           # for its nsenter-based mutate path (OMNI_EXECUTOR_FORCE_NSENTER). The repo's namespace.yaml
@@ -433,6 +442,10 @@ yaml.dump_all(docs, sys.stdout)
       // resource with no prior revision (e.g. first-ever deploy) must not stop the
       // rest of the undo attempts.
       sh '''
+        if [ ! -f .rollout_started ]; then
+          echo "[rollback] build failed before touching the cluster (Test/Security/Build stage) — nothing to roll back, skipping"
+          exit 0
+        fi
         echo "[rollback] pipeline failed — attempting kubectl rollout undo on app-layer resources"
         kubectl rollout undo deployment/omni-fullstack -n multi-agent || true
         kubectl rollout undo deployment/omni-onboarding -n multi-agent || true
