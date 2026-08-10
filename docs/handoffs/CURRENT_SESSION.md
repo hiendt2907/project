@@ -1,8 +1,66 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ42 — S3 xong + phát hiện & vá lỗi thật do chính S3 lộ ra. Đ41 — S5 +
-lỗi im lặng PromQL. Đ40 — proactive-first P1+S0/S1/S2/S4/S8. Đ39 — gỡ `lane`.) · **Branch:** `main`
-· **HEAD:** `7393bf8` · Build Jenkins **#27 SUCCESS**.
+**Cập nhật:** 2026-08-10 (Đ43 — CI/CD full-sync local→GCP UAT, ĐANG VERIFY. Đ42 — S3 xong + phát
+hiện & vá lỗi thật do chính S3 lộ ra. Đ41 — S5 + lỗi im lặng PromQL. Đ40 — proactive-first
+P1+S0/S1/S2/S4/S8. Đ39 — gỡ `lane`.) · **Branch:** `main` · **HEAD:** `07c6f5d` · Build Jenkins
+**#28 ĐANG CHẠY** (trigger tự động qua webhook, lần đầu tiên — xem Đ43).
+
+## Đ43 — CI/CD full-sync local → GCP UAT: test gate + security gate + auto-trigger + rollback (ĐANG VERIFY)
+
+**Yêu cầu user:** Mac = local dev, GCP k3s hiện tại = UAT (xác nhận không tạo cluster mới). Auto-deploy
+mọi push `gitea main`, không cần bấm "Build Now" tay. pytest + security check bắt buộc trước deploy.
+Rollback tự động khi rollout fail.
+
+### Đã làm — commit `d4bd20d` (Jenkinsfile) + hạ tầng Jenkins/Gitea (chưa nằm trong git, ghi lại đây)
+
+1. **`Jenkinsfile`**: thêm 2 stage đầu tiên trước `Build images` —
+   `Test (pytest gate)` (docker `python:3.11-slim`, cài `requirements.txt`+`requirements-gateway.txt`,
+   `pytest tests/ --ignore=tests/integration --ignore=tests/real_services -q`) và `Security scan`
+   (`gitleaks detect --no-git` dùng `.gitleaks.toml` có sẵn + `pip-audit` trên cả 2 requirements
+   file). Fail 1 trong 2 ⇒ dừng trước khi build image.
+2. **`post{failure{}}`** mới: `kubectl rollout undo` cho omni-fullstack/omni-onboarding/aoip-dex/
+   4 portal deployment/prometheus/loki/mimir/grafana, và `kubectl argo rollouts undo omni-gateway`
+   (Rollout CRD không phải kind `kubectl rollout` hiểu — đã cài plugin `kubectl-argo-rollouts`
+   v1.9.1 vào `/usr/local/bin` trên VM, xác nhận user `jenkins` chạy được). Toàn bộ `|| true` vì
+   đây là best-effort safety net chạy trong 1 build ĐÃ fail.
+3. **Jenkins remote trigger — GOTCHA quan trọng**: job `omni-gcp-deploy` dùng
+   `FullControlOnceLoggedInAuthorizationStrategy` + `denyAnonymousReadAccess=true` (đúng ý, KHÔNG
+   nới lỏng). Cách cũ (`<authToken>` + gọi `?token=` ẩn danh) **KHÔNG hoạt động** dù đã set đúng —
+   Jenkins vẫn đòi `hudson.model.Hudson.Read` cho request ẩn danh trước khi xét token, và kể cả khi
+   có quyền, POST vẫn bị crumb CSRF chặn (`403 No valid crumb`). Đã **bỏ `<authToken>`**, thay bằng
+   API token thật của user `hiendang` — sinh qua init-script Groovy một lần
+   (`/var/lib/jenkins/init.groovy.d/`, đã xoá sau khi lấy token, không để lại file bí mật trên đĩa)
+   — Gitea webhook gọi kèm `Authorization: Basic base64(hiendang:token)`. Request có API token auth
+   được Jenkins core miễn crumb tự động. **Token chỉ tồn tại trong Gitea webhook config (DB), không
+   commit vào git, không ghi ra file trên VM.**
+4. **Gitea webhook (`ALLOWED_HOST_LIST` gotcha)**: Gitea 1.22 có SSRF protection chặn webhook gọi
+   ra IP nội bộ theo mặc định — lần đầu tạo webhook bị deny im lặng-ish (`webhook.ALLOWED_HOST_LIST`,
+   log `[E] Unable to deliver ... deny '10.148.0.4'`). Fix: `kubectl set env deployment/gitea -n cicd
+   GITEA__webhook__ALLOWED_HOST_LIST="10.148.0.4"` (chỉ whitelist đúng 1 IP Jenkins, không dùng `*`).
+   Webhook id=1, event=push, branch_filter=main, url=`http://10.148.0.4:8080/job/omni-gcp-deploy/build`.
+   Xác nhận sống bằng `hooks/1/tests` API → `hook_task.is_succeed=1, status=201`.
+5. **Push thật `07c6f5d` lên `gitea main` → Jenkins tự tạo build #28** (lần đầu tiên không cần bấm
+   tay) — xác nhận trực tiếp qua `builds/28/log`, đang chạy đúng stage `Test (pytest gate)` mới thêm.
+
+### CHƯA XONG khi kết thúc phiên — verify negative-path còn dang dở
+- Build #28 mới chạy tới stage Test/Security lúc kết thúc phiên, **chưa biết kết quả cuối** (pass
+  qua Build images hay không). Session sau: kiểm `builds/28/log` xem `Finished: SUCCESS/FAILURE`.
+- **Chưa test negative case thật**: cố ý phá 1 test hoặc để gitleaks bắt secret giả để xác nhận
+  pipeline dừng ĐÚNG TRƯỚC `Build images` (chỉ mới xác nhận stage chạy, chưa xác nhận nó CHẶN đúng
+  khi fail).
+- **Chưa test rollback thật**: chưa giả lập rollout fail để xác nhận `kubectl rollout undo` +
+  `kubectl argo rollouts undo omni-gateway` chạy thật, không chỉ đọc code.
+- Nếu build #28 SUCCESS toàn bộ: đó là bằng chứng happy-path CI/CD hoạt động, nhưng KHÔNG đủ để
+  coi Đ43 DONE — vẫn thiếu 2 negative-path ở trên.
+
+### Lưu ý không được quên
+- Có 1 tiến trình/agent KHÁC đang chạy song song trên cùng working directory này trong lúc Đ43 thực
+  hiện (audit backend 5-agent, commit `a9a7e84` xuất hiện giữa phiên không phải do phiên này tạo,
+  cộng thêm nhiều file uncommitted xuất hiện dần: `src/gateway/api.py`,
+  `src/services/analyst/diagnosis_loop.py`, `src/workers/evidence_consumer.py`,
+  `src/workers/omni_worker.py`, 3 file test mới). Đ43 **KHÔNG đụng** vào các file đó — chỉ
+  `git add Jenkinsfile` / file cụ thể của Đ43 mỗi lần commit. Session sau cần `git status` trước
+  khi tiếp tục để biết tiến trình kia đã commit gì thêm chưa, tránh nhầm lẫn thay đổi của ai.
 
 ## Đ42 — S3 xong, verify bằng incident thật; lộ + vá một bug fail-closed thật
 

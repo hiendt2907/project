@@ -42,8 +42,25 @@ _REGISTRY_KEY_PREFIX = "omni:remote_agent:registry:"
 _SESSION_KEY_PREFIX = "omni:diag:session:"
 _SESSION_TTL = 86400
 _CMD_QUEUE_TTL = 300
-# Agent counts as online if it re-registered within this window (gateway TTL=120s).
-_AGENT_ONLINE_MAX_AGE_S = 120
+
+# Ngưỡng "agent còn online" từng là hằng số 120 gõ tay, độc lập với registry TTL
+# thật (300s, `agent_push._REGISTRY_TTL`) — comment cũ còn ghi sai "gateway
+# TTL=120s" dù giá trị thật đã là 300 từ lâu. Đây cùng lớp bug đã gặp 4 lần
+# trước (domain/signal_kind/_domain/snapshot_freshness — xem
+# docs/audit/BACKEND_AUDIT_PLAN_2026-08-10.md #3): ngưỡng và config nó phụ
+# thuộc là hai con số rời nhau, trôi khỏi nhau mà không ai thấy.
+#
+# Lưu ý: registry record KHÔNG mang collect_interval thật của từng agent
+# (agent_push.py không gửi field này) nên không thể suy đúng theo chu kỳ báo
+# cáo thật của từng VM khách — chỉ có thể neo vào registry TTL, config DUY
+# NHẤT Omni thực sự sở hữu cho key này. Suy ra bằng phân số của TTL đó thay vì
+# hằng số rời, để khi TTL đổi thì ngưỡng này đổi theo, không bị bỏ quên.
+try:
+    from gateway.routes.agent_push import _REGISTRY_TTL as _AGENT_REGISTRY_TTL_SEC
+except Exception:  # pragma: no cover - defensive, gateway module always present in prod
+    _AGENT_REGISTRY_TTL_SEC = 300
+
+_AGENT_ONLINE_MAX_AGE_S = _AGENT_REGISTRY_TTL_SEC / 2
 
 _DIAGNOSIS_SYSTEM_PROMPT = """You are an SRE diagnostic AI for Linux bare-metal and VM systems.
 You perform ROOT CAUSE ANALYSIS through iterative evidence gathering.

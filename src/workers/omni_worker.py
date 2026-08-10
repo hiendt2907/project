@@ -456,8 +456,17 @@ async def _process_stream_entry(
                     "[%s] event=alert_class kind=meta_self alertname=%s mutate_eligible=false",
                     trace, _ac.alertname,
                 )
-        except Exception:
-            logger.debug("[%s] alert_class classification skipped", trace, exc_info=True)
+        except Exception as _ac_err:
+            # WARNING chứ không phải debug: nếu setex thất bại (Redis flaky), cả hai
+            # nơi đọc (_proof_of_fault_gate, _handle_meta_self_alert) sẽ thấy key
+            # vắng mặt và coi là "không phải meta_self" — mất lá chắn chặn Omni tự
+            # mutate dựa trên tiếng ồn do chính nó phát ra. Phải thấy được sự kiện
+            # này trong log, không được im lặng.
+            logger.warning(
+                "[%s] event=alert_class_write_failed err=%r — alert_class gate sẽ "
+                "fail-closed ở phía đọc do thiếu key này",
+                trace, _ac_err, exc_info=True,
+            )
 
         # Master Plan V3: omni-alerts → prober only (diagnostic pipeline → evidence topic); reasoning in kafka_evidence_loop.
         if payload.get("chat_id") is not None:

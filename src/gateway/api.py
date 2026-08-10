@@ -633,6 +633,28 @@ async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONRespo
         # ── 3. Parse & Enqueue ───────────────────────────────────────────────
         raw_body = await request.body()
 
+        # Fail-closed ở prod: khác mọi router khác (dùng _require_api_key, đã fail-closed
+        # 503 khi thiếu key ở prod — dòng ~208), endpoint này trước đây CHỈ log WARNING lúc
+        # khởi động khi thiếu OMNI_GATEWAY_WEBHOOK_SECRET rồi vẫn nhận request bình thường
+        # (_verify_hmac_signature trả True vô điều kiện). Nếu operator quên set secret ở
+        # prod, endpoint nhận "Prometheus alert" mở hoàn toàn ra Internet — alert giả đi
+        # thẳng vào pipeline LLM/mutate (docs/audit/BACKEND_AUDIT_PLAN_2026-08-10.md #1).
+        if not _WEBHOOK_SECRET and os.getenv("OMNI_ENV_MODE", "prod").strip().lower() == "prod":
+            logger.error(
+                "[GATEWAY][%s] OMNI_GATEWAY_WEBHOOK_SECRET không được set ở prod — "
+                "từ chối webhook (fail-closed).", trace_id,
+            )
+            gw_requests.labels(status="503_webhook_secret_missing").inc()
+            return _json_with_trace(
+                {
+                    "error": "Service Unavailable",
+                    "detail": "Webhook secret not configured.",
+                    "trace_id": trace_id,
+                },
+                trace_id=trace_id,
+                status_code=503,
+            )
+
         if not _verify_hmac_signature(request, raw_body):
             logger.warning("[GATEWAY][%s] Webhook signature verification failed — rejecting.", trace_id)
             gw_requests.labels(status="401_invalid_signature").inc()

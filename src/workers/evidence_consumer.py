@@ -747,21 +747,47 @@ async def _proof_of_fault_gate(
     # Plan step 6 — meta/self-KPI alerts have no remediable cluster target. If the
     # ingestion classifier flagged this trace as meta_self, hard-close the gate so
     # the mutate-planner never anchors a mutation on Omni's own health signal.
+    #
+    # Fail-closed, không fail-open: đọc lỗi (Redis flaky/timeout) KHÁC với key
+    # vắng mặt hợp lệ (vì trace không phải meta_self). Trước đây cả hai case đều
+    # rơi vào cùng một nhánh "cứ để mutate chạy tiếp" — đúng lúc
+    # OMNI_AUTO_EXECUTE_ENABLED=true sống trên prod, một lỗi đọc Redis thoáng qua
+    # đủ để tắt lá chắn này mà không ai biết. Nay: đọc lỗi → chặn mutate, ghi rõ lý
+    # do khác với trường hợp thật sự xác nhận meta_self.
     try:
         _ac_raw = await ctx.redis.get(f"omni:trace:{trace}:alert_class")
-        if _ac_raw:
+    except Exception as _ac_read_err:
+        logger.warning(
+            "event=alert_class_read_failed trace=%s err=%r — fail-closed, chặn mutate",
+            trace, _ac_read_err, exc_info=True,
+        )
+        return (
+            False,
+            "ERR_ALERT_CLASS_READ_FAILED",
+            {"critical_evidence": False, "alert_class": "unknown_read_error"},
+        )
+    if _ac_raw:
+        try:
             _ac = json.loads(_ac_raw.decode() if isinstance(_ac_raw, bytes) else _ac_raw)
-            if _ac.get("kind") == "meta_self":
-                logger.info(
-                    "event=proof_of_fault_meta_self_blocked trace=%s — no cluster target", trace
-                )
-                return (
-                    False,
-                    "ERR_META_SELF_NO_TARGET",
-                    {"critical_evidence": False, "alert_class": "meta_self"},
-                )
-    except Exception:
-        logger.debug("event=alert_class_read_skip trace=%s", trace, exc_info=True)
+        except Exception as _ac_parse_err:
+            logger.warning(
+                "event=alert_class_corrupt trace=%s err=%r raw=%r — fail-closed, chặn mutate",
+                trace, _ac_parse_err, _ac_raw,
+            )
+            return (
+                False,
+                "ERR_ALERT_CLASS_READ_FAILED",
+                {"critical_evidence": False, "alert_class": "unknown_corrupt"},
+            )
+        if _ac.get("kind") == "meta_self":
+            logger.info(
+                "event=proof_of_fault_meta_self_blocked trace=%s — no cluster target", trace
+            )
+            return (
+                False,
+                "ERR_META_SELF_NO_TARGET",
+                {"critical_evidence": False, "alert_class": "meta_self"},
+            )
 
     critical = critical_evidence_present(batch)
     snap_raw = await ctx.redis.get(REDIS_KEY_SNAPSHOT)
@@ -2238,7 +2264,15 @@ async def _handle_meta_self_alert(ctx: WorkerHandlerContext, *, trace: str) -> s
         if not raw:
             return None
         ac = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
-    except Exception:
+    except Exception as _read_err:
+        # Chỉ là short-circuit tối ưu (bỏ qua RAG/LLM cho meta_self đã biết) — cổng
+        # THẬT nằm ở _proof_of_fault_gate (ERR_ALERT_CLASS_READ_FAILED, fail-closed).
+        # Ở đây fall-through về diagnosis flow đầy đủ là đúng ý đồ; chỉ cần log để
+        # không im lặng hoàn toàn khi việc này xảy ra.
+        logger.warning(
+            "event=meta_self_shortcut_read_failed trace=%s err=%r — fall through diagnosis flow",
+            trace, _read_err,
+        )
         return None
     if ac.get("kind") != ALERT_KIND_META_SELF:
         return None
