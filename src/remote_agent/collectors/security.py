@@ -143,22 +143,33 @@ async def collect_auth_failures(hostname: str) -> dict[str, Any] | None:
     )
 
 
-_SUDO_USER_RE = re.compile(r"^\s*(\S+)\s*:")
+# Đ49 S3 — sửa sau khi trigger drill THẬT trên cust-edge (2026-08-10): giả định ban đầu
+# "<user> : ..." chỉ đúng với dòng `siemdrilltest : user NOT in sudoers ; ...` (không
+# chứa "authentication failure" nên KHÔNG được filter chọn) — dòng THẬT bị chọn là
+# `pam_unix(sudo:auth): authentication failure; ... user=siemdrilltest`, và regex cũ bắt
+# nhầm "pam_unix(sudo:auth)" làm username. `user=`/`ruser=` field mới là nguồn đúng.
+_SUDO_PAM_USER_RE = re.compile(r"\buser=(\S+)")
+_SUDO_LEGACY_USER_RE = re.compile(r"^\s*(\S+)\s*:")
 
 
 def _parse_sudo_lines(out: str) -> list[str]:
-    """journalctl _COMM=sudo — dòng "user : ..." hoặc "user : command not allowed ;
-    ...". Trả list user đã chuẩn hoá."""
+    """journalctl _COMM=sudo — trích user từ dòng pam_unix "...authentication failure;
+    ... user=X" (định dạng thật đã xác nhận qua drill) hoặc "user : ..." (fallback cho
+    distro/định dạng journalctl khác)."""
     users: list[str] = []
     for line in out.splitlines():
-        # Bỏ phần "Aug 10 10:00:00 hostname sudo[123]: " (journalctl prefix) trước khi
-        # tìm "<user> :" — chỉ quan tâm nội dung sau tên tiến trình.
+        m = _SUDO_PAM_USER_RE.search(line)
+        if m:
+            u = _safe_entity(m.group(1))
+            if u:
+                users.append(u)
+            continue
         idx = line.find("sudo")
         tail = line[idx:] if idx >= 0 else line
         tail = tail.split(":", 1)[1] if ":" in tail else tail
-        m = _SUDO_USER_RE.match(tail)
-        if m:
-            u = _safe_entity(m.group(1))
+        m2 = _SUDO_LEGACY_USER_RE.match(tail)
+        if m2:
+            u = _safe_entity(m2.group(1))
             if u:
                 users.append(u)
     return users

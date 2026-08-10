@@ -27,9 +27,18 @@ _LASTB_MANY = "\n".join(
 
 _JOURNAL_CLEAN = ""
 
-_JOURNAL_FAILURES = """Aug 10 10:00:00 host sudo:   baduser : command not allowed ; TTY=pts/0 ; PWD=/home ; USER=root ; COMMAND=/bin/su
-Aug 10 10:00:05 host sudo:   baduser : 1 incorrect password attempt ; TTY=pts/0 ; USER=root ; COMMAND=/bin/su
-Aug 10 10:00:10 host sudo:   other : authentication failure ; TTY=pts/1 ; USER=root ; COMMAND=/bin/bash
+# Định dạng THẬT — bắt được bằng drill sống trên cust-edge (Đ49 S3, 2026-08-10): tạo user
+# không có quyền sudo, thử sudo với mật khẩu sai qua `sudo -S`. Bản đầu của collector giả
+# định sai định dạng dòng log (dùng mẫu "<user> : command not allowed"), bug thật đã vá
+# sau khi đối chiếu output journalctl thật.
+_JOURNAL_FAILURES = """Aug 10 21:10:45 cust-edge sudo[70186]: pam_unix(sudo:auth): authentication failure; logname= uid=1000 euid=0 tty= ruser=baduser rhost=  user=baduser
+Aug 10 21:10:47 cust-edge sudo[70186]: pam_unix(sudo:auth): conversation failed
+Aug 10 21:10:47 cust-edge sudo[70186]: pam_unix(sudo:auth): auth could not identify password for [baduser]
+Aug 10 21:10:47 cust-edge sudo[70186]: baduser : user NOT in sudoers ; PWD=/home ; USER=root ; COMMAND=/usr/bin/whoami
+Aug 10 21:10:49 cust-edge sudo[70207]: pam_unix(sudo:auth): authentication failure; logname= uid=1000 euid=0 tty= ruser=other rhost=  user=other
+Aug 10 21:10:49 cust-edge sudo[70207]: other : user NOT in sudoers ; PWD=/home ; USER=root ; COMMAND=/usr/bin/bash
+Aug 10 21:10:53 cust-edge sudo[70212]: pam_unix(sudo:auth): authentication failure; logname= uid=1000 euid=0 tty= ruser=baduser rhost=  user=baduser
+Aug 10 21:10:53 cust-edge sudo[70212]: baduser : user NOT in sudoers ; PWD=/home ; USER=root ; COMMAND=/usr/bin/whoami
 """
 
 
@@ -109,10 +118,10 @@ class TestCollectPrivilegeEscalation:
         with patch.object(sec, "_run", AsyncMock(return_value=(_JOURNAL_FAILURES, "", 0))):
             env = await sec.collect_privilege_escalation("host1")
         assert env["raw"] == ""
-        # COMMAND=/bin/su / PWD=/home không được rò rỉ ra ngoài
+        # COMMAND=/usr/bin/whoami / PWD=/home không được rò rỉ ra ngoài
         normalized = env["extracted_fact"]["normalized_entities"]
         assert "COMMAND" not in normalized
-        assert "/bin/su" not in normalized
+        assert "PWD" not in normalized
 
     @pytest.mark.asyncio
     async def test_journalctl_unavailable_returns_none(self) -> None:
