@@ -188,7 +188,14 @@ def _siem_raw_payload(
         "correlation_ids": [item.trace_id],
         "tags": [item.probe, agent_id, hostname],
     }
-    return json.dumps({"data": json.dumps(incident, ensure_ascii=False)}, ensure_ascii=False).encode("utf-8")
+    # LƯU Ý: omni-siem-raw KHÔNG dùng double-envelope {"data": "..."} như
+    # omni-diagnostic-evidence/omni-alerts — decode_kafka_message (Python port 1-1 của
+    # brain-go internal/transport/kafka.go) đọc field TRỰC TIẾP ở top-level. Đã gói nhầm
+    # double-envelope ở bản đầu (Đ49 S2), phát hiện qua drill thật: mọi message đều bị
+    # decode.py drop với reason=missing_id_or_tenant vì "id"/"tenant_id" nằm trong chuỗi
+    # JSON con, không phải top-level. Xem git history siem_bridge.py (đã xóa) để đối
+    # chiếu định dạng gốc — cùng cấu trúc phẳng, khác hẳn double-envelope.
+    return json.dumps(incident, ensure_ascii=False).encode("utf-8")
 
 
 # ─── GIGO helpers ────────────────────────────────────────────────────────────

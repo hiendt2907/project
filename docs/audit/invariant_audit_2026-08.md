@@ -215,3 +215,38 @@ khác chưa kiểm.
 percent bình thường. Đây là gap nhỏ hơn, cùng họ nhưng cần thêm 1 field
 đếm (`inode_critical_count`) ở phía collector mới vá triệt để — để lại
 cho lượt sau vì đụng tới producer VM-side (rủi ro cao hơn sửa phía Omni).
+
+---
+
+## S3 — Drill thật trên VM lab, 2 bug thật phát hiện (2026-08-10)
+
+Không có SSH daemon trên cả 3 VM lab (`orb -m <machine>` không qua SSH) — không thể
+trigger probe `security_auth_failures` (lastb). Chuyển sang trigger
+`security_privilege_escalation` (sudo) trên `cust-edge`: tạo user tạm `siemdrilltest`
+(không có quyền sudo), thử `sudo -S` với mật khẩu sai 4 lần.
+
+**Bug #1 — parser sai định dạng log thật.** `_parse_sudo_lines` viết ban đầu giả định
+dòng `"<user> : command not allowed"`, nhưng log THẬT là
+`sudo[PID]: pam_unix(sudo:auth): authentication failure; ... user=X`. Regex cũ bắt nhầm
+`"pam_unix(sudo:auth)"` làm username. Phát hiện bằng cách chạy trực tiếp collector trên
+VM thật (không qua mock) — output sai hiển nhiên. Đã vá: trích `user=`/`ruser=` field.
+Verify lại trên VM thật: `sudo_failure_count=4, distinct_users=1,
+normalized_entities='user=siemdrilltest process=sudo'` — khớp đúng số lần đã tạo.
+
+**Bug #2 — gateway gói sai định dạng Kafka payload cho `omni-siem-raw`.** Evidence tới
+đúng `omni-diagnostic-evidence` (domain=security, urgency=critical, diagnosis_loop chạy
+— xác nhận qua `kubectl logs`), NHƯNG `omni-siem-raw` toàn bộ bị
+`services.siem_correlation.decode` drop với `reason=missing_id_or_tenant`. Root cause:
+`_siem_raw_payload()` gói double-envelope `{"data": "<json>"}` giống quy ước
+`omni-diagnostic-evidence`, nhưng `decode_kafka_message` (port 1-1 từ brain-go Go gốc)
+đọc field PHẲNG ở top-level — đối chiếu `siem_bridge.py` cũ (đã xóa, xem git history)
+xác nhận định dạng gốc đúng là JSON phẳng, không double-envelope. Test ban đầu không bắt
+được vì encode/decode trong test dùng CÙNG giả định sai (đối xứng, tự nhất quán nhưng
+sai so với hệ thống thật) — đã thêm test dùng thẳng `decode_kafka_message` thật để khoá
+lại, tránh lặp lại lớp bug "test tự nhất quán với chính nó, không khớp production".
+
+**Kết luận:** domain `security` đã xác nhận sống tới lớp diagnostic (evidence → domain
+detect → diagnosis_loop) và lớp Kafka transport tới `omni-siem-raw` (sau khi vá bug #2 —
+cần verify lại 1 lần drill nữa sau khi deploy để xác nhận `decode_kafka_message` không
+còn drop). Chưa verify được các mắt xích sau: `corr:*` Redis state, `omni-siem-chains`,
+advisory, CRAT, case_ledger — cần 1 lượt drill tiếp sau khi build deploy xong bug #2.

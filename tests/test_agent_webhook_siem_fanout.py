@@ -33,6 +33,13 @@ class _TopicAwareKafkaCapture:
         self.sent.append((topic, value))
 
     def decoded_on(self, topic: str) -> list[dict]:
+        # Đ49 S3 gotcha đã vá qua drill thật: omni-siem-raw KHÔNG dùng double-envelope
+        # {"data": "..."} như omni-diagnostic-evidence — decode_kafka_message đọc field
+        # phẳng ở top-level (bug thật: bản đầu gói double-envelope, mọi message bị
+        # decode.py drop reason=missing_id_or_tenant, test cũ không bắt được vì cùng
+        # sai đối xứng cả 2 phía encode/decode).
+        if topic == "omni-siem-raw":
+            return [json.loads(v) for t, v in self.sent if t == topic]
         return [
             json.loads(json.loads(v)["data"])
             for t, v in self.sent
@@ -93,6 +100,15 @@ async def test_security_failed_evidence_fans_out_to_siem_raw():
     assert incident["source"] == "omni_siem"
     # INV_DATA_RESIDENCY: raw_log chỉ chứa chuỗi ĐÃ chuẩn hoá, không log thô
     assert incident["raw_log"] == "user=root host=203.0.113.5 user=admin host=203.0.113.7"
+
+    # Đ49 S3 — khoá lại bằng chính hàm decode thật (không tự suy đoán định dạng), đúng
+    # class bug vừa vá: payload phải là JSON PHẲNG ở top-level, không double-envelope.
+    from services.siem_correlation.decode import decode_kafka_message
+    raw_bytes = kafka.sent[-1][1]  # message thật gửi tới omni-siem-raw
+    inc = decode_kafka_message(raw_bytes)
+    assert inc is not None, "decode_kafka_message phải parse được payload thật gửi đi — KHÔNG bị drop reason=missing_id_or_tenant"
+    assert inc.incident_id == "trace-sec-001:security_auth_failures"
+    assert inc.tenant_id == "default"
 
 
 @pytest.mark.asyncio
