@@ -54,16 +54,50 @@ Rollback tự động khi rollout fail.
 5. **Push thật `07c6f5d` lên `gitea main` → Jenkins tự tạo build #28** (lần đầu tiên không cần bấm
    tay) — xác nhận trực tiếp qua `builds/28/log`, đang chạy đúng stage `Test (pytest gate)` mới thêm.
 
-### CHƯA XONG khi kết thúc phiên — verify negative-path còn dang dở
-- Build #28 mới chạy tới stage Test/Security lúc kết thúc phiên, **chưa biết kết quả cuối** (pass
-  qua Build images hay không). Session sau: kiểm `builds/28/log` xem `Finished: SUCCESS/FAILURE`.
-- **Chưa test negative case thật**: cố ý phá 1 test hoặc để gitleaks bắt secret giả để xác nhận
-  pipeline dừng ĐÚNG TRƯỚC `Build images` (chỉ mới xác nhận stage chạy, chưa xác nhận nó CHẶN đúng
-  khi fail).
-- **Chưa test rollback thật**: chưa giả lập rollout fail để xác nhận `kubectl rollout undo` +
-  `kubectl argo rollouts undo omni-gateway` chạy thật, không chỉ đọc code.
-- Nếu build #28 SUCCESS toàn bộ: đó là bằng chứng happy-path CI/CD hoạt động, nhưng KHÔNG đủ để
-  coi Đ43 DONE — vẫn thiếu 2 negative-path ở trên.
+### KẾT QUẢ VERIFY THẬT (builds #28-31, tất cả FAILURE — đúng ý, xem lý do)
+
+- **Build #28** (`07c6f5d`, webhook tự trigger LẦN ĐẦU — không bấm tay): pytest gate chạy, 52
+  failed/7310 passed → `set -e` chặn đúng, `Security scan`/`Build images`/mọi stage deploy đều
+  in `"skipped due to earlier failure(s)"` — **xác nhận sống: gate chặn deploy khi test fail,
+  không suy đoán từ code**. `Finished: FAILURE` xác nhận qua `build.xml` SAU khi build hoàn tất
+  (đọc `build.xml` giữa chừng lúc build đang chạy trả `SUCCESS` giả — đó là placeholder mặc định
+  của Jenkins trước khi build xong, KHÔNG phải kết quả thật; luôn đợi `Finished: SUCCESS/FAILURE`
+  trong log, không tin `build.xml` một mình).
+- **Bug thật phát hiện qua build #28**: `post{failure{}}` chạy `kubectl rollout undo` vô điều
+  kiện cho MỌI failure, kể cả khi build chưa từng đụng cluster (fail ngay ở Test stage) — build
+  #28 lùi omni-fullstack/onboarding/aoip-dex/portal về revision của build #27 một cách VÔ CỚ.
+  **Đã fix** (`1d509fd`): marker `.rollout_started` — `touch` ở đầu `Apply manifests`, `rm -f` ở
+  đầu `Test` stage (workspace persist qua nhiều build nên phải tự dọn), `post{failure{}}` kiểm
+  marker trước khi chạy undo. Build #29/#30 (queue từ 2 push trung gian, chạy Jenkinsfile CŨ
+  trước fix) vẫn lùi vô cớ lần nữa — vô hại thực tế (đã thấy `kubectl` tự in "skipped rollback
+  (current template already matches revision 0)" vì nội dung deployment không đổi giữa các
+  build, ảnh hưởng chỉ là churn pod không cần thiết, không mất dữ liệu/downtime thật). **Build
+  #31** (`1d509fd`, có fix) xác nhận đúng: log in
+  `"[rollback] build failed before touching the cluster ... skipping"` — **bug đã vá và verify
+  sống**.
+- Cluster hiện tại (`kubectl get pods -n multi-agent,monitor`) — không pod nào bất thường sau
+  toàn bộ churn trên, mọi thứ Running/Completed.
+
+### CHƯA XONG khi kết thúc phiên — 1 gap còn lại, KHÔNG thuộc phạm vi Đ43
+
+- **Root cause 52 test fail (nhất quán qua build #28→31, không phải flaky)**: các test trong
+  `tests/test_track2a_k8s_sdk.py`/`test_track2b_diagnostic_proactive.py` gọi thẳng K8s API thật
+  (vd `deployment_evidence_snapshot`) và giả định có sẵn 1 pod fixture tên `nginx-test` trong
+  namespace `multi-agent` — **pod đó KHÔNG tồn tại trên cluster GCP hiện tại**
+  (`kubectl get pod nginx-test -n multi-agent` → NotFound), xác nhận đây không phải lỗi riêng
+  của môi trường Jenkins/Docker cô lập mà là gap có thật ngay trên cluster thật. Các test này
+  không mang marker `integration`/`requires_services` nên không bị filter bởi
+  `pytest tests/ --ignore=tests/integration --ignore=tests/real_services` (đúng lệnh trong
+  CLAUDE.md COMMANDS). **Đây là vấn đề pre-existing của bộ test, KHÔNG phải do Đ43 gây ra** —
+  Đ43 chỉ là lần đầu tiên lệnh pytest này chạy trong CI nên phát hiện ra. Ngoài phạm vi CI/CD,
+  chưa xử lý. Session sau cần quyết định: (a) tạo lại fixture `nginx-test` cố định trên cluster,
+  hay (b) gắn marker `requires_services`/mới cho các test này để tách khỏi "unit gate".
+- **Chưa verify được nhánh rollback-khi-ĐÃ-deploy-rồi-fail** (vd rollout fail ở stage `Rollout`
+  sau khi đã tới `Apply manifests`) — vì chưa build nào vượt qua được Test gate để tới đó. Logic
+  đã đọc lại kỹ và đúng, nhưng chưa có bằng chứng runtime thật cho nhánh này — để ngỏ, không tự
+  nhận DONE.
+- Đ43 xem như **DONE cho phần CI/CD cơ chế** (auto-trigger + gate chặn đúng + rollback không
+  chạy sai) — phần pytest content (52 fail) là backlog riêng, đã bàn giao rõ ràng ở trên.
 
 ### Lưu ý không được quên
 - Có 1 tiến trình/agent KHÁC đang chạy song song trên cùng working directory này trong lúc Đ43 thực
