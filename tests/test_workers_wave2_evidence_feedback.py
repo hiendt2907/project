@@ -222,6 +222,54 @@ async def test_emit_hitl_pending_when_auto_execute_enabled():
     assert st and "PENDING_APPROVAL" in st
 
 
+@pytest.mark.asyncio
+async def test_emit_hitl_pending_writes_postgres_pending_row():
+    """Đ49 B1 — tái hiện sống trên UAT: emit_hitl_pending gửi Kafka/Redis nhưng
+    KHÔNG ghi omni_admin.hitl_decision (bảng vĩnh viễn 0 dòng dù CRAT ghi
+    MUTATION_ENQUEUED thật), vì consumer duy nhất của omni-hitl-pending
+    (hitl_dispatcher.py) không được đăng ký trong worker loop nào. Cùng lớp bug
+    #27 đã vá ở hitl_telegram.py::open_hitl_pending_for_mutate — vá bằng cách
+    ghi trực tiếp tại nguồn thay vì phụ thuộc consumer chết."""
+    from workers import evidence_mutate_emit as eme
+
+    kafka = AsyncMock()
+    r = _fakeredis()
+    ws = _ws(omni_auto_execute_enabled=True)
+    ws.kafka_topic_hitl_pending = "omni-hitl-pending"
+
+    class _FakeAdminRepo:
+        def __init__(self) -> None:
+            self.created: list[dict] = []
+
+        async def create_hitl_pending(self, **kwargs):
+            self.created.append(kwargs)
+
+    admin_repo = _FakeAdminRepo()
+    ctx = SimpleNamespace(settings=ws, kafka=kafka, redis=r, admin_repo=admin_repo)
+    batch = [
+        {
+            "canonical_query_snippet": json.dumps(
+                {"labels": {"siem_source": "finguard", "siem_tenant": "t1"}}
+            )
+        }
+    ]
+    await eme.emit_hitl_pending(
+        ctx,
+        trace="tr-hitl-pg",
+        tool_name="human_escalation",
+        args={},
+        batch=batch,
+        hitl_reason="siem_critical_action_requires_approval",
+    )
+    assert admin_repo.created == [{
+        "pending_id": "mut-tr-hitl-pg",
+        "tenant_id": "t1",
+        "tool_name": "human_escalation",
+        "risk_class": "HIGH",
+        "tier_at_time": "siem_critical_action_requires_approval",
+    }]
+
+
 def test_siem_hitl_required_and_labels():
     from workers import evidence_mutate_emit as eme
 

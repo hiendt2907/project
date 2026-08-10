@@ -97,3 +97,38 @@ Có test hồi quy chuyên biệt:
 comment giải thích rõ + test hồi quy đặt tên đúng theo bug), không cần
 trigger sống thêm trên UAT (khác B1, đây không phải đường phụ thuộc cluster
 runtime, logic thuần và đã có test bảo vệ).
+
+---
+
+## B1 — ROOT CAUSE TÌM ĐƯỢC + ĐÃ VÁ (2026-08-10, tiếp)
+
+Trigger 1 sự kiện thật qua Admin Simulator (`POST /simulate/sys_hard_fail`,
+`target=omni`) trên UAT — pipeline chạy tới `tier=L3_HITL`,
+`HITL_ESCALATION_EMITTED` (CRAT seq 411), `hitl_pending_emitted` (Kafka
+`omni-hitl-pending`) — **nhưng `omni_admin.hitl_decision` vẫn 0 dòng sau
+khi trace hoàn tất.**
+
+**Root cause xác nhận bằng đọc code:** Có 2 hàm "mở HITL pending" song
+song, không đối xứng:
+- `hitl_telegram.py::open_hitl_pending_for_mutate()` — CRAT → **Postgres
+  `create_hitl_pending()`** → Redis → Telegram. ĐÚNG, đã vá từ #27.
+- `evidence_mutate_emit.py::emit_hitl_pending()` — CRAT → Kafka
+  `omni-hitl-pending` → Redis. **KHÔNG có bước Postgres.** Consumer duy
+  nhất của topic `omni-hitl-pending` là `hitl_dispatcher.py` (gọi FinGuard
+  HITL API) — **không được đăng ký trong bất kỳ worker loop nào**
+  (`grep` `omni_worker.py` không có), nên message rơi vào Kafka mà không
+  ai xử lý tiếp.
+
+Đây chính xác là instance THỨ HAI của bug #27 (docstring `create_hitl_pending`
+đã tự mô tả: "UPDATE luôn no-op vì không có INSERT gốc") — chỉ vá 1/2 chỗ
+gọi.
+
+**Đã vá:** `src/workers/evidence_mutate_emit.py::emit_hitl_pending()` —
+thêm gọi `repo.create_hitl_pending()` trực tiếp tại nguồn (mirror đúng
+pattern của `hitl_telegram.py`), không phụ thuộc consumer chết. Test mới:
+`tests/test_workers_wave2_evidence_feedback.py::test_emit_hitl_pending_writes_postgres_pending_row`.
+
+**Chưa làm (ghi lại, không thuộc phạm vi "chỉ sửa"):** `hitl_dispatcher.py`
+gọi FinGuard API ngoài — đúng nhóm việc B3 (FinGuard→Smart SIEM merge chưa
+xong). Có thể cân nhắc xóa hẳn `hitl_dispatcher.py` nếu xác nhận không còn
+đường nào cần nó sau khi B3 đóng, nhưng đó là quyết định riêng.

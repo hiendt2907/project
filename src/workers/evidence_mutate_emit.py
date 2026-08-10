@@ -396,6 +396,25 @@ async def emit_hitl_pending(
     except Exception as e:
         logger.warning("HITL_PENDING emit skip trace=%s: %s", trace, e)
 
+    # Cùng bug đã vá ở hitl_telegram.py::open_hitl_pending_for_mutate (#27): chỉ gửi
+    # Kafka/Redis không tạo dòng PENDING gốc trong omni_admin.hitl_decision — bảng
+    # vĩnh viễn trống dù CRAT ghi MUTATION_ENQUEUED thật, vì consumer duy nhất của
+    # omni-hitl-pending (hitl_dispatcher.py, gọi FinGuard API) không được đăng ký
+    # trong bất kỳ worker loop nào. Ghi trực tiếp tại nguồn, không phụ thuộc consumer
+    # đó — best-effort, không chặn đường Kafka/Telegram nếu Postgres lỗi.
+    repo = getattr(ctx, "admin_repo", None)
+    if repo is not None and hasattr(repo, "create_hitl_pending"):
+        try:
+            await repo.create_hitl_pending(
+                pending_id=f"mut-{trace}",
+                tenant_id=str(siem_labels.get("siem_tenant") or getattr(ctx, "current_tenant_id", None) or "default"),
+                tool_name=tool_name,
+                risk_class="HIGH",
+                tier_at_time=hitl_reason or "siem_critical_action",
+            )
+        except Exception as exc:  # noqa: BLE001 — ledger phụ trợ, CRAT mới là chain fail-closed
+            logger.error("emit_hitl_pending: postgres create_hitl_pending FAILED trace=%s err=%s", trace, exc)
+
 
 async def store_autonomous_trace_context(
     redis: Any,
