@@ -1,8 +1,64 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ45 — CI/CD giờ do phiên này đảm nhận hoàn toàn (user đã tắt phiên
-CI/CD kia), tối ưu tốc độ Jenkinsfile + vá 3 lỗi pytest-gate/security-scan lộ ra khi build lần
-đầu chạy hết tới đó. Đ44 — audit backend 5-agent, P0 3 CRITICAL + P1 4 HIGH đã code+test
+**Cập nhật:** 2026-08-10 (Đ46 — build #40 SUCCESS, P0+P1 verify sống xong bằng incident thật
+qua Alertmanager; sự cố tự gây bởi P0 #1 (chặn nhầm Alertmanager nội bộ) đã phát hiện + vá +
+verify cùng đợt. Đ45 — CI/CD giờ do phiên này đảm nhận hoàn toàn, tối ưu tốc độ Jenkinsfile +
+vá 3 lỗi pytest-gate/security-scan lộ ra khi build lần đầu chạy hết tới đó. Đ44 — audit backend
+5-agent, P0 3 CRITICAL + P1 4 HIGH đã code+test
+
+## Đ46 — Verify sống P0+P1 THÀNH CÔNG (build #40), + 1 sự cố tự gây do chính P0 #1 đã vá cùng đợt
+
+**Build #40 SUCCESS** (464s, build #39 trước đó cũng SUCCESS 475s nhưng thiếu code bearer-token —
+xem sự cố dưới). `omni-fullstack`/`omni-gateway` đều rolled out, symbol P0/P1 xác nhận có thật
+trong pod đang chạy (không chỉ tin "rollout successful"):
+- `diagnosis_loop._AGENT_ONLINE_MAX_AGE_S = 150.0`, `_AGENT_REGISTRY_TTL_SEC = 300`
+- `evidence_consumer` có `ERR_ALERT_CLASS_READ_FAILED`
+- `remote_agent_pipeline.REMOTE_Z_THRESHOLD = 3.0`
+- `gateway.api` có `_take_rate_limit_token`, `_MAX_RATE_LIMIT_KEYS=500`, `_verify_webhook_auth`
+- `case_ledger.advocacy._MAX_CONCURRENT_PATTERN_FETCHES = 4`
+
+**Verify hành vi sống bằng incident thật** (không chỉ đọc symbol):
+- Inject alert `OmniAdvisoryAcceptanceRateLow` qua Alertmanager thật → log xác nhận đúng chuỗi:
+  `alert_class=meta_self` → `mutate_eligible=false` → `SUGGEST_REMEDIATION` deterministic,
+  KHÔNG qua LLM/mutate, đúng thiết kế P0 #2.
+- Unauthenticated POST tới `https://gateway.omnisre.xyz/webhook/prometheus` từ ngoài → **401**
+  (đúng, không làm yếu bảo mật P0 #1).
+- Alert từ Alertmanager nội bộ (đã có bearer token) → **200** (đường hợp lệ không còn bị chặn).
+
+### Sự cố tự gây — P0 #1 chặn nhầm Alertmanager nội bộ, đã phát hiện+vá+verify cùng session
+Sau khi build #39 deploy, `kubectl get ingress` xác nhận `omni-gateway` **thật sự lộ ra Internet**
+qua `gateway.omnisre.xyz` (đúng threat model finding #1) — NHƯNG cùng route đó cũng là đường
+Alertmanager nội bộ gửi self-monitoring alert, và Alertmanager `webhook_configs` **không có khả
+năng tự ký HMAC** (chỉ hỗ trợ bearer token tĩnh qua `authorization.credentials_file`). Fail-closed
+đúng ý nhưng chặn nhầm luôn đường hợp lệ duy nhất — mọi alert (kể cả self-monitoring) bị 503 một
+thời gian ngắn giữa build #39 và #40.
+
+Fix (commit `6958476`): `_verify_webhook_auth()` (đổi tên từ `_verify_hmac_signature`) chấp nhận
+HMAC HOẶC bearer token `OMNI_ALERTMANAGER_WEBHOOK_TOKEN`. Hạ tầng sửa trực tiếp trên cluster:
+- `vault kv patch secret/omni-gateway-secret OMNI_ALERTMANAGER_WEBHOOK_TOKEN=...` (giữ nguyên
+  `OMNI_GATEWAY_API_KEY`).
+- `k8s/gitops/omni-gateway-external-secret.yaml` map thêm key (namespace `multi-agent`).
+- **Gotcha phát hiện live**: mount thẳng `omni-gateway-secret` vào pod alertmanager (namespace
+  `monitor`) làm pod treo `ContainerCreating` vĩnh viễn — "secret ... not found" — Secret
+  **không cross-namespace được**. Fix: ExternalSecret RIÊNG
+  `k8s/gitops/alertmanager-webhook-token-external-secret.yaml` (namespace `monitor`), cùng
+  property Vault, một nguồn sự thật, 2 Secret ở 2 namespace.
+
+### Còn treo
+- P1 #5 (blocking `psutil.cpu_percent`) chạy trên `src/remote_agent/` — process trên VM khách
+  hàng, KHÔNG nằm trong cluster GCP này, chưa verify sống (cần deploy riêng lên VM lab, ngoài
+  phạm vi build Jenkins hiện tại).
+- **P2** (8 mục MEDIUM, đặc biệt #8 RBAC scope + #9 credential_source_of_truth governance) —
+  chưa bắt đầu, cần bàn thiết kế trước.
+- **CI/CD architecture gap** (user hỏi trực tiếp, chưa làm): Harbor + ArgoCD đã deploy đầy đủ
+  nhưng **chưa nối vào luồng deploy thật** — image build xong `docker save | k3s ctr images
+  import` thẳng, bỏ qua Harbor hoàn toàn; luôn tag `:latest` nên phải `kubectl rollout restart`
+  tay thay vì rollout theo tag/digest đổi; ArgoCD Application `omni-core` cố tình
+  `selfHeal:false, prune:false`, chỉ là drift-detector, Jenkins vẫn là nguồn sự thật duy nhất
+  cho rollout (ghi rõ trong comment `argocd-application.yaml`, không phải oversight nhưng cũng
+  chưa fix). Đề xuất: build → tag git-SHA → push Harbor → ArgoCD sync theo tag — việc lớn, cần
+  quyết định riêng.
+
 
 ## Đ45 — CI/CD full ownership + tối ưu tốc độ build + vá 3 lỗi lộ ra khi build chạy xa hơn
 
