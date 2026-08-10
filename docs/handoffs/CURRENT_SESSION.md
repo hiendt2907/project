@@ -1,11 +1,12 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ49 — blueprint dọn dẹp + hoàn thiện Omni tự vận hành, không thêm tính
-năng mới. Plan: `plans/omni-finish-autonomous-sre-and-repo-cleanup-2026-08-10.md`, đã review đối
-kháng bằng agent Opus riêng trước khi thực thi. Track A (repo hygiene) + Track B (9-domain) ĐÃ
-ĐÓNG B0-B6, **verify sống B1 fix xác nhận qua Postgres UAT thật** (dòng `hitl_decision` mới,
-`pending_id=mut-sim-sys_hard_fail-604075f2371d`). Chỉ còn C1 (tổng hợp cuối) — xem mục Đ49 để biết
-chi tiết + next step.)
+**Cập nhật:** 2026-08-10 (Đ49 — ĐÃ ĐÓNG. Blueprint dọn dẹp + hoàn thiện Omni tự vận hành (Track A+B,
+`plans/omni-finish-autonomous-sre-and-repo-cleanup-2026-08-10.md`) VÀ gộp FinGuard→Smart SIEM nội
+bộ (S0-S4, `plans/finguard-to-smart-siem-merge-2026-08-04.md`) — theo yêu cầu trực tiếp của user
+"merge luôn vào omni đi, nó là tính năng có sẵn và phải có của omni, không phải thêm tính năng
+mới". domain `security` chuyển từ ❌ (0 collector, 0 dữ liệu) sang ⏳ có bằng chứng thật (verify sống
+bằng drill sudo-failure trên VM lab `cust-edge`, tới tận `corr:*` Redis + CRAT ADVISORY_DECISION).
+3 bug thật tìm được qua drill sống — xem mục Đ49 dưới đây + `docs/audit/invariant_audit_2026-08.md`.)
 Đ48 — task #16 (việc gốc phiên trước) **XONG, VERIFY SỐNG bằng build thật #49 SUCCESS** — Jenkins
 giờ CHỈ test/build/push Harbor + bump tag git-SHA + commit-back; ArgoCD (`selfHeal: true, prune:
 true`, multi-source) là bên DUY NHẤT apply/rollout. Build #49 xác nhận trực tiếp qua `kubectl`:
@@ -92,21 +93,55 @@ bước nằm ở `docs/audit/invariant_audit_2026-08.md` (audit doc liên tục
    trong phiên này, chưa cung cấp bot token thật nên chưa tạo secret thật — cần bot token +
    chat_id thật từ BotFather nếu muốn bật.
 
-### Next step (Đ49 gần như đã đóng — chỉ còn xác nhận build #52)
-1. Kiểm tra kết quả Jenkins build #52 (`http://100.67.117.19:30080/job/omni-gcp-deploy/52/`,
-   trigger sau commit `a3dc845` B6) — nếu SUCCESS, deploy đã bao gồm cả B1+B5+B6.
-2. Nếu build #52 FAIL do lỗi khác (không phải race condition — không còn push gì song song trong
-   lúc build này chạy): đọc `consoleText`, sửa nếu cần, KHÔNG push gì thêm tới khi build kế tiếp
-   xong (bài học gotcha #2 dưới đây).
-3. Commit + push phần cập nhật CLAUDE.md bảng 9-domain (storage → ✅ ĐÃ VÁ Đ49 B6) + chính file
-   handoff này.
-4. Đóng blueprint: đánh dấu tất cả 11 task trong task list là completed, báo cáo tổng kết ngắn cho
-   user theo 4 nhóm: đã sửa (B1 hitl_decision, B5 application urgency, B6 storage urgency — cả 3
-   đều verify sống được ít nhất 1 lần trên UAT thật), đã xóa (ui/app cũ, ui/e2e cũ, 6 worktree),
-   đã đồng bộ (CLAUDE.md bảng 9-domain + quy ước môi trường + mục hardware), đã bổ sung (test
-   coverage domain_signals, invariant audit doc, memory quy ước môi trường). Nêu rõ việc CHƯA làm:
-   B3 (FinGuard→Smart SIEM merge S1 collector — cần quyết định riêng, không tự ý viết vì khối
-   lượng lớn), Telegram cần bot token thật từ user.
+### Đ49 tiếp — Telegram bật thật + Merge FinGuard→Smart SIEM (S0-S4) — ĐÃ ĐÓNG
+
+**Telegram**: user xác nhận có bot thật (`@Leader_Agentic_bot`) trong `.env` gốc (gitignored).
+Tạo Secret thật trên UAT qua `kubectl` + bật `OMNI_TELEGRAM_ENABLED=true` trong ConfigMap (đã push
+git để ArgoCD không tự revert). Verify sống: `telegram_outbound_ok chat_id=-5174042122
+message_id=4454` — tin nhắn thật đã gửi.
+
+**Merge FinGuard→Smart SIEM nội bộ** (user: "merge luôn vào omni đi, nó là tính năng có sẵn và
+phải có của omni, không phải thêm tính năng mới") — theo đúng
+`plans/finguard-to-smart-siem-merge-2026-08-04.md`:
+
+- **S0** (dọn hệ ngoài chết): xóa 7 manifest (`omni-siem-bridge`/`hitl-dispatcher`/
+  `evidence-adapter` + production, `finguard-customer-netpol`), xóa code
+  (`hitl_dispatcher.py`, `siem_bridge.py`, `evidence_adapter/worker.py`), gỡ 10 Makefile
+  target + 3 script + 1 runbook phụ thuộc. Bỏ nhánh "SIEM luôn suggest-only bất kể tier/risk" —
+  đi chung ma trận tier×risk như 8 domain khác. Đổi hardcode `siem_source=="finguard"` →
+  chấp nhận bất kỳ giá trị không rỗng, canonical mới `"omni_siem"`.
+- **S1**: viết `src/remote_agent/collectors/security.py` — collector ĐẦU TIÊN cho domain
+  `security` (2 probe: auth_failures qua `lastb`, privilege_escalation qua
+  `journalctl _COMM=sudo`). Opt-in `OMNI_AGENT_SECURITY_ENABLED`.
+- **S2**: gateway `agent_webhook.py` fan-out evidence domain=security+FAILED sang thêm
+  `omni-siem-raw`. Vá luôn gotcha thật: `EvidenceItem` thiếu field `domain` khiến
+  `domain_hint` collector tự khai bị Pydantic âm thầm bỏ.
+- **S3**: drill thật trên VM lab `cust-edge` (không có sshd nên dùng probe sudo thay vì
+  lastb) — tìm và vá **3 bug thật**:
+  1. `_parse_sudo_lines` giả định sai định dạng log (bắt nhầm `"pam_unix(sudo:auth)"`
+     làm username) — sửa đọc field `user=`/`ruser=` thật.
+  2. Gateway gói `omni-siem-raw` bằng double-envelope `{"data": "..."}` giống
+     `omni-diagnostic-evidence`, nhưng `decode_kafka_message` (port từ brain-go Go) đọc
+     field PHẲNG — mọi message bị drop `missing_id_or_tenant`. Sửa bỏ double-envelope.
+  3. Sửa file `.py` trên đĩa VM KHÔNG hot-reload process Python đang chạy — phải
+     `systemctl restart` sau mỗi lần sửa, nếu không process cũ chạy code lỗi trong bộ nhớ
+     (đã xảy ra thật, để lại rác `corr:ent:staging-sim:user:pam_unix` làm bằng chứng).
+  Verify CUỐI: `corr:ent:staging-sim:user:siemdrilltest` (entity đúng trong Redis) +
+  CRAT `ADVISORY_DECISION` ghi thật. Chain `omni-siem-chains` CHƯA hình thành (cần ≥2
+  nguồn entity liên quan, đúng thiết kế — chưa test). `case_ledger`/`omni_admin.playbook`
+  (0 dòng) để lại việc sau.
+- **S4**: không cần làm gì thêm trong phạm vi phiên này — `omni_admin.playbook` 0 dòng
+  là thiếu dữ liệu vận hành (seed playbook), không phải lỗi code; `PlaybookMatcher` trả
+  `None` một cách hợp lệ khi chưa có playbook.
+
+Domain `security` trong CLAUDE.md: ❌ → **⏳ có bằng chứng thật** (không phải ✅ đầy đủ —
+xem bảng chi tiết trong `docs/audit/invariant_audit_2026-08.md` mục S3).
+
+Dọn dẹp VM lab: xóa user tạm `siemdrilltest`, xóa file `.bak-s3drill`. Deploy qua build
+#53-#56 SUCCESS (S0→S1+S2→fix parser→fix double-envelope, mỗi build verify riêng trước
+khi push tiếp — đúng kỷ luật "1 commit = 1 concern" của plan gốc).
+
+**Task list (11 + 8 task S0-S4 = 19 task): TẤT CẢ completed. Đ49 đóng hoàn toàn.**
 
 ## Đ48 — Bỏ hẳn `:latest`, Jenkins chỉ build+push, ArgoCD là bên deploy duy nhất — XONG, VERIFY SỐNG build #49 SUCCESS
 

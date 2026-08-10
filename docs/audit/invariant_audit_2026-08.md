@@ -250,3 +250,36 @@ detect → diagnosis_loop) và lớp Kafka transport tới `omni-siem-raw` (sau 
 cần verify lại 1 lần drill nữa sau khi deploy để xác nhận `decode_kafka_message` không
 còn drop). Chưa verify được các mắt xích sau: `corr:*` Redis state, `omni-siem-chains`,
 advisory, CRAT, case_ledger — cần 1 lượt drill tiếp sau khi build deploy xong bug #2.
+
+---
+
+## S3 — Verify sống hoàn tất, domain `security` có dữ liệu thật lần đầu tiên (2026-08-10)
+
+**Bug #3 phát hiện qua drill (ngoài bug #1 parser + bug #2 double-envelope đã ghi ở
+trên):** sửa file `security.py` trên đĩa VM KHÔNG hot-reload process Python đang chạy —
+`systemctl restart` bắt buộc sau MỌI lần sửa code agent. Bỏ sót bước này khiến lần drill
+thứ 2 vẫn chạy code lỗi cũ trong bộ nhớ dù file trên đĩa đã đúng — bằng chứng còn lại
+trong Redis: `corr:ent:staging-sim:user:pam_unix` (entity rác từ code cũ, "pam_unix" bị
+bắt nhầm làm username — đúng bug #1 trước khi vá). Không xóa key rác này (dữ liệu lab,
+vô hại, để lại làm bằng chứng lịch sử của chính quá trình debug).
+
+**Drill lần 3 (sau khi restart agent + cả 2 fix đã deploy) — verify từng mắt xích:**
+
+| Mắt xích | Kết quả | Bằng chứng |
+|---|---|---|
+| Evidence tới gateway | ✅ | `enqueued` tăng đều mỗi cycle |
+| Domain detect đúng `security` | ✅ | log `[RAP] cluster ... domain=security` |
+| Diagnostic pipeline chạy | ✅ | `diagnosis_loop START probe=security_privilege_escalation` |
+| Fan-out `omni-siem-raw` (S2) | ✅ | không còn `missing_id_or_tenant` sau fix #2 |
+| `decode_kafka_message` parse đúng | ✅ | `corr:ent:staging-sim:user:siemdrilltest` — đúng username thật, không còn "pam_unix" |
+| `correlator.process()` chạy | ✅ | 8 key `corr:*` ghi Redis thật (ent/ginc/gent/imeta/uf) |
+| `omni-siem-chains` (chain hình thành) | ⏳ chưa | Chỉ 1 nguồn entity/1 incident type — correlator cần ≥2 sự kiện liên quan (chung entity, khác nguồn) mới tạo chain đồ thị. ĐÚNG THIẾT KẾ, không phải bug — cần drill 2 nguồn khác nhau để kiểm tiếp (để lại việc sau). |
+| CRAT `ADVISORY_DECISION` | ✅ | `audit_block_written seq=35 event_type=ADVISORY_DECISION trace=ra-24a351305e3a tenant=staging-sim` |
+| `case_ledger` mở ca | ❌ chưa | Chỉ có 1 row cũ (tenant=default, từ B1) — trace security (tenant=staging-sim) chưa mở ca. Cần điều tra thêm nếu muốn domain security dùng chung vòng học case_ledger (S4 phạm vi rộng hơn). |
+| `omni_admin.playbook` | 0 dòng | Đúng như plan gốc đã cảnh báo — `PlaybookMatcher.match_from_batch()` sẽ luôn trả `None` cho tới khi có playbook được seed. Không phải lỗi code — thiếu dữ liệu vận hành. |
+
+**Kết luận domain `security`:** Chuyển từ ❌ (0 collector, 0 dữ liệu vào bao giờ) sang
+**có luồng dữ liệu thật, được xử lý đúng tới tầng correlation entity + advisory/CRAT** —
+đây là bước tiến thực chất, không phải "code chạy suông". Chưa đạt mức ✅ hoàn chỉnh như
+8 domain kia (thiếu: chain hình thành từ đa nguồn, case_ledger, playbook) — đánh dấu
+**⏳ ĐANG SỐNG, có bằng chứng thật** thay vì ❌ tuyệt đối.
