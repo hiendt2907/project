@@ -22,6 +22,15 @@ paths = [
     '''ui/node_modules/.*''',
     '''node_modules/.*''',
 ]
+# Placeholder cố ý giả — Jenkinsfile ("Deploy monitoring" stage) tự sinh secret
+# grafana-telegram-alerting với giá trị này CHỈ để thoả điều kiện "không rỗng"
+# của initContainer alerting provisioning (nó hard-fail nếu bot-token trống);
+# khớp đúng regex omni-telegram-token bên dưới vì cố tình có hình dạng token
+# thật — không phải leak. Build #37 là lần đầu Security scan thật sự chạy tới
+# (mọi build trước fail sớm hơn ở pytest gate), 2026-08-10.
+regexes = [
+    '''0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA''',
+]
 
 [[rules]]
 description = "Chặn Postgres DSN (Omni Core DB)"
