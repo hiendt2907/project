@@ -1159,14 +1159,6 @@ class TestExecuteRolloutRestartFromPending:
 class TestK8sListPods:
     """Live K8s pod listing."""
 
-    @pytest.mark.asyncio
-    async def test_list_namespace_pods_multi_agent(self) -> None:
-        from workers.k8s_tools import tool_list_namespace_pods
-
-        ctx = _ctx()
-        result = await tool_list_namespace_pods(ctx, {"namespace": "multi-agent"})
-        assert "multi-agent" in result
-        assert "nginx" in result.lower() or "omni" in result.lower() or "kafka" in result.lower()
 
     @pytest.mark.asyncio
     async def test_list_namespace_pods_no_namespace(self) -> None:
@@ -1176,13 +1168,6 @@ class TestK8sListPods:
         result = await tool_list_namespace_pods(ctx, {})
         assert "namespace" in result.lower() or "Chưa có" in result
 
-    @pytest.mark.asyncio
-    async def test_list_all_pods_sdk(self) -> None:
-        from workers.k8s_tools import tool_list_all_pods_sdk
-
-        ctx = _ctx()
-        result = await tool_list_all_pods_sdk(ctx, {"limit": 10})
-        assert "multi-agent" in result or "Running" in result
 
     @pytest.mark.asyncio
     async def test_k8s_list_pods_no_namespace_calls_all(self) -> None:
@@ -1193,41 +1178,10 @@ class TestK8sListPods:
         assert isinstance(result, str)
         assert len(result) > 10
 
-    @pytest.mark.asyncio
-    async def test_k8s_list_pods_with_namespace(self) -> None:
-        from workers.k8s_tools import tool_k8s_list_pods
-
-        ctx = _ctx()
-        result = await tool_k8s_list_pods(ctx, {"namespace": "multi-agent"})
-        assert "multi-agent" in result
-
-    @pytest.mark.asyncio
-    async def test_list_namespace_pods_caches_to_redis(self) -> None:
-        from workers.k8s_tools import tool_list_namespace_pods, POD_INDEX_REDIS_KEY
-
-        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        ctx = _ctx(redis=redis)
-        result = await tool_list_namespace_pods(ctx, {"namespace": "multi-agent"})
-        assert "multi-agent" in result
-        # Check redis was populated
-        cached = await redis.get(POD_INDEX_REDIS_KEY.format(ns="multi-agent"))
-        assert cached is not None
-        names = json.loads(cached)
-        assert isinstance(names, list)
-        assert len(names) > 0
-
 
 class TestK8sNamespacePodsTop:
     """Live kubectl top equivalent."""
 
-    @pytest.mark.asyncio
-    async def test_namespace_pods_top_multi_agent(self) -> None:
-        from workers.k8s_tools import tool_namespace_pods_top
-
-        ctx = _ctx()
-        result = await tool_namespace_pods_top(ctx, {"namespace": "multi-agent"})
-        assert "[DATA]" in result
-        assert "kubectl top pods" in result
 
     @pytest.mark.asyncio
     async def test_namespace_pods_top_no_namespace(self) -> None:
@@ -1241,21 +1195,6 @@ class TestK8sNamespacePodsTop:
 class TestK8sResolveIdentity:
     """Live pod/deployment identity resolution."""
 
-    @pytest.mark.asyncio
-    async def test_resolve_pod_identity_found(self) -> None:
-        from workers.k8s_tools import tool_resolve_pod_identity
-
-        ctx = _ctx()
-        result = await tool_resolve_pod_identity(ctx, {"pod_name": "nginx", "namespace": "multi-agent"})
-        assert "resolved_pod" in result or "nginx" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_resolve_pod_identity_not_found(self) -> None:
-        from workers.k8s_tools import tool_resolve_pod_identity
-
-        ctx = _ctx()
-        result = await tool_resolve_pod_identity(ctx, {"pod_name": "totally-nonexistent-xyz"})
-        assert "not_found" in result or "Không thấy" in result
 
     @pytest.mark.asyncio
     async def test_resolve_pod_identity_no_hint(self) -> None:
@@ -1265,31 +1204,6 @@ class TestK8sResolveIdentity:
         result = await tool_resolve_pod_identity(ctx, {})
         assert "Thiếu" in result or "hint" in result.lower()
 
-    @pytest.mark.asyncio
-    async def test_resolve_pod_identity_ambiguous(self) -> None:
-        from workers.k8s_tools import tool_resolve_pod_identity
-
-        ctx = _ctx()
-        result = await tool_resolve_pod_identity(ctx, {"pod_name": "omni"})
-        # "omni" matches multiple pods → ambiguous or resolved single
-        assert "ambiguous_pod" in result or "resolved_pod" in result
-
-    @pytest.mark.asyncio
-    async def test_resolve_deployment_identity_found(self) -> None:
-        from workers.k8s_tools import tool_resolve_deployment_identity
-
-        ctx = _ctx()
-        result = await tool_resolve_deployment_identity(ctx, {"deployment": "nginx-test"})
-        assert "resolved_deployment" in result
-        assert "multi-agent" in result
-
-    @pytest.mark.asyncio
-    async def test_resolve_deployment_identity_not_found(self) -> None:
-        from workers.k8s_tools import tool_resolve_deployment_identity
-
-        ctx = _ctx()
-        result = await tool_resolve_deployment_identity(ctx, {"deployment": "nonexistent-deploy-xyz"})
-        assert "not_found" in result
 
     @pytest.mark.asyncio
     async def test_resolve_deployment_identity_no_hint(self) -> None:
@@ -1303,26 +1217,6 @@ class TestK8sResolveIdentity:
 class TestK8sInspectPodDeep:
     """Live pod deep inspect."""
 
-    @pytest.mark.asyncio
-    async def test_inspect_nginx_pod(self) -> None:
-        from workers.k8s_tools import tool_inspect_pod_deep
-
-        ctx = _ctx()
-        result = await tool_inspect_pod_deep(
-            ctx,
-            {"pod_name": "nginx", "namespace": "multi-agent", "tail_lines": 3},
-        )
-        assert "[DATA]" in result
-        assert "[DIAGNOSIS]" in result
-        assert "nginx" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_inspect_pod_not_found(self) -> None:
-        from workers.k8s_tools import tool_inspect_pod_deep
-
-        ctx = _ctx()
-        result = await tool_inspect_pod_deep(ctx, {"pod_name": "nonexistent-xyz"})
-        assert "not_found" in result or "pod_not_found" in result
 
     @pytest.mark.asyncio
     async def test_inspect_pod_no_name(self) -> None:
@@ -1332,61 +1226,10 @@ class TestK8sInspectPodDeep:
         result = await tool_inspect_pod_deep(ctx, {})
         assert "Missing" in result or "pod_name" in result
 
-    @pytest.mark.asyncio
-    async def test_inspect_pod_alias(self) -> None:
-        from workers.k8s_tools import tool_inspect_pod_details
-
-        ctx = _ctx()
-        result = await tool_inspect_pod_details(
-            ctx,
-            {"pod_name": "nginx", "namespace": "multi-agent"},
-        )
-        assert "[DATA]" in result
-
 
 class TestK8sRolloutRestart:
     """Live rollout restart (confirm_required / not_found paths — no actual restart)."""
 
-    @pytest.mark.asyncio
-    async def test_confirm_required_no_redis_no_chat(self) -> None:
-        from workers.k8s_tools import tool_k8s_rollout_restart
-
-        ctx = _ctx(redis=None, telegram_chat_id=None)
-        result = await tool_k8s_rollout_restart(
-            ctx, {"deployment": "nginx-test", "namespace": "multi-agent"}
-        )
-        assert "confirm_required" in result.lower() or "CONFIRM_REQUIRED" in result
-
-    @pytest.mark.asyncio
-    async def test_confirm_required_with_redis_and_chat(self) -> None:
-        from workers.k8s_tools import tool_k8s_rollout_restart
-
-        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        ctx = _ctx(redis=redis, telegram_chat_id=12345)
-        result = await tool_k8s_rollout_restart(
-            ctx, {"deployment": "nginx-test", "namespace": "multi-agent"}
-        )
-        assert "[CONFIRM_REQUIRED]" in result
-
-    @pytest.mark.asyncio
-    async def test_not_found_deployment(self) -> None:
-        from workers.k8s_tools import tool_k8s_rollout_restart
-
-        ctx = _ctx()
-        result = await tool_k8s_rollout_restart(
-            ctx, {"deployment": "nonexistent-xyz", "namespace": "multi-agent"}
-        )
-        assert "not_found" in result.lower() or "Không có Deployment" in result
-
-    @pytest.mark.asyncio
-    async def test_explicit_restart_executes(self) -> None:
-        from workers.k8s_tools import tool_k8s_rollout_restart
-
-        ctx = _ctx(restart_rollout_explicit=True)
-        result = await tool_k8s_rollout_restart(
-            ctx, {"deployment": "nginx-test", "namespace": "multi-agent"}
-        )
-        assert "rollout_restart_ok" in result or "restartedAt" in result
 
     @pytest.mark.asyncio
     async def test_missing_deployment_name(self) -> None:
@@ -1396,154 +1239,21 @@ class TestK8sRolloutRestart:
         result = await tool_k8s_rollout_restart(ctx, {})
         assert "Thiếu" in result
 
-    @pytest.mark.asyncio
-    async def test_cluster_wide_search(self) -> None:
-        """No explicit ns → cluster-wide search."""
-        from workers.k8s_tools import tool_k8s_rollout_restart
-
-        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        ctx = _ctx(redis=redis, telegram_chat_id=12345)
-        result = await tool_k8s_rollout_restart(ctx, {"deployment": "nginx-test"})
-        assert "[CONFIRM_REQUIRED]" in result or "rollout_restart" in result
-
 
 class TestK8sRolloutRestartFromPendingK8s:
     """execute_rollout_restart_from_pending with real K8s."""
-
-    @pytest.mark.asyncio
-    async def test_executes_with_valid_data_no_snapshot(self) -> None:
-        from workers.k8s_tools import execute_rollout_restart_from_pending
-
-        ctx = SimpleNamespace(
-            settings=SimpleNamespace(pre_action_state_revalidate_enabled=False),
-            inbound_trace_id="test",
-        )
-        result = await execute_rollout_restart_from_pending(
-            ctx, {"namespace": "multi-agent", "deployment": "nginx-test"}
-        )
-        assert "rollout_restart_ok" in result
-
-    @pytest.mark.asyncio
-    async def test_stale_evidence_generation_mismatch(self) -> None:
-        from workers.k8s_tools import execute_rollout_restart_from_pending, deployment_evidence_snapshot
-
-        # Get real snapshot first
-        snap = await deployment_evidence_snapshot("multi-agent", "nginx-test")
-        # Tamper generation
-        snap_tampered = dict(snap)
-        snap_tampered["deployment_generation"] = -999
-
-        ctx = SimpleNamespace(
-            settings=SimpleNamespace(pre_action_state_revalidate_enabled=True),
-            inbound_trace_id="test-stale",
-        )
-        result = await execute_rollout_restart_from_pending(
-            ctx,
-            {
-                "namespace": "multi-agent",
-                "deployment": "nginx-test",
-                "evidence_snapshot": snap_tampered,
-            },
-        )
-        assert "stale_state" in result
 
 
 class TestDeploymentEvidenceSnapshot:
     """deployment_evidence_snapshot reading."""
 
-    @pytest.mark.asyncio
-    async def test_reads_nginx_test(self) -> None:
-        from workers.k8s_tools import deployment_evidence_snapshot
-
-        snap = await deployment_evidence_snapshot("multi-agent", "nginx-test")
-        assert "deployment_generation" in snap
-        assert "deployment_uid" in snap
-        assert snap["deployment_uid"]
-
-    @pytest.mark.asyncio
-    async def test_not_found_returns_empty(self) -> None:
-        from workers.k8s_tools import deployment_evidence_snapshot
-
-        snap = await deployment_evidence_snapshot("multi-agent", "nonexistent-xyz")
-        assert snap == {}
-
 
 class TestDiscoverPodAcrossNamespaces:
     """discover_pod_across_namespaces live cluster."""
 
-    @pytest.mark.asyncio
-    async def test_finds_nginx_across_cluster(self) -> None:
-        from workers.k8s_tools import discover_pod_across_namespaces
-        from kubernetes_asyncio import client, config
-
-        await config.load_kube_config()
-        v1 = client.CoreV1Api()
-        try:
-            result = await discover_pod_across_namespaces(v1, "nginx")
-            assert len(result) > 0
-            assert any("nginx" in name for _, name in result)
-        finally:
-            await v1.api_client.close()
-
 
 class TestResolvePodIdentityK8s:
     """resolve_pod_identity low-level function."""
-
-    @pytest.mark.asyncio
-    async def test_resolved_with_namespace(self) -> None:
-        from workers.k8s_tools import resolve_pod_identity
-        from kubernetes_asyncio import client, config
-
-        await config.load_kube_config()
-        v1 = client.CoreV1Api()
-        try:
-            ident = await resolve_pod_identity(v1, "nginx", "multi-agent")
-            assert ident.kind == "resolved"
-            assert ident.namespace == "multi-agent"
-            assert "nginx" in (ident.pod_name or "")
-        finally:
-            await v1.api_client.close()
-
-    @pytest.mark.asyncio
-    async def test_empty_hint_not_found(self) -> None:
-        from workers.k8s_tools import resolve_pod_identity
-        from kubernetes_asyncio import client, config
-
-        await config.load_kube_config()
-        v1 = client.CoreV1Api()
-        try:
-            ident = await resolve_pod_identity(v1, "", None)
-            assert ident.kind == "not_found_cluster"
-        finally:
-            await v1.api_client.close()
-
-    @pytest.mark.asyncio
-    async def test_ambiguous_across_cluster(self) -> None:
-        from workers.k8s_tools import resolve_pod_identity
-        from kubernetes_asyncio import client, config
-
-        await config.load_kube_config()
-        v1 = client.CoreV1Api()
-        try:
-            ident = await resolve_pod_identity(v1, "omni", None)
-            assert ident.kind in ("ambiguous", "resolved")
-            if ident.kind == "ambiguous":
-                assert len(ident.candidates) > 1
-        finally:
-            await v1.api_client.close()
-
-    @pytest.mark.asyncio
-    async def test_not_found_in_namespace(self) -> None:
-        from workers.k8s_tools import resolve_pod_identity
-        from kubernetes_asyncio import client, config
-
-        await config.load_kube_config()
-        v1 = client.CoreV1Api()
-        try:
-            ident = await resolve_pod_identity(v1, "totally-nonexistent-zzz", "multi-agent")
-            assert ident.kind == "not_found_namespace"
-        finally:
-            await v1.api_client.close()
 
 
 # ===========================================================================

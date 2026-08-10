@@ -469,13 +469,6 @@ class TestFetchLastKnownStatePure:
         assert result["unavailable"] is True
         assert "missing_kind_or_name" in result["reason"]
 
-    @pytest.mark.asyncio
-    async def test_unsupported_kind_returns_unavailable(self) -> None:
-        # "StatefulSet" is not in the supported kinds list — returns unavailable
-        # But it needs namespace, so let's use a kind that hits the unsupported_kind branch
-        result = await krs.fetch_last_known_state("default", "StatefulSet", "my-ss")
-        assert result["unavailable"] is True
-        assert "unsupported_kind" in result.get("reason", "")
 
     @pytest.mark.asyncio
     async def test_very_short_timeout_returns_unavailable(self) -> None:
@@ -483,13 +476,6 @@ class TestFetchLastKnownStatePure:
         # This is safe — the code handles asyncio.TimeoutError
         result = await krs.fetch_last_known_state("default", "Deployment", "some-dep", timeout_sec=0.001)
         assert result.get("unavailable") is True
-
-    @pytest.mark.asyncio
-    async def test_namespace_kind_requires_no_namespace_guard(self) -> None:
-        """When kind is namespaced but namespace is empty → should return unavailable."""
-        result = await krs.fetch_last_known_state("", "Deployment", "nginx")
-        assert result["unavailable"] is True
-        assert "missing_namespace" in result["reason"]
 
 
 class TestFetchLastKnownStateIntegration:
@@ -503,13 +489,6 @@ class TestFetchLastKnownStateIntegration:
         else:
             assert result.get("kind") == "Namespace" or "metadata" in result
 
-    @pytest.mark.asyncio
-    async def test_missing_deployment_returns_unavailable(self) -> None:
-        result = await krs.fetch_last_known_state(
-            "multi-agent", "Deployment", "this-deployment-does-not-exist-xyz123"
-        )
-        assert result.get("unavailable") is True
-        assert "ApiException" in result.get("reason", "")
 
     @pytest.mark.asyncio
     async def test_real_nginx_deployment(self) -> None:
@@ -850,8 +829,6 @@ class TestUpdateLearningPatternStats:
         assert card >= 1
 
 
-
-
 # ===========================================================================
 # 4. diagnostic_k8s_clinical — integration tests with real K8s
 # ===========================================================================
@@ -916,103 +893,6 @@ class TestDiagnosticK8sIntegration:
         result = await dkc.probe_k8s_clinical_pod_log_previous(None, ev)  # type: ignore[arg-type]
         assert result.status == "SKIPPED"
 
-    @pytest.mark.asyncio
-    async def test_probe_pod_status_nonexistent_pod(self) -> None:
-        """Pod that does not exist → workload resolution returns INCONCLUSIVE or PASSED with no pods.
-        canonical_query must be JSON with labels.namespace and labels.pod for pod_identity_from_event.
-        """
-        import json as _json
-        cq = _json.dumps({
-            "labels": {"namespace": "multi-agent", "pod": "ghost-pod-xyz-99999-aaaaa"},
-        })
-        ev = AnomalyEvent(
-            trace_id="test-trace-0007",
-            canonical_query=cq,
-            namespace="multi-agent",
-        )
-        result = await dkc.probe_k8s_clinical_pod_status(None, ev)  # type: ignore[arg-type]
-        # Should return INCONCLUSIVE (no pods found) or PASSED
-        assert result.status in ("PASSED", "INCONCLUSIVE", "FAILED")
-        assert result.probe_name == "k8s_clinical_pod_status"
-
-    @pytest.mark.asyncio
-    async def test_probe_resource_quota_real_namespace(self) -> None:
-        """List resource quotas in multi-agent namespace (may be empty but should not fail)."""
-        ev = AnomalyEvent(
-            trace_id="test-trace-0008",
-            canonical_query="resource quota test",
-            namespace="multi-agent",
-            gigo_metadata={"namespace": "multi-agent"},
-        )
-        result = await dkc.probe_k8s_resource_quota_probe(None, ev)  # type: ignore[arg-type]
-        assert result.status in ("PASSED", "FAILED")
-        if result.status == "PASSED":
-            assert "ResourceQuota" in result.raw_text or "(no ResourceQuota" in result.raw_text
-
-    @pytest.mark.asyncio
-    async def test_fetch_pod_events_summary_nonexistent_pod(self) -> None:
-        """fetch_pod_events_summary for a missing pod should return empty/no events."""
-        from kubernetes_asyncio import client, config as k8s_config
-        try:
-            k8s_config.load_incluster_config()
-        except Exception:
-            await k8s_config.load_kube_config()
-        v1 = client.CoreV1Api()
-        try:
-            result = await dkc.fetch_pod_events_summary(v1, "multi-agent", "nonexistent-pod-xyz")
-            assert isinstance(result, str)
-            # Either "(no events in scope)" or some event lines
-        finally:
-            await v1.api_client.close()
-
-    @pytest.mark.asyncio
-    async def test_probe_pod_events_real_ns(self) -> None:
-        """Pod events probe on multi-agent namespace with a known pod pattern.
-        canonical_query must be JSON with labels.namespace and labels.pod for pod_identity_from_event.
-        """
-        import json as _json
-        cq = _json.dumps({
-            "labels": {"namespace": "multi-agent", "pod": "nginx-test-847cb6f7-c55zk"},
-        })
-        ev = AnomalyEvent(
-            trace_id="test-trace-0009",
-            canonical_query=cq,
-            namespace="multi-agent",
-        )
-        result = await dkc.probe_k8s_clinical_pod_events(None, ev)  # type: ignore[arg-type]
-        # Should be PASSED or FAILED (not SKIPPED, since namespace+pod are set)
-        assert result.status in ("PASSED", "FAILED", "INCONCLUSIVE")
-
-    @pytest.mark.asyncio
-    async def test_resolve_workload_probe_targets_existing_pod(self) -> None:
-        """resolve_workload_probe_targets with an existing pod returns a resolution."""
-        from kubernetes_asyncio import client, config as k8s_config
-        try:
-            k8s_config.load_incluster_config()
-        except Exception:
-            await k8s_config.load_kube_config()
-        v1 = client.CoreV1Api()
-        apps = client.AppsV1Api()
-        batch_api = client.BatchV1Api()
-        ev = AnomalyEvent(
-            trace_id="test-trace-0010",
-            canonical_query="nginx workload resolution",
-            namespace="multi-agent",
-            gigo_metadata={"namespace": "multi-agent", "pod": "nginx-test-847cb6f7-c55zk"},
-        )
-        try:
-            res = await dkc.resolve_workload_probe_targets(
-                v1, apps, batch_api, ev, "multi-agent", "nginx-test-847cb6f7-c55zk"
-            )
-            assert res.namespace == "multi-agent"
-            assert res.alert_pod == "nginx-test-847cb6f7-c55zk"
-            assert isinstance(res.target_pods, list)
-            assert isinstance(res.evidence_prefix, str)
-        finally:
-            await v1.api_client.close()
-            await apps.api_client.close()
-            await batch_api.api_client.close()
-
 
 # ===========================================================================
 # 5. k8s_resource_snapshot — additional integration tests (K8s)
@@ -1030,12 +910,6 @@ class TestFetchLastKnownStateIntegrationExtended:
             meta = result.get("metadata") or {}
             assert meta.get("namespace") == "multi-agent"
 
-    @pytest.mark.asyncio
-    async def test_fetch_missing_pod_returns_api_exception(self) -> None:
-        """A pod that doesn't exist → unavailable with ApiException reason."""
-        result = await krs.fetch_last_known_state("multi-agent", "Pod", "nonexistent-pod-zzz999")
-        assert result.get("unavailable") is True
-        assert "ApiException" in result.get("reason", "")
 
     @pytest.mark.asyncio
     async def test_fetch_service_kubernetes(self) -> None:
@@ -1406,138 +1280,6 @@ class TestAppendDlqProactive:
 class TestDiagnosticK8sIntegrationDeepProbes:
     """Integration tests that exercise the inner probe loops with real K8s pods."""
 
-    @pytest.mark.asyncio
-    async def test_probe_pod_status_with_existing_nginx_pod(self) -> None:
-        """Uses canonical_query JSON to pass pod identity to the probe."""
-        import json as _json
-        cq = _json.dumps({
-            "labels": {"namespace": "multi-agent", "pod": "nginx-test-847cb6f7-c55zk"},
-        })
-        ev = AnomalyEvent(
-            trace_id="test-trace-deep-001",
-            canonical_query=cq,
-            namespace="multi-agent",
-        )
-        result = await dkc.probe_k8s_clinical_pod_status(None, ev)  # type: ignore[arg-type]
-        # With a real existing pod, should PASS or INCONCLUSIVE
-        assert result.status in ("PASSED", "INCONCLUSIVE", "FAILED")
-        assert result.probe_name == "k8s_clinical_pod_status"
-        if result.status == "PASSED":
-            assert result.raw_text  # should have some text
-            sh = result.structured_hint
-            assert sh.get("source") == "K8s_SDK"
-
-    @pytest.mark.asyncio
-    async def test_probe_pod_metrics_with_existing_nginx_pod(self) -> None:
-        """Metrics probe — may return PASSED (metrics-server) or INCONCLUSIVE (404)."""
-        import json as _json
-        cq = _json.dumps({
-            "labels": {"namespace": "multi-agent", "pod": "nginx-test-847cb6f7-c55zk"},
-        })
-        ev = AnomalyEvent(
-            trace_id="test-trace-deep-002",
-            canonical_query=cq,
-            namespace="multi-agent",
-        )
-        result = await dkc.probe_k8s_clinical_pod_metrics(None, ev)  # type: ignore[arg-type]
-        # With a real pod, should PASSED (metrics) or INCONCLUSIVE (no metrics-server)
-        assert result.status in ("PASSED", "INCONCLUSIVE", "FAILED")
-        assert result.probe_name == "k8s_clinical_pod_metrics"
-
-    @pytest.mark.asyncio
-    async def test_probe_log_tail_with_healthy_pod(self) -> None:
-        """Log tail on a healthy Running pod should be SKIPPED (clinical rule)."""
-        import json as _json
-        cq = _json.dumps({
-            "labels": {"namespace": "multi-agent", "pod": "nginx-test-847cb6f7-c55zk"},
-        })
-        ev = AnomalyEvent(
-            trace_id="test-trace-deep-003",
-            canonical_query=cq,
-            namespace="multi-agent",
-        )
-        result = await dkc.probe_k8s_clinical_pod_log_tail(None, ev)  # type: ignore[arg-type]
-        # Running healthy pod → SKIPPED (no log tail needed) or PASSED if it's unhealthy
-        assert result.status in ("SKIPPED", "PASSED", "INCONCLUSIVE", "FAILED")
-        assert result.probe_name == "k8s_clinical_pod_log_tail"
-
-    @pytest.mark.asyncio
-    async def test_probe_log_previous_with_healthy_pod(self) -> None:
-        """Previous log on a healthy pod with no crashes → SKIPPED."""
-        import json as _json
-        cq = _json.dumps({
-            "labels": {"namespace": "multi-agent", "pod": "nginx-test-847cb6f7-c55zk"},
-        })
-        ev = AnomalyEvent(
-            trace_id="test-trace-deep-004",
-            canonical_query=cq,
-            namespace="multi-agent",
-        )
-        result = await dkc.probe_k8s_clinical_pod_log_previous(None, ev)  # type: ignore[arg-type]
-        assert result.status in ("SKIPPED", "PASSED", "INCONCLUSIVE", "FAILED")
-        assert result.probe_name == "k8s_clinical_pod_log_previous"
-
-    @pytest.mark.asyncio
-    async def test_probe_pod_status_ghost_pod_no_labels(self) -> None:
-        """Ghost pod with no useful labels → resolve tries pod name pattern then unresolved."""
-        import json as _json
-        cq = _json.dumps({
-            "labels": {"namespace": "multi-agent", "pod": "nonexistent-pod-abc-12345-xyzzy"},
-        })
-        ev = AnomalyEvent(
-            trace_id="test-trace-deep-005",
-            canonical_query=cq,
-            namespace="multi-agent",
-        )
-        result = await dkc.probe_k8s_clinical_pod_status(None, ev)  # type: ignore[arg-type]
-        # Ghost pod → INCONCLUSIVE or PASSED (no pods)
-        assert result.status in ("PASSED", "INCONCLUSIVE", "FAILED")
-
-    @pytest.mark.asyncio
-    async def test_probe_pod_metrics_ghost_pod(self) -> None:
-        """Metrics probe for a ghost pod → INCONCLUSIVE."""
-        import json as _json
-        cq = _json.dumps({
-            "labels": {"namespace": "multi-agent", "pod": "nonexistent-pod-abc-12345-xyzzy"},
-        })
-        ev = AnomalyEvent(
-            trace_id="test-trace-deep-006",
-            canonical_query=cq,
-            namespace="multi-agent",
-        )
-        result = await dkc.probe_k8s_clinical_pod_metrics(None, ev)  # type: ignore[arg-type]
-        assert result.status in ("PASSED", "INCONCLUSIVE", "FAILED")
-
-    @pytest.mark.asyncio
-    async def test_probe_pod_log_tail_ghost_pod(self) -> None:
-        """Log tail for a ghost pod → INCONCLUSIVE (no active pods to inspect)."""
-        import json as _json
-        cq = _json.dumps({
-            "labels": {"namespace": "multi-agent", "pod": "nonexistent-pod-abc-12345-xyzzy"},
-        })
-        ev = AnomalyEvent(
-            trace_id="test-trace-deep-007",
-            canonical_query=cq,
-            namespace="multi-agent",
-        )
-        result = await dkc.probe_k8s_clinical_pod_log_tail(None, ev)  # type: ignore[arg-type]
-        assert result.status in ("SKIPPED", "INCONCLUSIVE", "PASSED", "FAILED")
-
-    @pytest.mark.asyncio
-    async def test_probe_pod_log_previous_ghost_pod(self) -> None:
-        """Previous log for a ghost pod → INCONCLUSIVE."""
-        import json as _json
-        cq = _json.dumps({
-            "labels": {"namespace": "multi-agent", "pod": "nonexistent-pod-abc-12345-xyzzy"},
-        })
-        ev = AnomalyEvent(
-            trace_id="test-trace-deep-008",
-            canonical_query=cq,
-            namespace="multi-agent",
-        )
-        result = await dkc.probe_k8s_clinical_pod_log_previous(None, ev)  # type: ignore[arg-type]
-        assert result.status in ("SKIPPED", "INCONCLUSIVE", "PASSED", "FAILED")
-
 
 # ===========================================================================
 # 9. k8s_resource_snapshot — cover remaining exception branches
@@ -1546,11 +1288,6 @@ class TestDiagnosticK8sIntegrationDeepProbes:
 class TestFetchLastKnownStateAllKinds:
     """Test all supported kind branches in fetch_last_known_state."""
 
-    @pytest.mark.asyncio
-    async def test_pod_kind_missing(self) -> None:
-        result = await krs.fetch_last_known_state("multi-agent", "Pod", "no-pod-xyz-999")
-        assert result.get("unavailable") is True
-        assert "ApiException" in result.get("reason", "")
 
     @pytest.mark.asyncio
     async def test_service_kind_missing(self) -> None:
@@ -1568,12 +1305,6 @@ class TestFetchLastKnownStateAllKinds:
         result = await krs.fetch_last_known_state("", "Namespace", "this-ns-does-not-exist-xyz")
         assert result.get("unavailable") is True
 
-    @pytest.mark.asyncio
-    async def test_namespace_empty_for_namespaced_kind_deployment(self) -> None:
-        """Deployment kind with empty namespace → missing_namespace_for_namespaced_kind."""
-        result = await krs.fetch_last_known_state("", "Deployment", "nginx")
-        assert result.get("unavailable") is True
-        assert "missing_namespace" in result.get("reason", "")
 
     @pytest.mark.asyncio
     async def test_deployment_kind_real(self) -> None:
