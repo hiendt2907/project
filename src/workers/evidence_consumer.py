@@ -63,7 +63,11 @@ from workers.evidence_mutate_emit import (
 )
 from workers.handler_context import WorkerHandlerContext
 from workers.diagnostic_k8s_clinical import confirm_workload_unavailable, resolve_workload_from_pod
-from workers.baseline_snapshot import REDIS_KEY_SNAPSHOT, REDIS_KEY_TS
+from workers.baseline_snapshot import (
+    REDIS_KEY_SNAPSHOT,
+    REDIS_KEY_TS,
+    snapshot_freshness_budget_sec,
+)
 from workers.autonomous_execute import MUTATE_TOOL_ALLOWLIST
 from workers.k8s_tools import deployment_evidence_snapshot
 from workers.llm_context_budget import effective_reply_max_words
@@ -773,8 +777,12 @@ async def _proof_of_fault_gate(
     if ts_raw:
         import time as _time
         _snap_age = _time.time() - float(ts_raw)
-        if _snap_age > 300:
-            logger.warning("event=baseline_snapshot_stale age_sec=%.0f trace=%s", _snap_age, trace)
+        _snap_budget = snapshot_freshness_budget_sec(ctx.settings)
+        if _snap_age > _snap_budget:
+            logger.warning(
+                "event=baseline_snapshot_stale age_sec=%.0f budget_sec=%.0f trace=%s",
+                _snap_age, _snap_budget, trace,
+            )
     z_thr = float(getattr(ctx.settings, "baseline_dr_z_threshold", 3.0) or 3.0)
     dr = bool(snap.get("dr"))
     z_cpu = _f64(snap.get("z_cpu"))
@@ -2693,8 +2701,15 @@ async def reason_from_diagnostic_evidence(ctx: WorkerHandlerContext, fields: dic
                 else:
                     import time as _time
                     _adv_snap_age = _time.time() - float(_adv_snap_ts)
-                    if _adv_snap_age > 300:
-                        _adv_no_ground_truth = f"baseline snapshot quá hạn ({_adv_snap_age:.0f}s > 300s)"
+                    # Ngưỡng SUY RA từ chu kỳ sync thật, không phải hằng số gõ tay.
+                    # Cũ: hằng 300s trong khi chu kỳ trên GCP là 600s ⇒ snapshot "quá
+                    # hạn" trong nửa mỗi chu kỳ, và vì cổng nay fail-closed THẬT nên
+                    # nửa đó mất advisory thật. Xem snapshot_freshness_budget_sec().
+                    _adv_budget = snapshot_freshness_budget_sec(ctx.settings)
+                    if _adv_snap_age > _adv_budget:
+                        _adv_no_ground_truth = (
+                            f"baseline snapshot quá hạn ({_adv_snap_age:.0f}s > {_adv_budget:.0f}s)"
+                        )
 
                 # FAIL-CLOSED THẬT (sửa 2026-08-09). Trước đây chỗ này đặt
                 # `_adv_snap_raw = None` rồi rơi xuống `if _adv_snap_raw:` — tức khối

@@ -130,7 +130,10 @@ async def test_proof_of_fault_gate_stale_snapshot_logs_warning(caplog):
     redis = FakeRedis(decode_responses=True)
     snap = {"z_cpu": 1.5, "z_mem": 1.2, "dr": False}
     await redis.set(REDIS_KEY_SNAPSHOT, json.dumps(snap))
-    await redis.set(REDIS_KEY_TS, str(time.time() - 400))  # 400s ago > 300s threshold
+    # Ngưỡng tươi giờ SUY RA từ chu kỳ sync (snapshot_freshness_budget_sec), không còn
+    # hằng số 300s — xem docs/handoffs Đ41. interval=60 -> budget=300 (sàn), nên 400s
+    # vẫn vượt ngưỡng đúng như test này muốn kiểm.
+    await redis.set(REDIS_KEY_TS, str(time.time() - 400))  # 400s ago > 300s budget floor
 
     ctx = SimpleNamespace(
         redis=redis,
@@ -138,6 +141,7 @@ async def test_proof_of_fault_gate_stale_snapshot_logs_warning(caplog):
             baseline_dr_z_threshold=3.0,
             autonomous_sigma_observation_window=1,
             omni_proof_lane_enabled=True,
+            baseline_snapshot_interval_sec=60,
         ),
     )
 

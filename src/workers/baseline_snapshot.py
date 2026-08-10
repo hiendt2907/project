@@ -30,6 +30,31 @@ def _get_sigma_gate(redis: Any) -> ThreeSigmaGate:
 REDIS_KEY_SNAPSHOT = "omni:baseline:snapshot"
 REDIS_KEY_TS = "omni:baseline:ts"
 
+# Cửa sổ "snapshot còn dùng được", SUY RA từ chu kỳ làm mới thật — không phải hằng số.
+#
+# Vì sao phải suy ra (lỗi đo được 2026-08-09): ngưỡng này từng là số 300 gõ tay ở hai
+# chỗ trong `evidence_consumer`, độc lập hoàn toàn với `baseline_snapshot_interval_sec`.
+# Trên GCP chu kỳ đang là 600s ⇒ theo đúng thiết kế thì snapshot "quá hạn" trong NỬA
+# mỗi chu kỳ. Khi cổng 3σ còn fail-OPEN thì vô hại; sau khi vá cho fail-closed thật,
+# nó lập tức chặn khoảng một nửa số advisory lane resource. Trace thật:
+# `proact-s3fresh-1786283080` → "baseline snapshot quá hạn (388s > 300s)".
+#
+# Hệ số 2,5: cho phép lỡ đúng một nhịp sync (mạng chậm, Prometheus timeout) mà chưa
+# coi là mất nền so sánh, nhưng lỡ hai nhịp liên tiếp thì có — vì lúc đó vòng sync
+# thật sự đang hỏng chứ không phải nhiễu.
+_SNAPSHOT_FRESHNESS_FACTOR = 2.5
+_SNAPSHOT_FRESHNESS_FLOOR_SEC = 300.0
+
+
+def snapshot_freshness_budget_sec(settings: Any) -> float:
+    """Tuổi tối đa của baseline snapshot còn được coi là sự thật nền.
+
+    Luôn ≥ ``_SNAPSHOT_FRESHNESS_FLOOR_SEC`` để một cấu hình chu kỳ rất ngắn không
+    biến ngưỡng thành gắt vô lý.
+    """
+    interval = float(getattr(settings, "baseline_snapshot_interval_sec", 300) or 300)
+    return max(_SNAPSHOT_FRESHNESS_FLOOR_SEC, interval * _SNAPSHOT_FRESHNESS_FACTOR)
+
 # Hint legend (keys: t cpu mem z_* net dsk rp evt dr chs golden remediation_silent)
 BASELINE_HINT_LEGEND = (
     "[baseline] t=epoch; cpu=busy(0-1) mem=avail_ratio(0-1); "

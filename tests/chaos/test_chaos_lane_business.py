@@ -330,10 +330,13 @@ class TestLane1AdvisorySnapshotStalenessGap:
             baseline_dr_z_threshold=3.0,
             autonomous_sigma_observation_window=1,
             omni_proof_lane_enabled=True,
+            baseline_snapshot_interval_sec=60,
         )
         ctx = SimpleNamespace(redis=redis, settings=settings)
 
-        # Write snapshot with timestamp 10 minutes ago (> 300s stale)
+        # Ngưỡng tươi SUY RA từ chu kỳ sync (snapshot_freshness_budget_sec) — xem
+        # docs/handoffs Đ41. interval=60 -> budget=300 (sàn), nên 610s vẫn vượt ngưỡng.
+        # Write snapshot with timestamp 10 minutes ago (> budget)
         stale_snap = json.dumps({"z_cpu": 4.5, "z_mem": 0.0, "dr": False})
         stale_ts = _time.time() - 610
         await redis.set(REDIS_KEY_SNAPSHOT, stale_snap)
