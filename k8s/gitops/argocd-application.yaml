@@ -1,15 +1,34 @@
-# ArgoCD Application — syncs the omni core Deployments straight from this
-# repo's own Gitea instance (in-cluster, not the external gitea.omnisre.xyz
-# path) so a `git push` to Gitea both triggers the Jenkins build AND keeps
-# ArgoCD's view of desired state current. selfHeal/prune stay OFF: Jenkins is
-# still the one that actually rolls out image changes (rebuild + `k3s ctr
-# images import` + `kubectl rollout restart`); ArgoCD here is the drift
-# detector / audit trail, not (yet) the sole source of truth for rollouts.
+# ArgoCD Application — syncs the omni core Deployments/Rollout straight from
+# this repo's own Gitea instance (in-cluster, not the external
+# gitea.omnisre.xyz path) so a `git push` to Gitea keeps ArgoCD's view of
+# desired state current. Jenkins pushing here never re-triggers a Jenkins
+# build (the omni-gcp-deploy job has no SCM trigger, confirmed live — see
+# Jenkinsfile).
 #
-# omni-gateway.yaml is deliberately excluded from `include` — that Deployment
+# selfHeal/prune ON (2026-08-10, was OFF) — ArgoCD is now the sole applier
+# for every resource listed below: Jenkins builds images, pushes them to
+# Harbor tagged with the git short-SHA (no more :latest, anywhere), commits
+# that tag bump into the manifests here, and pushes. This Application is what
+# actually turns that commit into a live rollout; Jenkins no longer
+# kubectl-applies or kubectl-rollout-restarts any of these directly (only a
+# one-time "create if missing" bootstrap guard on a brand-new cluster, before
+# ArgoCD itself exists yet). This is the actual job ArgoCD was deployed for —
+# CI (Jenkins: test/build/push/tag) and CD (ArgoCD: deploy/rollout) are now
+# properly split instead of Jenkins doing both.
+#
+# Two sources: k8s/deployments (plain Deployments) and k8s/gitops (the
+# omni-gateway Rollout, a different directory). omni-gateway.yaml itself is
+# deliberately excluded from the first source's `include` — that Deployment
 # was replaced by the Rollout in omni-gateway-rollout.yaml (see that file for
-# why), and having both ArgoCD and the Rollout controller reconcile pods with
-# the same `app: omni-gateway` selector would fight each other.
+# why), and having both ArgoCD reconcile a plain Deployment AND the Rollout
+# controller reconcile a Rollout with the same `app: omni-gateway` selector
+# would fight each other.
+#
+# NOT included: k8s/jobs/crat-integrity-check-cronjob.gcp.yaml (different
+# directory again, a single low-frequency CronJob — not worth a third source;
+# Jenkins still applies it directly after committing its tag bump here) and
+# aoip-dex.gcp.yaml (off-the-shelf ghcr.io/dexidp/dex image, this pipeline
+# never builds or tags it).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -17,16 +36,21 @@ metadata:
   namespace: argocd
 spec:
   project: default
-  source:
-    repoURL: http://gitea.cicd.svc.cluster.local:3000/hiendang/project.git
-    targetRevision: main
-    path: k8s/deployments
-    directory:
-      include: "{omni-fullstack.yaml,omni-onboarding.yaml,omni-worker-configmap.gcp.yaml}"
+  sources:
+    - repoURL: http://gitea.cicd.svc.cluster.local:3000/hiendang/project.git
+      targetRevision: main
+      path: k8s/deployments
+      directory:
+        include: "{omni-fullstack.yaml,omni-onboarding.yaml,omni-worker-configmap.gcp.yaml,aoip-portals.gcp.yaml,aoip-portals-web.yaml}"
+    - repoURL: http://gitea.cicd.svc.cluster.local:3000/hiendang/project.git
+      targetRevision: main
+      path: k8s/gitops
+      directory:
+        include: "{omni-gateway-rollout.yaml}"
   destination:
     server: https://kubernetes.default.svc
     namespace: multi-agent
   syncPolicy:
     automated:
-      prune: false
-      selfHeal: false
+      prune: true
+      selfHeal: true

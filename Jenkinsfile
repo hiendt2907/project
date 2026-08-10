@@ -25,7 +25,13 @@ pipeline {
           # Workspace persists across builds — clear any leftover marker from a
           # previous run so a failure here can't be mistaken for "this build
           # already started mutating the cluster" (see Apply manifests / post{failure{}}).
-          rm -f .rollout_started
+          # .gitops_commit_sha specifically: post{failure{}} reverts whatever
+          # commit SHA is in this file — if a build fails in THIS stage
+          # (before "Update image tags in git" even runs) and the file were
+          # left over from a PREVIOUS successful build, the rollback would
+          # revert unrelated, perfectly good work. Must be empty unless THIS
+          # build itself wrote it.
+          rm -f .rollout_started .gitops_commit_sha .gitops_changed
           # Pip cache mounted from the persistent workspace (not the ephemeral
           # container fs) so unchanged deps don't re-download every build — this
           # alone was costing real minutes on every single push regardless of
@@ -106,31 +112,45 @@ pipeline {
         sh '''
           set -e
           HARBOR=harbor.harbor.svc.cluster.local/library
-          docker build -t $HARBOR/multi-agent-system:latest -f Dockerfile .
-          docker build -t $HARBOR/omni-gateway:latest -f Dockerfile.gateway .
+          # No :latest, anywhere, on purpose (2026-08-10) — every image is
+          # tagged ONLY with the git short-SHA of the commit that built it.
+          # Captured ONCE here, before any git-mutating stage runs (the new
+          # "Update image tags in git" stage below commits back to this same
+          # branch) — every later stage reads this file instead of re-running
+          # `git rev-parse HEAD`, which would silently return a DIFFERENT
+          # (newer) commit after that commit lands and desync the tag actually
+          # pushed/deployed from the tag stages further down think they're
+          # still working with.
+          IMAGE_TAG=$(git rev-parse --short HEAD)
+          echo -n "$IMAGE_TAG" > .image_tag
+          docker build -t $HARBOR/multi-agent-system:$IMAGE_TAG -f Dockerfile .
+          docker build -t $HARBOR/omni-gateway:$IMAGE_TAG -f Dockerfile.gateway .
 
           # Build-speed fix 2026-08-10: the two Next.js portal images were
           # rebuilt (docker build, the single slowest step in this whole
           # pipeline) on EVERY push regardless of whether ui/ changed — a
           # pure-Python commit paid the full Next.js build cost for nothing.
-          # Marker file (`.build_ui`) read by the "Push images to Harbor" and
-          # "Deploy portals + Dex" stages below — separate `sh` steps don't
-          # share shell state, only the persistent workspace filesystem does
-          # (same pattern as `.rollout_started`). `git diff` against HEAD~1
-          # falls back to "changed" on any error (shallow clone / first-ever
-          # build / no parent commit) — never silently skip a real UI change.
+          # Marker file (`.build_ui`) read by the "Push images to Harbor",
+          # "Update image tags in git", and "Deploy portals + Dex" stages below
+          # — separate `sh` steps don't share shell state, only the persistent
+          # workspace filesystem does (same pattern as `.rollout_started`).
+          # `git diff` against HEAD~1 falls back to "changed" on any error
+          # (shallow clone / first-ever build / no parent commit) — never
+          # silently skip a real UI change. No more "does a local :latest
+          # image already exist" fallback check (removed 2026-08-10 along with
+          # :latest itself) — with a unique tag per commit there's no
+          # meaningful local-cache-loss case to guard for; git diff alone
+          # decides whether ui/ actually changed.
           rm -f .build_ui
           if git diff --name-only HEAD~1 HEAD -- ui/ 2>/dev/null | grep -q . || \
-             ! git rev-parse HEAD~1 >/dev/null 2>&1 || \
-             ! docker image inspect $HARBOR/aoip-provider-web:latest >/dev/null 2>&1 || \
-             ! docker image inspect $HARBOR/aoip-tenant-web:latest >/dev/null 2>&1; then
+             ! git rev-parse HEAD~1 >/dev/null 2>&1; then
             touch .build_ui
-            docker build -t $HARBOR/aoip-provider-web:latest -f ui/apps/provider-portal/Dockerfile \
+            docker build -t $HARBOR/aoip-provider-web:$IMAGE_TAG -f ui/apps/provider-portal/Dockerfile \
               --build-arg AOIP_BACKEND_URL=http://aoip-provider-portal:8081 ui
-            docker build -t $HARBOR/aoip-tenant-web:latest -f ui/apps/tenant-portal/Dockerfile \
+            docker build -t $HARBOR/aoip-tenant-web:$IMAGE_TAG -f ui/apps/tenant-portal/Dockerfile \
               --build-arg AOIP_BACKEND_URL=http://aoip-tenant-portal:8082 ui
           else
-            echo "[skip] ui/ unchanged since HEAD~1 and both portal images already exist locally — skipping Next.js build"
+            echo "[skip] ui/ unchanged since HEAD~1 — skipping Next.js build, reusing the tag already deployed"
           fi
         '''
       }
@@ -164,15 +184,82 @@ pipeline {
           cat > ~/.docker/config.json <<EOF
 {"auths":{"harbor.harbor.svc.cluster.local":{"auth":"$AUTH"}}}
 EOF
-          docker push $HARBOR/multi-agent-system:latest
-          docker push $HARBOR/omni-gateway:latest
+          IMAGE_TAG=$(cat .image_tag)
+          docker push $HARBOR/multi-agent-system:$IMAGE_TAG
+          docker push $HARBOR/omni-gateway:$IMAGE_TAG
           if [ -f .build_ui ]; then
-            docker push $HARBOR/aoip-provider-web:latest
-            docker push $HARBOR/aoip-tenant-web:latest
+            docker push $HARBOR/aoip-provider-web:$IMAGE_TAG
+            docker push $HARBOR/aoip-tenant-web:$IMAGE_TAG
           else
             echo "[skip] portal images unchanged this build — already pushed from a prior run"
           fi
         '''
+      }
+    }
+
+    stage('Update image tags in git (GitOps)') {
+      steps {
+        // Every manifest below is what ArgoCD's omni-core Application actually
+        // tracks (see k8s/gitops/argocd-application.yaml, multi-source:
+        // k8s/deployments include + k8s/gitops include for the Rollout) —
+        // bumping the tag here and pushing is what ArgoCD's selfHeal picks up
+        // and applies; the "Apply manifests"/"Deploy Argo Rollouts"/"Deploy
+        // portals + Dex" stages below no longer kubectl-apply or
+        // restart/patch these directly, ArgoCD owns the rollout end to end,
+        // same as any other GitOps-managed resource — no more :latest +
+        // imperative `kubectl rollout restart` standing in for what ArgoCD
+        // was already deployed to do. crat-integrity-check-cronjob.gcp.yaml
+        // is the one exception: it lives in k8s/jobs/ (a different directory,
+        // not worth a third ArgoCD source for one low-frequency batch job) so
+        // it still gets its tag committed here but stays Jenkins-applied
+        // directly in "Deploy OrbStack-parity gaps" below.
+        //
+        // Safe against a push-triggered rebuild loop: the omni-gcp-deploy
+        // Jenkins job has NO SCM trigger configured (<triggers/> empty,
+        // confirmed live 2026-08-04 and unaffected by the 2026-08-10
+        // in-cluster migration) — pushing here never fires another build.
+        sh '''
+          set -e
+          IMAGE_TAG=$(cat .image_tag)
+          CHANGED=0
+
+          bump() {
+            f="$1"; image="$2"
+            if grep -q "$image:latest\\|$image:[0-9a-f]\\{7,\\}" "$f" && ! grep -q "$image:$IMAGE_TAG\\b" "$f"; then
+              sed -i "s#$image:latest#$image:$IMAGE_TAG#g; s#$image:[0-9a-f]\\{7,\\}#$image:$IMAGE_TAG#g" "$f"
+              CHANGED=1
+              git add "$f"
+            fi
+          }
+
+          bump k8s/deployments/omni-fullstack.yaml multi-agent-system
+          bump k8s/deployments/omni-onboarding.yaml multi-agent-system
+          bump k8s/deployments/aoip-portals.gcp.yaml multi-agent-system
+          bump k8s/jobs/crat-integrity-check-cronjob.gcp.yaml multi-agent-system
+          bump k8s/gitops/omni-gateway-rollout.yaml omni-gateway
+          if [ -f .build_ui ]; then
+            bump k8s/deployments/aoip-portals-web.yaml aoip-provider-web
+            bump k8s/deployments/aoip-portals-web.yaml aoip-tenant-web
+          fi
+
+          echo "$CHANGED" > .gitops_changed
+          rm -f .gitops_commit_sha
+          if [ "$CHANGED" != "1" ]; then
+            echo "[skip] every tracked manifest already pinned to $IMAGE_TAG — nothing to commit"
+          fi
+        '''
+        withCredentials([usernamePassword(credentialsId: 'gitea-hiendang', usernameVariable: 'GITEA_USER', passwordVariable: 'GITEA_TOKEN')]) {
+          sh '''
+            set -e
+            if [ "$(cat .gitops_changed)" = "1" ]; then
+              IMAGE_TAG=$(cat .image_tag)
+              git -c user.email="jenkins@omnisre.xyz" -c user.name="jenkins-ci" \
+                commit -m "ci: bump image tags to $IMAGE_TAG"
+              git rev-parse HEAD > .gitops_commit_sha
+              git push "http://${GITEA_USER}:${GITEA_TOKEN}@gitea.cicd.svc.cluster.local:3000/hiendang/project.git" HEAD:main
+            fi
+          '''
+        }
       }
     }
 
@@ -227,8 +314,17 @@ EOF
           # but the plain Deployment would fight the Rollout over the same
           # `app: omni-gateway` pod selector, so it's deleted right after applying.
           kubectl delete deployment omni-gateway -n multi-agent --ignore-not-found
-          kubectl apply -f k8s/deployments/omni-fullstack.yaml
-          kubectl apply -f k8s/deployments/omni-onboarding.yaml
+          # omni-fullstack.yaml / omni-onboarding.yaml are NOT kubectl-applied
+          # here anymore (2026-08-10) — ArgoCD's omni-core Application (selfHeal
+          # + prune, see "Deploy ArgoCD (GitOps)" stage below) is now the sole
+          # applier for these two, sourced from git after the "Update image
+          # tags in git" stage above pushes the new tag. First-ever bootstrap on
+          # a brand-new cluster (before ArgoCD exists yet) still needs these
+          # objects to exist though, so create them here ONLY if missing —
+          # never on a normal build, which is exactly when a stale `kubectl
+          # apply` here would fight ArgoCD over who owns the object.
+          kubectl get deployment omni-fullstack -n multi-agent >/dev/null 2>&1 || kubectl apply -f k8s/deployments/omni-fullstack.yaml
+          kubectl get deployment omni-onboarding -n multi-agent >/dev/null 2>&1 || kubectl apply -f k8s/deployments/omni-onboarding.yaml
         '''
       }
     }
@@ -374,6 +470,49 @@ EOF
       }
     }
 
+    stage('Wait for ArgoCD rollout') {
+      steps {
+        sh '''
+          set -e
+          # Replaces the old per-Deployment `kubectl rollout restart` +
+          # `kubectl rollout status --timeout=180s` calls (removed from "Apply
+          # manifests"/"Deploy Argo Rollouts"/"Deploy portals + Dex"/the old
+          # "Rollout" stage) for every image this pipeline builds — ArgoCD is
+          # now what actually applies the tag bump pushed to git above, so
+          # build-time verification watches ArgoCD's own aggregate Sync/Health
+          # status (covers both sources: k8s/deployments + the
+          # omni-gateway-rollout.yaml Rollout) instead of each Deployment
+          # directly.
+          #
+          # 300s ceiling, not the usual 180s: omni-gateway's canary strategy
+          # (k8s/gitops/omni-gateway-rollout.yaml) has two deliberate 60s
+          # `pause` steps built into every promotion (20% -> pause 60s -> 50%
+          # -> pause 60s -> 100%) — that alone is 120s of intentional waiting
+          # before Argo Rollouts even finishes promoting, on top of the actual
+          # ramp/readiness time and whatever omni-fullstack/omni-onboarding
+          # need. 180s left too little margin for a real canary to land
+          # cleanly; ArgoCD reports "Progressing" (not yet "Healthy") for the
+          # whole duration of an in-flight canary, which is the state this
+          # loop is correctly waiting through.
+          kubectl patch application omni-core -n argocd --type merge \
+            -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}'
+          for i in $(seq 1 60); do
+            SYNC=$(kubectl get application omni-core -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "")
+            HEALTH=$(kubectl get application omni-core -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "")
+            echo "argocd omni-core: sync=$SYNC health=$HEALTH ($i/60)"
+            if [ "$SYNC" = "Synced" ] && [ "$HEALTH" = "Healthy" ]; then
+              echo "[ok] omni-core Synced+Healthy — all ArgoCD-tracked images are on $(cat .image_tag)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "[FAIL] omni-core did not reach Synced+Healthy within 300s"
+          kubectl get application omni-core -n argocd -o yaml || true
+          exit 1
+        '''
+      }
+    }
+
     stage('Deploy Vault + External Secrets') {
       steps {
         sh '''
@@ -434,9 +573,18 @@ EOF
             kubectl wait --for=condition=Available deployment -n argo-rollouts --all --timeout=120s
           fi
 
-          kubectl apply -f k8s/gitops/omni-gateway-rollout.yaml
-          kubectl patch rollout omni-gateway -n multi-agent --type merge \
-            -p "{\\"spec\\":{\\"restartAt\\":\\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\\"}}"
+          # omni-gateway-rollout.yaml is ArgoCD-tracked now (2026-08-10, second
+          # source in argocd-application.yaml) — no more unconditional
+          # `kubectl apply` + `restartAt` patch here on every build. The
+          # restartAt hack existed ONLY because the image stayed pinned to
+          # :latest, so the pod template never actually changed and
+          # `kubectl apply` alone couldn't trigger a new ReplicaSet; now that
+          # every build bumps the tag to a real git-SHA, a plain apply (done
+          # by ArgoCD after "Update image tags in git" pushes) changes the pod
+          # template for real and the canary steps in this Rollout's own
+          # `strategy` drive the rollout correctly on their own. Bootstrap
+          # guard only, same reasoning as omni-fullstack/omni-onboarding above.
+          kubectl get rollout omni-gateway -n multi-agent >/dev/null 2>&1 || kubectl apply -f k8s/gitops/omni-gateway-rollout.yaml
         '''
       }
     }
@@ -472,8 +620,14 @@ EOF
           # above) instead of "unchanged" for every resource in the file.
           DEX_APPLY_OUT=$(kubectl apply -f k8s/deployments/aoip-dex.gcp.yaml)
           echo "$DEX_APPLY_OUT"
-          kubectl apply -f k8s/deployments/aoip-portals.gcp.yaml
-          kubectl apply -f k8s/deployments/aoip-portals-web.yaml
+          # aoip-portals.gcp.yaml (aoip-provider-portal/aoip-tenant-portal) and
+          # aoip-portals-web.yaml (aoip-provider-web/aoip-tenant-web) are
+          # ArgoCD-tracked now (2026-08-10) — Jenkins no longer applies or
+          # restarts them here; "Update image tags in git" already pushed the
+          # new tag and ArgoCD's selfHeal picks it up. Bootstrap-if-missing
+          # only, same as omni-fullstack/omni-onboarding/omni-gateway-rollout.
+          kubectl get deployment aoip-provider-portal -n multi-agent >/dev/null 2>&1 || kubectl apply -f k8s/deployments/aoip-portals.gcp.yaml
+          kubectl get deployment aoip-provider-web -n multi-agent >/dev/null 2>&1 || kubectl apply -f k8s/deployments/aoip-portals-web.yaml
           kubectl apply -f k8s/ingress/omnisre-gcp.yaml
 
           if echo "$DEX_APPLY_OUT" | grep -qv unchanged; then
@@ -481,21 +635,6 @@ EOF
             kubectl rollout status deployment/aoip-dex -n multi-agent --timeout=180s
           else
             echo "[skip] aoip-dex manifest unchanged — no restart needed"
-          fi
-          # aoip-provider-portal / aoip-tenant-portal run multi-agent-system:latest
-          # (the same backend image "Build images" rebuilds on every push) — their
-          # restart stays unconditional, unlike aoip-dex/the web images above.
-          kubectl rollout restart deployment/aoip-provider-portal -n multi-agent
-          kubectl rollout restart deployment/aoip-tenant-portal -n multi-agent
-          kubectl rollout status deployment/aoip-provider-portal -n multi-agent --timeout=180s
-          kubectl rollout status deployment/aoip-tenant-portal -n multi-agent --timeout=180s
-          if [ -f .build_ui ]; then
-            kubectl rollout restart deployment/aoip-provider-web -n multi-agent
-            kubectl rollout restart deployment/aoip-tenant-web -n multi-agent
-            kubectl rollout status deployment/aoip-provider-web -n multi-agent --timeout=180s
-            kubectl rollout status deployment/aoip-tenant-web -n multi-agent --timeout=180s
-          else
-            echo "[skip] portal web images unchanged this build — no restart needed"
           fi
         '''
       }
@@ -646,20 +785,6 @@ $_GRAFANA_MAIN_OUT"
       }
     }
 
-    stage('Rollout') {
-      steps {
-        sh '''
-          set -e
-          # omni-gateway restarts via the "Deploy Argo Rollouts" stage's restartAt
-          # patch, not here — it's a Rollout, and `kubectl rollout restart` only
-          # understands the built-in Deployment/DaemonSet/StatefulSet kinds.
-          kubectl rollout restart deployment/omni-fullstack -n multi-agent
-          kubectl rollout restart deployment/omni-onboarding -n multi-agent
-          kubectl rollout status deployment/omni-fullstack -n multi-agent --timeout=180s
-          kubectl rollout status deployment/omni-onboarding -n multi-agent --timeout=180s
-        '''
-      }
-    }
   }
 
   post {
@@ -670,33 +795,51 @@ $_GRAFANA_MAIN_OUT"
       sh 'kubectl get application -n argocd || true'
     }
     failure {
-      // Auto-rollback: only for the app-layer Deployments/StatefulSet/Rollout that
-      // this pipeline itself restarts (never Helm releases — those aren't
-      // rollout-versioned the same way and a bad undo there is a bigger blast
-      // radius than the failure being handled). `|| true` on every line: this is a
-      // best-effort safety net running inside an already-failed build, so one
-      // resource with no prior revision (e.g. first-ever deploy) must not stop the
-      // rest of the undo attempts.
+      // Two rollback mechanisms now, split by who owns the resource:
+      //
+      // 1. GitOps-managed (omni-fullstack, omni-onboarding, aoip-provider/
+      //    tenant-portal, aoip-provider/tenant-web, omni-gateway Rollout —
+      //    everything the "Update image tags in git" stage bumps and ArgoCD's
+      //    selfHeal applies): `kubectl rollout undo` / `kubectl argo rollouts
+      //    undo` would just get FOUGHT and reverted right back by selfHeal on
+      //    ArgoCD's next reconcile, since the live object would then differ
+      //    from what's in git — an imperative undo is the wrong tool once
+      //    selfHeal owns the object. The correct GitOps rollback is
+      //    `git revert` of the tag-bump commit this build itself pushed
+      //    (never anyone else's — `.gitops_commit_sha` is cleared at the very
+      //    start of every build, see "Test (pytest gate)"), then push; ArgoCD
+      //    converges back to the last-good tag on its own.
+      // 2. Everything else this pipeline still applies/restarts directly
+      //    (aoip-dex, Prometheus/Loki/Mimir/Grafana) keeps the old imperative
+      //    `kubectl rollout undo` — best-effort, `|| true` on every line so
+      //    one resource with no prior revision (e.g. first-ever deploy)
+      //    doesn't stop the rest.
+      script {
+        if (fileExists('.gitops_commit_sha')) {
+          withCredentials([usernamePassword(credentialsId: 'gitea-hiendang', usernameVariable: 'GITEA_USER', passwordVariable: 'GITEA_TOKEN')]) {
+            sh '''
+              set +e
+              SHA=$(cat .gitops_commit_sha)
+              if [ -n "$SHA" ]; then
+                echo "[rollback] reverting this build's GitOps tag-bump commit $SHA so ArgoCD self-heals back to the last-good tag"
+                git -c user.email="jenkins@omnisre.xyz" -c user.name="jenkins-ci" revert --no-edit "$SHA"
+                git push "http://${GITEA_USER}:${GITEA_TOKEN}@gitea.cicd.svc.cluster.local:3000/hiendang/project.git" HEAD:main
+              fi
+            '''
+          }
+        }
+      }
       sh '''
         if [ ! -f .rollout_started ]; then
           echo "[rollback] build failed before touching the cluster (Test/Security/Build stage) — nothing to roll back, skipping"
           exit 0
         fi
-        echo "[rollback] pipeline failed — attempting kubectl rollout undo on app-layer resources"
-        kubectl rollout undo deployment/omni-fullstack -n multi-agent || true
-        kubectl rollout undo deployment/omni-onboarding -n multi-agent || true
+        echo "[rollback] pipeline failed — attempting kubectl rollout undo on non-GitOps app-layer resources"
         kubectl rollout undo deployment/aoip-dex -n multi-agent || true
-        kubectl rollout undo deployment/aoip-provider-portal -n multi-agent || true
-        kubectl rollout undo deployment/aoip-tenant-portal -n multi-agent || true
-        kubectl rollout undo deployment/aoip-provider-web -n multi-agent || true
-        kubectl rollout undo deployment/aoip-tenant-web -n multi-agent || true
         kubectl rollout undo statefulset/prometheus -n monitor || true
         kubectl rollout undo deployment/loki -n monitor || true
         kubectl rollout undo deployment/mimir -n monitor || true
         kubectl rollout undo deployment/grafana -n monitor || true
-        # Rollout (Argo Rollouts CRD) isn't a builtin kind `kubectl rollout` knows —
-        # needs the kubectl-argo-rollouts plugin (installed on this Jenkins host).
-        kubectl argo rollouts undo omni-gateway -n multi-agent || true
         echo "[rollback] done — see 'kubectl get pods -n multi-agent -o wide' above for resulting state"
       '''
     }

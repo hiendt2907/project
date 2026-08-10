@@ -21,7 +21,9 @@
 
 ## Jenkins (CI/CD)
 
-- **URL**: `http://100.67.117.19:8080`
+- **URL**: `http://100.67.117.19:30080` (NodePort — Jenkins migrated in-cluster
+  2026-08-10, pod in namespace `cicd`; the old `:8080` VM systemd service is
+  stopped+disabled, see `k8s/gitops/jenkins-incluster.yaml`)
 - **User**: `hiendang`
 - **Password**: `D@ngT4phi3n2026`
 

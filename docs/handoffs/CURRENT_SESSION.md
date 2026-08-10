@@ -1,13 +1,91 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ47 — migrate Jenkins từ VM systemd vào pod trong k3s **ĐÃ CUTOVER
-XONG HOÀN TOÀN**: build #48 SUCCESS end-to-end trên pipeline mới (build→push Harbor→apply→
-production pods Running với image Harbor thật), NodePort `:30080` thay hostPort, VM
-`jenkins.service` đã `stop`+`disable` hẳn (user tự xác nhận), production health-check sạch. CI/CD
-giờ hoàn toàn chạy trong cluster, không còn phụ thuộc VM ngoài k3s bản thân. Việc gốc còn treo:
-Harbor git-SHA tag + ArgoCD selfHeal (task #16, CHƯA làm — xem "Next step"). Đ46 — build #40
-SUCCESS, P0+P1 verify sống bằng incident thật qua Alertmanager. Đ45 — CI/CD do phiên này đảm
-nhận hoàn toàn. Đ44 — audit backend 5-agent, P0+P1 đã code+test
+**Cập nhật:** 2026-08-10 (Đ48 — task #16 (việc gốc của cả phiên) **CODE XONG, validated cú pháp,
+CHƯA chạy build thật để verify sống** — Jenkins giờ CHỈ test/build/push Harbor + bump tag git-SHA
++ commit-back; ArgoCD (`selfHeal: true, prune: true`, multi-source) là bên DUY NHẤT apply/rollout
+5 image app (`multi-agent-system`, `omni-gateway`, `aoip-provider-web`, `aoip-tenant-web`) —
+**KHÔNG còn `:latest` ở đâu cả**, theo đúng yêu cầu trực tiếp của user. Xem "Đ48" bên dưới để biết
+chi tiết + việc còn lại (trigger 1 build thật để verify end-to-end). Đ47 — migrate Jenkins từ VM
+systemd vào pod trong k3s ĐÃ CUTOVER XONG HOÀN TOÀN, build #48 SUCCESS, VM `jenkins.service` đã
+`stop`+`disable` hẳn. Đ46 — build #40 SUCCESS, P0+P1 verify sống bằng incident thật qua
+Alertmanager. Đ45 — CI/CD do phiên này đảm nhận hoàn toàn. Đ44 — audit backend 5-agent, P0+P1 đã
+code+test
+
+## Đ48 — Bỏ hẳn `:latest`, Jenkins chỉ build+push, ArgoCD là bên deploy duy nhất — CODE XONG, chưa verify sống
+
+**Bối cảnh:** Đ47 migrate Jenkins vào k3s xong nhưng vẫn còn nợ việc GỐC của cả phiên (user hỏi từ
+đầu: tại sao Harbor/ArgoCD deploy sẵn mà không thực sự dùng để tag/rollout, pipeline vẫn tag
+`:latest` + `kubectl rollout restart` tay). User chốt rõ 2 yêu cầu giữa phiên này: (1) "tôi không
+chấp nhận việc gán latest, bắt buộc phải đánh version" — bỏ hẳn `:latest`, chỉ dùng git-SHA thật;
+(2) "jenkins chỉ làm nhiệm vụ build, sau đó push lên harbor để ArgoCD deploy chứ nhỉ" — tách bạch
+CI (Jenkins: test/build/push/tag) và CD (ArgoCD: deploy/rollout), không phải Jenkins tự
+`kubectl apply`+`rollout restart` như trước.
+
+### Đã sửa (Jenkinsfile + k8s/gitops/argocd-application.yaml), validated qua
+`/pipeline-model-converter/validate` (Jenkins pod thật, PASS) + `kubectl apply --dry-run=client`
+(argocd-application.yaml, PASS)
+
+1. **`Build images` / `Push images to Harbor`**: bỏ hẳn mọi `docker build/push ...:latest`. Chỉ
+   build/push `$IMAGE_TAG` = `git rev-parse --short HEAD`, ghi 1 lần vào `.image_tag` NGAY ĐẦU
+   stage Build (trước khi bất kỳ stage nào commit ngược vào git) — mọi stage sau đọc file này thay
+   vì tự `git rev-parse` lại, vì sau khi stage GitOps commit chạy, HEAD đã đổi sang commit MỚI,
+   `git rev-parse HEAD` lúc đó sẽ trả sai SHA (không khớp image thật đã build/push).
+2. **Stage mới `Update image tags in git (GitOps)`**: sed thay tag `:latest`/SHA cũ → `$IMAGE_TAG`
+   trong 6 file (`omni-fullstack.yaml`, `omni-onboarding.yaml`, `aoip-portals.gcp.yaml`,
+   `crat-integrity-check-cronjob.gcp.yaml`, `omni-gateway-rollout.yaml`, và có điều kiện
+   `aoip-portals-web.yaml` khi `.build_ui` tồn tại), `git commit` + `git push` thẳng lên
+   `gitea.cicd.svc.cluster.local` bằng credential Jenkins `gitea-hiendang` (không phải remote
+   `origin` đã checkout — dùng URL tường minh kèm token để tránh phụ thuộc credential-helper).
+   AN TOÀN không lặp vô hạn: job `omni-gcp-deploy` xác nhận **không có SCM trigger**
+   (`<triggers/>` rỗng, xác nhận 2026-08-04, không đổi qua migrate Đ47) — push này không tự kích
+   build mới.
+3. **`Apply manifests` / `Deploy Argo Rollouts` / `Deploy portals + Dex`**: bỏ hẳn
+   `kubectl apply`/`kubectl rollout restart`/patch `restartAt` cho 6 resource ArgoCD giờ quản
+   (chỉ còn "tạo nếu chưa tồn tại" — bootstrap cluster mới trước khi ArgoCD tồn tại). Patch
+   `restartAt` trên Rollout `omni-gateway` XOÁ HẲN — lý do tồn tại của nó (tag không đổi nên
+   `kubectl apply` không tạo ReplicaSet mới) không còn đúng nữa khi mỗi build đều đổi tag thật.
+4. **Stage mới `Wait for ArgoCD rollout`**: thay `kubectl rollout status --timeout=180s` từng
+   Deployment bằng poll `kubectl get application omni-core -o jsonpath sync.status/health.status`
+   sau khi `kubectl patch ... argocd.argoproj.io/refresh=hard`. Timeout nâng lên **300s** (không
+   phải 180s) vì Rollout canary của `omni-gateway` có 2 bước `pause: {duration: 60}` cố ý — riêng
+   phần chờ đã 120s, 180s không đủ margin cho canary chạy xong thật.
+5. **`k8s/gitops/argocd-application.yaml`**: `selfHeal: true, prune: true` (trước `false/false`);
+   chuyển `source:` đơn sang `sources:` (multi-source, ArgoCD 2.13 hỗ trợ) — source 1
+   `path: k8s/deployments` include 5 file, source 2 `path: k8s/gitops` include
+   `omni-gateway-rollout.yaml` (khác thư mục nên cần source riêng).
+   `crat-integrity-check-cronjob.gcp.yaml` CỐ Ý không đưa vào ArgoCD (khác thư mục `k8s/jobs/`,
+   CronJob tần suất thấp, không đáng thêm source thứ 3) — vẫn được Jenkins bump tag + `kubectl
+   apply` trực tiếp như cũ.
+6. **`post{failure{}}` — rollback logic tách 2 nhánh theo ai sở hữu resource**: 6 resource giờ do
+   ArgoCD `selfHeal` quản lý (`omni-fullstack`, `omni-onboarding`, `aoip-provider-portal`,
+   `aoip-tenant-portal`, `aoip-provider-web`, `aoip-tenant-web`, Rollout `omni-gateway`) — `kubectl
+   rollout undo`/`kubectl argo rollouts undo` cho các resource này bị XOÁ khỏi rollback cũ vì
+   selfHeal sẽ ĐÈ NGƯỢC lại undo đó ngay lần reconcile kế tiếp (undo làm live-state lệch khỏi git
+   → selfHeal "sửa" nó về lại đúng cái commit lỗi). Rollback đúng kiểu GitOps: `git revert` chính
+   commit tag-bump mà BUILD NÀY vừa push (SHA đọc từ `.gitops_commit_sha`, file này được `rm -f`
+   ngay đầu stage Test mỗi build để không bao giờ lỡ revert nhầm commit của build TRƯỚC), rồi push
+   — ArgoCD tự hội tụ về tag tốt cuối cùng. aoip-dex + Prometheus/Loki/Mimir/Grafana (không do
+   pipeline này tag) vẫn giữ `kubectl rollout undo` như cũ.
+
+### CHƯA verify sống — việc còn lại ngay đầu phiên sau (hoặc cuối phiên này nếu user cho phép)
+
+- **Trigger 1 build thật qua Jenkins** (`POST /job/omni-gcp-deploy/build` hoặc bấm Build Now) và
+  theo dõi tới hết — đây là lần ĐẦU TIÊN cơ chế git-commit-back + `git revert` rollback + ArgoCD
+  multi-source selfHeal/prune thực sự chạy trên hạ tầng thật, chưa test qua bất kỳ đường nào khác
+  ngoài Groovy-syntax-validate (không kiểm tra logic shell bên trong) + `kubectl apply --dry-run`
+  (chỉ kiểm schema YAML, không kiểm hành vi sync/prune thật).
+- Cần xác nhận riêng: `prune: true` lần sync ĐẦU sau khi mở rộng include có xoá nhầm gì không (lý
+  thuyết an toàn — ArgoCD chỉ prune resource nó từng track, danh sách include hiện đúng khớp toàn
+  bộ resource đang chạy sống, không resource nào bị loại khỏi include so với thực tế) — vẫn nên
+  quan sát trực tiếp lần sync đầu.
+- 6 manifest hiện tại trong git VẪN còn ghi `:latest` cho tới khi build thật đầu tiên chạy xong
+  (không phải bug — sed chỉ chạy trong pipeline; ArgoCD sẽ không phá gì vì pod đang chạy không bị
+  restart chỉ vì string `:latest` không đổi, nhưng `:latest` cũng không còn được push lên Harbor
+  nữa kể từ giờ — nếu có ai `kubectl apply` tay file cũ trước khi build thật chạy, pod mới sẽ
+  ImagePullBackOff vì Harbor không còn tag đó).
+- Sau khi verify sống: cân nhắc xoá logic conditional-restart còn sót lại không liên quan (không
+  có, đã rà lại toàn file) và cập nhật `CLAUDE.md` phần Jenkins/CI-CD cho khớp kiến trúc mới
+  (Jenkins = CI-only, ArgoCD = CD).
 
 ## Đ47 — Migrate Jenkins vào k3s — ĐÃ CUTOVER XONG, production khoẻ
 
