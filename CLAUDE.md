@@ -122,7 +122,7 @@ network/storage/database/service/hardware. Kế hoạch + bằng chứng:
 | `storage` | `collectors/storage.py` | ✅ ĐÃ VÁ 2026-08-10 (Đ49 B6) — dòng cũ ghi nhầm producer/field: `disk_percent` thực ra đến từ `collectors/system.py` (baseline os_host 3-sigma), KHÔNG phải `storage.py`. Producer thật `storage.py` (probe `disk_usage`) phát `disk_critical_count`/`disk_warn_count`, không khớp field `assess_domain_severity` từng đọc → cùng lớp bug lệch bí danh với `application` (B5). Đã thêm nhánh đọc đúng field. Ngưỡng VM-side (agent tự tính, STATIC_GUARD): 95% critical / 90% warn (94% ra `INCONCLUSIVE` là ĐÚNG thiết kế). |
 | `application` | `collectors/logs.py`, `log_surge_probe.py` | ✅ ĐÃ VÁ 2026-08-10 (Đ49 B5) — root cause: `assess_domain_severity` đọc `error_rate`/`latency_p99_ms` nhưng producer thật phát `failed_file_count`/`files_scanned` (lệch bí danh, cùng lớp bug đã trả giá ở domain OS `cpu_pct`/`cpu_percent`), khiến `domain_severity` luôn `"none"` và urgency kẹt ở `medium` qua nhánh `failed_ratio` dự phòng. Thêm nhánh đọc đúng field thật vào `_check_numeric_thresholds`, nay lên đúng `critical`/`high` theo tỉ lệ file lỗi. |
 | `network` | `collectors/network.py` (MỚI) | ✅ cổng lắng nghe vừa đóng → `NetworkListenerLost`; verified `tcp/80` trên VM |
-| `security` | `siem_reasoning.py`, FinGuard | ❌ chưa kiểm được trong lab |
+| `security` | `siem_reasoning.py`, Smart SIEM nội bộ (không còn FinGuard ngoài — xem `plans/finguard-to-smart-siem-merge-2026-08-04.md`) | ⏳ ĐANG GỘP 2026-08-10 (Đ49): S0 (dọn FinGuard-như-hệ-ngoài) xong; S1 (collector security trên Remote Agent) đang làm; S2-S4 (ingress + drill thật + đóng vòng học) chưa xong. Xem mục Đ49 trong handoff cho tiến độ mới nhất. |
 | `hardware` | — | ❌ giới hạn kiến trúc, không phải gap môi trường — xác nhận 2026-08-10: KHÔNG có collector nào cho domain này (0 file trong `src/remote_agent/collectors/`), và cả agent lẫn Omni đều chạy containerized (K8s pod) nên không có đường truy cập `/sys/class/hwmon`/cảm biến vật lý dù chạy trên OrbStack hay GCP VM. Chuyển hạ tầng sang GCP KHÔNG giải quyết được domain này — cần chạy trực tiếp trên host (systemd, không container) mới có, đó là quyết định kiến trúc riêng, không phải nợ kỹ thuật cần "làm nốt". |
 
 **Ai phán "bất thường": OMNI, không phải agent.** Agent gửi `METRIC_SAMPLE`
@@ -386,11 +386,14 @@ Tài liệu: `docs/adr/0001-cloudflare-pages-tunnel-local-core.md` ·
 git từ commit `915e509` (split-role consolidation) nhưng object Deployment (`replicas=0`) vẫn còn sót
 trong cluster đến 2026-07-02 → đã `kubectl delete` dứt điểm (kèm Service `omni-analyst` orphan, đã
 `git rm k8s/services/omni-analyst-service.yaml`). `omni-siem-bridge`, `omni-hitl-dispatcher`,
-`omni-evidence-adapter` — manifest VẪN còn trong git (`replicas: 1`, target `make deploy-siem-stack`,
-có PDB riêng) nhưng đang scale 0 trong lab hiện tại vì SIEM correlation đã chạy trong
-`omni-fullstack` (trước 2026-07-22 là `omni-brain-go`, nay là loop `kafka_siem_correlation_loop`);
-đã annotate `omni.io/status=scaled-down-intentional` + owner + sunset condition
-trên cả 3 — KHÔNG coi là zombie, KHÔNG xóa.
+`omni-evidence-adapter` — **claim "scaled-down-intentional, KHÔNG xóa" HẾT HIỆU LỰC 2026-08-10
+(Đ49 S0.1/S0.2)**: cả 3 manifest + `deploy-siem-stack` target + code (`hitl_dispatcher.py`,
+`siem_bridge.py`, `evidence_adapter/worker.py`) đã xóa hẳn — đây là phần "gộp FinGuard thành Smart
+SIEM nội bộ" (`plans/finguard-to-smart-siem-merge-2026-08-04.md`, phase S0). Namespace
+`finguard-customer` mà `omni-hitl-dispatcher` từng gọi tới không còn tồn tại trong cluster.
+Correlation engine SIEM vẫn chạy trong `omni-fullstack` (loop `kafka_siem_correlation_loop`,
+không đổi). Đường ingest mới: agent → gateway → `omni-siem-raw` trực tiếp (phase S2), không qua
+bridge nữa.
 
 RAG `omni:rag:sop` HLEN=1019 (khớp MEMORY.md). Redis AOF enabled. Knowledge pipeline active
 (`omni-knowledge-evidence`). **Cập nhật 2026-07-03** (đã xác minh lại `scripts/kafka_ensure_omni_topics.sh`):

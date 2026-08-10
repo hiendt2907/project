@@ -99,7 +99,12 @@ class PlaybookMatcher:
                 labels = j.get("labels") if isinstance(j, dict) else {}
                 if not isinstance(labels, dict):
                     continue
-                if labels.get("siem_source") != "finguard":
+                # Đ49 B3/S0.3 — trước đây chỉ match khi siem_source=="finguard" (external
+                # FinGuard). SIEM nay là dữ liệu nội bộ (Smart SIEM merge), canonical value
+                # là "omni_siem" — nhưng gate không còn cần so đúng 1 chuỗi, chỉ cần đây LÀ
+                # một batch item gốc SIEM (có siem_source nào đó), tránh phụ thuộc lại một
+                # literal cụ thể như bug cũ.
+                if not labels.get("siem_source"):
                     continue
                 return await self.match(
                     playbook_id=str(labels.get("siem_playbook_id") or ""),

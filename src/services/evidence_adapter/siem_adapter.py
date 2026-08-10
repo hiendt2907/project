@@ -1,12 +1,15 @@
-"""SIEMEvidenceAdapter — converts a FinGuard incident dict into Omni evidence envelopes.
+"""SIEMEvidenceAdapter — converts a Smart SIEM incident dict into Omni evidence envelopes.
 
-Omni receives raw SIEM events from the siem_bridge (via omni-alerts → prober). This adapter
-produces synthetic evidence envelopes that skip the prober layer and inject SIEM context
-directly into the analyst evidence pipeline (omni-diagnostic-evidence).
+Omni's Smart SIEM correlation engine (src/workers/siem_correlation_loop.py) is internal —
+this adapter converts a correlated incident into synthetic evidence envelopes that skip the
+prober layer and inject SIEM context directly into the analyst evidence pipeline
+(omni-diagnostic-evidence). Formerly consumed external FinGuard incidents via siem_bridge.py
+(retired 2026-08-10, plans/finguard-to-smart-siem-merge-2026-08-04.md) — canonical
+`siem_source` is now "omni_siem", not the legacy "finguard".
 
 Usage:
     adapter = SIEMEvidenceAdapter()
-    envelopes = adapter.to_evidence(finguard_incident_fields)
+    envelopes = adapter.to_evidence(siem_incident_fields)
     for env in envelopes:
         await kafka.send_dict("omni-diagnostic-evidence", {"data": json.dumps(env)})
 """
@@ -21,7 +24,7 @@ from typing import Any
 from pkg.domain.taxonomy import SECURITY
 
 
-# Maps FinGuard severity to Omni-canonical severity.
+# Maps SIEM incident severity to Omni-canonical severity.
 _SEVERITY_MAP = {
     "critical": "critical",
     "high": "warning",
@@ -30,7 +33,7 @@ _SEVERITY_MAP = {
     "info": "info",
 }
 
-# Maps FinGuard category to Prometheus-style alertname.
+# Maps SIEM incident category to Prometheus-style alertname.
 _CATEGORY_TO_ALERTNAME = {
     "network_anomaly": "SIEMNetworkAnomaly",
     "auth_failure": "SIEMAuthFailure",
@@ -47,10 +50,10 @@ _PROBE_SIEM_NETWORK = "siem_network_event"
 
 
 class SIEMEvidenceAdapter:
-    """Converts FinGuard incident dicts to Omni evidence envelopes."""
+    """Converts Smart SIEM incident dicts to Omni evidence envelopes."""
 
     def to_evidence(self, event: dict[str, Any]) -> list[dict[str, Any]]:
-        """Return a list of evidence envelopes for one FinGuard incident."""
+        """Return a list of evidence envelopes for one Smart SIEM incident."""
         incident_id = str(event.get("id") or uuid.uuid4())
         severity = str(event.get("severity") or "medium").lower()
         category = str(event.get("category") or "unknown").lower()
@@ -63,14 +66,14 @@ class SIEMEvidenceAdapter:
 
         omni_severity = _SEVERITY_MAP.get(severity, "warning")
         alert_rule = _CATEGORY_TO_ALERTNAME.get(category, f"SIEM{category.replace('_', '').title()}")
-        trace_id = f"fg-{incident_id[:8]}"
+        trace_id = f"omni-siem-{incident_id[:8]}"
         namespace = f"siem-{tenant_id[:24]}"
 
         # Canonical query snippet carries SIEM labels so PlaybookMatcher can match.
         canonical_snippet = json.dumps(
             {
                 "labels": {
-                    "siem_source": "finguard",
+                    "siem_source": "omni_siem",
                     "siem_category": category,
                     "severity": omni_severity,
                     "siem_playbook_id": playbook_id,
@@ -81,7 +84,7 @@ class SIEMEvidenceAdapter:
         )
 
         alert_hint = (
-            f"FinGuard SIEM incident: category={category} severity={omni_severity} "
+            f"Smart SIEM incident: category={category} severity={omni_severity} "
             f"tenant={tenant_id} affected_ip={affected_ip or 'unknown'}. "
             f"{description[:500]}"
         )

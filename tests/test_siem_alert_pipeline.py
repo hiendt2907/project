@@ -1,4 +1,12 @@
-"""Tests for SIEM alert pipeline: bridge envelope, alert_to_event, synthetic evidence."""
+"""Tests for SIEM alert pipeline: alert_to_event source=siem path, synthetic evidence.
+
+`translate_incident`/`workers.siem_bridge` removed 2026-08-10 (FinGuard→Smart SIEM internal
+merge, plans/finguard-to-smart-siem-merge-2026-08-04.md phase S0.2) — it converted a FinGuard
+Redis-stream incident into an Alertmanager-shaped envelope; that external source no longer
+exists. `_build_siem_alert()` below reproduces just enough of the same envelope shape (now with
+canonical `siem_source="omni_siem"` per S0.3, not the retired `"finguard"` literal) so the
+still-live consumers (`alert_to_event.py`, `diagnostic_dispatcher.py`) stay covered.
+"""
 
 from __future__ import annotations
 
@@ -10,12 +18,49 @@ import fakeredis.aioredis
 import pytest
 
 from workers.alert_to_event import build_anomaly_event_from_alert_payload
-from workers.siem_bridge import translate_incident
+
+_CATEGORY_TO_ALERTNAME = {
+    "ddos": "SIEMDDoSDetected",
+    "malware": "SIEMMalwareDetected",
+    "data_exfil": "SIEMDataExfiltration",
+    "k8s_threat": "SIEMKubernetesThreat",
+}
+_SEVERITY_MAP = {"critical": "critical", "high": "warning", "medium": "warning", "low": "info"}
 
 
-# ---------------------------------------------------------------------------
-# A) siem_bridge: _process wraps in double-envelope
-# ---------------------------------------------------------------------------
+def _build_siem_alert(msg_id: str, fields: dict) -> dict:
+    """Minimal stand-in for the retired `translate_incident` — same envelope shape."""
+    category = fields.get("category", "unknown").lower()
+    severity = fields.get("severity", "medium").lower()
+    incident_id = fields.get("id", "inc-unknown")
+    trace_id = fields.get("trace_id") or f"omni-siem-{incident_id[:8]}"
+    alert_name = _CATEGORY_TO_ALERTNAME.get(category, f"SIEM{category.title()}")
+    return {
+        "version": "4",
+        "status": "firing",
+        "alerts": [{
+            "status": "firing",
+            "labels": {
+                "alertname": alert_name,
+                "severity": _SEVERITY_MAP.get(severity, "warning"),
+                "source": fields.get("source", "omni_siem"),
+                "siem_source": "omni_siem",
+                "siem_tenant": fields.get("tenant_id", "unknown"),
+                "siem_category": category,
+                "siem_incident_id": incident_id,
+                "trace_id": trace_id,
+            },
+            "annotations": {
+                "description": fields.get("description", ""),
+                "suggested_action": fields.get("suggested_action", ""),
+                "affected_ip": fields.get("affected_ip", ""),
+                "siem_stream_msg_id": msg_id,
+            },
+        }],
+        "commonLabels": {"siem_source": "omni_siem"},
+        "groupLabels": {"alertname": alert_name},
+    }
+
 
 def _make_siem_fields(category: str = "ddos", severity: str = "critical") -> dict:
     return {
@@ -24,61 +69,20 @@ def _make_siem_fields(category: str = "ddos", severity: str = "critical") -> dic
         "category": category,
         "tenant_id": "tenant-1",
         "description": f"Large-scale {category} detected targeting port 443",
-        "suggested_action": f"Block IP range and rate-limit",
+        "suggested_action": "Block IP range and rate-limit",
         "affected_ip": "10.0.1.5",
     }
 
 
-def test_translate_incident_alertname_prefixed():
-    """All SIEM categories map to SIEM-prefixed alertnames."""
-    for cat, expected in [
-        ("ddos", "SIEMDDoSDetected"),
-        ("malware", "SIEMMalwareDetected"),
-        ("data_exfil", "SIEMDataExfiltration"),
-        ("k8s_threat", "SIEMKubernetesThreat"),
-        ("unknown_cat", "SIEMUnknowncat"),  # fallback
-    ]:
-        alert = translate_incident("msg-1", _make_siem_fields(category=cat))
-        alertname = alert["alerts"][0]["labels"]["alertname"]
-        assert alertname.startswith("SIEM"), f"Expected SIEM prefix for {cat}, got {alertname}"
-
-
-def test_translate_incident_has_trace_id():
-    alert = translate_incident("msg-1", _make_siem_fields())
-    trace_id = alert["alerts"][0]["labels"].get("trace_id", "")
-    assert trace_id.startswith("fg-"), f"Expected fg- prefix trace_id, got {trace_id!r}"
-
-
-def test_siem_bridge_envelope_format():
-    """_process must wrap in the same double-envelope the omni worker expects."""
-    from workers.siem_bridge import translate_incident as _ti
-
-    fields = _make_siem_fields()
-    alert = _ti("msg-2", fields)
-    trace_id = alert["alerts"][0]["labels"].get("trace_id", "fg-msg-2")
-
-    inner = {"source": "siem", "trace_id": trace_id, "data": alert}
-    envelope_bytes = json.dumps({"data": json.dumps(inner, ensure_ascii=False)}, ensure_ascii=False).encode()
-
-    # Simulate decode_kafka_value_to_fields
-    outer = json.loads(envelope_bytes.decode("utf-8"))
-    assert "data" in outer, "Outer envelope must have 'data' key"
-    inner_parsed = json.loads(outer["data"])
-    assert inner_parsed["source"] == "siem"
-    assert inner_parsed["trace_id"] == trace_id
-    assert "alerts" in inner_parsed["data"]
-
-
 # ---------------------------------------------------------------------------
-# B) alert_to_event: source=siem path builds rich AnomalyEvent
+# alert_to_event: source=siem path builds rich AnomalyEvent
 # ---------------------------------------------------------------------------
 
 def _make_siem_alert_payload(category: str = "ddos", severity: str = "critical") -> dict:
     """Simulate what _process_stream_entry produces after decode_kafka_value_to_fields."""
     fields = _make_siem_fields(category=category, severity=severity)
-    from workers.siem_bridge import translate_incident as _ti
-    alert = _ti("msg-3", fields)
-    trace_id = alert["alerts"][0]["labels"].get("trace_id", "fg-msg-3")
+    alert = _build_siem_alert("msg-3", fields)
+    trace_id = alert["alerts"][0]["labels"].get("trace_id", "omni-siem-msg-3")
     return {
         "source": "siem",
         "trace_id": trace_id,
@@ -126,7 +130,7 @@ def test_siem_trace_id_fallback_from_alert_labels_when_envelope_omits_top_level(
 
 
 # ---------------------------------------------------------------------------
-# C) diagnostic_dispatcher: SIEM synthetic evidence published
+# diagnostic_dispatcher: SIEM synthetic evidence published
 # ---------------------------------------------------------------------------
 
 def _make_dispatcher_ctx(kafka_captures: list):
@@ -144,7 +148,6 @@ def _make_dispatcher_ctx(kafka_captures: list):
 @pytest.mark.asyncio
 async def test_siem_dispatcher_publishes_synthetic_evidence():
     from workers.diagnostic_dispatcher import run_diagnostic_pipeline
-    from workers.proactive_models import AnomalyEvent
 
     kafka_captures: list = []
     ctx = _make_dispatcher_ctx(kafka_captures)

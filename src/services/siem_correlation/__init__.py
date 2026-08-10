@@ -11,7 +11,7 @@ Contract parity (must not drift without a schema bump):
 - output: ``omni-siem-chains``    — CorrelationChain envelope consumed by
   ``services.analyst.chain_consumer.ChainConsumer``
 
-SECURITY INVARIANT (FinGuard, non-negotiable): correlation reads only parsed
+SECURITY INVARIANT (INV_DATA_RESIDENCY, non-negotiable): correlation reads only parsed
 metadata fields and the already-normalized message string; entity extraction is
 allowlist-only so raw VM log content can never travel through a chain.
 """

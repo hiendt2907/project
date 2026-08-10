@@ -1376,34 +1376,11 @@ async def _emit_agentic_mutate_if_any(
     """
     ac = max(1, int(attempt_count))
 
-    # SIEM suggest-only: FinGuard incidents must not enter EXECUTE_MUTATE or HITL pipeline.
-    # Emit SUGGEST_REMEDIATION + Telegram to admin; return False without touching the planner.
-    if bool(getattr(ctx.settings, "omni_siem_suggest_only", True)) and _is_siem_batch(batch):
-        siem = _siem_alert_labels(batch)
-        incident_id = siem.get("siem_incident_id", "")
-        diag = _siem_diagnosis_from_batch(batch, siem, sanitized_text)
-        await _emit_suggest_remediation(
-            ctx,
-            trace=trace,
-            diagnosis=diag,
-            confidence=0.9,
-            source="SIEM_SUGGEST_ONLY",
-            suggested_tool="k8s_describe_resource",
-        )
-        await _notify_siem_telegram(ctx, trace=trace, batch=batch, diagnosis=diag)
-        await emit_transition(
-            ctx,
-            trace_id=trace,
-            transition=TRANSITION_PLAN_EMITTED,
-            component="evidence_consumer",
-            detail="siem_suggest_only",
-            meta={"siem_incident_id": incident_id},
-        )
-        logger.info(
-            "event=siem_suggest_only_emitted trace=%s siem_incident=%s",
-            trace, incident_id,
-        )
-        return True  # handled — caller must not fall through to RAG_MISS escalation
+    # Đ49 B3/S0.3 — trước đây SIEM LUÔN suggest-only bất kể tier/risk (bảo vệ vì nguồn
+    # FinGuard ngoài không kiểm soát được). SIEM nay là dữ liệu nội bộ (Smart SIEM merge,
+    # plans/finguard-to-smart-siem-merge-2026-08-04.md), đi chung ma trận tier × risk như
+    # 8 domain còn lại — không còn nhánh chặn cứng ở đây; rơi xuống planner LLM bên dưới
+    # như mọi batch khác. HITL cho HIGH-risk vẫn giữ nguyên qua tier gate (không đổi ở đây).
 
     llm_first = bool(getattr(ctx.settings, "omni_llm_first_autonomy_enabled", False))
     unrestricted = bool(getattr(ctx.settings, "omni_unrestricted_tool_execution", False))

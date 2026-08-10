@@ -241,12 +241,13 @@ def test_siem_alert_labels_extracted() -> None:
     assert labels["siem_tenant"] == "default"
 
 
-def test_siem_alert_labels_empty_for_non_finguard() -> None:
-    """_siem_alert_labels returns empty dict when siem_source is not finguard."""
+def test_siem_alert_labels_empty_when_no_siem_source() -> None:
+    """Đ49 B3/S0.3 — _siem_alert_labels chấp nhận bất kỳ siem_source không rỗng (canonical
+    nay là "omni_siem", không còn hardcode "finguard"); chỉ batch KHÔNG có siem_source mới {}."""
     batch = [
         {
             "canonical_query_snippet": json.dumps({
-                "labels": {"siem_source": "other", "siem_incident_id": "inc-888"}
+                "labels": {"siem_incident_id": "inc-888"}
             })
         }
     ]

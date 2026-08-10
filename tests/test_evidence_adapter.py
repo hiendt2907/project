@@ -1,16 +1,10 @@
-"""Unit tests for services.evidence_adapter — protocol, adapter, and worker."""
+"""Unit tests for services.evidence_adapter — protocol and SIEM adapter."""
 from __future__ import annotations
 
-import asyncio
 import json
-import os
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-# worker.py checks env at module level — set before import
-os.environ.setdefault("ADAPTER_REDIS_URL", "redis://localhost:6379")
 
 from services.evidence_adapter.protocol import EvidenceAdapter
 from services.evidence_adapter.siem_adapter import SIEMEvidenceAdapter
@@ -93,60 +87,3 @@ def test_siem_adapter_extracted_fact_is_dict():
     adapter = SIEMEvidenceAdapter()
     env = adapter.to_evidence(_make_incident())[0]
     assert isinstance(env["extracted_fact"], dict)
-
-
-# ---------------------------------------------------------------------------
-# AdapterGeneratorWorker
-# ---------------------------------------------------------------------------
-
-def test_worker_rejects_non_adapter():
-    from services.evidence_adapter.worker import AdapterGeneratorWorker
-    with pytest.raises(TypeError, match="EvidenceAdapter"):
-        AdapterGeneratorWorker(object())  # type: ignore[arg-type]
-
-
-def test_worker_accepts_valid_adapter():
-    from services.evidence_adapter.worker import AdapterGeneratorWorker
-    worker = AdapterGeneratorWorker(SIEMEvidenceAdapter())
-    assert worker is not None
-
-
-@pytest.mark.asyncio
-async def test_worker_handle_acks_after_emit():
-    from services.evidence_adapter.worker import AdapterGeneratorWorker
-
-    adapter = SIEMEvidenceAdapter()
-    worker = AdapterGeneratorWorker(adapter)
-
-    redis = AsyncMock()
-    producer = AsyncMock()
-
-    incident = _make_incident()
-    fields = {k: json.dumps(v) if isinstance(v, dict) else str(v) for k, v in incident.items()}
-
-    with patch.object(adapter, "to_evidence", return_value=[
-        {"trace_id": "t1", "probe": "siem", "alert_rule": "R", "alert_hint": "H", "extracted_fact": {}, "raw": "raw"}
-    ]):
-        await worker._handle(redis, producer, "msg-1", fields)
-
-    producer.send_and_wait.assert_awaited_once()
-    redis.xack.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_worker_handle_skips_ack_on_error():
-    from services.evidence_adapter.worker import AdapterGeneratorWorker
-
-    adapter = SIEMEvidenceAdapter()
-    worker = AdapterGeneratorWorker(adapter)
-
-    redis = AsyncMock()
-    producer = AsyncMock()
-    producer.send_and_wait.side_effect = Exception("kafka down")
-
-    with patch.object(adapter, "to_evidence", return_value=[
-        {"trace_id": "t1", "probe": "siem", "alert_rule": "R", "alert_hint": "H", "extracted_fact": {}, "raw": ""}
-    ]):
-        await worker._handle(redis, producer, "msg-2", {})
-
-    redis.xack.assert_not_awaited()

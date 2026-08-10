@@ -1,10 +1,18 @@
-"""SIEM suggest-only mode: FinGuard batches must not emit EXECUTE_MUTATE or HITL_PENDING."""
+"""SIEM batches now flow through the same planner/tier×risk path as every other domain.
+
+Đ49 B3/S0.3 (plans/finguard-to-smart-siem-merge-2026-08-04.md) removed the unconditional
+"SIEM always suggest-only, never EXECUTE_MUTATE/HITL" short-circuit in
+`evidence_consumer._emit_agentic_mutate_if_any` — that gate existed because FinGuard was an
+uncontrolled external source. SIEM is now internal (Smart SIEM correlation engine) and is
+gated by the normal tier×risk matrix + HITL-for-HIGH-risk like the other 8 domains, not by a
+blanket SIEM-only bypass. `omni_siem_suggest_only` no longer has any effect on this path.
+"""
 
 from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import fakeredis.aioredis
 import pytest
@@ -13,7 +21,7 @@ import pytest
 def _siem_batch(incident_id: str = "inc-001", hitl_required: bool = True) -> list[dict]:
     labels = {
         "alertname": "SIEMKubernetesThreat",
-        "siem_source": "finguard",
+        "siem_source": "omni_siem",
         "siem_incident_id": incident_id,
         "siem_category": "k8s_threat",
         "severity": "critical",
@@ -25,10 +33,10 @@ def _siem_batch(incident_id: str = "inc-001", hitl_required: bool = True) -> lis
     return [
         {
             "probe": "siem_evidence",
-            "trace_id": f"fg-{incident_id}",
+            "trace_id": f"omni-siem-{incident_id}",
             "canonical_query_snippet": snippet,
             "alert_hint": "Privileged container breakout detected.",
-            "extracted_fact": {"siem_source": "finguard"},
+            "extracted_fact": {"siem_source": "omni_siem"},
         }
     ]
 
@@ -73,66 +81,16 @@ class _KafkaCapture:
 
 
 @pytest.mark.asyncio
-async def test_siem_suggest_only_blocks_execute_mutate_and_hitl():
-    """SIEM batch + omni_siem_suggest_only=True → only SUGGEST_REMEDIATION(SIEM_SUGGEST_ONLY), nothing on omni-actions mutate path."""
-    from workers.evidence_consumer import _emit_agentic_mutate_if_any
-
-    kafka = _KafkaCapture()
-    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    tg = AsyncMock()
-    settings = _make_settings(omni_siem_suggest_only=True, telegram_admin_chat_id=9999)
-    ctx = SimpleNamespace(
-        kafka=kafka,
-        redis=redis,
-        settings=settings,
-        telegram=tg,
-        vector_store=None,
-        inbound_trace_id=None,
-    )
-
-    batch = _siem_batch()
-    result = await _emit_agentic_mutate_if_any(
-        ctx,
-        "fg-inc-001",
-        batch,
-        sanitized_text="Privileged container escape in default/compromised-svc.",
-    )
-
-    assert result is True, "SIEM suggest-only must return True (handled; caller must NOT fall through to RAG_MISS)"
-
-    topics_used = {t for t, _ in kafka.sent}
-    assert "omni-hitl-pending" not in topics_used, "emit_hitl_pending must NOT fire in suggest-only mode"
-
-    # SUGGEST_REMEDIATION goes to omni-actions (action routing topic), not an execution
-    for topic, payload in kafka.sent:
-        if topic == "omni-actions":
-            envelope = json.loads(payload["data"])
-            assert envelope.get("action") == "SUGGEST_REMEDIATION", (
-                f"Only SUGGEST_REMEDIATION allowed on omni-actions for SIEM; got {envelope.get('action')!r}"
-            )
-            # source is inside the nested data dict
-            inner = envelope.get("data", {})
-            assert inner.get("source") == "SIEM_SUGGEST_ONLY"
-
-    # Telegram must be sent to admin chat
-    tg.send_message.assert_called_once()
-    call_args = tg.send_message.call_args
-    assert call_args[0][0] == 9999
-    msg = call_args[0][1]
-    assert "cần người phê duyệt" in msg
-    assert "inc-001" in msg
-
-
-@pytest.mark.asyncio
-async def test_siem_suggest_only_disabled_does_not_short_circuit(monkeypatch):
-    """omni_siem_suggest_only=False → falls through to normal planner path (no short-circuit)."""
+async def test_siem_batch_reaches_planner_regardless_of_suggest_only_flag(monkeypatch):
+    """SIEM batch must reach the normal planner — omni_siem_suggest_only=True no longer
+    short-circuits it (that gate only ever existed for the retired external FinGuard path)."""
     from workers import evidence_consumer as ec
 
     planner_called = []
 
     async def fake_planner(ctx, *, trace, sanitized_text, batch, **kw):
         planner_called.append(True)
-        return None  # no plan → returns False from outer function
+        return None
 
     async def fake_blind(ctx, batch, *, sanitized_text, rag_match_text):
         return None
@@ -143,7 +101,7 @@ async def test_siem_suggest_only_disabled_does_not_short_circuit(monkeypatch):
     kafka = _KafkaCapture()
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     settings = _make_settings(
-        omni_siem_suggest_only=False,
+        omni_siem_suggest_only=True,
         omni_unrestricted_tool_execution=False,
         omni_legacy_deterministic_fallback=False,
         telegram_admin_chat_id=9999,
@@ -159,18 +117,18 @@ async def test_siem_suggest_only_disabled_does_not_short_circuit(monkeypatch):
     batch = _siem_batch(hitl_required=False)
     result = await ec._emit_agentic_mutate_if_any(
         ctx,
-        "fg-inc-002",
+        "omni-siem-inc-002",
         batch,
         sanitized_text="Privileged container escape.",
     )
 
-    assert planner_called, "Planner must be invoked when suggest-only is disabled"
+    assert planner_called, "SIEM batch must reach the planner — no more blanket suggest-only bypass"
     assert result is False  # planner returned None → no plan
 
 
 @pytest.mark.asyncio
-async def test_non_siem_batch_not_intercepted(monkeypatch):
-    """Non-SIEM batches must never be caught by the SIEM short-circuit."""
+async def test_non_siem_batch_also_reaches_planner(monkeypatch):
+    """Non-SIEM batches were never affected by the SIEM gate — still reach the planner."""
     from workers import evidence_consumer as ec
 
     planner_called = []
@@ -209,33 +167,3 @@ async def test_non_siem_batch_not_intercepted(monkeypatch):
     )
 
     assert planner_called, "Non-SIEM batch must reach the planner"
-
-
-@pytest.mark.asyncio
-async def test_siem_suggest_only_no_telegram_without_admin_cid():
-    """No Telegram sent when telegram_admin_chat_id is None — just log a warning."""
-    from workers.evidence_consumer import _emit_agentic_mutate_if_any
-
-    kafka = _KafkaCapture()
-    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    tg = AsyncMock()
-    settings = _make_settings(omni_siem_suggest_only=True, telegram_admin_chat_id=None)
-    ctx = SimpleNamespace(
-        kafka=kafka,
-        redis=redis,
-        settings=settings,
-        telegram=tg,
-        vector_store=None,
-    )
-
-    result = await _emit_agentic_mutate_if_any(
-        ctx,
-        "fg-inc-003",
-        _siem_batch("inc-003"),
-        sanitized_text="Some SIEM evidence.",
-    )
-
-    assert result is True, "SIEM path handled (True) even without admin_cid — prevents RAG_MISS fallthrough"
-    tg.send_message.assert_not_called()
-    # SUGGEST_REMEDIATION still emitted to Kafka
-    assert any(t == "omni-actions" for t, _ in kafka.sent)

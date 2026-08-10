@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import time
-from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -89,7 +88,7 @@ def test_playbooks_list_and_get_mock_redis():
         assert r2.status_code == 200
 
 
-def test_playbooks_state_and_hitl_mock_redis():
+def test_playbooks_state_mock_redis():
     from gateway.routes.playbooks import router
 
     redis = MagicMock()
@@ -98,31 +97,9 @@ def test_playbooks_state_and_hitl_mock_redis():
     app.include_router(router)
     app.state.redis = redis
 
-    class _Resp:
-        status = 200
-
-        def read(self):
-            return b'{"ok":true}'
-
-    @contextmanager
-    def _open(*_a, **_kw):
-        yield _Resp()
-
     with TestClient(app) as client:
         r = client.get("/playbooks/pb1/state?trace_id=t1")
         assert r.status_code == 200
-
-        with patch("gateway.routes.playbooks.urllib.request.urlopen", _open):
-            r2 = client.post(
-                "/playbooks/inc1/approve",
-                json={"trace_id": "t1", "reason": "ok"},
-            )
-            assert r2.status_code == 200
-            r3 = client.post(
-                "/playbooks/inc1/reject",
-                json={"trace_id": "t1", "reason": "no"},
-            )
-            assert r3.status_code == 200
 
 
 def test_gateway_env_topic_and_headers():

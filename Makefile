@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: lint-imports list-omni-postgres-backups restore-omni-postgres-verify verify-case-ledger deploy-landing sync-public sync-public-ui sync-public-backend sync-public-all agent-bundle agent-bundle-offline agent-keygen publish-agent-release tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway docker-hitl-api deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap e2e-portal product-release-gate chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit deploy-siem-stack deploy-hitl-api verify-hitl-production hitl-gate prove-siem-capabilities siem-proof-3x siem-lab-gate print-image-digests siem-lab-inject siem-deploy-workers teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
+.PHONY: lint-imports list-omni-postgres-backups restore-omni-postgres-verify verify-case-ledger deploy-landing sync-public sync-public-ui sync-public-backend sync-public-all agent-bundle agent-bundle-offline agent-keygen publish-agent-release tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap e2e-portal product-release-gate chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit print-image-digests teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
 
 NS ?= multi-agent
 
@@ -100,21 +100,10 @@ backend-verify-job-run: backend-verify-job-infra
 	./scripts/with_working_kube.sh wait --for=condition=complete job/omni-backend-verify -n multi-agent --timeout=180s || true
 	./scripts/with_working_kube.sh logs job/omni-backend-verify -n multi-agent --tail=200
 
-# Builds finguard-hitl-api binary from smart-siem monorepo.
-# Build context is smart-siem/ so go.work + vendor are on PATH.
-# Tag: finguard-hitl-api:lab  (override with IMAGE_TAG=prod make docker-hitl-api)
-docker-hitl-api:
-	docker build -t finguard-hitl-api:$${IMAGE_TAG:-lab} \
-	  -f smart-siem/Dockerfile.hitl-api \
-	  smart-siem/
-
 # Print image digests for all SIEM/HITL images — copy sha256 values into manifests for digest pinning.
 print-image-digests:
 	@echo "=== Image digests for prod pinning (copy into kustomization newDigest or manifest image field) ==="
-	@docker inspect omni-hitl-dispatcher:latest --format='omni-hitl-dispatcher:latest  {{.Id}}' 2>/dev/null || echo "omni-hitl-dispatcher:latest  NOT BUILT (run: make docker-hitl-dispatcher)"
 	@docker inspect multi-agent-system:latest   --format='multi-agent-system:latest    {{.Id}}' 2>/dev/null || echo "multi-agent-system:latest    NOT BUILT (run: make docker-worker)"
-	@docker inspect finguard-hitl-api:lab       --format='finguard-hitl-api:lab        {{.Id}}' 2>/dev/null || echo "finguard-hitl-api:lab        NOT BUILT (run: make docker-hitl-api)"
-	@docker inspect finguard-hitl-api:prod      --format='finguard-hitl-api:prod       {{.Id}}' 2>/dev/null || echo "finguard-hitl-api:prod       NOT BUILT (run: IMAGE_TAG=prod make docker-hitl-api)"
 
 # Split-role pods (prober/analyst/core/executor) consolidated into omni-fullstack
 # (2026-06-03). deploy-worker now aliases deploy-fullstack — single pod role=full.
@@ -341,75 +330,9 @@ autonomy-gate:
 	.venv/bin/python scripts/validate_nonimpact_guards_gate.py
 	.venv/bin/python scripts/validate_learning_loop_gate.py
 	.venv/bin/python -m pytest tests/test_autonomous_experience_gate.py tests/test_agentic_planner_early_exit.py tests/test_feedback_full_agentic_planner.py tests/test_deterministic_mutate_from_evidence.py tests/test_shadow_os_contract.py -q
-	$(MAKE) hitl-gate
 	.venv/bin/python scripts/full_system_audit.py --duration-sec 90 --interval-sec 10 --strict --min-action-experience 0 --sigma-min-hits 0
 
-# SIEM stack: deploy SIEM bridge + HITL dispatcher + EvidenceAdapter (multi-agent namespace).
-# Run `make docker-worker` first to rebuild the image with the new services.
-deploy-siem-stack:
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-siem-bridge.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-hitl-dispatcher.yaml
-	./scripts/with_working_kube.sh apply -f k8s/deployments/omni-evidence-adapter.yaml
-	./scripts/with_working_kube.sh rollout restart deployment/omni-siem-bridge deployment/omni-hitl-dispatcher deployment/omni-evidence-adapter -n multi-agent
-	./scripts/with_working_kube.sh rollout status deployment/omni-siem-bridge -n multi-agent --timeout=120s
-	./scripts/with_working_kube.sh rollout status deployment/omni-hitl-dispatcher -n multi-agent --timeout=120s
-	./scripts/with_working_kube.sh rollout status deployment/omni-evidence-adapter -n multi-agent --timeout=120s
 
-# Deploy finguard-hitl-api into finguard-customer namespace via kustomize.
-# Prerequisite: `make docker-hitl-api` and image imported into cluster (k3s ctr import or registry push).
-# Secrets must be pre-created out-of-band; see scripts/rotate_hitl_token.sh.
-deploy-hitl-api:
-	./scripts/with_working_kube.sh apply -k smart-siem/customer/k3s/overlays/lab
-	./scripts/with_working_kube.sh rollout status deployment/finguard-hitl-api -n finguard-customer --timeout=120s
-
-# Run post-deploy production readiness gate for the full HITL path.
-verify-hitl-production:
-	bash scripts/verify_hitl_production.sh
-
-# CI gate: unit tests + token rotation script linting.
-# Safe to run without cluster access; tests use fakeredis/mock Kafka.
-hitl-gate:
-	.venv/bin/python -m pytest tests/test_hitl_dispatcher.py -q --tb=short
-	bash -n scripts/rotate_hitl_token.sh
-	bash -n scripts/verify_hitl_production.sh
-
-# Run full SIEM capability proof (CAP-1 through CAP-6) against live cluster.
-# Requires: cluster port-forwards active (Kafka:29092, Redis:16379/19379, HITL:18081).
-# HITL_TOKEN is read from in-cluster secret; no env var needed when running locally.
-# Output: artifacts/siem_capability_proof_<YYYYMMDD_HHMM>.json
-prove-siem-capabilities:
-	mkdir -p artifacts
-	HITL_TOKEN=$$(./scripts/with_working_kube.sh get secret hitl-dispatcher-secret -n multi-agent \
-	  -o jsonpath='{.data.hitl_api_token}' | base64 -d) \
-	  .venv/bin/python scripts/prove_siem_capabilities.py \
-	    --out artifacts/siem_capability_proof_$$(date +%Y%m%d_%H%M).json
-
-# Run capability proof 3 consecutive times to catch flakes.
-# All 3 must pass; fails fast on first failure.
-siem-proof-3x:
-	@echo "=== siem-proof-3x: run 1/3 ===" && $(MAKE) prove-siem-capabilities
-	@echo "=== siem-proof-3x: run 2/3 ===" && $(MAKE) prove-siem-capabilities
-	@echo "=== siem-proof-3x: run 3/3 ===" && $(MAKE) prove-siem-capabilities
-	@echo "=== siem-proof-3x: all 3 runs passed ==="
-
-# Lab-only gate: full SIEM capability proof + production readiness check.
-# Requires live cluster with port-forwards. NOT run in GitHub CI.
-# To run: make siem-lab-gate
-siem-lab-gate:
-	$(MAKE) verify-hitl-production
-	$(MAKE) prove-siem-capabilities
-
-# Smart SIEM: inject fake log events vào stream:siem_normalized để test pipeline.
-# SCENARIO=brute_force|port_scan|normal|all  COUNT=15  FG_NAMESPACE=finguard-customer
-siem-lab-inject:
-	bash smart-siem/scripts/siem_log_injector.sh
-
-# Smart SIEM: scale brain-go + math-gateway + agent lên replicas=1 (sau khi đã build image).
-siem-deploy-workers:
-	./scripts/with_working_kube.sh apply -f smart-siem/customer/k3s/components/redis-stream-workers/worker-deployments.yaml
-	./scripts/with_working_kube.sh rollout restart deployment/finguard-brain-go deployment/finguard-math-gateway deployment/finguard-agent -n finguard-customer
-	./scripts/with_working_kube.sh rollout status deployment/finguard-brain-go -n finguard-customer --timeout=120s
-	./scripts/with_working_kube.sh rollout status deployment/finguard-math-gateway -n finguard-customer --timeout=120s
 	./scripts/with_working_kube.sh rollout status deployment/finguard-agent -n finguard-customer --timeout=120s
 
 # Playbooks now stored in Redis Stack (HNSW index). Legacy Postgres schema removed.

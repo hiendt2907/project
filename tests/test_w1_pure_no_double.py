@@ -157,10 +157,6 @@ def test_compliance_pure_key_parse_and_row_helpers() -> None:
     assert row["has_signature"] == "false"
 
 
-def test_playbook_hitl_headers_without_token_are_content_type_only() -> None:
-    assert playbook_routes._hitl_headers() == {"Content-Type": "application/json"}
-
-
 def test_preflight_secret_refs_uses_real_kubernetes_models() -> None:
     deployment = k8s_client.V1Deployment(
         spec=k8s_client.V1DeploymentSpec(

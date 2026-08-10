@@ -47,7 +47,7 @@ or supplied, then access-log metadata verifies runtime routes. TCP connection ev
 alone is labelled `network_only`; see
 [Customer System Understanding](architecture/customer-system-understanding.md).
 
-Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbound signals arrive via three paths: HTTP alerts through the FastAPI Gateway (→ Kafka `omni-alerts`), SIEM incidents from FinGuard Redis streams (siem-bridge → `omni-alerts`), and direct SIEM evidence injection (evidence-adapter → `omni-diagnostic-evidence`). All of these run **inside the single `omni-fullstack` deployment** (`OMNI_WORKER_ROLE=full`) — the `prober`/`analyst`/`executor`/`core` split roles were consolidated in `915e509` and their Deployments RETIRED 2026-07-02. The prober loops consume `omni-alerts`, run K8s SDK + Prometheus probes, and publish per-probe evidence to `omni-diagnostic-evidence`. The analyst loops batch evidence by `trace_id`, run RAG gate + Ollama LLM (qwen2.5-coder:7b, num_ctx=8192), and emit `SUGGEST_REMEDIATION` → `omni-actions` with mandatory CRAT audit writes before any Telegram or action emission; feedback returns via `omni-action-feedback`. HITL escalation runs through Telegram advisory-ack (the Kafka `omni-hitl-pending` dispatcher is scaled to 0 by design). SIEM correlation was **ported from Go to Python 2026-07-22** (`src/services/siem_correlation/`, loop `kafka_siem_correlation_loop`); `brain-go` is RETIRED and its Deployment deleted.
+Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbound signals arrive via two paths: HTTP alerts through the FastAPI Gateway (→ Kafka `omni-alerts`), and diagnostic/SIEM evidence via the Gateway agent webhook (→ Kafka `omni-diagnostic-evidence`; SIEM-domain evidence also fans out to `omni-siem-raw`). All of these run **inside the single `omni-fullstack` deployment** (`OMNI_WORKER_ROLE=full`) — the `prober`/`analyst`/`executor`/`core` split roles were consolidated in `915e509` and their Deployments RETIRED 2026-07-02. The prober loops consume `omni-alerts`, run K8s SDK + Prometheus probes, and publish per-probe evidence to `omni-diagnostic-evidence`. The analyst loops batch evidence by `trace_id`, run RAG gate + Ollama LLM (qwen2.5-coder:7b, num_ctx=8192), and emit `SUGGEST_REMEDIATION` → `omni-actions` with mandatory CRAT audit writes before any Telegram or action emission; feedback returns via `omni-action-feedback`. HITL escalation runs through the internal `hitl_telegram.py` (CRAT → Postgres `omni_admin.hitl_decision` → Telegram) — the external FinGuard bridge/dispatcher (`siem_bridge.py`, `hitl_dispatcher.py`, `evidence_adapter/worker.py`) was retired 2026-08-10 (Đ49, `plans/finguard-to-smart-siem-merge-2026-08-04.md`). SIEM correlation was **ported from Go to Python 2026-07-22** (`src/services/siem_correlation/`, loop `kafka_siem_correlation_loop`); `brain-go` is RETIRED and its Deployment deleted.
 
 > **Lab deployment (2026-06-05):** single consolidated pod `omni-fullstack` (`OMNI_WORKER_ROLE=full`) — split-role deployments deleted. Active model `qwen2.5-coder:7b` (embed `nomic-embed-text`) on OrbStack host Ollama. Graduated-autonomy tiers (shadow→assist→auto) are live with PostgreSQL `omni_admin` as config source-of-truth — see [Autonomy Tiers & Admin Config](#autonomy-tiers--admin-config-2026-06-05) below.
 
@@ -97,8 +97,6 @@ Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbo
 | `proactive_tool_policy.py` | PROACTIVE_DIAGNOSE_TOOLS / PROACTIVE_RECHECK_TOOLS allowlists | — |
 | `forecast_autonomous_loop.py` | Periodic: Prometheus → Prophet/linear forecast → threshold → Telegram admin | anomaly.prophet_forecast, metrics.prometheus_dataframe, visualization |
 | `kafka_actions_consumer.py` | Consume `omni-actions`: execute_write_pending, EXECUTE_MUTATE, audit SUGGEST_REMEDIATION | autonomous_execute, pkg.executor, autonomy_contract |
-| `siem_bridge.py` | Bridge worker: FinGuard Redis stream → Kafka `omni-alerts`; optional dual-emit to `omni-siem-raw` | aiokafka, redis.asyncio |
-| `hitl_dispatcher.py` | Consume `omni-hitl-pending`; poll FinGuard HITL API; route APPROVED→omni-actions / REJECTED→omni-action-feedback | httpx, aiokafka, redis |
 | `kpi_metrics.py` | KPIStore: rolling 24h ZADD window for MTTD/MTTR/acceptance_rate/false_positive metrics | redis |
 | `metrics_exporter.py` | Prometheus /metrics server (thread-based); all inc_*/observe_* counters used by other modules | prometheus_client |
 | `health_server.py` | Passive health/readiness HTTP server (thread-based); read from metrics state | — |
@@ -239,10 +237,13 @@ Omni is an async-first, multi-agent SRE automation platform for Kubernetes. Inbo
 
 ### src/services/evidence_adapter/ — SIEM Evidence Injection
 
+Đ49 (2026-08-10): `worker.py` (Redis-stream standalone consumer, Deployment riêng đã retired)
+xóa hẳn — xem `plans/finguard-to-smart-siem-merge-2026-08-04.md` phase S0.2. Ingest nay qua
+gateway (`agent_webhook.py`) gọi trực tiếp `siem_adapter.py`, không qua worker/Redis stream riêng.
+
 | File | Mô tả | Depends on |
 |------|-------|------------|
-| `worker.py` | AdapterGeneratorWorker: Redis stream → evidence envelopes → Kafka `omni-diagnostic-evidence` | aiokafka, redis, protocol |
-| `siem_adapter.py` | SIEMEvidenceAdapter: FinGuard incident dict → Omni evidence envelopes | — |
+| `siem_adapter.py` | SIEMEvidenceAdapter: Smart SIEM incident dict → Omni evidence envelopes (`siem_source="omni_siem"`) | — |
 | `protocol.py` | EvidenceAdapter protocol definition | — |
 
 ### src/services/playbook/ — Pre-approved Remediation Playbooks
@@ -570,14 +571,14 @@ từ đó khi build, không phải rác.
 
 | Topic | Producer(s) | Consumer(s) | Purpose |
 |-------|-------------|-------------|---------|
-| `omni-alerts` | gateway/api.py, siem_bridge.py, devtools/kafka_inject | omni_worker (prober role): `kafka_alerts_loop` | Inbound alerts from HTTP gateway + SIEM bridge |
-| `omni-diagnostic-evidence` | diagnostic_dispatcher.py, evidence_adapter/worker.py | omni_worker (analyst role): `reason_from_diagnostic_evidence` | Per-probe evidence batches for analyst |
-| `omni-actions` | evidence_consumer.py (SUGGEST_REMEDIATION/EXECUTE_MUTATE), hitl_dispatcher.py (APPROVED) | kafka_actions_consumer.py (executor role) | Actions: suggest + execute + runbooks |
-| `omni-action-feedback` | kafka_actions_consumer.py (executor result), hitl_dispatcher.py (REJECTED) | autonomous_feedback_loop.py (analyst), kpi_metrics.py (KPI collector) | Execution results + KPI tracking |
-| `omni-hitl-pending` | evidence_consumer.py (HITL_PENDING) | hitl_dispatcher.py | Awaiting human approval |
+| `omni-alerts` | gateway/api.py, devtools/kafka_inject | omni_worker (prober role): `kafka_alerts_loop` | Inbound alerts from HTTP gateway |
+| `omni-diagnostic-evidence` | diagnostic_dispatcher.py, gateway agent_webhook.py | omni_worker (analyst role): `reason_from_diagnostic_evidence` | Per-probe evidence batches for analyst |
+| `omni-actions` | evidence_consumer.py (SUGGEST_REMEDIATION/EXECUTE_MUTATE) | kafka_actions_consumer.py (executor role) | Actions: suggest + execute + runbooks |
+| `omni-action-feedback` | kafka_actions_consumer.py (executor result) | autonomous_feedback_loop.py (analyst), kpi_metrics.py (KPI collector) | Execution results + KPI tracking |
+| `omni-hitl-pending` | evidence_mutate_emit.py (`emit_hitl_pending`) | **KHÔNG có consumer đăng ký** (Đ49 B1: `hitl_dispatcher.py` — consumer cũ — đã xóa; HITL thật đi qua `hitl_telegram.py`/`autonomy.py::decide_hitl`, không qua topic này) | Legacy — xem gotcha B1 trong `docs/audit/invariant_audit_2026-08.md` |
 | `omni-audit-chain` | audit_ledger/chain_writer.py | (downstream SIEM/compliance consumers) | CRAT tamper-evident audit blocks |
-| `omni-siem-raw` | siem_bridge.py (SIEM_BRIDGE_DUAL_EMIT=true) | brain-go (BRAIN_TRANSPORT=kafka) | Raw FinGuard incidents to brain-go Kafka mode |
-| `omni-siem-incidents` | brain-go/internal/transport/kafka.go | (downstream consumers) | Correlated SIEM incidents from brain-go |
+| `omni-siem-raw` | ⏳ chưa có producer sống (Đ49 S2 chưa làm — trước đây là `siem_bridge.py`, đã xóa) | `siem_correlation_loop.py` (Python port, in-cluster, sẵn sàng nhưng chưa nhận input thật) | Normalized SIEM incident metadata for correlation engine |
+| `omni-siem-incidents` | `siem_correlation_loop.py` | (downstream consumers) | Passthrough correlated SIEM incident metadata |
 
 ---
 
@@ -660,32 +661,27 @@ omni_worker [analyst]
 
 ### Flow 2: SIEM Incident → Advisory → HITL
 
+**Đ49 (2026-08-10):** đường vào cũ (FinGuard Redis stream → `siem_bridge.py` → `omni-alerts`)
+đã retired hẳn — xem `plans/finguard-to-smart-siem-merge-2026-08-04.md`. Đường vào mới
+(Remote Agent security collector → gateway `agent_webhook.py` → `omni-diagnostic-evidence` +
+`omni-siem-raw`) đang xây (phase S1/S2), CHƯA sống — sơ đồ dưới mô tả phần từ analyst trở đi,
+vẫn đúng nguyên trạng.
+
 ```
-FinGuard Redis stream:actionable_incidents
-  → siem_bridge.py (XREADGROUP)
-    → translate FinGuard severity/category → Omni AnomalyEvent
-    → produce omni-alerts (Kafka)
-    [OPTIONAL: SIEM_BRIDGE_DUAL_EMIT=true → produce omni-siem-raw (brain-go)]
-
-omni_worker [prober]
-  kafka_alerts_loop → run_diagnostic_pipeline (SIEM probe plan)
-    → publish omni-diagnostic-evidence
-
 omni_worker [analyst]
   reason_from_diagnostic_evidence()
-    → PlaybookMatcher.match (pb: Redis JSON)
+    → PlaybookMatcher.match (pb: Redis JSON, siem_source bất kỳ không rỗng — Đ49 S0.3)
       → HIT: state_machine.StepStateMachine → step execution
-    → MISS: LLM advisory (same as Flow 1)
+    → MISS: LLM advisory (same as Flow 1) — không còn nhánh "SIEM luôn suggest-only" (Đ49 S0.3),
+      đi chung ma trận tier×risk như domain khác
     → _siem_hitl_required() check
-      → TRUE: emit_hitl_pending → omni-hitl-pending
+      → TRUE: emit_hitl_pending → CRAT + Postgres omni_admin.hitl_decision trực tiếp (Đ49 B1
+        fix — trước đó chỉ gửi Kafka omni-hitl-pending, không consumer nào xử lý) → omni-hitl-pending (Kafka, không consumer — legacy)
       → FALSE: emit SUGGEST_REMEDIATION → omni-actions
 
-hitl_dispatcher.py
-  omni-hitl-pending (Kafka)
-    → POST /v1/hitl/register (FinGuard HITL API)
-    → poll GET /v1/hitl/decisions/{id} (exponential backoff)
-    → APPROVED: produce omni-actions
-    → REJECTED: produce omni-action-feedback
+HITL duyệt/từ chối thật: Telegram (hitl_telegram.py::handle_hitl_callback) hoặc UI
+(POST /autonomy/hitl/{pending_id}/decide) → cả hai gọi AdminConfigRepo.decide_hitl() nội bộ,
+KHÔNG còn forward ra FinGuard HITL API ngoài.
 ```
 
 ### Flow 3: Proactive Anomaly → Evidence → Advisory
@@ -735,8 +731,6 @@ ui/app/api/kpi/route.ts
 ```mermaid
 graph TD
     GW[gateway/api.py] -->|omni-alerts| KAFKA[(Kafka)]
-    SB[workers/siem_bridge.py] -->|omni-alerts| KAFKA
-    EA[services/evidence_adapter/worker.py] -->|omni-diagnostic-evidence| KAFKA
 
     KAFKA -->|omni-alerts| PROBER[omni_worker prober]
     PROBER -->|k8s SDK| K8S[(Kubernetes)]
@@ -749,13 +743,13 @@ graph TD
     ANALYST -->|hash-chain| CRAT[(Redis audit_chain)]
     ANALYST -->|omni-audit-chain| KAFKA
     ANALYST -->|omni-actions SUGGEST| KAFKA
-    ANALYST -->|omni-hitl-pending| KAFKA
+    ANALYST -->|CRAT + Postgres hitl_decision| HITLPG[(omni_admin.hitl_decision)]
     ANALYST -->|Telegram card| TG[(Telegram Bot)]
 
-    KAFKA -->|omni-hitl-pending| HITL[hitl_dispatcher.py]
-    HITL -->|HTTP poll| FGAPI[(FinGuard HITL API)]
-    HITL -->|omni-actions APPROVED| KAFKA
-    HITL -->|omni-action-feedback REJECTED| KAFKA
+    TG -->|approve/reject callback| HITLTG[hitl_telegram.py]
+    HITLTG -->|decide_hitl| HITLPG
+    HITLTG -->|omni-actions APPROVED| KAFKA
+    HITLTG -->|omni-action-feedback REJECTED| KAFKA
 
     KAFKA -->|omni-actions| EXEC[omni_worker executor]
     EXEC -->|k8s mutations| K8S
@@ -765,16 +759,15 @@ graph TD
     KAFKA -->|omni-action-feedback| KPI[kpi_metrics.py]
     KPI -->|ZADD| REDIS_KPI[(Redis KPI ZSETs)]
 
-    subgraph Smart-SIEM Go
-        BG[brain-go] -->|XADD actionable_incidents| FG_REDIS[(FinGuard Redis)]
-        MG[math-gateway] -->|stats detect| FG_REDIS
-        AG[agent] -->|LLM analyze| LOCAL_LLM[(local-llm)]
-        AG -->|Telegram| TG
-        BFF[bff Gin] -->|SSE| UI_REACT[Next.js UI]
-    end
-
-    FG_REDIS -->|XREADGROUP| SB
+    SIEMCORR[siem_correlation_loop.py] -->|omni-siem-raw consume| KAFKA
+    SIEMCORR -->|omni-siem-chains| KAFKA
+    SIEMCORR -->|corr:*| CORR_REDIS[(Redis correlation state)]
 ```
+
+Ghi chú: `brain-go` (Go correlation engine cũ) RETIRED 2026-07-22, ported sang Python
+(`siem_correlation_loop.py` ở trên) — xem mục "Retired compatibility artifacts" trong
+`CLAUDE.md`. `math-gateway`/`agent` (Go, submodule `smart-siem/`) không còn là đường vào SIEM
+của Omni kể từ merge FinGuard→Smart SIEM nội bộ (Đ49, 2026-08-10).
 
 ---
 
@@ -787,10 +780,11 @@ graph TD
 | `core` | `deep_scout_periodic_loop` (baseline_snapshot), `autonomous_forecast_loop` (Prophet/linear), `baseline_snapshot_loop`, `proactive_evaluate_loop` |
 | `executor` | `kafka_actions_loop` (consume omni-actions → execute_mutate or suggest_remediation audit) |
 | `full` | All loops above (legacy monolith — all roles in one process) |
-| `siem-bridge` | `siem_bridge.py` XREADGROUP loop: FinGuard Redis → omni-alerts Kafka |
-| `evidence-adapter` | `evidence_adapter/worker.py` XREADGROUP loop: siem_evidence_raw Redis → omni-diagnostic-evidence Kafka |
-| `hitl-dispatcher` | `hitl_dispatcher.py` loop: omni-hitl-pending → FinGuard HITL API poll → omni-actions / omni-action-feedback |
 | `gateway` | FastAPI HTTP server (separate Docker image — MUST NOT import workers/) |
+
+Đ49 (2026-08-10): role `siem-bridge`/`evidence-adapter`/`hitl-dispatcher` RETIRED — code + manifest
+đã xóa hẳn (`plans/finguard-to-smart-siem-merge-2026-08-04.md`, phase S0). Không còn Deployment
+nào chạy 3 role này.
 
 > **analyst/full extra loops (autonomy tiers):** `crat_outbox_drainer_loop` (drain `crat_outbox` PENDING → CRAT block, FOR UPDATE SKIP LOCKED), `tier_readiness_loop` (compute Wilson-LB readiness → Redis `omni:tier:readiness:{tenant}`), `hitl_ui_decisions_loop` (consume `omni-hitl-decisions` → route APPROVED/REJECTED). All wired in `tier_loops.py`.
 

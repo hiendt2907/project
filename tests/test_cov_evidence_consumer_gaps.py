@@ -968,30 +968,10 @@ class TestTryLogSurgeSigmaBypass:
         assert ok is False
 
 
-# ---------------------------------------------------------------------------
-# _emit_agentic_mutate_if_any — SIEM suggest-only path
-# ---------------------------------------------------------------------------
-
-class TestEmitAgenticMutateIfAnySiem:
-    async def test_siem_batch_returns_true_suggest_only(self):
-        from workers.evidence_consumer import _emit_agentic_mutate_if_any
-        kafka = _KafkaCapture()
-        redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-        tg = AsyncMock()
-        tg.send_message = AsyncMock(return_value=None)
-        settings = _make_settings(omni_siem_suggest_only=True, telegram_admin_chat_id=9999)
-        ctx = SimpleNamespace(
-            kafka=kafka, redis=redis, settings=settings, telegram=tg,
-            vector_store=None, inbound_trace_id=None,
-        )
-        batch = _siem_batch("k8s_threat")
-        result = await _emit_agentic_mutate_if_any(
-            ctx, "trace-001", batch, sanitized_text="k8s threat detected"
-        )
-        assert result is True
-        # Verify SUGGEST_REMEDIATION was emitted to kafka
-        topics = [t for t, _ in kafka.sent]
-        assert "omni-actions" in topics
+# Đ49 B3/S0.3 — TestEmitAgenticMutateIfAnySiem removed: it tested the unconditional
+# "SIEM always suggest-only, return True" short-circuit that no longer exists
+# (plans/finguard-to-smart-siem-merge-2026-08-04.md). SIEM batches now reach the same
+# planner path as every other domain — see tests/test_siem_suggest_only.py.
 
 
 # ---------------------------------------------------------------------------

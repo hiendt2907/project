@@ -1545,9 +1545,13 @@ class WorkerSettings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("OMNI_SIEM_SUGGEST_ONLY"),
         description=(
-            "When True (default), SIEM (FinGuard siem_source=finguard) evidence batches emit "
-            "SUGGEST_REMEDIATION + Telegram to admin only — no EXECUTE_MUTATE and no HITL pipeline. "
-            "Set to False only to re-enable autonomous execution for SIEM incidents (not recommended for prod)."
+            "Đ49 B3/S0.3 (2026-08-10): KHÔNG còn gate riêng cho SIEM trong "
+            "evidence_consumer._emit_agentic_mutate_if_any — SIEM (Smart SIEM nội bộ, siem_source="
+            "'omni_siem') nay đi chung ma trận tier×risk như 8 domain còn lại, đúng thiết kế merge "
+            "khỏi FinGuard ngoài. Field này vẫn còn 2 call site legacy không liên quan riêng tới SIEM "
+            "(evidence_consumer.py Advisory Mode Phase-5 gate chung, advisory_mode_kill_switch.py "
+            "tham số không dùng) — giữ lại field để không phá 2 chỗ đó, KHÔNG suy ra ý nghĩa 'chặn "
+            "SIEM' từ tên field nữa."
         ),
     )
     shadow_influence_suggest_only: bool = Field(

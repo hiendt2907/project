@@ -271,18 +271,22 @@ async def test_emit_hitl_pending_writes_postgres_pending_row():
 
 
 def test_siem_hitl_required_and_labels():
+    """Đ49 B3/S0.3 — _siem_alert_labels chấp nhận bất kỳ siem_source không rỗng (canonical
+    nay là "omni_siem", không còn hardcode "finguard"); chỉ batch KHÔNG có siem_source mới
+    trả {}."""
     from workers import evidence_mutate_emit as eme
 
     b = [
         {
             "canonical_query_snippet": json.dumps(
-                {"labels": {"siem_hitl_required": "true", "siem_source": "finguard"}}
+                {"labels": {"siem_hitl_required": "true", "siem_source": "omni_siem"}}
             )
         }
     ]
     assert eme._siem_hitl_required(b) is True
     assert eme._siem_alert_labels(b).get("siem_hitl_required") == "true"
-    assert eme._siem_alert_labels([{"canonical_query_snippet": '{"labels": {"siem_source": "other"}}'}]) == {}
+    assert eme._siem_alert_labels([{"canonical_query_snippet": '{"labels": {"siem_source": "omni_siem"}}'}]) == {"siem_source": "omni_siem"}
+    assert eme._siem_alert_labels([{"canonical_query_snippet": '{"labels": {}}'}]) == {}
 
 
 @pytest.mark.asyncio

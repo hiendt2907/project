@@ -280,7 +280,12 @@ def _siem_hitl_required(batch: list[dict[str, Any]]) -> bool:
 
 
 def _siem_alert_labels(batch: list[dict[str, Any]]) -> dict[str, str]:
-    """Extract SIEM-specific labels from the canonical_query_snippet of the first matching batch item."""
+    """Extract SIEM-specific labels from the canonical_query_snippet of the first matching batch item.
+
+    Đ49 B3/S0.3 — trước đây chỉ khớp `siem_source=="finguard"` (external FinGuard). SIEM nay
+    là dữ liệu nội bộ (Smart SIEM merge), canonical value là "omni_siem" — chấp nhận bất kỳ
+    `siem_source` không rỗng để không phụ thuộc lại một literal cụ thể (mirror matcher.py).
+    """
     for b in batch:
         snip = str(b.get("canonical_query_snippet") or "").strip()
         if not snip.startswith("{"):
@@ -288,7 +293,7 @@ def _siem_alert_labels(batch: list[dict[str, Any]]) -> dict[str, str]:
         try:
             j = json.loads(snip)
             labels = j.get("labels") if isinstance(j, dict) else {}
-            if isinstance(labels, dict) and labels.get("siem_source") == "finguard":
+            if isinstance(labels, dict) and labels.get("siem_source"):
                 return {k: str(v) for k, v in labels.items()}
         except Exception:
             continue
@@ -325,7 +330,6 @@ async def emit_hitl_pending(
         return
 
     auto_execute_enabled = bool(getattr(ws, "omni_auto_execute_enabled", False))
-    siem_suggest_only = bool(getattr(ws, "omni_siem_suggest_only", True))
 
     if not auto_execute_enabled:
         allowed, reason = AdvisoryHITLCompat.validate_hitl_gate(trace, context="emit_hitl_pending", settings=ws)

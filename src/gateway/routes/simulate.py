@@ -271,11 +271,11 @@ def _build_evidence_envelopes(
     # with a public IP (distributed/external framing) vs the default RFC1918 IP
     # (single-internal framing). Default preserves the original internal scenario.
     _ip = (siem_ip or "10.0.0.42").strip() or "10.0.0.42"
-    # SIEM batch detection (_siem_alert_labels) keys off
-    # canonical_query_snippet.labels.siem_source == "finguard".
+    # SIEM batch detection (_siem_alert_labels) keys off presence of
+    # canonical_query_snippet.labels.siem_source (any non-empty value, canonical "omni_siem").
     siem_snip = json.dumps({
         "labels": {
-            "siem_source": "finguard",
+            "siem_source": "omni_siem",
             "siem_category": "ddos",
             "siem_severity": "critical",
             "siem_incident_id": incident_id,
