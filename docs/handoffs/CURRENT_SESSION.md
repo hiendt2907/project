@@ -5,6 +5,18 @@ hiện & vá lỗi thật do chính S3 lộ ra. Đ41 — S5 + lỗi im lặng Pr
 P1+S0/S1/S2/S4/S8. Đ39 — gỡ `lane`.) · **Branch:** `main` · **HEAD:** `07c6f5d` · Build Jenkins
 **#28 ĐANG CHẠY** (trigger tự động qua webhook, lần đầu tiên — xem Đ43).
 
+> ⚠️ **Commit `c24906b` LẪN NỘI DUNG** — message chỉ mô tả Đ43 (CI/CD) nhưng diff thật gồm CẢ
+> `src/gateway/api.py`, `src/services/analyst/diagnosis_loop.py`, `src/workers/evidence_consumer.py`,
+> `src/workers/omni_worker.py`, và 3 file test mới (`test_agent_online_threshold_derived.py`,
+> `test_meta_self_gate_fail_closed.py`, `test_webhook_prometheus_fail_closed.py`) — code này thuộc
+> một phiên/tiến trình KHÁC đang chạy song song trên cùng working directory lúc Đ43 chạy `git add`.
+> Chỉ `docs/handoffs/CURRENT_SESSION.md` là thay đổi thật của Đ43 trong commit này; phần code kia bị
+> gộp nhầm vì tiến trình kia tự stage vào cùng index ngay trước lúc commit chạy — không bị phát hiện
+> vì đã không kiểm tra `git status` kỹ trước khi `git commit`. Đã quyết định (2026-08-10, theo yêu
+> cầu user): **không revert, không sửa lịch sử** — nội dung code đó có thể vẫn đúng/an toàn, chỉ là
+> gộp nhầm lịch sử/message. Ghi chú này tồn tại để bất kỳ ai đọc `git log`/`git blame` commit
+> `c24906b` biết rõ nó không phải một khối việc, tránh hiểu nhầm khi truy nguyên sau này.
+
 ## Đ43 — CI/CD full-sync local → GCP UAT: test gate + security gate + auto-trigger + rollback (ĐANG VERIFY)
 
 **Yêu cầu user:** Mac = local dev, GCP k3s hiện tại = UAT (xác nhận không tạo cluster mới). Auto-deploy
