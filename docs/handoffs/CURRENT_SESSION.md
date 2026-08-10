@@ -1,9 +1,11 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ49 — ĐANG LÀM, blueprint dọn dẹp + hoàn thiện Omni tự vận hành, không
-thêm tính năng mới. Plan: `plans/omni-finish-autonomous-sre-and-repo-cleanup-2026-08-10.md`, đã
-review đối kháng bằng agent Opus riêng trước khi thực thi. Track A (repo hygiene) ĐÃ ĐÓNG, Track B
-(đồng bộ/sửa lệch 9-domain) đang B6/11. Xem mục Đ49 ngay dưới đây để biết chi tiết + next step.)
+**Cập nhật:** 2026-08-10 (Đ49 — blueprint dọn dẹp + hoàn thiện Omni tự vận hành, không thêm tính
+năng mới. Plan: `plans/omni-finish-autonomous-sre-and-repo-cleanup-2026-08-10.md`, đã review đối
+kháng bằng agent Opus riêng trước khi thực thi. Track A (repo hygiene) + Track B (9-domain) ĐÃ
+ĐÓNG B0-B6, **verify sống B1 fix xác nhận qua Postgres UAT thật** (dòng `hitl_decision` mới,
+`pending_id=mut-sim-sys_hard_fail-604075f2371d`). Chỉ còn C1 (tổng hợp cuối) — xem mục Đ49 để biết
+chi tiết + next step.)
 Đ48 — task #16 (việc gốc phiên trước) **XONG, VERIFY SỐNG bằng build thật #49 SUCCESS** — Jenkins
 giờ CHỈ test/build/push Harbor + bump tag git-SHA + commit-back; ArgoCD (`selfHeal: true, prune:
 true`, multi-source) là bên DUY NHẤT apply/rollout. Build #49 xác nhận trực tiếp qua `kubectl`:
@@ -33,7 +35,7 @@ bước nằm ở `docs/audit/invariant_audit_2026-08.md` (audit doc liên tục
   `ui/package.json`/`ui/packages/` — workspace root thật cho 2 portal sống. User đã xác nhận
   trước khi xóa. Ngoài phạm vi: dọn 6/14 worktree sạch trong `.claude/worktrees/` (~600MB, gitignored).
 
-### Track B — Đồng bộ/sửa lệch 9-domain: B0-B5 ĐÃ ĐÓNG, B6 GẦN XONG (chưa push), B7=C1 CHƯA LÀM
+### Track B — Đồng bộ/sửa lệch 9-domain: B0-B6 ĐÃ ĐÓNG + PUSH + DEPLOY, C1 gần xong
 - **B0** (commit 89787ed): 8 invariant chính trong CLAUDE.md đối chiếu code+test thật — cả 8 đúng.
 - **B1** (commit 9c6fefe, 097239f): **bug thật tái hiện sống trên UAT bằng Admin Simulator**
   (`POST /simulate/sys_hard_fail {target:omni}` qua gateway port-forward) —
@@ -51,15 +53,22 @@ bước nằm ở `docs/audit/invariant_audit_2026-08.md` (audit doc liên tục
   `assess_domain_severity` đọc `error_rate`/`latency_p99_ms` nhưng producer thật
   (`collectors/logs.py`) phát `failed_file_count`/`files_scanned` — lệch bí danh, cùng lớp bug
   `cpu_pct`/`cpu_percent` đã vá năm ngoái ở domain OS. Đã vá + 3 test.
-- **B6** (ĐÃ CODE + TEST XANH, `git add` rồi nhưng **CHƯA COMMIT/PUSH** — xem "Next step"): quét lại
-  9 domain tìm bug B5 có lặp ở đâu khác — **tìm thấy domain `storage` cùng lỗi hệt B5**
-  (`collectors/storage.py` phát `disk_critical_count`/`disk_warn_count`, không phát
-  `disk_pct`/`result`-trong-fact). Đã vá `src/pkg/reasoning/domain_signals.py` + 2 test trong
-  `tests/test_domain_signals.py` + ghi vào `docs/audit/invariant_audit_2026-08.md`. `os_host`/
+- **B6** (commit a3dc845, deploy qua build #52): quét lại 9 domain tìm bug B5 có lặp ở đâu khác —
+  **tìm thấy domain `storage` cùng lỗi hệt B5** (`collectors/storage.py` phát
+  `disk_critical_count`/`disk_warn_count`, không phát `disk_pct`/`result`-trong-fact; field
+  `disk_percent` mà CLAUDE.md từng ghi thực ra đến từ `collectors/system.py`, cơ chế khác hẳn). Đã
+  vá `src/pkg/reasoning/domain_signals.py` + 2 test + cập nhật CLAUDE.md bảng 9-domain. `os_host`/
   `database`/`service`/`network` xác nhận ĐÚNG (không lệch). `kubernetes`/`security`/`hardware`
   ngoài phạm vi quét (cơ chế khác/chưa build).
-- **B7 = C1** (task #11 trong task list): CHƯA LÀM — tổng hợp cuối, cập nhật bảng 9-domain trong
-  CLAUDE.md theo kết quả B1-B6, viết báo cáo tổng kết cho user, cập nhật handoff lần cuối.
+- **VERIFY SỐNG B1 trên UAT** (sau build #51 SUCCESS, tag `3428f7f`): trigger lại
+  `POST /simulate/sys_hard_fail {target:omni}` → trace `sim-sys_hard_fail-604075f2371d` escalate
+  `L3_HITL` → `hitl_pending_emitted` → query `omni_admin.hitl_decision` trên `omni-postgres-0`:
+  **1 dòng PENDING mới thật** (`pending_id=mut-sim-sys_hard_fail-604075f2371d`,
+  `tool_name=human_escalation`, `risk_class=HIGH`) — khác hẳn lần verify B1 đầu tiên (0 dòng,
+  trước fix). Fix B1 xác nhận hoạt động đúng trên UAT thật, không chỉ "code đã sửa" suông.
+- **C1** (task #11): cập nhật bảng 9-domain trong CLAUDE.md xong (storage/application → ✅ ĐÃ VÁ).
+  Còn: build #52 (deploy B6) — kiểm tra kết quả, commit+push phần cập nhật CLAUDE.md/handoff này,
+  đóng task list, báo cáo tổng kết cho user.
 
 ### Gotcha vận hành mới phát hiện (Đ49) — quan trọng cho phiên sau
 1. **Jenkins KHÔNG tự trigger khi push Gitea** (đã biết từ trước, nhắc lại): sau mỗi `git push
@@ -83,28 +92,21 @@ bước nằm ở `docs/audit/invariant_audit_2026-08.md` (audit doc liên tục
    trong phiên này, chưa cung cấp bot token thật nên chưa tạo secret thật — cần bot token +
    chat_id thật từ BotFather nếu muốn bật.
 
-### Next step (nối tiếp ngay khi vào phiên/lượt mới)
-1. Kiểm tra kết quả Jenkins build #51 (`http://100.67.117.19:30080/job/omni-gcp-deploy/51/`) và
-   `pytest tests/ -q --ignore=tests/integration` local — cả hai đang chạy nền lúc cập nhật handoff
-   này (task ID nội bộ `bbeit4wqq`, không còn hiệu lực ở phiên mới — chạy lại nếu cần).
-2. Nếu cả hai xanh: `git add -A`, commit B6 (đã sửa `src/pkg/reasoning/domain_signals.py` +
-   `tests/test_domain_signals.py` + `docs/audit/invariant_audit_2026-08.md`, nội dung đã viết sẵn
-   trong audit doc, chỉ cần thông điệp commit theo đúng convention Đ49 B6), rồi
-   `git push gitea main && git push origin main`.
-3. **Verify sống B1 fix trên UAT trước khi coi B1 là DONE thật**: build #50 (bump tag `097239f`)
-   đã FAIL do race condition (xem gotcha #2 ở trên) — chưa xác nhận `emit_hitl_pending` fix có
-   thật sự chạy trên UAT chưa. Sau khi build #51 (hoặc build mới nhất) SUCCESS, lặp lại đúng bước
-   đã làm ở B1: `POST /simulate/sys_hard_fail {"target":"omni"}` qua gateway port-forward, đợi
-   trace escalate `L3_HITL`, rồi `SELECT * FROM omni_admin.hitl_decision ORDER BY created_at DESC
-   LIMIT 1` trên `omni-postgres-0` — phải thấy 1 dòng PENDING mới, khác với lần verify B1 trước
-   (0 dòng, trước khi có fix).
-4. Làm C1 (task #11): cập nhật bảng 9-domain trong CLAUDE.md theo B1-B6 (đặc biệt storage/
-   application từ ⚠️/❌ sang ✅ ĐÃ VÁ), viết báo cáo tổng kết ngắn gửi user theo đúng 4 nhóm yêu
-   cầu ban đầu (sửa/xóa/đồng bộ/bổ sung), cập nhật lại chính file handoff này (mục hiện hành, xóa
-   phần "ĐANG LÀM" khi đã xong), push.
-5. Đóng blueprint: đánh dấu tất cả 11 task trong task list là completed.
-
-## Đ48 — Bỏ hẳn `:latest`, Jenkins chỉ build+push, ArgoCD là bên deploy duy nhất — XONG, VERIFY SỐNG build #49 SUCCESS
+### Next step (Đ49 gần như đã đóng — chỉ còn xác nhận build #52)
+1. Kiểm tra kết quả Jenkins build #52 (`http://100.67.117.19:30080/job/omni-gcp-deploy/52/`,
+   trigger sau commit `a3dc845` B6) — nếu SUCCESS, deploy đã bao gồm cả B1+B5+B6.
+2. Nếu build #52 FAIL do lỗi khác (không phải race condition — không còn push gì song song trong
+   lúc build này chạy): đọc `consoleText`, sửa nếu cần, KHÔNG push gì thêm tới khi build kế tiếp
+   xong (bài học gotcha #2 dưới đây).
+3. Commit + push phần cập nhật CLAUDE.md bảng 9-domain (storage → ✅ ĐÃ VÁ Đ49 B6) + chính file
+   handoff này.
+4. Đóng blueprint: đánh dấu tất cả 11 task trong task list là completed, báo cáo tổng kết ngắn cho
+   user theo 4 nhóm: đã sửa (B1 hitl_decision, B5 application urgency, B6 storage urgency — cả 3
+   đều verify sống được ít nhất 1 lần trên UAT thật), đã xóa (ui/app cũ, ui/e2e cũ, 6 worktree),
+   đã đồng bộ (CLAUDE.md bảng 9-domain + quy ước môi trường + mục hardware), đã bổ sung (test
+   coverage domain_signals, invariant audit doc, memory quy ước môi trường). Nêu rõ việc CHƯA làm:
+   B3 (FinGuard→Smart SIEM merge S1 collector — cần quyết định riêng, không tự ý viết vì khối
+   lượng lớn), Telegram cần bot token thật từ user.
 
 ## Đ48 — Bỏ hẳn `:latest`, Jenkins chỉ build+push, ArgoCD là bên deploy duy nhất — XONG, VERIFY SỐNG build #49 SUCCESS
 
