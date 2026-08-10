@@ -17,9 +17,24 @@
 > qua `Jenkinsfile` (Gitea nội bộ `http://100.67.117.19:30300`), nhưng job
 > `omni-gcp-deploy` **KHÔNG có trigger tự động** (`<triggers/>` rỗng trong
 > `config.xml`, xác nhận trực tiếp trên VM 2026-08-04) — push git KHÔNG tự
-> deploy, phải bấm "Build Now" hoặc gọi Jenkins API tay. Jenkins tự nó chạy như
-> **systemd service ngay trên VM** (`/etc/systemd/system/jenkins.service`),
-> không phải pod K8s, không có manifest trong `k8s/`.
+> deploy, phải bấm "Build Now" hoặc gọi Jenkins API tay.
+> ⚠️ **Jenkins đã migrate vào pod trong chính k3s cluster (2026-08-10, Đ47)** —
+> KHÔNG còn là systemd service trên VM nữa (`jenkins.service` đã `stop` +
+> `disable` hẳn, cutover xác nhận sống). Manifest: `k8s/gitops/jenkins-incluster.yaml`
+> (namespace `cicd`, Deployment 2 container: `jenkins` + sidecar DinD
+> `docker:29-dind` cho `docker build`/`push`), image controller riêng
+> `docker/jenkins-controller/Dockerfile` (kubectl/helm/istioctl/docker CLI +
+> python3/PyYAML, build+push qua Harbor bằng chính DinD sidecar, không cần VM
+> nữa). Truy cập: `http://100.67.117.19:30080` (NodePort, **không phải** `:8080`
+> nữa). Image build/deploy giờ qua Harbor thật (ClusterIP `10.43.239.205`, k3s
+> `registries.yaml` đã có mirror insecure cho IP đó) thay vì
+> `sudo k3s ctr images import` cũ — `imagePullPolicy: Always` trên
+> `omni-fullstack`/`omni-onboarding`/`omni-gateway-rollout`/portal deployments
+> vì lý do đó (`:latest` giờ sống trên registry thật, không còn bị ghi đè cục bộ
+> nữa nên `IfNotPresent` sẽ không bao giờ pull lại). Chi tiết đầy đủ + các gotcha
+> (MTU overlay lồng nhau, bind-mount DinD, UID/GID lệch khi migrate data,
+> `docker login` luôn thử HTTPS bất kể `insecure-registries`): xem mục Đ47 trong
+> `docs/handoffs/CURRENT_SESSION.md`.
 > `kubectl` local nối cluster qua Tailscale IP `100.67.117.19:6443` (không phải
 > IP nội bộ VPC `10.x` — không route được từ máy ngoài); k3s server có thêm cờ
 > `--tls-san 100.67.117.19` (chỉ sống trên VM, KHÔNG có trong git/manifest —

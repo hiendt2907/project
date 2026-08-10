@@ -1,13 +1,15 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ47 — migrate Jenkins từ VM systemd vào pod trong k3s (namespace
-`cicd`) VERIFY SỐNG THÀNH CÔNG: 2/2 Running, data+job+credential migrate nguyên vẹn, DNS/network
-cluster thật hoạt động (mục tiêu gốc của việc migrate), build+push qua DinD OK. Vẫn CHẠY SONG
-SONG với Jenkins VM cũ (hostPort 8081, chưa cutover sang 8080) — xem "Next step" cuối mục Đ47.
-Đ46 — build #40 SUCCESS, P0+P1 verify sống xong bằng incident thật qua Alertmanager. Đ45 —
-CI/CD giờ do phiên này đảm nhận hoàn toàn. Đ44 — audit backend 5-agent, P0+P1 đã code+test
+**Cập nhật:** 2026-08-10 (Đ47 — migrate Jenkins từ VM systemd vào pod trong k3s **ĐÃ CUTOVER
+XONG HOÀN TOÀN**: build #48 SUCCESS end-to-end trên pipeline mới (build→push Harbor→apply→
+production pods Running với image Harbor thật), NodePort `:30080` thay hostPort, VM
+`jenkins.service` đã `stop`+`disable` hẳn (user tự xác nhận), production health-check sạch. CI/CD
+giờ hoàn toàn chạy trong cluster, không còn phụ thuộc VM ngoài k3s bản thân. Việc gốc còn treo:
+Harbor git-SHA tag + ArgoCD selfHeal (task #16, CHƯA làm — xem "Next step"). Đ46 — build #40
+SUCCESS, P0+P1 verify sống bằng incident thật qua Alertmanager. Đ45 — CI/CD do phiên này đảm
+nhận hoàn toàn. Đ44 — audit backend 5-agent, P0+P1 đã code+test
 
-## Đ47 — Migrate Jenkins vào k3s (VERIFY SỐNG THÀNH CÔNG — chạy song song, chưa cutover)
+## Đ47 — Migrate Jenkins vào k3s — ĐÃ CUTOVER XONG, production khoẻ
 
 **Bối cảnh:** user hỏi tại sao Harbor/ArgoCD không thực sự dùng để tag/rollout image (đúng —
 pipeline luôn `docker save | k3s ctr images import` + tag `:latest`, `kubectl rollout restart`
@@ -97,36 +99,75 @@ từ trước, không liên quan). An toàn.
   chỉ báo thiếu credential (`no basic auth credentials`) — đúng hành vi kỳ vọng, chưa cấu hình
   login cho test thủ công này, KHÔNG phải lỗi.
 
-### Next step (session sau tiếp tục từ đây)
-1. **Sửa Jenkinsfile** (task #14, CHƯA làm) — bỏ các đoạn giả định Jenkins chạy trên VM host
-   (`sudo k3s ctr images import`, `istioctl`/`helm` cài thẳng trên host, mọi `kubectl` không qua
-   ServiceAccount). Đổi sang: build/push qua Harbor thật (dùng lại pattern
-   `~/.docker/config.json` đã test — KHÔNG gọi `docker login`), không cần `k3s ctr images import`
-   nữa cho 3 image core (Harbor + containerd registries.yaml đã thông đường pull thật).
-2. **Cutover** (task #15) — đổi `hostPort: 8081` → `8080` trong
-   `k8s/gitops/jenkins-incluster.yaml`, apply, xác nhận `2/2 Running` trên port mới, RỒI mới
-   `sudo systemctl stop jenkins && sudo systemctl disable jenkins` trên VM (user đã xác nhận chủ
-   trương này). Sau bước này KHÔNG còn Script Console VM nữa — mọi thao tác VM sau đó phải qua
-   `!` shell của user hoặc qua chính Jenkins pod mới.
-3. Commit `k8s/gitops/jenkins-incluster.yaml` + `Jenkinsfile` đã sửa vào git — **CHƯA commit**,
-   xem "Files changed" bên dưới.
-4. Việc gốc (task #16, CHƯA bắt đầu) vẫn còn treo: Harbor push git-SHA tag + commit-back +
-   ArgoCD `selfHeal/prune=true` cho `omni-core` — chỉ làm SAU khi cutover xong và ổn định.
+### Việc gốc CHƯA làm — Harbor git-SHA tag + ArgoCD selfHeal (task #16)
+Đây là câu hỏi ban đầu của user ("CI/CD có full harbor, argocd, phải đánh tag image và cập nhật
+trên k3s chứ?") — migrate Jenkins vào cluster chỉ là NỀN TẢNG (network/DNS thật) để làm việc này,
+CHƯA phải bản thân việc đó. Hiện tại image vẫn tag `:latest` cố định, `kubectl rollout restart`
+tay để force pull. Việc còn lại, session sau làm:
+1. Jenkinsfile: tính `IMAGE_TAG=$(git rev-parse --short HEAD)`, build/push CẢ `:latest` (giữ
+   tương thích) LẪN `:$IMAGE_TAG` lên Harbor.
+2. Cập nhật `image:` trong 6 manifest đã sửa Đ47 (`omni-fullstack.yaml`, `omni-onboarding.yaml`,
+   `omni-gateway-rollout.yaml`, `aoip-portals.gcp.yaml`, `aoip-portals-web.yaml`,
+   `crat-integrity-check-cronjob.gcp.yaml`) sang tag `$IMAGE_TAG`, `git commit` NGAY TRONG pipeline
+   (Jenkins pod đã cluster-admin, chỉ cần `git config user.email/name` + push qua credential
+   `gitea-hiendang` đã có sẵn).
+3. Bật `selfHeal: true, prune: true` trên Application `omni-core`
+   (`k8s/gitops/argocd-application.yaml`) — ArgoCD giờ mới thật sự là nguồn sự thật, không chỉ
+   drift-detector. Cân nhắc mở rộng `directory.include` để phủ luôn
+   `omni-gateway-rollout.yaml`/portal manifest thay vì chỉ 3 file hiện tại.
+4. Bỏ hẳn `kubectl rollout restart` thủ công cho các deployment này — thay đổi tag ảnh tự nhiên
+   trigger rollout thật, không cần force nữa.
 
 ### Việc khác trong phiên (không liên quan Jenkins migrate)
 - ⚠️ **Tự phát hiện + báo ngay:** đầu phiên, 1 lệnh `sed` mask lỗi làm lộ password Jenkins VM
   cleartext trong transcript (regex không khớp format `**Password**:`). Đã báo user, khuyến
-  nghị đổi password Jenkins — **CHƯA XÁC NHẬN user đã đổi hay chưa, nhắc lại ở đầu phiên sau.**
-- File `docker/jenkins-controller/Dockerfile` mới, đã dùng để build image thật (không phải
-  scaffold chưa test) — xem mục 3 ở trên.
+  nghị đổi password Jenkins — **VẪN CHƯA XÁC NHẬN user đã đổi hay chưa, nhắc lại đầu phiên sau.**
+  (Không còn quan trọng bằng trước vì VM Jenkins đã tắt hẳn, nhưng account `hiendang` trên VM vẫn
+  dùng password đó cho SSH/sudo nếu có — vẫn nên đổi.)
 
-### Files changed (Đ47, MỘT PHẦN đã commit — commit `bf8df1a`, phần còn lại CHƯA)
-- Đã commit + push (`bf8df1a`, cả gitea+origin): `Jenkinsfile` (fix root-cause credential
-  ArgoCD), `docker/jenkins-controller/Dockerfile` (mới).
-- CHƯA commit (working tree hiện tại): `docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` (password
-  Harbor mới), `k8s/gitops/jenkins-incluster.yaml` (mới, đã apply lên cluster nhưng chưa
-  commit vào git — sẽ commit SAU khi verify xong toàn bộ migrate, tránh commit một trạng thái
-  còn dở/broken).
+### Files changed (Đ47) — ĐÃ COMMIT + PUSH ĐẦY ĐỦ (4 commit, cả gitea+origin)
+`bf8df1a` → `c89e8e9` → `3ffa38a` → `fc63a8b`. Không còn gì treo chưa commit từ Đ47.
+- `Jenkinsfile`: fix credential ArgoCD (`withCredentials`), build→push Harbor (bỏ hẳn
+  `sudo k3s ctr images import`), stage "Push images to Harbor" mới.
+- `docker/jenkins-controller/Dockerfile`: image controller (kubectl/helm/istioctl/docker CLI/
+  python3/PyYAML) — build thật trên Harbor `10.43.239.205/library/jenkins-controller:v3`.
+- `k8s/gitops/jenkins-incluster.yaml`: Deployment 2 container (jenkins+dind) + PVC + RBAC +
+  Service NodePort `30080`.
+- `k8s/deployments/omni-fullstack.yaml`, `omni-onboarding.yaml`, `aoip-portals.gcp.yaml`,
+  `aoip-portals-web.yaml`, `k8s/gitops/omni-gateway-rollout.yaml`,
+  `k8s/jobs/crat-integrity-check-cronjob.gcp.yaml`: `image:` trỏ Harbor ClusterIP,
+  `imagePullPolicy: Always` (trừ cronjob dùng `IfNotPresent`).
+- `docs/handoffs/GCP_CREDENTIALS_2026-08-04.md`: password Harbor mới (đã tracked git từ trước).
+- `CLAUDE.md`: cập nhật kiến trúc Jenkins (không còn "systemd trên VM" nữa).
+
+### Verify cutover cuối cùng (đã xác nhận sống, không chỉ tin log)
+- Build #48: SUCCESS end-to-end trên Jenkins in-cluster (build→push Harbor→apply→rollout).
+- `omni-fullstack`/`omni-onboarding`/`omni-gateway`/portal pods: `2/2 Running`, image field trỏ
+  đúng Harbor ClusterIP.
+- `omni-gateway` `/healthz` 200, log cho thấy đang xử lý traffic AGENT THẬT
+  (`staging-sim_cust-edge/cust-app/cust-db`) — không phải giả lập.
+- VM `jenkins.service`: `stop` + `disable`, port 8080 không còn phản hồi (`HTTPCODE:000`).
+- Jenkins in-cluster NodePort `:30080`: `200`, pod `2/2 Running`, không crash-loop.
+- `kubectl get pods -n multi-agent --field-selector=status.phase!=Running,!=Succeeded`: rỗng —
+  không pod nào bất thường sau toàn bộ quá trình.
+
+### Gotcha tổng hợp Đ47 (đọc trước khi động vào Jenkins-in-cluster lần sau)
+1. ArgoCD auth broken do bug parse token trong Jenkinsfile cũ (pipe nuốt lỗi, không `pipefail`).
+2. Harbor admin password không khớp bất kỳ nguồn lưu trữ nào — phải reset qua Postgres trực tiếp
+   (`pbkdf2_sha256`, 600000 iterations, dklen=16 — xem Harbor `src/common/utils/encrypt.go`).
+3. `docker login` luôn thử HTTPS bất kể `insecure-registries` — dùng thẳng `~/.docker/config.json`.
+4. `insecure-registry` match theo STRING trước khi resolve DNS — cần khai cả IP lẫn DNS name.
+5. `docker:dind` tự bật TLS mặc định (`DOCKER_TLS_CERTDIR`) — phải set rỗng tường minh.
+6. Copy data giữ nguyên UID/GID gốc — phải `chown` lại khớp UID image mới.
+7. kubeconfig copy từ VM trỏ `127.0.0.1:6443` — sai trong pod, xoá để dùng ServiceAccount.
+8. Job Jenkins tự cấu hình git URL `localhost:30300` (đúng trên VM, sai trong pod) — sửa qua
+   `config.xml` API sang `gitea.cicd.svc.cluster.local:3000`.
+9. DinD là container/daemon RIÊNG — bind-mount (`docker build -v $(pwd):/repo`) cần PVC workspace
+   mount vào CẢ HAI container, không chỉ container `jenkins`.
+10. MTU lồng nhau: pod `eth0` (flannel VXLAN) 1410 vs `docker0` mặc định 1500 — gói lớn bị rớt
+    âm thầm (DNS/gói nhỏ vẫn qua được, đánh lừa chẩn đoán ban đầu). Set `--mtu=1400` cho dockerd.
+11. Image controller thiếu `python3`/`python3-yaml` — 2 chỗ trong pipeline (`vault-bootstrap.sh`,
+    Grafana apply) cần, lỗi rất khác nhau (1 cái âm thầm fallback sai, 1 cái lỗi rõ ràng).
 
 ## Đ46 — Verify sống P0+P1 THÀNH CÔNG (build #40), + 1 sự cố tự gây do chính P0 #1 đã vá cùng đợt
 
