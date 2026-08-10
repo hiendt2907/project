@@ -553,31 +553,16 @@ Chi tiết: `docs/adr/0001-cloudflare-pages-tunnel-local-core.md` ·
 
 ---
 
-## ui/app/ + ui/components/ — Next.js 15 Admin Dashboard
+## `ui/app/` + `ui/components/` — RETIRED (xóa 2026-08-10)
 
-| File | Mô tả | Depends on |
-|------|-------|------------|
-| `app/layout.tsx` | Root layout: Geist font, dark bg, Providers wrapper | components/providers |
-| `app/page.tsx` | Dashboard home: SIEM overview, diagnostic lanes, agent pods, KPI charts | components/*, recharts, api/* |
-| `app/kpi/page.tsx` | KPI page: MTTD/MTTR/acceptance rate radial charts; 24h trend | recharts, api/kpi |
-| `app/ledger/page.tsx` | Error ledger: filterable error/critical/warning entries with TTL bars | api/ledger |
-| `app/playbooks/page.tsx` | Playbook CRUD: list + create/edit/delete pre-approved remediation playbooks | api/playbooks |
-| `app/login/page.tsx` | NextAuth credentials login form | next-auth |
-| `app/api/agents/route.ts` | GET /api/agents: static pod list (prober/analyst/executor/gateway roles) | — |
-| `app/api/auth/[...nextauth]/route.ts` | NextAuth handler with Redis rate-limiting | lib/auth, lib/redis |
-| `app/api/kpi/route.ts` | Proxy to OMNI_GATEWAY_URL/kpi/summary or mock KPI data | — |
-| `app/api/ledger/route.ts` | Mock error ledger entries from WORKERS list | — |
-| `app/api/playbooks/route.ts` | GET/POST playbooks via OMNI_REDIS_URL → `pb:*` keys | lib/redis |
-| `app/api/playbooks/[id]/route.ts` | PUT/DELETE individual playbook | lib/redis |
-| `app/api/redis/metrics/route.ts` | GET Redis metrics from OMNI_REDIS_URL | lib/redis |
-| `app/api/siem/overview/route.ts` | SIEM telemetry: proxy SIEM_METRICS_URL Prometheus or mock shape | — |
-| `components/diagnostic-lanes.tsx` | DiagnosticLanes: 4-lane status cards (sys_resource/sys_hard_fail/app_http/siem_security) | ui/* |
-| `components/sidebar.tsx` | Navigation sidebar with route links | — |
-| `components/providers.tsx` | SessionProvider (NextAuth) + any global context | next-auth |
-| `components/ui/*.tsx` | shadcn/ui primitives: Button, Card, Badge, Dialog, Table, Tabs, etc. | radix-ui |
-| `lib/auth.ts` | NextAuth config: CredentialsProvider + Redis login rate-limit | next-auth, lib/redis |
-| `lib/redis.ts` | Singleton ioredis client (OMNI_REDIS_URL) | ioredis |
-| `lib/utils.ts` | cn() helper: tailwind-merge + clsx | tailwind-merge, clsx |
+Next.js app cũ (`omni-ui`, 19 route) + `ui/components/`/`ui/lib/`/`ui/types/`/
+`ui/mocks/`/`ui/public/` gốc đã bị xóa khỏi source tree — không còn
+Dockerfile/Jenkinsfile/K8s manifest nào build hay deploy tới nó từ
+2026-07-06 (portal thật là `ui/apps/provider-portal` + `ui/apps/tenant-portal`,
+xem "Provider/Tenant Portal" bên dưới). `ui/package.json` gốc (workspace
+root, `workspaces: ["apps/*","packages/*"]`) và `ui/packages/*` VẪN GIỮ
+NGUYÊN — 2 Dockerfile portal thật (`ui/apps/*/Dockerfile`) copy trực tiếp
+từ đó khi build, không phải rác.
 
 ---
 
