@@ -11,6 +11,35 @@ pipeline {
   }
 
   stages {
+    stage('Test (pytest gate)') {
+      steps {
+        sh '''
+          set -e
+          docker run --rm -v "$(pwd):/repo" -w /repo python:3.11-slim bash -c "
+            pip install -q -r requirements.txt -r requirements-gateway.txt &&
+            PYTHONPATH=src python -m pytest tests/ --ignore=tests/integration --ignore=tests/real_services -q
+          "
+        '''
+      }
+    }
+
+    stage('Security scan') {
+      steps {
+        sh '''
+          set -e
+          # Fast per-push gate on the CURRENT tree (not full git history — that's
+          # what `make secret-history-audit` already covers separately).
+          docker run --rm -v "$(pwd):/repo" zricethezav/gitleaks:v8.18.2 \
+            detect --source=/repo --config=/repo/.gitleaks.toml --no-git -v
+
+          docker run --rm -v "$(pwd):/repo" -w /repo python:3.11-slim bash -c "
+            pip install -q pip-audit &&
+            pip-audit -r requirements.txt -r requirements-gateway.txt
+          "
+        '''
+      }
+    }
+
     stage('Build images') {
       steps {
         sh '''
@@ -394,6 +423,33 @@ yaml.dump_all(docs, sys.stdout)
       sh 'kubectl get pods -n monitor -o wide || true'
       sh 'kubectl get rollout -n multi-agent || true'
       sh 'kubectl get application -n argocd || true'
+    }
+    failure {
+      // Auto-rollback: only for the app-layer Deployments/StatefulSet/Rollout that
+      // this pipeline itself restarts (never Helm releases — those aren't
+      // rollout-versioned the same way and a bad undo there is a bigger blast
+      // radius than the failure being handled). `|| true` on every line: this is a
+      // best-effort safety net running inside an already-failed build, so one
+      // resource with no prior revision (e.g. first-ever deploy) must not stop the
+      // rest of the undo attempts.
+      sh '''
+        echo "[rollback] pipeline failed — attempting kubectl rollout undo on app-layer resources"
+        kubectl rollout undo deployment/omni-fullstack -n multi-agent || true
+        kubectl rollout undo deployment/omni-onboarding -n multi-agent || true
+        kubectl rollout undo deployment/aoip-dex -n multi-agent || true
+        kubectl rollout undo deployment/aoip-provider-portal -n multi-agent || true
+        kubectl rollout undo deployment/aoip-tenant-portal -n multi-agent || true
+        kubectl rollout undo deployment/aoip-provider-web -n multi-agent || true
+        kubectl rollout undo deployment/aoip-tenant-web -n multi-agent || true
+        kubectl rollout undo statefulset/prometheus -n monitor || true
+        kubectl rollout undo deployment/loki -n monitor || true
+        kubectl rollout undo deployment/mimir -n monitor || true
+        kubectl rollout undo deployment/grafana -n monitor || true
+        # Rollout (Argo Rollouts CRD) isn't a builtin kind `kubectl rollout` knows —
+        # needs the kubectl-argo-rollouts plugin (installed on this Jenkins host).
+        kubectl argo rollouts undo omni-gateway -n multi-agent || true
+        echo "[rollback] done — see 'kubectl get pods -n multi-agent -o wide' above for resulting state"
+      '''
     }
   }
 }
