@@ -367,3 +367,21 @@ class TestAssessSeverityStorage:
     def test_baseline_disk(self):
         sev = assess_domain_severity(DOMAIN_STORAGE, "", "", {"disk_used_pct": 45.0})
         assert sev == "baseline"
+
+    def test_remote_storage_collector_schema_critical(self):
+        """Đ49 B6 — producer thật remote_agent/collectors/storage.py (probe
+        disk_usage) phát disk_critical_count/disk_warn_count, không phát
+        disk_pct/disk_percent — cùng lớp bug bí danh đã vá ở domain application
+        (B5). Trước fix, domain_severity luôn "none" cho sự cố disk thật."""
+        sev = assess_domain_severity(
+            DOMAIN_STORAGE, "", "",
+            {"disk_critical_count": 1, "disk_warn_count": 0},
+        )
+        assert sev == "critical"
+
+    def test_remote_storage_collector_schema_high(self):
+        sev = assess_domain_severity(
+            DOMAIN_STORAGE, "", "",
+            {"disk_critical_count": 0, "disk_warn_count": 2},
+        )
+        assert sev == "high"

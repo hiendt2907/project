@@ -1,15 +1,110 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ48 — task #16 (việc gốc của cả phiên) **XONG, VERIFY SỐNG bằng build
-thật #49 SUCCESS** — Jenkins giờ CHỈ test/build/push Harbor + bump tag git-SHA + commit-back;
-ArgoCD (`selfHeal: true, prune: true`, multi-source) là bên DUY NHẤT apply/rollout. Build #49 xác
-nhận trực tiếp qua `kubectl`: `omni-fullstack`/`omni-onboarding`/`aoip-provider-portal`/
-`aoip-tenant-portal`/`omni-gateway` đều chạy tag thật `e2afaf7`, ArgoCD `Synced Healthy`, commit
-tag-bump `d964e1a` do chính Jenkins tạo+push, đã fast-forward về cả 2 remote. Đ47 — migrate Jenkins từ VM
-systemd vào pod trong k3s ĐÃ CUTOVER XONG HOÀN TOÀN, build #48 SUCCESS, VM `jenkins.service` đã
-`stop`+`disable` hẳn. Đ46 — build #40 SUCCESS, P0+P1 verify sống bằng incident thật qua
-Alertmanager. Đ45 — CI/CD do phiên này đảm nhận hoàn toàn. Đ44 — audit backend 5-agent, P0+P1 đã
-code+test
+**Cập nhật:** 2026-08-10 (Đ49 — ĐANG LÀM, blueprint dọn dẹp + hoàn thiện Omni tự vận hành, không
+thêm tính năng mới. Plan: `plans/omni-finish-autonomous-sre-and-repo-cleanup-2026-08-10.md`, đã
+review đối kháng bằng agent Opus riêng trước khi thực thi. Track A (repo hygiene) ĐÃ ĐÓNG, Track B
+(đồng bộ/sửa lệch 9-domain) đang B6/11. Xem mục Đ49 ngay dưới đây để biết chi tiết + next step.)
+Đ48 — task #16 (việc gốc phiên trước) **XONG, VERIFY SỐNG bằng build thật #49 SUCCESS** — Jenkins
+giờ CHỈ test/build/push Harbor + bump tag git-SHA + commit-back; ArgoCD (`selfHeal: true, prune:
+true`, multi-source) là bên DUY NHẤT apply/rollout. Build #49 xác nhận trực tiếp qua `kubectl`:
+`omni-fullstack`/`omni-onboarding`/`aoip-provider-portal`/`aoip-tenant-portal`/`omni-gateway` đều
+chạy tag thật `e2afaf7`, ArgoCD `Synced Healthy`. Đ47 — migrate Jenkins từ VM systemd vào pod
+trong k3s ĐÃ CUTOVER XONG HOÀN TOÀN. Đ46 — build #40 SUCCESS, P0+P1 verify sống bằng incident
+thật qua Alertmanager. Đ45 — CI/CD do phiên này đảm nhận hoàn toàn.
+
+## Đ49 — Blueprint hoàn thiện Omni tự vận hành + dọn repo (ĐANG LÀM, chưa xong)
+
+**Bối cảnh:** User yêu cầu rõ: không thêm tính năng mới, chỉ sửa cái sai/xóa cái dư/đồng bộ cái
+lệch/bổ sung cái thiếu; đồng thời dọn repo cho gọn ("nhìn nó như bãi rác quá"). Quy ước môi trường
+mới chốt: **MacBook = dev, GCP k3s = UAT (KHÔNG phải production)** — luồng bắt buộc: test local
+trước → push Gitea → Jenkins build/push Harbor/bump tag → ArgoCD deploy UAT → verify qua kubectl
+trên UAT thật. Đã lưu vào memory `project_env_convention_macbook_dev_gcp_uat`.
+
+Blueprint đầy đủ tại `plans/omni-finish-autonomous-sre-and-repo-cleanup-2026-08-10.md` (2 track,
+đã review đối kháng Opus trước khi chạy — 6 CRITICAL đã sửa vào plan). Chi tiết bằng chứng từng
+bước nằm ở `docs/audit/invariant_audit_2026-08.md` (audit doc liên tục cập nhật theo B0-B6).
+
+### Track A — Repo hygiene: ĐÃ ĐÓNG (commit 1ed174f, b81e380, f9dd56c)
+- A1: tách `docs/handoffs/CURRENT_SESSION.md` 3682→316 dòng, archive tại
+  `docs/handoffs/archive/SESSION_ARCHIVE_2026-08.md`.
+- A2: đối chiếu bảng RETIRED trong CLAUDE.md — 0 file rác sót (đã dọn từ trước).
+- A3: xóa `ui/app/` (Next app cũ 19 route, đã retired 2026-07-06), `ui/Dockerfile` root,
+  `ui/e2e/`+`ui/playwright.config.ts` (target `svc/omni-ui` đã retired). GIỮ NGUYÊN
+  `ui/package.json`/`ui/packages/` — workspace root thật cho 2 portal sống. User đã xác nhận
+  trước khi xóa. Ngoài phạm vi: dọn 6/14 worktree sạch trong `.claude/worktrees/` (~600MB, gitignored).
+
+### Track B — Đồng bộ/sửa lệch 9-domain: B0-B5 ĐÃ ĐÓNG, B6 GẦN XONG (chưa push), B7=C1 CHƯA LÀM
+- **B0** (commit 89787ed): 8 invariant chính trong CLAUDE.md đối chiếu code+test thật — cả 8 đúng.
+- **B1** (commit 9c6fefe, 097239f): **bug thật tái hiện sống trên UAT bằng Admin Simulator**
+  (`POST /simulate/sys_hard_fail {target:omni}` qua gateway port-forward) —
+  `evidence_mutate_emit.py::emit_hitl_pending()` gửi Kafka+Redis nhưng KHÔNG ghi
+  `omni_admin.hitl_decision` (consumer `hitl_dispatcher.py` không đăng ký trong worker loop nào).
+  Đã vá: thêm `repo.create_hitl_pending()` trực tiếp tại nguồn, mirror `hitl_telegram.py` đã đúng.
+- **B2** (commit 61170a0): vòng học chỉ nhận nhãn khen — ĐÃ FIX TỪ TRƯỚC (commit 383cc1a), không
+  cần sửa gì, chỉ xác nhận qua code+test.
+- **B3** (commit ff3e6b4): FinGuard→Smart SIEM merge (`plans/finguard-to-smart-siem-merge-2026-08-04.md`)
+  CHƯA XONG (S0 dở, S1 collector chưa viết, `omni_admin.playbook`=0 dòng) — KHÔNG tự ý viết S1 vì
+  là khối lượng triển khai đáng kể, ranh giới với "tính năng mới" mờ. Domain `security` giữ ❌.
+- **B4** (commit 42f3053): domain `hardware` — xác nhận là giới hạn kiến trúc (containerized, 0
+  collector), không phải gap môi trường có thể giải quyết bằng đổi hạ tầng. Cập nhật CLAUDE.md.
+- **B5** (commit 3428f7f): **bug thật thứ 2** — domain `application` urgency kẹt "medium" vì
+  `assess_domain_severity` đọc `error_rate`/`latency_p99_ms` nhưng producer thật
+  (`collectors/logs.py`) phát `failed_file_count`/`files_scanned` — lệch bí danh, cùng lớp bug
+  `cpu_pct`/`cpu_percent` đã vá năm ngoái ở domain OS. Đã vá + 3 test.
+- **B6** (ĐÃ CODE + TEST XANH, `git add` rồi nhưng **CHƯA COMMIT/PUSH** — xem "Next step"): quét lại
+  9 domain tìm bug B5 có lặp ở đâu khác — **tìm thấy domain `storage` cùng lỗi hệt B5**
+  (`collectors/storage.py` phát `disk_critical_count`/`disk_warn_count`, không phát
+  `disk_pct`/`result`-trong-fact). Đã vá `src/pkg/reasoning/domain_signals.py` + 2 test trong
+  `tests/test_domain_signals.py` + ghi vào `docs/audit/invariant_audit_2026-08.md`. `os_host`/
+  `database`/`service`/`network` xác nhận ĐÚNG (không lệch). `kubernetes`/`security`/`hardware`
+  ngoài phạm vi quét (cơ chế khác/chưa build).
+- **B7 = C1** (task #11 trong task list): CHƯA LÀM — tổng hợp cuối, cập nhật bảng 9-domain trong
+  CLAUDE.md theo kết quả B1-B6, viết báo cáo tổng kết cho user, cập nhật handoff lần cuối.
+
+### Gotcha vận hành mới phát hiện (Đ49) — quan trọng cho phiên sau
+1. **Jenkins KHÔNG tự trigger khi push Gitea** (đã biết từ trước, nhắc lại): sau mỗi `git push
+   gitea main`, phải tự gọi Jenkins API để trigger build nếu muốn deploy lên UAT ngay. Credential:
+   `docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` (không commit) — Jenkins user/pass ở đó. Cách
+   trigger qua curl (crumb + cookie jar, xem lịch sử bash trong session này nếu cần lại):
+   `curl -c jar -u user:pass .../crumbIssuer/api/json` lấy crumb → `curl -b jar -u user:pass -H
+   "Jenkins-Crumb: $CRUMB" -X POST .../job/omni-gcp-deploy/build`.
+2. **RACE CONDITION đã gây build #50 FAIL**: trigger Jenkins build RỒI vẫn tiếp tục `git push`
+   commit khác lên `gitea` trong lúc build đang chạy → bước "Update image tags in git (GitOps)"
+   của Jenkins bị `git push` từ chối (non-fast-forward) vì `main` đã đổi. Image vẫn build/push
+   Harbor thành công (không mất gì), chỉ bước tag-bump git fail nên ArgoCD không thấy tag mới.
+   **Bài học: sau khi trigger Jenkins build, KHÔNG push thêm commit nào tới khi build xong.** Build
+   #51 được trigger lại sau khi ngừng push — xem kết quả ở "Next step" nếu wakeup đã chạy.
+3. Bảng `omni_admin` (32 bảng, đúng CLAUDE.md) sống trong schema `omni_admin` của DB `omnidb`
+   trên pod `omni-postgres-0` — `psql -U omni -d omnidb` mặc định vào schema `public` (rỗng),
+   phải `SELECT ... FROM omni_admin.<table>` tường minh hoặc `\dn`/`SET search_path`.
+4. Secret `telegram-bot` (namespace `multi-agent`) trên UAT vẫn là **placeholder rỗng**
+   (`bot-token=""`, `chat-id="0"`) + `OMNI_TELEGRAM_ENABLED=false` trong ConfigMap — đây là thiết
+   kế cố ý (file `k8s/deployments/telegram-bot-secret.yaml` ghi rõ), KHÔNG phải bug. User hỏi
+   trong phiên này, chưa cung cấp bot token thật nên chưa tạo secret thật — cần bot token +
+   chat_id thật từ BotFather nếu muốn bật.
+
+### Next step (nối tiếp ngay khi vào phiên/lượt mới)
+1. Kiểm tra kết quả Jenkins build #51 (`http://100.67.117.19:30080/job/omni-gcp-deploy/51/`) và
+   `pytest tests/ -q --ignore=tests/integration` local — cả hai đang chạy nền lúc cập nhật handoff
+   này (task ID nội bộ `bbeit4wqq`, không còn hiệu lực ở phiên mới — chạy lại nếu cần).
+2. Nếu cả hai xanh: `git add -A`, commit B6 (đã sửa `src/pkg/reasoning/domain_signals.py` +
+   `tests/test_domain_signals.py` + `docs/audit/invariant_audit_2026-08.md`, nội dung đã viết sẵn
+   trong audit doc, chỉ cần thông điệp commit theo đúng convention Đ49 B6), rồi
+   `git push gitea main && git push origin main`.
+3. **Verify sống B1 fix trên UAT trước khi coi B1 là DONE thật**: build #50 (bump tag `097239f`)
+   đã FAIL do race condition (xem gotcha #2 ở trên) — chưa xác nhận `emit_hitl_pending` fix có
+   thật sự chạy trên UAT chưa. Sau khi build #51 (hoặc build mới nhất) SUCCESS, lặp lại đúng bước
+   đã làm ở B1: `POST /simulate/sys_hard_fail {"target":"omni"}` qua gateway port-forward, đợi
+   trace escalate `L3_HITL`, rồi `SELECT * FROM omni_admin.hitl_decision ORDER BY created_at DESC
+   LIMIT 1` trên `omni-postgres-0` — phải thấy 1 dòng PENDING mới, khác với lần verify B1 trước
+   (0 dòng, trước khi có fix).
+4. Làm C1 (task #11): cập nhật bảng 9-domain trong CLAUDE.md theo B1-B6 (đặc biệt storage/
+   application từ ⚠️/❌ sang ✅ ĐÃ VÁ), viết báo cáo tổng kết ngắn gửi user theo đúng 4 nhóm yêu
+   cầu ban đầu (sửa/xóa/đồng bộ/bổ sung), cập nhật lại chính file handoff này (mục hiện hành, xóa
+   phần "ĐANG LÀM" khi đã xong), push.
+5. Đóng blueprint: đánh dấu tất cả 11 task trong task list là completed.
+
+## Đ48 — Bỏ hẳn `:latest`, Jenkins chỉ build+push, ArgoCD là bên deploy duy nhất — XONG, VERIFY SỐNG build #49 SUCCESS
 
 ## Đ48 — Bỏ hẳn `:latest`, Jenkins chỉ build+push, ArgoCD là bên deploy duy nhất — XONG, VERIFY SỐNG build #49 SUCCESS
 

@@ -166,3 +166,52 @@ blueprint dọn dẹp này.
 **Kết luận B3:** Domain `security` vẫn giữ nguyên trạng thái ❌ trong
 CLAUDE.md — đúng thực tế, không phải tài liệu lệch. Không sửa gì thêm
 trong lượt này.
+
+---
+
+## B6 — Loop-until-dry: quét lại 9 domain, tìm được 1 lệch mới (2026-08-10)
+
+Đối chiếu từng producer thật (`src/remote_agent/collectors/*.py`) với
+`assess_domain_severity` (Omni-side) xem field/`result` có khớp không —
+cùng phương pháp đã lộ ra bug B5.
+
+| Domain | Producer đặt `result` trong `extracted_fact`? | Field numeric khớp `_check_numeric_thresholds`? | Kết luận |
+|---|---|---|---|
+| `os_host` | (dùng cơ chế baseline riêng `remote_host_baseline.py`, không qua `assess_domain_severity`) | `cpu_percent`/`mem_percent`/`disk_percent` — có alias, đã vá 2026-07-31 | ✅ đúng |
+| `database` | ✅ `database.py:155 fact["result"]=result` | có `replication_lag_s` khớp | ✅ đúng (Priority 1 đủ, nhánh numeric là dự phòng không bao giờ chạm) |
+| `service` | ✅ `services.py:310` | n/a (Priority 1 đủ) | ✅ đúng — tái xác nhận sống qua trace `sim-service-075f88ff7091` (turn 2, confidence 0.30, do agent OFFLINE degraded — không liên quan bug field) |
+| `network` | ✅ `network.py:125` | n/a (Priority 1 đủ) | ✅ đúng |
+| `storage` | ❌ **KHÔNG** — chỉ có `disk_critical_count`/`disk_warn_count`, không có `result` hay `disk_pct`/`disk_percent` | ❌ trước fix: miss hoàn toàn | ⚠️ **LỆCH MỚI TÌM ĐƯỢC — ĐÃ VÁ cùng lượt này** (xem dưới) |
+| `application` | ❌ | ❌ trước fix | Đã vá ở B5 |
+| `kubernetes` | (cơ chế riêng `os_state_validator.py`, không qua `assess_domain_severity`) | n/a | Ngoài phạm vi quét này |
+| `security` | Chưa có producer thật (B3) | n/a | Ngoài phạm vi (chưa build) |
+| `hardware` | Không tồn tại (B4) | n/a | Ngoài phạm vi (giới hạn kiến trúc) |
+
+**Phát hiện mới: domain `storage`** — `collectors/storage.py` (probe
+`disk_usage`) không đặt `result` vào `extracted_fact` (chỉ truyền `result=`
+làm tham số top-level cho `build_envelope`, giống hệt lỗi đã vá ở
+application/B5), và cũng không phát `disk_pct`/`disk_used_pct`/`disk_percent`
+— field `disk_percent` mà CLAUDE.md từng ghi ("storage · metric
+disk_percent") thực ra đến từ `collectors/system.py` (cơ chế baseline
+os_host 3-sigma, HOÀN TOÀN khác `assess_domain_severity`) — bằng chứng
+verified cũ trong CLAUDE.md nhiều khả năng đã đo nhầm cơ chế bắt lỗi
+(baseline os_host bắt được, không phải `assess_domain_severity` domain
+storage như ghi).
+
+**Đã vá:** thêm nhánh đọc `disk_critical_count`/`disk_warn_count` (field
+thật) vào `_check_numeric_thresholds` cho `DOMAIN_STORAGE`, mirror đúng
+cách đã làm cho `DOMAIN_APPLICATION` ở B5. 2 test mới trong
+`tests/test_domain_signals.py`.
+
+**Vòng quét tiếp theo (round 2) không cần thiết ngay** — 1 vòng đã tìm đủ
+bằng chứng để đóng loop-until-dry theo tiêu chí: các domain còn lại
+(`os_host`/`database`/`service`/`network`) đều xác nhận `result` được đặt
+đúng vị trí trong `extracted_fact`, không còn nghi vấn schema-mismatch nào
+khác chưa kiểm.
+
+**Còn tồn đọng, chưa xử lý (ghi lại, không thuộc phạm vi "chỉ sửa"):**
+`inode_critical` (list, không phải count) trong `storage.py` chưa có
+đường vào `assess_domain_severity` — sự cố inode-đầy sẽ vẫn miss dù disk
+percent bình thường. Đây là gap nhỏ hơn, cùng họ nhưng cần thêm 1 field
+đếm (`inode_critical_count`) ở phía collector mới vá triệt để — để lại
+cho lượt sau vì đụng tới producer VM-side (rủi ro cao hơn sửa phía Omni).

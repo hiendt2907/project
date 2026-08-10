@@ -433,6 +433,19 @@ def _check_numeric_thresholds(domain: str, fact: dict[str, Any]) -> str | None:
             return "high"
         if disk is not None and disk > 80:
             return "medium"
+        # Đ49 B6 — cùng lớp lệch bí danh vá ở domain application (B5): producer
+        # thật `remote_agent/collectors/storage.py` (probe `disk_usage`) không
+        # phát `disk_pct`/`disk_percent`/`result`-trong-fact — chỉ phát
+        # `disk_critical_count`/`disk_warn_count` (đếm số partition đã VƯỢT
+        # ngưỡng 95%/90% ngay trên host, không phải % thô). Thiếu nhánh này khiến
+        # domain_severity luôn "none" cho sự cố disk thật, urgency kẹt ở "medium"
+        # qua failed_ratio dự phòng dù có bao nhiêu partition critical.
+        disk_critical_count = _num("disk_critical_count")
+        disk_warn_count = _num("disk_warn_count")
+        if disk_critical_count is not None and disk_critical_count > 0:
+            return "critical"
+        if disk_warn_count is not None and disk_warn_count > 0:
+            return "high"
 
     elif domain == DOMAIN_DATABASE:
         error_count = _num("error_count") or _num("deadlock_count")
