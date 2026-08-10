@@ -44,10 +44,15 @@ Lớp bảo vệ "chỉ tôi được vào" trước khi tới các UI monitorin
 
 ## Harbor (registry.omnisre.xyz)
 
-- **URL**: `https://registry.omnisre.xyz`
+- **URL**: `https://registry.omnisre.xyz` (chưa test — `harbor-values.yaml` ghi ClusterIP-only,
+  không public ingress; nếu URL này không sống, dùng `svc/harbor` ClusterIP nội bộ)
 - **User**: `admin`
-- **Password**: `d6dd73468861b78ea46d39bdd42bdb79`
-- Lưu trong k8s Secret `harbor-admin-bootstrap` (namespace `harbor`).
+- **Password**: `5d39921bfc6d263ae5784f80fb5e5d348e7ac286` (reset 2026-08-10 — cả secret cũ lẫn
+  giá trị cũ trong doc này đều KHÔNG khớp Harbor thật, xác nhận qua log `harbor-core`
+  "Invalid credentials"; reset trực tiếp qua `UPDATE harbor_user` trên Postgres của Harbor,
+  đúng scheme `pbkdf2_sha256` — PBKDF2-HMAC-SHA256, 600000 iterations, dklen=16, xem
+  `src/common/utils/encrypt.go` upstream Harbor v2.15.2)
+- Lưu trong k8s Secret `harbor-admin-bootstrap` (namespace `harbor`) — đã đồng bộ lại.
 
 ## ArgoCD (argocd.omnisre.xyz)
 

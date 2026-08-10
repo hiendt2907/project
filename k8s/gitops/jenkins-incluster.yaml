@@ -1,0 +1,179 @@
+# Jenkins controller, migrated in-cluster 2026-08-10 (namespace cicd, alongside Gitea).
+# Replaces the systemd service that used to run directly on omni-k3s-vm — in-cluster
+# gives it real cluster DNS (*.svc.cluster.local resolves) and ClusterIP routing, so
+# the pipeline no longer needs host-level insecure-registries/no-DNS workarounds to
+# reach Harbor or any other in-cluster service.
+#
+# DinD sidecar: `docker build`/`push` run against a Docker daemon in its OWN sidecar
+# container, sharing the pod's network namespace (localhost) — so those commands also
+# get real cluster networking, not the host VM's. Requires a privileged sidecar
+# (standard DinD constraint); single-tenant cluster, same trust level the VM-based
+# Jenkins already had via passwordless sudo for k3s ctr.
+#
+# hostPort 8080 on the node (single-node cluster, same as the VM's prior systemd
+# Jenkins) preserves the existing access address (http://100.67.117.19:8080 via
+# Tailscale) without needing a new Ingress/NodePort during migration.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jenkins-home
+  namespace: cicd
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jenkins-dind-data
+  namespace: cicd
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins
+  namespace: cicd
+---
+# Matches the trust level the VM-based Jenkins already had via its kubeconfig
+# (cluster-admin-equivalent) — the pipeline creates namespaces, CRDs (Istio/ArgoCD/
+# Argo Rollouts/Vault ESO), and cluster-scoped RBAC objects across many namespaces.
+# Single-tenant lab/prod box; not scoping down further here, same as before.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jenkins-cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: cicd
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins
+  namespace: cicd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: jenkins
+  template:
+    metadata:
+      labels:
+        app: jenkins
+    spec:
+      serviceAccountName: jenkins
+      hostPID: false
+      containers:
+        - name: jenkins
+          image: 10.43.239.205/library/jenkins-controller:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              # hostPort 8081 (not 8080) while running in parallel with the VM's
+              # systemd Jenkins — that one still owns :8080 and is also this
+              # session's remote-execution channel (Script Console) until the
+              # migration is verified. Switch to 8080 only after cutover.
+              hostPort: 8081
+            - name: agent
+              containerPort: 50000
+          env:
+            - name: DOCKER_HOST
+              value: tcp://localhost:2375
+            - name: JAVA_OPTS
+              value: "-Djenkins.install.runSetupWizard=false"
+          volumeMounts:
+            - name: jenkins-home
+              mountPath: /var/jenkins_home
+          resources:
+            requests:
+              cpu: "250m"
+              memory: 1Gi
+            limits:
+              memory: 3Gi
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+        - name: dind
+          image: docker:29-dind
+          securityContext:
+            privileged: true
+          env:
+            # docker:dind's entrypoint auto-generates TLS certs and enables
+            # TLS by default (DOCKER_TLS_CERTDIR defaults to /certs) REGARDLESS
+            # of the explicit --host arg below — confirmed live 2026-08-10:
+            # even `docker images` (no registry contact at all) failed with
+            # "Client sent an HTTP request to an HTTPS server", meaning the
+            # client↔daemon link itself was TLS-mismatched, not a registry
+            # issue. Empty string is docker:dind's documented way to fully
+            # disable the auto-TLS setup for a plain HTTP daemon.
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          # Harbor still has TLS disabled (see harbor-values.yaml) — the DinD
+          # daemon needs its own insecure-registries entry, scoped to this
+          # sidecar only, no host-level daemon.json edit needed anymore.
+          args:
+            - --host=tcp://0.0.0.0:2375
+            # Both forms needed: insecure-registry matching is a string/CIDR
+            # match done BEFORE DNS resolution, so the ClusterIP and the DNS
+            # name are two separate entries even though they resolve to the
+            # same place (confirmed live 2026-08-10: pushing by DNS name alone
+            # got "Client sent an HTTP request to an HTTPS server" — Docker
+            # defaulted to HTTPS because only the IP form was listed).
+            - --insecure-registry=10.43.239.205
+            - --insecure-registry=harbor.harbor.svc.cluster.local
+          volumeMounts:
+            - name: jenkins-dind-data
+              mountPath: /var/lib/docker
+          resources:
+            requests:
+              cpu: "250m"
+              memory: 1Gi
+            limits:
+              memory: 4Gi
+      volumes:
+        - name: jenkins-home
+          persistentVolumeClaim:
+            claimName: jenkins-home
+        - name: jenkins-dind-data
+          persistentVolumeClaim:
+            claimName: jenkins-dind-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins
+  namespace: cicd
+spec:
+  selector:
+    app: jenkins
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: agent
+      port: 50000
+      targetPort: agent
