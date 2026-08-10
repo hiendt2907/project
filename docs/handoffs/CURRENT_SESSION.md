@@ -1,9 +1,46 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ43 — CI/CD full-sync local→GCP UAT, ĐANG VERIFY. Đ42 — S3 xong + phát
-hiện & vá lỗi thật do chính S3 lộ ra. Đ41 — S5 + lỗi im lặng PromQL. Đ40 — proactive-first
-P1+S0/S1/S2/S4/S8. Đ39 — gỡ `lane`.) · **Branch:** `main` · **HEAD:** `07c6f5d` · Build Jenkins
-**#28 ĐANG CHẠY** (trigger tự động qua webhook, lần đầu tiên — xem Đ43).
+**Cập nhật:** 2026-08-10 (Đ43 — CI/CD full-sync local→GCP UAT DONE cho cơ chế + đã xóa 46 test
+nginx-test lỗi thời, verify xanh 7330/7330 local. Đ42 — S3 xong + phát hiện & vá lỗi thật do
+chính S3 lộ ra. Đ41 — S5 + lỗi im lặng PromQL. Đ40 — proactive-first P1+S0/S1/S2/S4/S8. Đ39 —
+gỡ `lane`.) · **Branch:** `main` · **HEAD:** `874ca77`.
+
+## Đ43 tiếp — xóa 46 test phụ thuộc fixture `nginx-test` không còn tồn tại (commit `874ca77`)
+
+Theo yêu cầu user sau khi build #28-31 lộ ra 52 test fail trong CI. Điều tra kỹ hơn: chỉ 46/52
+thật sự liên quan `nginx-test` (pod fixture không tồn tại trên chính cluster GCP —
+`kubectl get pod nginx-test -n multi-agent` → NotFound, xác nhận không phải lỗi riêng môi trường
+CI cô lập). 6/52 fail còn lại (`test_diag_command_normalize.py`,
+`test_remote_agent_command_executor.py` x3, `test_feedback_full_agentic_planner.py`,
+`test_remote_agent_outbox.py`) là root cause KHÁC (nghi subprocess sandbox bị hạn chế trong
+container Docker cô lập của Jenkins — không tái hiện khi chạy trên Mac có đủ quyền OS) — **cố ý
+KHÔNG xóa**, ngoài phạm vi yêu cầu "xóa test liên quan nginx-test".
+
+Đã dùng `ast` để định vị chính xác 27 hàm test trong `test_track2a_k8s_sdk.py` + 19 hàm trong
+`test_track2b_diagnostic_proactive.py` khớp đúng tên trong log FAILED thật (không xóa theo cảm
+tính/regex chuỗi "nginx" — nhiều test khác cùng file cũng có chữ "nginx" trong tên/docstring
+nhưng viết khoan dung với fixture vắng mặt kiểu `if unavailable: assert reason else: assert data`
+nên KHÔNG fail, KHÔNG lỗi thời, đã giữ nguyên, ví dụ `test_real_nginx_deployment`).
+
+**Verify xanh:**
+- `pytest tests/test_track2a_k8s_sdk.py tests/test_track2b_diagnostic_proactive.py` → 332/332 pass.
+- Full suite `pytest tests/ --ignore=tests/integration --ignore=tests/real_services` → **7330
+  passed, 0 failed** trên Mac (có k8s access thật qua Tailscale) — xác nhận xóa đúng phạm vi,
+  không phá gì khác. 6 fail "subprocess sandbox" ở trên không tái hiện trên Mac, càng củng cố đó
+  là vấn đề riêng của môi trường container Jenkins, không phải bug code.
+
+### Next step — chưa làm, để ngỏ
+- Push `874ca77` đã tự trigger 1 build Jenkins mới qua webhook (chưa kiểm kết quả lúc kết thúc
+  phiên). Kỳ vọng: Test gate lần này chỉ còn 6 fail "subprocess sandbox" (không phải 52), pipeline
+  vẫn dừng ở gate (đúng ý — 6 fail đó chưa được xử lý), nhưng sẽ KHÔNG còn nginx-test trong danh
+  sách fail nữa. Session sau: `sudo tail .../builds/<N>/log` xác nhận đúng dự đoán này.
+- 6 fail "subprocess sandbox" vẫn treo — cần quyết định: chạy Test stage KHÔNG cô lập trong Docker
+  (chạy thẳng trên Jenkins host, có quyền OS đầy đủ hơn) hay điều tra sandbox permission cụ thể
+  thiếu gì trong `python:3.11-slim`. Chưa điều tra sâu, ngoài phạm vi phiên này.
+- Working tree hiện KHÔNG sạch do 1 tiến trình/agent khác đang chạy song song (`src/remote_agent/
+  collectors/system.py`, `src/services/case_ledger/advocacy.py`, `src/workers/
+  remote_agent_pipeline.py` + 3 file test mới) — KHÔNG phải của Đ43, không đụng vào. Session sau
+  `git status` trước khi tiếp tục, đối chiếu xem tiến trình kia đã commit gì thêm chưa.
 
 > ⚠️ **Commit `c24906b` LẪN NỘI DUNG** — message chỉ mô tả Đ43 (CI/CD) nhưng diff thật gồm CẢ
 > `src/gateway/api.py`, `src/services/analyst/diagnosis_loop.py`, `src/workers/evidence_consumer.py`,
