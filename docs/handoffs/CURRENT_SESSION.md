@@ -3129,3 +3129,4 @@ nhưng **không có dashboard/trace nào cho LLM**.
 - `docs/architecture/SYSTEM_DIAGRAMS.md` — 6 sơ đồ verified
 - `src/workers/advisory_grounding_gate.py` — cổng chống bịa, đang thiếu call site
 - `omni:diag:session:{trace}` trong Redis — nơi duy nhất thấy được LLM nghĩ gì
+# webhook-verify 20260810T033458Z
