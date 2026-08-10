@@ -1,6 +1,7 @@
 """Collect CPU, memory, disk metrics via psutil."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -36,7 +37,14 @@ async def collect_system_metrics(
     disk_warn = float(t.get("disk_warn", _DISK_WARN))
 
     try:
-        cpu = psutil.cpu_percent(interval=1)
+        # interval=1 nội bộ psutil làm time.sleep(1) đồng bộ — gọi thẳng trong
+        # async def sẽ đóng băng CẢ event loop của agent 1s/chu kỳ, kể cả vòng poll
+        # command-channel (agent.py, _CMD_POLL_INTERVAL=5) đang chạy chung loop này.
+        # run_in_executor đẩy phần block sang thread pool, event loop vẫn sống
+        # (audit 2026-08-10, docs/audit/BACKEND_AUDIT_PLAN_2026-08-10.md #5).
+        cpu = await asyncio.get_running_loop().run_in_executor(
+            None, psutil.cpu_percent, 1
+        )
         mem = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
         load = list(psutil.getloadavg())

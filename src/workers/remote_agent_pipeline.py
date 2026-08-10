@@ -17,6 +17,7 @@ import json
 import logging
 from typing import Any
 
+from anomaly.remote_host_baseline import REMOTE_Z_THRESHOLD
 from pkg.domain.taxonomy import UNKNOWN as _DOMAIN_UNKNOWN, normalize_domain
 from pkg.reasoning.domain_signals import detect_domain
 from pkg.reasoning.evidence_cluster import upsert_cluster
@@ -208,7 +209,14 @@ async def handle_remote_agent_evidence(
         # spams Active Traces with one "healthy" entry per host per collect cycle.
         # Park it in a side-channel snapshot instead; only a real breach proceeds
         # into the pipeline below.
-        is_anomalous = result == "FAILED" or any(abs(v) > 3.0 for v in zscores.values())
+        # REMOTE_Z_THRESHOLD, không phải literal 3.0: đây là hằng số đã có nguồn chuẩn
+        # (three_sigma.DEFAULT_THRESHOLD) với comment "không phát minh số mới cho remote
+        # host" — trước đây bị gõ lại thành literal ở đây, hai giá trị trùng nhau hôm nay
+        # nhưng sẽ trôi khỏi nhau âm thầm nếu một bên được tune sau này (audit 2026-08-10
+        # #7, docs/audit/BACKEND_AUDIT_PLAN_2026-08-10.md).
+        is_anomalous = result == "FAILED" or any(
+            abs(v) > REMOTE_Z_THRESHOLD for v in zscores.values()
+        )
         if not is_anomalous:
             await _store_healthy_baseline_sample(ctx.redis, agent_id, extracted, zscores)
             return ""

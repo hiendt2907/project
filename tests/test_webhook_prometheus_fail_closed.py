@@ -70,7 +70,7 @@ async def test_prod_without_webhook_secret_rejects_with_503(monkeypatch) -> None
 
     monkeypatch.setattr(gw, "_WEBHOOK_SECRET", b"")
     monkeypatch.setattr(gw, "_redis", _FakeRedisGetNone())
-    monkeypatch.setattr(gw, "_rate_tokens", 100)
+    monkeypatch.setattr(gw, "_rate_tokens", gw.OrderedDict())
     os.environ["OMNI_ENV_MODE"] = "prod"
     os.environ.pop("OMNI_GATEWAY_WEBHOOK_SECRET", None)
 
@@ -96,7 +96,7 @@ async def test_lab_mode_without_webhook_secret_still_open(monkeypatch) -> None:
     monkeypatch.setattr(gw, "_WEBHOOK_SECRET", b"")
     monkeypatch.setattr(gw, "_redis", _FakeRedisGetNone())
     monkeypatch.setattr(gw, "_kafka", _FakeKafka())
-    monkeypatch.setattr(gw, "_rate_tokens", 100)
+    monkeypatch.setattr(gw, "_rate_tokens", gw.OrderedDict())
     os.environ["OMNI_ENV_MODE"] = "lab"
     os.environ.pop("OMNI_GATEWAY_WEBHOOK_SECRET", None)
 
@@ -114,7 +114,7 @@ async def test_prod_with_webhook_secret_configured_but_no_signature_rejects_401(
 
     monkeypatch.setattr(gw, "_WEBHOOK_SECRET", b"real-secret")
     monkeypatch.setattr(gw, "_redis", _FakeRedisGetNone())
-    monkeypatch.setattr(gw, "_rate_tokens", 100)
+    monkeypatch.setattr(gw, "_rate_tokens", gw.OrderedDict())
     os.environ["OMNI_ENV_MODE"] = "prod"
 
     req = _make_request()

@@ -15,6 +15,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -316,17 +317,50 @@ def _is_chaos_lab_prometheus_webhook(body: Any) -> bool:
 # ─── State ────────────────────────────────────────────────────────────────────
 _redis: aioredis.Redis | None = None
 _kafka: AIOKafkaProducer | None = None
-# Token Bucket: integer counter — asyncio single-threaded, no lock needed.
-_rate_tokens: int = 0
+# Token bucket PER NGUỒN GỌI (client IP), không phải 1 bucket dùng chung — trước
+# đây một nguồn ồn ào (hoặc kẻ tấn công, nhất là khi #1 chưa vá) chiếm hết budget
+# của MỌI nguồn khác đang gọi cùng endpoint (audit 2026-08-10, #4). `OrderedDict`
+# đóng vai LRU bounded để không phình bộ nhớ nếu có nhiều IP lạ gọi vào — tối đa
+# `_MAX_RATE_LIMIT_KEYS` nguồn được theo dõi cùng lúc, cũ nhất bị đuổi trước.
+# asyncio single-threaded, không cần lock.
+_MAX_RATE_LIMIT_KEYS = 500
+_rate_tokens: OrderedDict[str, int] = OrderedDict()
 _token_refill_task: asyncio.Task | None = None
 
 
+def _rate_limit_key(request: Request) -> str:
+    client = request.client
+    return client.host if client else "unknown"
+
+
+def _take_rate_limit_token(key: str) -> bool:
+    """True nếu còn token cho `key`. Cấp phát mới đủ RATE_LIMIT_TPS lần đầu gặp."""
+    global _rate_tokens
+    if key not in _rate_tokens:
+        if len(_rate_tokens) >= _MAX_RATE_LIMIT_KEYS:
+            _rate_tokens.popitem(last=False)
+        _rate_tokens[key] = RATE_LIMIT_TPS
+    else:
+        _rate_tokens.move_to_end(key)
+    if _rate_tokens[key] > 0:
+        _rate_tokens[key] -= 1
+        return True
+    return False
+
+
 async def _refill_tokens() -> None:
-    """Reset token bucket to RATE_LIMIT_TPS every second."""
+    """Reset toàn bộ token bucket (mọi key đang theo dõi) về RATE_LIMIT_TPS mỗi giây."""
     global _rate_tokens
     while True:
         await asyncio.sleep(1.0)
-        _rate_tokens = RATE_LIMIT_TPS
+        try:
+            for key in list(_rate_tokens.keys()):
+                _rate_tokens[key] = RATE_LIMIT_TPS
+        except Exception:
+            # Không để loop chết im lặng: task chết mà không log thì rate limit
+            # rơi vào trạng thái đứng yên vĩnh viễn, không ai biết vì sao 429 dai
+            # dẳng hoặc biến mất hẳn (finding MEDIUM #4 phụ, cùng đợt audit).
+            logger.exception("event=rate_limit_refill_failed — token bucket có thể kẹt")
 
 
 def _build_redis_client() -> aioredis.Redis:
@@ -395,7 +429,7 @@ async def lifespan(app: FastAPI):
     )
     await _kafka.start()
     global _rate_tokens
-    _rate_tokens = RATE_LIMIT_TPS
+    _rate_tokens = OrderedDict()
     _token_refill_task = asyncio.create_task(_refill_tokens())
     logger.info(
         "omni-gateway started. rate_limit=%d tps kafka_topic=%s bootstrap=%s",
@@ -596,12 +630,15 @@ async def prometheus_webhook(request: Request) -> JSONResponse:
 async def _prometheus_webhook_body(request: Request, trace_id: str) -> JSONResponse:
     logger.info("[GATEWAY][%s] webhook_prometheus enter", trace_id)
 
-    # ── 1. Rate Limiting (Token Bucket) ──────────────────────────────────────
-    global _rate_tokens
-    if _rate_tokens > 0:
-        _rate_tokens -= 1
-    else:
-        logger.warning("[GATEWAY][%s] Rate limit exceeded (%d TPS). Dropping request.", trace_id, RATE_LIMIT_TPS)
+    # ── 1. Rate Limiting (Token Bucket, PER NGUỒN GỌI) ────────────────────────
+    # Trước đây 1 bucket dùng chung cho mọi nguồn — 1 nguồn ồn ào chiếm hết budget
+    # của nguồn khác (audit 2026-08-10, #4). Nay mỗi client IP có bucket riêng.
+    _rl_key = _rate_limit_key(request)
+    if not _take_rate_limit_token(_rl_key):
+        logger.warning(
+            "[GATEWAY][%s] Rate limit exceeded (%d TPS) for source=%s. Dropping request.",
+            trace_id, RATE_LIMIT_TPS, _rl_key,
+        )
         gw_requests.labels(status="429_rate_limit").inc()
         return _json_with_trace(
             {"error": "Too Many Requests", "detail": f"Rate limit {RATE_LIMIT_TPS} TPS exceeded.", "trace_id": trace_id},

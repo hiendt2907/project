@@ -26,6 +26,7 @@ tới dữ liệu.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -84,6 +85,11 @@ class AdvocacyOutcome:
         }
 
 
+# admin_pg_pool_max mặc định 8 (services/admin_config/pool.py) — chừa nửa pool
+# cho request khác đang cần cùng lúc, không chiếm hết chỉ vì 1 request competency.
+_MAX_CONCURRENT_PATTERN_FETCHES = 4
+
+
 class ScopeAdvocate:
     """Duyệt các pattern của một tenant và nộp đơn cho những cái đủ điều kiện."""
 
@@ -106,19 +112,28 @@ class ScopeAdvocate:
         Mẫu số lấy từ chính sổ ca, không lọc thêm gì ở đây. Mọi cơ hội "chọn ca"
         đều là cơ hội bùa số, nên tầng này cố ý không có tham số lọc nào ngoài
         ``tenant_id``.
+
+        Trước đây N pattern = N round-trip Postgres TUẦN TỰ trên đường HTTP
+        ``GET /competency/patterns`` (audit 2026-08-10, #6) — tenant nhiều
+        pattern giữ pool connection qua hàng chục lượt, cạnh tranh với request
+        khác cần cùng pool. Chạy song song có giới hạn (không đổi SQL, không
+        đổi ngữ nghĩa dual-key pattern_key/pattern_key_domain — logic đó nhạy
+        compliance, không đáng mạo hiểm viết lại thành 1 query phức tạp) — vẫn
+        N round-trip nhưng chồng lấp thời gian chờ thay vì cộng dồn tuần tự.
         """
-        patterns = await self._ledger.list_patterns(tenant_id=tenant_id)
-        reports: list[CompetencyReport] = []
-        for pattern_key in sorted(patterns):
-            cases = await self._ledger.list_cases_for_pattern(
-                tenant_id=tenant_id, pattern_key=pattern_key, limit=self._case_limit
-            )
-            reports.append(
-                build_competency_report(
-                    cases, pattern_key=pattern_key, tenant_id=tenant_id
+        patterns = sorted(await self._ledger.list_patterns(tenant_id=tenant_id))
+        sem = asyncio.Semaphore(_MAX_CONCURRENT_PATTERN_FETCHES)
+
+        async def _fetch(pattern_key: str) -> CompetencyReport:
+            async with sem:
+                cases = await self._ledger.list_cases_for_pattern(
+                    tenant_id=tenant_id, pattern_key=pattern_key, limit=self._case_limit
                 )
+            return build_competency_report(
+                cases, pattern_key=pattern_key, tenant_id=tenant_id
             )
-        return reports
+
+        return list(await asyncio.gather(*(_fetch(p) for p in patterns)))
 
     async def evaluate_pattern(
         self, *, tenant_id: str, report: CompetencyReport

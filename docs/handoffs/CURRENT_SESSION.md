@@ -1,9 +1,62 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ43 — CI/CD full-sync local→GCP UAT DONE cho cơ chế + đã xóa 46 test
-nginx-test lỗi thời, verify xanh 7330/7330 local. Đ42 — S3 xong + phát hiện & vá lỗi thật do
-chính S3 lộ ra. Đ41 — S5 + lỗi im lặng PromQL. Đ40 — proactive-first P1+S0/S1/S2/S4/S8. Đ39 —
-gỡ `lane`.) · **Branch:** `main` · **HEAD:** `874ca77`.
+**Cập nhật:** 2026-08-10 (Đ44 — audit backend 5-agent, P0 3 CRITICAL + P1 4 HIGH đã code+test
+xong, commit+push ngay sau đoạn này. Đ43 — CI/CD full-sync local→GCP UAT DONE cho cơ chế + đã
+xóa 46 test nginx-test lỗi thời, verify xanh 7330/7330 local. Đ42 — S3 xong + phát hiện & vá lỗi
+thật do chính S3 lộ ra. Đ41 — S5 + lỗi im lặng PromQL. Đ40 — proactive-first
+P1+S0/S1/S2/S4/S8. Đ39 — gỡ `lane`.) · **Branch:** `main`.
+
+## Đ44 — Audit backend 5-agent song song, P0+P1 xong (code+test, verify sống CHƯA làm)
+
+`docs/audit/BACKEND_AUDIT_PLAN_2026-08-10.md` — audit đọc-only (silent-failure-hunter/
+security-reviewer/database-reviewer/python-reviewer/Explore) toàn `src/` trừ `ui/` và 3
+capability frozen. 3 CRITICAL + 4 HIGH + 8 MEDIUM + 2 LOW.
+
+**P0 (3 CRITICAL) + P1 (4 HIGH) đã sửa code + viết test, 21 test mới pass sạch, full suite
+không regression từ phía tôi** (đếm tổng suite dao động giữa các lần chạy vì phiên CI/CD khác
+đang sửa file cùng lúc — đã xác nhận là do họ xoá 46 test nginx-test, KHÔNG phải do fix P0/P1):
+
+- **#2** cổng `meta_self` (`_proof_of_fault_gate`, `evidence_consumer.py`) từng fail-open khi
+  đọc Redis lỗi/JSON hỏng — nguy hiểm vì `OMNI_AUTO_EXECUTE_ENABLED=true` sống trên prod. Nay
+  đọc lỗi/hỏng → chặn mutate (`ERR_ALERT_CLASS_READ_FAILED`) + WARNING, phân biệt rõ với "key
+  vắng mặt hợp lệ".
+- **#3** `_AGENT_ONLINE_MAX_AGE_S=120` gõ cứng (`diagnosis_loop.py`) — lần thứ 5 gặp lớp bug
+  "ngưỡng lệch config nó phụ thuộc" (trước: domain/signal_kind/_domain/snapshot_freshness). Nay
+  suy từ `agent_push._REGISTRY_TTL/2` (=150s).
+- **#1** `/webhook/prometheus` không fail-closed ở prod khi thiếu `OMNI_GATEWAY_WEBHOOK_SECRET`
+  (`gateway/api.py`) — nay trả 503 đúng pattern `_require_api_key`.
+- **#7** hardcode `3.0` thay `REMOTE_Z_THRESHOLD` (`remote_agent_pipeline.py`).
+- **#6** N+1 query `/competency/patterns` (`case_ledger/advocacy.py`) — không viết lại SQL dual-
+  key (nhạy compliance), chỉ đổi N round-trip TUẦN TỰ → song song có giới hạn
+  (`_MAX_CONCURRENT_PATTERN_FETCHES=4`).
+- **#5** `psutil.cpu_percent(interval=1)` block cả event loop remote_agent 1s/chu kỳ
+  (`collectors/system.py`) — nay qua `run_in_executor`.
+- **#4** rate limit `/webhook/prometheus` từng 1 bucket dùng chung toàn cục — 1 nguồn ồn ào
+  chiếm hết budget của mọi nguồn khác (nguy hiểm hơn khi kết hợp #1 lúc chưa vá). Nay per-source
+  IP, `OrderedDict` bounded LRU (`_MAX_RATE_LIMIT_KEYS=500`). Tiện thể vá luôn finding MEDIUM phụ
+  (`_refill_tokens` không có log khi lỗi).
+
+**Gotcha thật gặp phải lúc làm** (đáng nhớ, không phải riêng phiên này):
+- **Race điều kiện thư mục dùng chung**: phiên này và phiên CI/CD Đ43 chạy TRÊN CÙNG
+  `/Users/hiendang/project` cùng lúc → `git add` của tôi bị `git commit` của họ cuốn theo (xem
+  `c24906b`, họ cũng đã tự ghi chú lại). Từ đó tôi kiểm `git status`/`git diff --cached` kỹ trước
+  mỗi thao tác git, không giả định staging area chỉ có việc của mình.
+- Do race trên, **P0 đã bị commit chung với `c24906b`** (không phải chủ đích) — coi như đã
+  deploy chung theo xác nhận của user, CHƯA verify sống riêng.
+
+**CHƯA làm — verify sống P0+P1 trên GCP** (đúng standing rule "cấm chỉ pytest"): cần bơm alert/
+trace thật qua `kubectl exec` sau khi build deploy xong, xác nhận từng fix hoạt động đúng trên
+cluster thật, không chỉ test local.
+
+### Còn treo — P2 (cần bàn thiết kế trước khi sửa, KHÔNG tự ý làm)
+- #8 RBAC `omni-executor-mutate-lab` cấp quyền Secrets toàn cluster thay vì đúng namespace —
+  đổi ClusterRole→Role có thể phá ArgoCD sync, cần xác nhận trước.
+- #9 `credential_source_of_truth` evidence gate tự-chứng-thực bởi chính LLM đề xuất mutation —
+  governance-theater trên tool rủi ro cao nhất (`k8s_patch_secret`), cần thiết kế xác minh độc
+  lập, không phải vá vài dòng.
+- #10 mutate+audit không cùng transaction trong `identity_store.py` — sửa nhanh (bọc
+  `conn.transaction()` như `admin_config/repo.py` đã làm đúng) nhưng chưa làm.
+- #11-15 xem đầy đủ trong `docs/audit/BACKEND_AUDIT_PLAN_2026-08-10.md`.
 
 ## Đ43 tiếp — xóa 46 test phụ thuộc fixture `nginx-test` không còn tồn tại (commit `874ca77`)
 
