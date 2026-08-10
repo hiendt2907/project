@@ -132,3 +132,37 @@ pattern của `hitl_telegram.py`), không phụ thuộc consumer chết. Test m�
 gọi FinGuard API ngoài — đúng nhóm việc B3 (FinGuard→Smart SIEM merge chưa
 xong). Có thể cân nhắc xóa hẳn `hitl_dispatcher.py` nếu xác nhận không còn
 đường nào cần nó sau khi B3 đóng, nhưng đó là quyết định riêng.
+
+---
+
+## B3 — Domain `security` qua Smart SIEM: merge CHƯA XONG, cần quyết định phạm vi
+
+Đọc `plans/finguard-to-smart-siem-merge-2026-08-04.md` (S0-S4) đối chiếu
+code thật:
+
+| Phase | Trạng thái thật |
+|---|---|
+| S0 (dọn FinGuard-như-hệ-ngoài) | **Chưa xong** — `src/workers/siem_bridge.py` vẫn còn dual-emit tới FinGuard ngoài (comment dòng 46: "Dual-emit: when true, also publish raw FinGuard incident..."), `hitl_dispatcher.py` vẫn gọi FinGuard HITL API |
+| S1 (security collector trên Remote Agent) | **Chưa bắt đầu** — `src/remote_agent/collectors/security.py` không tồn tại |
+| S2-S4 | Phụ thuộc S1, chưa thể bắt đầu |
+| `omni_admin.playbook` | **0 dòng** — đúng như chính plan merge đã tự cảnh báo trước ("bảng hiện 0 dòng cần seed trước"), chưa xử lý |
+
+**Đánh giá:** Đây KHÔNG phải "sửa lệch nhỏ" — hoàn tất S1 (viết
+`collectors/security.py` mới) là khối lượng việc triển khai đáng kể (thu
+thập log auth/lastb/journalctl trên host khách, tôn trọng
+`INV_DATA_RESIDENCY`), và ranh giới giữa "hoàn tất tính năng đã thiết kế
+từ trước" với "thêm tính năng mới" ở đây mờ — plan tồn tại nhưng CHƯA có
+dòng code nào của S1 được viết. Theo đúng ràng buộc "tuyệt đối không đẻ
+thêm tính năng mới" của lượt dọn dẹp này, KHÔNG tự ý bắt tay viết S1 —
+cần quyết định riêng của user trước khi coi đây là "bổ sung phần thiếu"
+hay "tính năng mới đang chờ".
+
+**Việc trong phạm vi đã làm (không phải tính năng mới, chỉ dọn lệch)**:
+không có — S0 (dọn FinGuard cũ) cũng đụng `siem_bridge.py`/`hitl_dispatcher.py`
+là code đang sống, cần cẩn trọng test kỹ trước khi xóa nhánh dual-emit,
+để dành cho lượt riêng có thời gian test đầy đủ hơn là làm vội trong
+blueprint dọn dẹp này.
+
+**Kết luận B3:** Domain `security` vẫn giữ nguyên trạng thái ❌ trong
+CLAUDE.md — đúng thực tế, không phải tài liệu lệch. Không sửa gì thêm
+trong lượt này.
