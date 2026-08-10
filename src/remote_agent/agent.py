@@ -49,6 +49,7 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
     from remote_agent.collectors.k8s import collect_k8s_status
     from remote_agent.collectors.database import collect_mysql_health, collect_proxysql_stats
     from remote_agent.collectors.services import collect_haproxy_stats, collect_systemd_units
+    from remote_agent.collectors.security import collect_auth_failures, collect_privilege_escalation
     from remote_agent.collectors.network import collect_listening_ports
     from remote_agent.collectors.storage import collect_disk_usage, collect_nfs_health
     from remote_agent.collectors.discovery_evidence import (
@@ -249,6 +250,15 @@ async def run_agent(extra_register_fields: dict[str, str] | None = None) -> None
             systemd_ev = await collect_systemd_units(cfg.hostname)
             if systemd_ev:
                 evidence.append(systemd_ev)
+
+        # Đ49 S1: security signals (opt-in via OMNI_AGENT_SECURITY_ENABLED)
+        if cfg.security_enabled:
+            auth_ev = await collect_auth_failures(cfg.hostname)
+            if auth_ev:
+                evidence.append(auth_ev)
+            privesc_ev = await collect_privilege_escalation(cfg.hostname)
+            if privesc_ev:
+                evidence.append(privesc_ev)
 
         # Mạng: cổng lắng nghe vừa đóng (on by default, OMNI_AGENT_NETWORK_ENABLED)
         if cfg.network_enabled:

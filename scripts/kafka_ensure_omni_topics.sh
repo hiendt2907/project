@@ -75,7 +75,8 @@ echo "  [OK] omni-proactive-incidents retention=1d"
 
 # SIEM integration topics — correlation engine chạy trong omni-fullstack
 # (src/services/siem_correlation, port Python của brain-go; brain-go RETIRED 2026-07-22).
-# omni-siem-raw: raw FinGuard incidents from siem_bridge (SIEM_BRIDGE_DUAL_EMIT=true).
+# omni-siem-raw: SIEM incident metadata from gateway agent_webhook.py (domain=security
+# evidence fan-out, Đ49 S2 — siem_bridge.py/FinGuard retired 2026-08-10).
 # omni-siem-incidents: correlated incidents passthrough (OMNI_SIEM_CORRELATION_ENABLED=true).
 # Retention: broker default (set OMNI_SIEM_RAW_RETENTION_MS to override at create).
 # omni-siem-chains: graph-correlated attack chains (union-find, corr:* Redis state).

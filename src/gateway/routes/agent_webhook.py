@@ -85,6 +85,14 @@ class EvidenceItem(BaseModel):
     probe: str = Field(min_length=1, max_length=128)
     alert_rule: str = Field(default="RemoteAgentAlert", max_length=256)
     alert_hint: str = Field(default="", max_length=2000)
+    # Đ49 S2 — trước đây KHÔNG khai field này ⇒ `build_envelope()`'s "domain" bị Pydantic
+    # âm thầm bỏ qua (extra field không khai), nên `_resolve_item_domain()`'s
+    # `getattr(item, "domain", "")` LUÔN trả "" — domain_hint collector tự khai không
+    # bao giờ tới được `detect_domain()`, đúng lớp bug CLAUDE.md đã cảnh báo ("domain_hint
+    # bỏ sót ở call site — đã trả giá"). Chỉ mất tác dụng khi probe-prefix cascade cũng
+    # đoán sai (hiếm, vì hầu hết probe đặt tên theo domain), nên chưa từng lộ ra bằng lỗi
+    # thật — phát hiện khi làm S2 cho domain security.
+    domain: str = Field(default="", max_length=64)
     # OBSERVED (2026-07-30): mẫu đo được ghi nhận, agent KHÔNG phán xét. Khác PASSED
     # ở chỗ agent không khẳng định "đã kiểm và sạch" — nó chỉ báo số. Phải nằm trong
     # pattern này, nếu không gateway trả 422, emitter retry 4 lần rồi bỏ cả batch và
@@ -141,6 +149,46 @@ def _get_evidence_topic(request: Request) -> str:
 
 def _get_knowledge_topic(request: Request) -> str:
     return getattr(request.app.state, "kafka_topic_knowledge_evidence", "omni-knowledge-evidence")
+
+
+def _get_siem_raw_topic(request: Request) -> str:
+    return getattr(request.app.state, "kafka_topic_siem_raw", "omni-siem-raw")
+
+
+def _siem_raw_payload(
+    *, item: "EvidenceItem", item_domain: str, agent_id: str, hostname: str, tenant_id: str, now_ts: str,
+) -> bytes | None:
+    """Đ49 S2 — chuyển 1 evidence item domain=security, result=FAILED thành payload
+    khớp schema `Incident` mà `services/siem_correlation/decode.py::decode_kafka_message`
+    đọc (id/tenant_id/severity/source/category/timestamp_unix/rule_id/raw_log/tags).
+
+    INV_DATA_RESIDENCY: `raw_log` chỉ nhận `extracted_fact["normalized_entities"]` — chuỗi
+    `user=X host=Y` đã được collector chuẩn hoá NGAY TRÊN HOST khách (xem
+    `remote_agent/collectors/security.py`). KHÔNG BAO GIỜ dùng `item.raw` (có thể chứa
+    log thô) cho trường này.
+    """
+    if item_domain != "security" or item.result != "FAILED":
+        return None
+    normalized = str(item.extracted_fact.get("normalized_entities") or "")
+    severity = "critical" if int(item.extracted_fact.get("failed_login_count") or item.extracted_fact.get("sudo_failure_count") or 0) >= 20 else "high"
+    incident = {
+        "id": f"{item.trace_id}:{item.probe}",
+        "tenant_id": tenant_id,
+        "severity": severity,
+        "source": "omni_siem",
+        "category": item.probe.removeprefix("security_"),
+        "timestamp_unix": int(item.ts or now_ts),
+        "schema_version": "1.0.0",
+        "rule_id": item.alert_rule,
+        "source_ip": "",
+        "dest_ip": "",
+        # Chuỗi ĐÃ chuẩn hoá trên host khách — không phải log thô. decode.py đọc field
+        # này (hoặc description/message) cho allowlist entity extraction.
+        "raw_log": normalized[:2000],
+        "correlation_ids": [item.trace_id],
+        "tags": [item.probe, agent_id, hostname],
+    }
+    return json.dumps({"data": json.dumps(incident, ensure_ascii=False)}, ensure_ascii=False).encode("utf-8")
 
 
 # ─── GIGO helpers ────────────────────────────────────────────────────────────
@@ -445,6 +493,20 @@ async def ingest_evidence(body: AgentEvidenceRequest, request: Request) -> JSONR
             dest_topic = topic if item.signal_type == "ANOMALY" else knowledge_topic
             await kafka.send_and_wait(dest_topic, value=payload)
             enqueued += 1
+
+            # Đ49 S2 — fan-out riêng cho domain=security vào omni-siem-raw để
+            # siem_correlation_loop.py tương quan (không thay thế đường evidence chuẩn
+            # ở trên, cả hai cùng nhận cùng 1 item — 2 mục đích khác nhau: chẩn đoán vs
+            # correlation an ninh).
+            siem_payload = _siem_raw_payload(
+                item=item, item_domain=item_domain, agent_id=body.agent_id,
+                hostname=body.hostname, tenant_id=tenant_id, now_ts=now_ts,
+            )
+            if siem_payload is not None:
+                try:
+                    await kafka.send_and_wait(_get_siem_raw_topic(request), value=siem_payload)
+                except Exception as exc:  # noqa: BLE001 — fan-out phụ, không chặn đường evidence chính
+                    logger.warning("[AGENT-EVIDENCE] siem_raw_fanout_failed agent=%s err=%s", body.agent_id, exc)
 
     # Update last_seen in registry
     key = f"{_REGISTRY_PREFIX}{body.agent_id}"

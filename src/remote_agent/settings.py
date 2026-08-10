@@ -56,6 +56,9 @@ class AgentSettings:
         self.proxysql_admin_pass = os.getenv("OMNI_AGENT_PROXYSQL_ADMIN_PASS", "")
         self.services_enabled = os.getenv("OMNI_AGENT_SERVICES_ENABLED", "false").lower() not in ("false", "0", "no")
         self.storage_enabled = os.getenv("OMNI_AGENT_STORAGE_ENABLED", "false").lower() not in ("false", "0", "no")
+        # Đ49 S1 — opt-in giống services/storage (không bật mặc định): collector mới,
+        # cần verify sống qua drill (S3) trước khi coi là an toàn bật hàng loạt.
+        self.security_enabled = os.getenv("OMNI_AGENT_SECURITY_ENABLED", "false").lower() not in ("false", "0", "no")
         # Mạng bật MẶC ĐỊNH, khác `services`/`storage` (mặc định tắt): nó không cần
         # discovery để biết bật hay không — mọi host đều có cổng lắng nghe, và chỉ đọc
         # `ss -lntu`. Trước collector này, domain `network` có 18 lệnh chẩn đoán nhưng

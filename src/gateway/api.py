@@ -71,6 +71,8 @@ KAFKA_BOOTSTRAP = os.getenv("OMNI_KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 KAFKA_TOPIC_ALERTS = _kafka_topic_from_env()
 KAFKA_TOPIC_EVIDENCE = (os.getenv("OMNI_KAFKA_TOPIC_DIAGNOSTIC_EVIDENCE") or "omni-diagnostic-evidence").strip()
 KAFKA_TOPIC_KNOWLEDGE_EVIDENCE = (os.getenv("OMNI_KAFKA_TOPIC_KNOWLEDGE_EVIDENCE") or "omni-knowledge-evidence").strip()
+# Đ49 S2 — fan-out riêng cho evidence domain=security, tiêu thụ bởi siem_correlation_loop.py.
+KAFKA_TOPIC_SIEM_RAW = (os.getenv("OMNI_KAFKA_TOPIC_SIEM_RAW") or "omni-siem-raw").strip()
 RATE_LIMIT_TPS = int(os.getenv("OMNI_GATEWAY_RATE_LIMIT_TPS", "1000"))
 CB_KEY = "omni:circuit_breaker:active"
 SILENCE_CHAOS_LAB = os.getenv("OMNI_GATEWAY_SILENCE_CHAOS_LAB", "false").strip().lower() in (
@@ -473,6 +475,7 @@ async def lifespan(app: FastAPI):
     app.state.kafka = _kafka
     app.state.kafka_topic_evidence = KAFKA_TOPIC_EVIDENCE
     app.state.kafka_topic_knowledge_evidence = KAFKA_TOPIC_KNOWLEDGE_EVIDENCE
+    app.state.kafka_topic_siem_raw = KAFKA_TOPIC_SIEM_RAW
     app.state.kafka_topic_alerts = KAFKA_TOPIC_ALERTS
     # Admin config store (Postgres omni_admin) — source-of-truth cho tier/runtime/risk +
     # per-agent credential auth (_resolve_agent_credential). Gateway KHÔNG import workers
