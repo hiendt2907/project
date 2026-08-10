@@ -68,3 +68,32 @@ Simulator `/simulate/{lane}` đã có sẵn, không phải tính năng mới) đ
 nhận dứt điểm. Đây là next step cụ thể, chưa thực hiện trong lượt này vì
 sinh ra 1 lần escalation thật sẽ gửi Telegram thật tới admin — cần user
 xác nhận trước khi kích hoạt trên UAT.
+
+---
+
+## B2 — Vòng học chỉ nhận nhãn khen: ĐÃ FIX từ trước (2026-08-10)
+
+Memory `project_learning_loop_broken_labels` (2026-07-30) mô tả: verdict
+`None` (callback 1-nút cũ) bị coi là "đồng ý", verdict `INCORRECT` ("Sai")
+chỉ bị bỏ qua, không ghi tín hiệu âm nào vào `omni:kpi:z:*:false_positive`.
+
+**Xác nhận qua code thật (`src/workers/advisory_ack.py:296-326`)**: đây là
+đúng bug đã mô tả, nhưng đã được sửa bởi commit `383cc1a` ("#29/#30 nút Sai
+không ghi false_positive; callback cũ bị coi là đồng ý") — commit này nằm
+trong lịch sử `main` hiện tại (xác nhận `git merge-base --is-ancestor`).
+Code hiện tại:
+- `verdict is None` (callback 1 nút cũ) → không ghi gì cả, tường minh
+  (dòng 309-312 có comment giải thích chính xác lý do).
+- `verdict == VERDICT_INCORRECT` → gọi `store.record_false_positive()`
+  (dòng 321-322), không còn bị bỏ qua.
+- `_record_case_verdict()` ghi verdict thật vào `case_ledger` qua
+  `store.record_verdict(diagnosis=verdict)`, trả `pattern_key` đã đóng băng
+  từ lúc mở ca — vòng học pattern dùng đúng nhóm.
+
+Có test hồi quy chuyên biệt:
+`tests/test_advisory_ack.py::test_incorrect_verdict_records_false_positive_not_accepted`.
+
+**Kết luận:** Không cần sửa thêm. Đóng B2 — bằng chứng đủ mạnh (code +
+comment giải thích rõ + test hồi quy đặt tên đúng theo bug), không cần
+trigger sống thêm trên UAT (khác B1, đây không phải đường phụ thuộc cluster
+runtime, logic thuần và đã có test bảo vệ).
