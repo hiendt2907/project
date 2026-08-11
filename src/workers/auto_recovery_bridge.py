@@ -146,22 +146,35 @@ def pending_member(tenant_id: str, command_id: str) -> str:
 
 async def register_pending_command(
     redis: Any, *, tenant_id: str, command_id: str, trace_id: str,
-    agent_id: str, unit: str, capability: str,
+    agent_id: str, unit: str, capability: str, chat_id: int | None = None,
 ) -> None:
     """Record a dispatched command so its terminal outcome can be reconciled back
     onto the originating trace. Best-effort: the mutation is already dispatched
     and already audited at this point, so a bookkeeping failure must not raise
-    into the caller — it degrades observability, not safety."""
+    into the caller — it degrades observability, not safety.
+
+    ``chat_id`` (Đ53): mắt xích còn thiếu để đóng vòng khép kín trên Telegram.
+    Trước đây meta không mang chat_id nên `remote_command_outcome_loop.reconcile_one`
+    không biết báo kết quả tự khắc phục cho ai — người vận hành chỉ thấy thẻ chẩn
+    đoán ban đầu rồi im lặng, dù lệnh đã COMPLETED/FAILED từ lâu. `None` (call site
+    cũ như known-fix reflex chưa truyền) là tương thích ngược hợp lệ: chỉ đơn giản
+    là không gửi được thông báo theo dõi, không phải lỗi.
+    """
     import json
     import time
 
     try:
         now = int(time.time())
         await redis.zadd(PENDING_KEY, {pending_member(tenant_id, command_id): now})
+        meta: dict[str, Any] = {
+            "trace_id": trace_id, "agent_id": agent_id, "unit": unit,
+            "capability": capability, "dispatched_at": now,
+        }
+        if chat_id is not None:
+            meta["chat_id"] = chat_id
         await redis.set(
             f"omni:autorecovery:meta:{tenant_id}:{command_id}",
-            json.dumps({"trace_id": trace_id, "agent_id": agent_id, "unit": unit,
-                        "capability": capability, "dispatched_at": now}),
+            json.dumps(meta),
             ex=_PENDING_TTL_S,
         )
     except Exception as exc:  # noqa: BLE001 — observability bookkeeping only
@@ -189,7 +202,7 @@ def build_dispatch_advisory(
 async def dispatch_if_eligible(
     *, settings: Any, http_client: Any, final: dict[str, Any],
     agent_id: str, tenant_id: str, trace_id: str,
-    redis: Any = None, kafka: Any = None,
+    redis: Any = None, kafka: Any = None, chat_id: int | None = None,
 ) -> dict[str, Any]:
     """Attempt automated dispatch for one diagnosis session. Always returns a
     result dict — never raises for an ineligible/skipped diagnosis (that is
@@ -332,7 +345,7 @@ async def dispatch_if_eligible(
         await register_pending_command(
             redis, tenant_id=tenant_id, command_id=command["command_id"],
             trace_id=trace_id, agent_id=agent_id, unit=suggested["unit"],
-            capability=suggested["capability"],
+            capability=suggested["capability"], chat_id=chat_id,
         )
     return {
         "dispatched": resp.status_code == 200, "reason": "dispatched",

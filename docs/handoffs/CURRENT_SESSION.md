@@ -1,7 +1,62 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-11 (Đ52 — cooldown chẩn đoán **đã code + test + deploy UAT thật**, đang
-drill để kiểm chứng. Đ51 audit giữ nguyên bên dưới.)
+**Cập nhật:** 2026-08-11 (Đ53 — fix Telegram + audit luồng tự học RAG. **Full suite 7343 pass, 0
+fail — đang commit + deploy.** Đ52 giữ nguyên bên dưới.)
+
+### Đ53 — Fix Telegram + audit RAG học lỗi — CODE XONG, CHƯA COMMIT (2026-08-11)
+
+**Yêu cầu user:** (1) fix Telegram, (2) kiểm tra luồng tự học ghi RAG có giảm tải LLM không,
+(3) giải thích các mô hình RAG hiện có.
+
+**1) Fix Telegram — 2 lỗi, cả hai đã sửa:**
+- `_render_section4_remediation` (`remote_diagnosis_emitter.py`) LUÔN khẳng định "Omni không tự
+  thực thi" — SAI kể từ khi tier=assist bật (Đ52). Đổi thành câu đúng trong mọi trường hợp: đây
+  là đề xuất, bước rủi ro thấp CÓ THỂ được Omni tự làm.
+- **Vòng khép kín từng câm ở bước cuối**: sau khi `reconcile_one` ghi CRAT + bài học xong, KHÔNG
+  kênh nào báo cho người dùng — họ chỉ thấy thẻ chẩn đoán ban đầu rồi im lặng vĩnh viễn dù lệnh
+  đã COMPLETED/FAILED từ lâu (xác nhận: `payment-api` COMPLETED 13:51:21 nhưng không ai được báo).
+  Thêm `_notify_telegram_outcome` gửi tin ✅/❌ riêng. Cần plumbing `chat_id` xuyên suốt: sửa
+  `register_pending_command`/`dispatch_if_eligible` (`auto_recovery_bridge.py`) thêm tham số
+  `chat_id`, `_dispatch_auto_recovery_if_eligible` (`remote_agent_pipeline.py`) truyền nó xuống.
+- Phụ: nâng `logger.debug`→`logger.warning` cho lỗi ghi `action_experience` thất bại
+  (`remote_command_outcome_loop.py`) — root logger prod chạy ở WARNING nên DEBUG trước đây vô hình.
+
+**2) Luồng tự học RAG — CÓ THẬT, ghi đúng, nhưng KHÔNG giảm tải đúng chỗ đang nghẽn:**
+- Xác nhận trên Redis thật: `action_experience` đã ghi đúng ca `payment-api` sáng nay
+  (`cmd-d79afbcf3e1c4b1f`, `exec_outcome=success verification_result=pass`).
+- **Phát hiện chính**: `remote_agent_pipeline.py` dòng ~340 —
+  `needs_research = ... or (route in (KNOWN_BASELINE, KNOWN_WITH_FIX) and urgency in
+  NOTIFY_TIERS)` — dù recall trúng (`KNOWN_WITH_FIX`), urgency critical/high (đúng loại chiếm
+  96% tải: domain `service`+`application`) vẫn chạy NGUYÊN vòng LLM 8 lượt. Comment xác nhận chủ
+  đích ("known pattern but urgent — still diagnose") — an toàn nhưng có nghĩa recall không tiết
+  kiệm LLM cho đúng traffic cần tiết kiệm nhất. Tải giảm hôm nay là nhờ COOLDOWN (Đ52), không
+  phải nhờ tái dùng bài học.
+- `try_remote_known_fix` (phản xạ dispatch thẳng, bỏ qua LLM hoàn toàn) chỉ nối vào
+  `knowledge_pipeline.py` (đường `METRIC_SAMPLE`/`os_host` baseline z-score) — KHÔNG nối vào
+  `remote_agent_pipeline.py` (đường `service_systemd_units`/`remote_log_errors`, đường chính).
+- **Phát hiện phụ**: kho SOP (`itops_sop_ledger`, CLAUDE.md ghi "1019 mục") hiện **0 doc** trên
+  cluster này — cả HNSW index lẫn hash gốc `omni:rag:sop:default` đều rỗng. Chưa rõ mất từ khi
+  nào; KHÔNG tự ý ingest lại (cần file JSONL nguồn, chưa xác nhận vị trí).
+
+**3) Giải thích RAG — đã trả lời user trực tiếp trong hội thoại.** Tóm tắt: 1 backend (Redis
+HNSW, `pgvector_store.py` chỉ là shim), 11 collection phân vai khác nhau. Chỉ `action_experience`
+(9 doc) đang sống trên đường xử lý chính; `diagnostic_history` (1085) + `infra_topology` (204) có
+dữ liệu nhưng không phải recall path; 8 collection còn lại (SOP, k8s_expert, SRE_KNOWLEDGE,
+vendor_knowledge, cli_hil_context, os_hard_fail_diagnostic, playbooks, semcache) đều **0 doc**.
+`redis_brain.py` (multi-turn RAG session, không gọi LLM) tồn tại nhưng không có call site trong
+`remote_agent_pipeline.py`/`remote_triage.py` — chưa đấu vào đường VM khách.
+
+**Full suite: 7343 pass, 0 fail.** Đang commit + push + kích Jenkins build + verify deploy UAT.
+
+**Next step:** (1) sau khi build xong, xác nhận image tag mới trong pod `omni-fullstack` +
+`omni-gateway` bằng `kubectl exec ... python -c "import ..."` như Đ52 — KHÔNG tự tin "rollout
+successful" là đủ; (2) verify sống: trigger 1 sự cố thật, xem tin Telegram ban đầu không còn câu
+"Omni không tự thực thi", và sau khi auto-recovery chạy xong có tin ✅/❌ riêng; (3) nếu có thời
+gian: điều tra kho SOP rỗng (tìm nguồn JSONL 1019 mục cũ, hoặc xác nhận đã mất vĩnh viễn);
+(4) cân nhắc nối `try_remote_known_fix` vào `remote_agent_pipeline.py` để recall thật sự tiết kiệm
+LLM cho traffic critical/high — đây là việc CHƯA làm, chỉ mới phát hiện và báo cáo.
+
+
 
 ### Đ52 — Cooldown chẩn đoán theo fingerprint — ĐANG KIỂM CHỨNG (2026-08-11)
 

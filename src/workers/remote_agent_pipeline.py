@@ -745,6 +745,14 @@ async def _dispatch_auto_recovery_if_eligible(
 
     from workers.auto_recovery_bridge import dispatch_if_eligible
 
+    # chat_id (Đ53): cùng nguồn ưu tiên mà `_run_diagnosis_and_notify_inner` dùng để
+    # gửi thẻ chẩn đoán ban đầu. Thiếu bước này thì `reconcile_one` không có nơi báo
+    # kết quả tự khắc phục — người vận hành thấy thẻ đầu rồi im lặng vĩnh viễn dù
+    # lệnh đã COMPLETED/FAILED từ lâu.
+    chat_id = getattr(ctx, "telegram_chat_id", None) or getattr(
+        ctx.settings, "telegram_admin_chat_id", None
+    )
+
     try:
         async with httpx.AsyncClient() as client:
             result = await dispatch_if_eligible(
@@ -761,6 +769,7 @@ async def _dispatch_auto_recovery_if_eligible(
                 # an toàn, nhưng toàn bộ đường tự khắc phục nằm im.
                 redis=ctx.redis,
                 kafka=ctx.kafka,
+                chat_id=int(chat_id) if chat_id is not None else None,
             )
     except Exception as exc:
         logger.error("[RAP] auto_recovery_dispatch_error trace=%s err=%s", trace, exc)

@@ -200,10 +200,67 @@ async def _upsert_action_experience(
             points=[PointStruct(id=point_id, vector=vec, payload=payload)],
         )
     except Exception as exc:  # noqa: BLE001 — learning write is best-effort
-        logger.debug(
+        # Đ53: nâng DEBUG→WARNING. Root logger prod chạy ở WARNING (đo thật trên UAT
+        # 2026-08-11) nên mọi thất bại ghi bài học từng biến mất không dấu vết —
+        # "action_experience ghi được không" đã suýt phải trả lời bằng cách đi đọc
+        # trực tiếp FT.SEARCH trên Redis vì log không có gì để soi.
+        logger.warning(
             "event=remote_outcome_learning_upsert_skip trace=%s command_id=%s err=%s",
             trace_id, command_id, exc,
         )
+
+
+def _short_trace(trace_id: str) -> str:
+    return f"#{trace_id[-8:]}" if trace_id else "#?"
+
+
+async def _notify_telegram_outcome(
+    ctx: Any, *, meta: dict, unit: str, ok: bool, outcome: dict, trace_id: str,
+) -> None:
+    """Đóng vòng khép kín trên Telegram — báo KẾT QUẢ tự khắc phục.
+
+    Đ53: trước đây `reconcile_one` chạy xong toàn bộ (CRAT ghi, bài học ghi, trace
+    đánh dấu terminal) mà KHÔNG một kênh nào báo cho người vận hành. Xác nhận trên
+    UAT thật: `payment-api` được Omni tự khởi động lại lúc 13:51:21
+    (`state=COMPLETED verified=True`) nhưng người dùng chỉ thấy thẻ chẩn đoán ban
+    đầu (phát TRƯỚC khi biết kết quả) rồi im lặng — không có cách nào phân biệt
+    "Omni đang làm" với "Omni đã bỏ cuộc từ lâu" nếu không tự tay tra Redis.
+
+    Best-effort tuyệt đối: lỗi gửi không được biến một outcome đã CRAT-audited
+    thành retry — bài học và audit đã ghi xong, một API lỗi ở bước thông báo
+    không được lặp lại toàn bộ reconcile.
+    """
+    chat_id = meta.get("chat_id")
+    telegram = getattr(ctx, "telegram", None)
+    if chat_id is None or telegram is None:
+        return
+    try:
+        if ok:
+            reason = str(outcome.get("reason") or "đã xác minh")
+            text = (
+                f"✅ <b>Đã tự khắc phục</b> — <code>{_e(unit)}</code>\n"
+                f"{_e(reason)}\n"
+                f"<b>TRACE:</b> <code>{_short_trace(trace_id)}</code>"
+            )
+        else:
+            reason = str(outcome.get("reason") or "không rõ lý do")
+            text = (
+                f"❌ <b>Tự khắc phục thất bại</b> — <code>{_e(unit)}</code>\n"
+                f"{_e(reason)}\n"
+                f"⚠️ <i>Cần can thiệp thủ công</i>\n"
+                f"<b>TRACE:</b> <code>{_short_trace(trace_id)}</code>"
+            )
+        await telegram.send_message(int(chat_id), text, parse_mode="HTML")
+    except Exception as exc:  # noqa: BLE001 — thông báo là tiện ích thêm, không phải điều kiện
+        logger.warning(
+            "event=remote_outcome_telegram_notify_failed trace=%s err=%s", trace_id, exc,
+        )
+
+
+def _e(text: Any) -> str:
+    return (
+        str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
 
 
 async def _write_outcome_audit(ctx: Any, *, record: dict, meta: dict, trace_id: str,
@@ -287,6 +344,13 @@ async def reconcile_one(ctx: Any, tenant_id: str, command_id: str) -> str:
         ctx.redis, trace_id, "EXECUTOR", "ok" if ok else "fail",
         detail=f"state={state} unit={unit} rc={rc} "
                f"reason={str(outcome.get('reason') or '')[:120]}",
+    )
+
+    # Đóng vòng khép kín trên Telegram — SAU khi CRAT đã ghi (fail-closed: đừng báo
+    # một kết quả chưa kịp kiểm chứng bằng audit), TRƯỚC bài học (thông báo người
+    # dùng không phụ thuộc việc ghi RAG có thành công hay không).
+    await _notify_telegram_outcome(
+        ctx, meta=meta, unit=str(unit), ok=ok, outcome=outcome, trace_id=trace_id,
     )
 
     # Ghi bài học cho CẢ hai chiều. Trước 2026-08-04 chỗ này là `if ok:` — hệ

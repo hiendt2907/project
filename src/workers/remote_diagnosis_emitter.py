@@ -188,8 +188,17 @@ def _render_section3_diagnosed(turns: list[dict[str, Any]]) -> str:
 
 
 def _render_section4_remediation(final: dict[str, Any]) -> str:
+    # Đ53: bản cũ khẳng định TUYỆT ĐỐI "Omni không tự thực thi" / "mọi thay đổi cần
+    # approval" — đúng ở tier `shadow` nhưng SAI kể từ khi tier `assist` + auto-execute
+    # được bật (Đ52): payment-api đã được Omni tự khởi động lại thật, không người duyệt.
+    # Thẻ này phát ra TRƯỚC khi biết auto-recovery có chạy hay không (dispatch xảy ra
+    # sau khi Telegram đã emit — xem `_dispatch_auto_recovery_if_eligible`), nên không
+    # thể khẳng định chắc "đã xong" ở đây. Chỉ nói đúng nhất tại thời điểm phát: đây là
+    # ĐỀ XUẤT, các bước rủi ro thấp có thể được Omni tự thực hiện theo chính sách hiện
+    # hành. Kết quả thật đến sau qua tin nhắn riêng — xem
+    # `remote_command_outcome_loop._notify_telegram_outcome`.
     steps = final.get("remediation_steps", [])
-    lines = ["🛠️ <b>CẦN LÀM (thực hiện thủ công, Omni không tự thực thi)</b>"]
+    lines = ["🛠️ <b>CẦN LÀM (đề xuất — bước rủi ro thấp có thể được Omni tự thực hiện)</b>"]
     if not steps:
         lines.append("• Không có bước remediation cụ thể — cần điều tra thêm")
     else:
@@ -199,7 +208,10 @@ def _render_section4_remediation(final: dict[str, Any]) -> str:
             else:
                 action = str(step)
             lines.append(f"{i}. {_e(_truncate(action, 200))}")
-    lines.append("\n⚠️ <i>Mọi thay đổi cần approval trước khi thực thi</i>")
+    lines.append(
+        "\n⚠️ <i>Bước rủi ro trung bình/cao luôn cần bạn duyệt; kết quả tự khắc "
+        "phục (nếu có) sẽ báo riêng khi hoàn tất</i>"
+    )
     return "\n".join(lines)
 
 
