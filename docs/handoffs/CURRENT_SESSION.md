@@ -1,11 +1,13 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-11 (Đ55 — script demo cafe + fix cách ly tenant + Telegram tier-aware.
-**2 commit `0f25e6d`+`c63fa16` push cả 2 remote, build Jenkins #63+#64 SUCCESS, cả hai đã verify
-sống bằng kubectl exec.** Đ53/Đ54 giữ nguyên bên dưới, đã deploy/verify xong. Buổi cafe với CTO cũ
-CHƯA CHỐT NGÀY — user xác nhận "còn linh hoạt", không vội.)
+**Cập nhật:** 2026-08-11 (Đ55 — ĐÓNG. Script demo cafe + fix cách ly tenant + Telegram tier-aware +
+talking points. **3 commit `0f25e6d`/`c63fa16`/`58f2731` push cả 2 remote, build Jenkins #63+#64
+SUCCESS, cả hai đã verify sống bằng kubectl exec. Full suite 7356 pass, 0 fail.** Đ53/Đ54 giữ
+nguyên bên dưới, đã deploy/verify xong. Buổi cafe với CTO cũ CHƯA CHỐT NGÀY — user xác nhận "còn
+linh hoạt", không vội. Toàn bộ scripts/demo/ đã tồn tại + đã dry-run/verify sống, sẵn sàng dùng bất
+cứ lúc nào user chốt ngày.)
 
-### Đ55 — Script demo live cho buổi cafe với CTO cũ (2026-08-11, ĐANG LÀM)
+### Đ55 — Script demo live cho buổi cafe với CTO cũ (2026-08-11, ĐÃ ĐÓNG)
 
 **Bối cảnh:** nối tiếp Đ54 — user có đầu mối thật (sếp cũ, vận hành hạ tầng doctorcheck.vn, y tế
 VN). User yêu cầu: không dùng slide, cần **script chứng minh được** những gì sẽ nói khi gặp cafe —
@@ -66,28 +68,30 @@ thống đúng thiết kế. CHƯA thêm bước clear cooldown vào preflight �
    số `tier_info`, render đúng chữ "AUTO"/"TỰ THỰC HIỆN" khi truyền tier_info thật.
    **Full suite 7356 pass, 0 fail** cả 2 lần.
 
-**CHƯA làm/còn treo (Đ55):**
-- Chưa seed lại action_experience RIÊNG cho `loyalty-uat` (vòng chẩn đoán cũ trước fix ghi vào pool
-  chung, không tính — collection `action_experience:loyalty-uat` giờ RỖNG, ĐÚNG như thiết kế mới,
-  chỉ là tenant chưa có kinh nghiệm nào của riêng nó). Cần 1 lần drill sạch để seed VÀ để thấy card
-  Telegram tier-aware mới trên 1 ca thật (chưa có ca nào chạy qua code mới).
-- Chưa làm: câu chuyện "cấm ở mức nào" — sự thật hiện tại là làn VM/AOIP chỉ có ĐÚNG 3 capability
-  (`systemd.restart_unit/reset_failed/journal_vacuum`, toàn LOW risk, `_SUPPORTED_CAPABILITIES` trong
-  `auto_recovery_bridge.py`) — nghĩa là KHÔNG có ví dụ MEDIUM/HIGH nào để demo "bị chặn" trên chính
-  làn VM này (khác K8s lane có `DANGEROUS_TOOLS`). Cần quyết định: nói thật giới hạn này (an toàn
-  vì phạm vi hẹp = thiết kế, không phải thiếu sót), hay cần thêm capability MEDIUM để demo HITL.
-- Chưa viết storyboard video ngắn (task #51).
+**Seed drill sạch — xác nhận sống 2026-08-11 18:03-18:08:** payment-api dừng thật lúc 18:03:28, tự
+phục hồi lúc 18:08:20 (~5 phút). Log xác nhận `auto_recovery_dispatched` → `remote_command_outcome_reconciled
+state=COMPLETED rc=0` × 2 lần, KHÔNG có dòng `tier_info_resolve_failed` nào (card tier-aware render
+đúng, không rơi về wording chung chung). `FT.INFO idx:action_experience:loyalty-uat` xác nhận
+`num_docs=2` — tenant demo giờ có kinh nghiệm RIÊNG của chính nó, không lẫn tenant khác.
 
-**Next step:** trigger 1 vòng drill sạch cho loyalty-uat (payment-api down/up trên cust-app) để (a)
-seed action_experience riêng cho tenant này, (b) xác nhận card Telegram tier-aware hiện đúng
-"AUTO — TỰ THỰC HIỆN" trên ca thật đầu tiên qua code mới. Chú ý cooldown 900s nếu VM đã bị test
-gần đây.
+**Câu chuyện "cấm ở mức nào" + storyboard video — ĐÃ VIẾT**, xem `scripts/demo/TALKING_POINTS.md`:
+quyết định KHÔNG thêm capability MEDIUM giả cho demo (tránh mở rộng bề mặt rủi ro thật chỉ để phục
+vụ 1 buổi demo) — thay vào đó dùng nguyên trạng làm bằng chứng "phạm vi hẹp = thiết kế": 3 lớp chặn
+đã verify sống hôm nay (danh sách capability đóng cứng trong code, tier gate, ngưỡng confidence
+0.75 từng chặn thật 1 candidate 0.71). Storyboard video 2-3 phút, 7 cảnh, dùng lại đúng luồng đã
+verify — không cần dàn dựng thêm.
 
-**Next step:** hỏi user ưu tiên tiếp giữa: (a) seed drill sạch cho loyalty-uat + tier-aware
-Telegram wording, (b) câu chuyện "cấm ở mức nào", (c) storyboard video — buổi cafe chưa chốt ngày
-nên không cần vội làm hết một lượt.
+**Đã thêm bước 8 vào preflight** (`cafe_demo_preflight.sh`, commit `58f2731`): báo cáo cooldown
+fingerprint còn lại trước khi đi — đã bắt được chính cooldown thật (~438s) sinh ra từ seed drill
+vừa chạy, xác nhận script hoạt động đúng như thiết kế (không tự sửa, chỉ báo).
 
-**Next step:** chờ vòng diagnosis loop nền hiện tại xong (xem có tự phục hồi + Telegram không) →
+**Toàn bộ Đ55 đã đóng.** `scripts/demo/` có đủ 3 file (`cafe_demo_preflight.sh`,
+`cafe_demo_payment_api.sh`, `TALKING_POINTS.md`), tất cả đã chạy/verify bằng dữ liệu thật, không
+phải lý thuyết chưa test. Chỉ còn chờ user chốt ngày gặp CTO.
+
+**Next step (không thuộc Đ55, backlog xa hơn nếu có thời gian):** kho SOP (`itops_sop_ledger`) vẫn
+0 doc, chưa điều tra tiếp (nêu từ Đ53); Twin chưa gắn tên service cụ thể như `payment-api` (nêu
+trong Đ55, hạn chế thật của discovery, chưa fix).
 nếu cooldown là nguyên nhân duy nhất từng chặn, thêm bước clear cooldown vào preflight → dry-run
 sạch 1 lần cuối → viết storyboard video → commit.
 
