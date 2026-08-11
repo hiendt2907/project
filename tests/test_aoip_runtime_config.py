@@ -38,10 +38,28 @@ def test_mutation_enabled_with_full_dependency_builds_active_executor():
     assert callable(executor)
 
 
-def test_mutation_enabled_missing_redis_url_fails_closed():
+def test_mutation_enabled_khong_con_can_redis_url():
+    """HỢP ĐỒNG ĐỔI (Đ52): `AOIP_REDIS_URL` KHÔNG còn là dependency của mutation mode.
+
+    Test cũ khoá đúng hành vi ngược lại (thiếu biến ⇒ `AgentBootstrapError`). Đổi vì cả
+    hai nhánh của hợp đồng cũ đều dẫn tới hỏng trên hạ tầng thật:
+      - thiếu biến  ⇒ agent từ chối khởi động ở mutation mode;
+      - có biến     ⇒ trỏ `redis.multi-agent.svc.cluster.local` (DNS chỉ sống trong k3s),
+        và mọi lệnh tự khắc phục chết ở `executor_exception: Timeout connecting to server`
+        dù đã tới được agent — đo thật trên UAT 2026-08-11.
+
+    Lease/ledger nay dùng kho CỤC BỘ trên host (`aoip.agent.local_coord`), đúng ngữ nghĩa:
+    scope là `{tenant}:{unit-systemd}` nên writer luôn là agent trên chính host đó, không
+    tồn tại nhu cầu điều phối liên máy. Bỏ hẳn phụ thuộc này còn trả agent về đúng phía
+    ranh giới NÃO/THÂN — VM khách không cần biết gì về hạ tầng nội bộ Omni.
+
+    Fail-closed KHÔNG bị nới lỏng: audit path, gate config và allowlist unit vẫn bắt buộc
+    (3 test ngay dưới). Chỉ riêng dependency SAI CHỖ này bị gỡ.
+    """
     env = {k: v for k, v in _FULL_MUTATION_ENV.items() if k != "AOIP_REDIS_URL"}
-    with pytest.raises(AgentBootstrapError, match="AOIP_REDIS_URL"):
-        build_agent_runtime(mode=MODE_MUTATION_ENABLED, agent_id="agent-1", env=env)
+    _, status = build_agent_runtime(
+        mode=MODE_MUTATION_ENABLED, agent_id="agent-1", env=env)
+    assert status.executor_status == STATUS_ACTIVE
 
 
 def test_mutation_enabled_missing_audit_log_path_fails_closed():

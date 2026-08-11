@@ -1834,12 +1834,60 @@ class TestUnitsThatStopped:
     def _active(self, *units: str) -> str:
         return "".join(f"{u} loaded active running desc\n" for u in units)
 
+    def _fake_run(self, cycles, props=None, enabled=()):
+        """Fake `_run` ĐIỀU PHỐI THEO LỆNH, không theo thứ tự gọi.
+
+        Đ52: bản vá level-trigger (`_collect_already_down_units`) thêm lệnh
+        `list-unit-files` + `is-active`/`show` ở chu kỳ đầu, làm cạn mọi
+        `AsyncMock(side_effect=[...])` xếp theo vị trí. Fake theo lệnh không chỉ sửa
+        được điều đó mà còn CHẶT HƠN: nó không vỡ khi thứ tự lệnh đổi, và không thể
+        vô tình trả nhầm output của lệnh này cho lệnh khác (đúng lớp lỗi ghép-theo-vị-trí
+        mà chính file này cảnh báo ở `test_properties_read_by_key_not_position`).
+
+        `cycles` = danh sách tập unit active theo từng chu kỳ.
+        """
+        props = props or {}
+        state = {"i": -1}
+
+        async def _run(cmd, stdin=None, timeout=8.0):
+            if cmd[:2] == ["systemctl", "list-units"]:
+                if "--state=failed,activating" in cmd:
+                    return ("", "", 0)
+                state["i"] += 1
+                idx = min(state["i"], len(cycles) - 1)
+                return (self._active(*cycles[idx]), "", 0)
+            if cmd[:2] == ["systemctl", "list-unit-files"]:
+                return ("\n".join(f"{u} enabled enabled" for u in enabled), "", 0)
+            if cmd[:2] == ["systemctl", "is-active"]:
+                idx = max(min(state["i"], len(cycles) - 1), 0)
+                return ("active" if cmd[-1] in cycles[idx] else "inactive", "", 0)
+            if cmd[:2] == ["systemctl", "show"]:
+                p = props.get(cmd[-1], {"Type": "simple", "RemainAfterExit": "no"})
+                return ("\n".join(f"{k}={v}" for k, v in p.items()), "", 0)
+            return ("", "", 0)
+
+        return _run
+
     @pytest.mark.asyncio
-    async def test_first_cycle_reports_nothing(self):
-        """Chưa có trí nhớ ⇒ không kết luận. Thà bỏ sót một chu kỳ hơn báo nhầm hàng loạt."""
+    async def test_first_cycle_reports_nothing_when_everything_healthy(self):
+        """Chu kỳ đầu, mọi thứ đang chạy ⇒ im lặng.
+
+        HỢP ĐỒNG ĐỔI (Đ52): trước đây chu kỳ đầu LUÔN trả rỗng ("thà bỏ sót một chu kỳ
+        hơn báo nhầm hàng loạt"). Đánh đổi đó có cái giá chưa được tính: dịch vụ đã chết
+        TRƯỚC khi agent khởi động thì không bao giờ được phát hiện — đo thật 2026-08-11,
+        `payment-api` chết lúc 12:53, agent restart 13:14, collector trả
+        "all monitored services OK" trong khi dịch vụ vẫn đang chết.
+
+        Nay chu kỳ đầu có quét level-triggered, nhưng chỉ báo unit vượt CẢ HAI bộ lọc
+        (`ConditionResult != no` + `Type` thuộc allowlist daemon). Đo trên cust-app: 18
+        unit `enabled`+`inactive` → còn đúng 1, không false positive. Bất biến chống nhiễu
+        được khoá riêng ở `tests/test_service_outage_persistence.py`.
+        """
         from remote_agent.collectors import services as svc
 
-        with patch.object(svc, "_run", AsyncMock(return_value=(self._active("nginx.service"), "", 0))):
+        with patch.object(svc, "_run", self._fake_run(
+            [["nginx.service"]], enabled=["nginx.service"],
+        )):
             stopped, skipped = await svc._collect_units_that_stopped()
         assert stopped == [] and skipped == []
 
@@ -1847,12 +1895,10 @@ class TestUnitsThatStopped:
     async def test_detects_active_to_inactive_transition(self):
         from remote_agent.collectors import services as svc
 
-        outs = [
-            (self._active("nginx.service", "cron.service"), "", 0),   # chu kỳ 1
-            (self._active("cron.service"), "", 0),                    # chu kỳ 2: nginx mất
-            ("Type=forking\nRemainAfterExit=no\n", "", 0),            # show nginx
-        ]
-        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+        with patch.object(svc, "_run", self._fake_run(
+            [["nginx.service", "cron.service"], ["cron.service"]],
+            props={"nginx.service": {"Type": "forking", "RemainAfterExit": "no"}},
+        )):
             assert await svc._collect_units_that_stopped() == ([], [])
             stopped, skipped = await svc._collect_units_that_stopped()
 
@@ -1864,12 +1910,10 @@ class TestUnitsThatStopped:
         """`oneshot` biến mất khỏi danh sách active theo THIẾT KẾ, không phải sự cố."""
         from remote_agent.collectors import services as svc
 
-        outs = [
-            (self._active("backup.service"), "", 0),
-            ("", "", 0),
-            ("Type=oneshot\nRemainAfterExit=no\n", "", 0),
-        ]
-        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+        with patch.object(svc, "_run", self._fake_run(
+            [["backup.service"], []],
+            props={"backup.service": {"Type": "oneshot", "RemainAfterExit": "no"}},
+        )):
             await svc._collect_units_that_stopped()
             stopped, skipped = await svc._collect_units_that_stopped()
 
@@ -1881,12 +1925,10 @@ class TestUnitsThatStopped:
         """`RemainAfterExit=yes` nghĩa là nó PHẢI ở trạng thái active sau khi chạy."""
         from remote_agent.collectors import services as svc
 
-        outs = [
-            (self._active("mount-helper.service"), "", 0),
-            ("", "", 0),
-            ("Type=oneshot\nRemainAfterExit=yes\n", "", 0),
-        ]
-        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+        with patch.object(svc, "_run", self._fake_run(
+            [["mount-helper.service"], []],
+            props={"mount-helper.service": {"Type": "oneshot", "RemainAfterExit": "yes"}},
+        )):
             await svc._collect_units_that_stopped()
             stopped, skipped = await svc._collect_units_that_stopped()
 
@@ -1901,12 +1943,10 @@ class TestUnitsThatStopped:
         """
         from remote_agent.collectors import services as svc
 
-        outs = [
-            (self._active("job.service"), "", 0),
-            ("", "", 0),
-            ("RemainAfterExit=no\nType=oneshot\n", "", 0),   # thứ tự ĐẢO
-        ]
-        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+        with patch.object(svc, "_run", self._fake_run(
+            [["job.service"], []],
+            props={"job.service": {"RemainAfterExit": "no", "Type": "oneshot"}},  # thứ tự ĐẢO
+        )):
             await svc._collect_units_that_stopped()
             stopped, skipped = await svc._collect_units_that_stopped()
 
@@ -1917,11 +1957,9 @@ class TestUnitsThatStopped:
         """`getty@.service` không phải unit chạy được; `is-active` từng lỗi vì nó."""
         from remote_agent.collectors import services as svc
 
-        outs = [
-            (self._active("getty@.service", "nginx.service"), "", 0),
-            (self._active("nginx.service"), "", 0),
-        ]
-        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+        with patch.object(svc, "_run", self._fake_run(
+            [["getty@.service", "nginx.service"], ["nginx.service"]],
+        )):
             await svc._collect_units_that_stopped()
             stopped, _ = await svc._collect_units_that_stopped()
         assert stopped == []
@@ -1930,14 +1968,10 @@ class TestUnitsThatStopped:
     async def test_stopped_unit_makes_envelope_failed_and_service_domain(self):
         from remote_agent.collectors import services as svc
 
-        outs = [
-            ("", "", 0),                                    # list-units failed,activating
-            (self._active("nginx.service"), "", 0),         # active chu kỳ 1
-            ("", "", 0),                                    # list-units failed,activating
-            ("", "", 0),                                    # active chu kỳ 2: rỗng
-            ("Type=forking\nRemainAfterExit=no\n", "", 0),  # show nginx
-        ]
-        with patch.object(svc, "_run", AsyncMock(side_effect=outs)):
+        with patch.object(svc, "_run", self._fake_run(
+            [["nginx.service"], []],
+            props={"nginx.service": {"Type": "forking", "RemainAfterExit": "no"}},
+        )):
             first = await svc.collect_systemd_units("host1")
             second = await svc.collect_systemd_units("host1")
 

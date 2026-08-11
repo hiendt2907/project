@@ -57,6 +57,55 @@ Bán kính nổ chặn ĐỘC LẬP 2 tầng, cố ý không gộp: (1) Omni ch�
 `systemd-journald.service`). ConfigMap `omni-worker-config` GIỮ NGUYÊN `false` để cluster dựng lại
 từ nó phải câm. Cộng `min_dispatch_confidence` + CRAT fail-closed.
 
+**🔴 LỖI #6 — mutate CHẾT vì agent phải nối Redis nội bộ của Omni (đã vá, CHƯA COMMIT)**
+
+Đo trên UAT 13:25: lệnh `systemd.restart_unit` tới agent thành công (`state=QUEUED http=200`,
+agent chạy đủ `accept→progress→terminal`) nhưng thất bại:
+`{"rc":1,"reason":"executor_exception: Timeout connecting to server"}`.
+
+Nguyên nhân: `run.env` cả 3 VM trỏ `AOIP_REDIS_URL=redis://redis.multi-agent.svc.cluster.local`
+— DNS **chỉ phân giải trong k3s**; từ VM khách `getent hosts` không ra, kết nối treo. Redis là
+ClusterIP, cố ý không có đường ra ngoài. `run_guarded_recovery` cần Redis cho lease+ledger.
+
+**User chọn hướng 2** (chuyển điều phối về đúng chỗ, KHÔNG mở Redis ra ngoài). Khi đọc code phát
+hiện việc còn đơn giản hơn: `ExecutionLease`/`IdempotencyLedger` **chỉ có call site trong
+`aoip/agent/*`** (không chỗ nào phía Omni), scope là `{tenant}:{unit-systemd}` ⇒ writer luôn là
+agent TRÊN CHÍNH HOST đó ⇒ **không tồn tại nhu cầu điều phối liên máy**. Nên kho CỤC BỘ mới là
+đúng ngữ nghĩa, không phải giải pháp tình thế.
+
+Vá: `src/aoip/agent/local_coord.py` (MỚI) — `LocalCoordStore` file JSON + `fcntl.flock` + TTL,
+giữ đúng bề mặt Redis (`set/get/delete/eval`) nên **`lease.py` và `idempotency.py` KHÔNG đổi một
+dòng**. `runtime_config.py` không còn đọc `AOIP_REDIS_URL` (cố ý — run.env cũ vẫn còn dòng đó, và
+bootstrap không được phụ thuộc vào việc ai nhớ xoá). `eval` chỉ nhận 2 script CAS của `lease.py`,
+script lạ ⇒ `NotImplementedError` (im lặng trả 0 sẽ khiến renew luôn hỏng mà không ai hiểu vì sao).
+
+Lợi thế so với Redis: đúng ranh giới NÃO/THÂN; không phơi kho dữ liệu lõi mọi tenant cho VM khách;
+`flock` serialize đúng kể cả mất mạng hoàn toàn (ca dual-agent Đ50 từng có 2 process/host).
+
+**18 test mới** (`tests/test_local_coord_store.py`), chạy THẬT qua chính `ExecutionLease`/
+`IdempotencyLedger` chứ không mock.
+
+**7 test cũ `TestUnitsThatStopped` đã vỡ do bản vá #5 — ĐÃ SỬA ĐÚNG CÁCH:** chúng mock theo THỨ TỰ
+lệnh (`AsyncMock(side_effect=[...])`) nên cạn khi thêm lệnh. Đổi sang fake ĐIỀU PHỐI THEO LỆNH
+(`_fake_run`) — chặt hơn, không vỡ khi đổi thứ tự, không nới lỏng assertion nào. Riêng
+`test_first_cycle_reports_nothing` là **xung đột hợp đồng thật** (nó khoá đúng hành vi #5 cố ý
+đổi) → viết lại thành `..._when_everything_healthy` kèm lý do đầy đủ.
+
+**Đã triển khai lên CẢ 3 VM** (`local_coord.py` + `runtime_config.py` + `services.py`), gỡ
+`AOIP_REDIS_URL`, thêm `AOIP_COORD_STORE_PATH=/var/lib/omni-agent/coord.json`, restart agent —
+cả 3 `active`. Backup run.env: `/opt/omni-remote-agent/run.env.bak-D52` trên mỗi máy.
+
+**⚠️ WORKING TREE CHƯA COMMIT:** `src/aoip/agent/local_coord.py`, `src/aoip/agent/runtime_config.py`,
+`tests/test_local_coord_store.py`, `tests/test_remote_agent.py`. Full suite đang chạy nền — đọc kết
+quả TRƯỚC khi commit.
+
+**Đang chạy:** drill vòng khép kín lần 2 — `payment-api` dừng lúc 13:46:36 trên cust-app, KHÔNG can
+thiệp. Kiểm bằng `orb -m cust-app -u root systemctl is-active payment-api`, KHÔNG chỉ đọc log.
+
+⚠️ **Lần 1 phép thử đã bị TÔI làm hỏng**: tôi chạy `systemctl restart payment-api` để kiểm chứng
+lệnh có hoạt động không (rc=0, có hoạt động) — nên lần đó dịch vụ sống lại DO TÔI, không phải do
+Omni. Đừng đọc nhầm log 13:26 thành bằng chứng tự khắc phục.
+
 **🔴 LỖI NỀN TẢNG #5 — hệ thống MÙ trước sự cố đang diễn ra (nghiêm trọng nhất phiên này)**
 
 Đo trên VM thật 13:16: `payment-api` ở trạng thái `enabled`+`inactive` (outage sống) nhưng
@@ -124,13 +173,15 @@ Với `assist`, mọi thao tác MEDIUM/HIGH vẫn buộc HITL. Tên tier canonic
 - `omni-cooldown-drill.service` — ✅ ĐÃ DỌN lúc 12:52 (disable + rm + daemon-reload + reset-failed);
   xác nhận `systemctl list-units --type=service --state=failed,activating` trả về RỖNG.
 
-**Next step:** (1) chờ build **#60** (kill-switch gateway — cổng cuối) → xác minh vòng khép kín:
-`payment-api` đang dừng, Omni phải TỰ khởi động lại, kiểm bằng `orb -m cust-app -u root systemctl
-is-active payment-api` chứ không chỉ đọc log; (2) nếu vẫn không chạy, đọc lý do 423 ở log gateway
-(`kubectl logs -l app=omni-gateway --all-containers | grep 423`) — 3 cổng đã mở hết nên nguyên nhân
-sẽ là cổng thứ 4 chưa biết; (3) khôi phục `payment-api` nếu hệ thống không tự làm được, và nói RÕ
-là chưa tự làm được; (4) đo lại `.venv/bin/python scripts/measure_diagnosis_health.py --hours 3
---compare /tmp/baseline_truoc_cooldown.json`.
+**Next step:** (1) đọc kết quả full pytest suite (đang chạy nền) rồi COMMIT 4 file working tree
+ở lỗi #6; (2) đọc kết quả drill vòng khép kín lần 2 — `payment-api` dừng 13:46:36, kiểm bằng
+`orb -m cust-app -u root systemctl is-active payment-api`; (3) nếu vẫn FAILED, đọc bản ghi lệnh
+MỚI (không phải `tail -1` tuỳ tiện): `redis-cli --scan --pattern "omni:cmd:rec:loyalty-uat:*"` rồi
+lọc theo `created_at` lớn nhất — bản ghi cũ `cmd-039277bf` vẫn còn với lỗi Redis đã vá, dễ đọc
+nhầm; (4) sửa chân thẻ Telegram (`unified_incident_card`/`remote_diagnosis_emitter`) đang ghi
+"Omni không tự thực thi" — SAI kể từ khi tier=assist + auto-execute bật; (5) đo lại
+`.venv/bin/python scripts/measure_diagnosis_health.py --hours 3 --compare
+/tmp/baseline_truoc_cooldown.json`.
 
 **CI/CD — user hỏi, đã kiểm chứng, TẠM GÁC theo yêu cầu user:** job `omni-gcp-deploy` có
 `<triggers/>` RỖNG, Jenkins không có plugin Gitea/generic-webhook, và build #55/#56/#57 đều

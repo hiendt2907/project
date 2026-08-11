@@ -155,14 +155,26 @@ def build_agent_runtime(*, mode: str, agent_id: str,
         return observe_only_executor, RuntimeStatus(MODE_OBSERVE_ONLY, STATUS_DISABLED)
 
     # MODE_MUTATION_ENABLED — mọi dependency bắt buộc, không silent fallback.
-    import redis.asyncio as aioredis  # import cục bộ: observe-only không cần cài redis client
+    #
+    # Đ52: lease/ledger chuyển từ Redis TỪ XA sang kho CỤC BỘ trên chính host.
+    # Đo trên UAT 2026-08-11: `AOIP_REDIS_URL` trên cả 3 VM khách trỏ
+    # `redis.multi-agent.svc.cluster.local` — DNS chỉ phân giải BÊN TRONG k3s, nên mọi
+    # lệnh tự khắc phục chết ở `executor_exception: Timeout connecting to server` dù đã
+    # tới được agent. Redis đó là ClusterIP, cố ý không có đường ra ngoài — và không nên có.
+    #
+    # Kho cục bộ mới là ĐÚNG NGỮ NGHĨA chứ không phải giải pháp tình thế: lease scope là
+    # `{tenant}:{unit-systemd}`, writer luôn là agent trên CHÍNH host đó; `ExecutionLease`/
+    # `IdempotencyLedger` không có call site nào phía Omni. Không tồn tại nhu cầu điều phối
+    # liên máy. Xem `aoip/agent/local_coord.py`.
+    #
+    # `AOIP_REDIS_URL` cố ý KHÔNG còn được đọc: run.env cũ trên VM vẫn còn dòng đó, và
+    # bootstrap không được phụ thuộc vào việc ai đó nhớ xoá.
+    from aoip.agent.local_coord import LocalCoordStore
 
-    redis_url = _require(env, "AOIP_REDIS_URL")
     audit_path = _require(env, "AOIP_AUDIT_LOG_PATH")
-    try:
-        redis_client = aioredis.from_url(redis_url, decode_responses=True)
-    except Exception as exc:  # noqa: BLE001 — không broad-catch-fallback, chỉ làm rõ nguyên nhân rồi raise
-        raise AgentBootstrapError(f"failed to construct redis client from AOIP_REDIS_URL: {exc}") from exc
+    redis_client = LocalCoordStore(
+        path=env.get("AOIP_COORD_STORE_PATH") or "/var/lib/omni-agent/coord.json"
+    )
 
     audit_log = audit.FileAuditLog(audit_path)
     gate = _build_gate(env)
