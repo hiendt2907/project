@@ -82,6 +82,23 @@ spec:
                 secretKeyRef:
                   name: omni-pg-secret
                   key: OMNI_ADMIN_PG_DSN
+            # Kill-switch mutate — PHẢI đặt ở ĐÂY, không chỉ ở omni-fullstack.
+            #
+            # Đo thật 2026-08-11 (Đ52): sau khi bật allowlist agent trên
+            # omni-fullstack, auto-recovery dispatch thành công tới gateway rồi
+            # nhận `HTTP 423 Locked`. Lý do: `_master_auto_execute_enabled()`
+            # (`gateway/routes/agent_runtime.py`) đọc env của CHÍNH POD GATEWAY —
+            # một Deployment/Rollout riêng, env riêng — chứ không đọc của worker.
+            # Đặt biến ở omni-fullstack mà quên gateway thì chuỗi tự khắc phục
+            # đứt ở đúng bước cuối, và log chỉ hiện "423" chứ không nói vì sao.
+            #
+            # Đây là 1 trong 3 cổng độc lập, cả ba đều phải mở mới mutate được:
+            #   1. runtime_flag `aoip_mutation_enabled` theo tenant (POST /autonomy/mutation)
+            #   2. biến này (master kill-switch, phía gateway)
+            #   3. tier×risk gate — `shadow` biến MỌI mutate thành SUGGEST
+            # ConfigMap `omni-worker-config` vẫn giữ "false"; đây là override có chủ đích.
+            - name: OMNI_AUTO_EXECUTE_ENABLED
+              value: "true"
           readinessProbe:
             httpGet: {path: /healthz, port: 8000}
             initialDelaySeconds: 5

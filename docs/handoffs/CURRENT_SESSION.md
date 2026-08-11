@@ -29,16 +29,45 @@ sinh lỗi log, nên `remote_log_errors` nay trả `PASSED` và thoát sớm ở
 3.4%, LLM chết 77.7%, trễ trung vị 591s) — nhưng so trực tiếp với sau deploy là **sai phương
 pháp**, phải nói rõ.
 
-**Đang làm:** drill thật `systemctl stop payment-api` trên `cust-app` lúc 11:50:13 để tạo sự cố
-lặp lại thật, kiểm 3 điều: (1) lần đầu có chẩn đoán + ghi `last_diagnosis`; (2) lần lặp bị chặn
-với log `diagnosis_cooldown`; (3) leo thang vẫn xuyên qua.
+**✅ COOLDOWN ĐÃ CHỨNG MINH HOẠT ĐỘNG — đo trên UAT thật, sự cố đang diễn ra:**
+4 phút liên tiếp: **12 evidence vào → 0 vòng chẩn đoán khởi động → 2 lần `diagnosis_cooldown`
+chặn** (đếm ngược 771s→749s→728s, count tăng 4→5→6), unit drill vẫn `failed`. Trước khi có
+cooldown, đúng 12 evidence đó sẽ tạo 12 vòng LLM — chính cơ chế đẻ ra 989 lượt cho 33 vấn đề.
 
-**Next step:** đọc kết quả drill. **Nhớ khôi phục `systemctl start payment-api` trên cust-app khi
-xong** (drill này đã để lại dịch vụ dừng). Sau đó mới đo lại bằng
-`scripts/measure_diagnosis_health.py --compare`. Nếu cooldown không nổ ⇒ báo đúng là chưa chứng
-minh được, không tô hồng. Công cụ đo: `scripts/measure_diagnosis_health.py` (chỉ đọc).
+**⚠️ Lỗ đua in-flight — ĐO ĐƯỢC, đã vá ở `42d82c7`, đang chờ build #59 xác minh:**
+`12:12:36 / 12:12:57 / 12:13:19` — 3 vòng khởi động cách nhau ĐÚNG 20s (= chu kỳ collect), tổng 4
+lượt trùng trước khi cooldown bám được lúc `12:17:39`. Nguyên nhân: mốc chỉ ghi SAU khi vòng chẩn
+đoán xong (~2-4 phút). Vá: `IN_FLIGHT_VERDICT`/`IN_FLIGHT_TIMEOUT_S=600`, đánh dấu TRƯỚC khi chạy;
+mốc tự hết hạn 600s để pod chết giữa vòng không bịt fingerprint 7 ngày. Kỳ vọng sau #59: **4 → 1**.
 
-**Chưa push** `769b910` (chờ build xong để tránh race non-fast-forward đã làm fail build #50).
+**Hai sai sót về PHƯƠNG PHÁP ĐO của chính phiên này (ghi để không lặp):**
+1. Drill đầu `stop payment-api` KHÔNG tái hiện được lỗi: "vừa dừng" là **edge-triggered** (báo 1
+   lần lúc chuyển trạng thái, `total_count` chỉ 3-4). Cơn lũ 398 lần đến từ danh sách `failed` —
+   **level-triggered**. Đo bằng drill sai thì kết luận cũng sai.
+2. Drill thứ hai ban đầu cũng vô hiệu: unit `disabled`+`failed` bị "migration residue guard"
+   (`collectors/services.py:291-297`) lọc đúng thiết kế. Phải `systemctl enable` mới thành sự cố
+   thật với collector.
+
+**✅ AUTO-EXECUTE ĐÃ BẬT trên VM khách (quyết định trực tiếp của user, `42d82c7`).** Trước đó GCP
+CHƯA TỪNG bật — đo thật: Omni chẩn đúng `payment-api` bị SIGTERM (**confidence 0.9**, 3 lượt, không
+generic) và ĐÃ muốn tự chữa nhưng dừng ở `auto_recovery_skipped reason=agent_not_in_lab_allowlist`.
+Allowlist cũ `staging-sim_*` (ghi trong CLAUDE.md) VÔ HIỆU từ khi đổi tenant sang `loyalty-uat`.
+Bán kính nổ chặn ĐỘC LẬP 2 tầng, cố ý không gộp: (1) Omni chọn AGENT — 3 VM `loyalty-uat_*`;
+(2) VM chọn UNIT — `AOIP_ALLOWED_SYSTEMD_UNITS` trong run.env (hiện `payment-api.service`,
+`systemd-journald.service`). ConfigMap `omni-worker-config` GIỮ NGUYÊN `false` để cluster dựng lại
+từ nó phải câm. Cộng `min_dispatch_confidence` + CRAT fail-closed.
+
+**⚠️ CẦN DỌN — trạng thái drill còn để lại trên `cust-app`:**
+- `payment-api.service` đang **dừng** (chủ ý: để thử vòng khép kín auto-execute sau build #59).
+- `omni-cooldown-drill.service` — unit rác do tôi tạo, đang `enabled`+`failed`. Dọn bằng:
+  `orb -m cust-app -u root sh -c 'systemctl disable --now omni-cooldown-drill.service;
+  rm -f /etc/systemd/system/omni-cooldown-drill.service; systemctl daemon-reload;
+  systemctl reset-failed'`
+
+**Next step:** (1) chờ build #59 → đếm lại số lượt trùng, kỳ vọng 1 thay vì 4; (2) thử vòng khép
+kín: `payment-api` đang dừng, Omni phải TỰ khởi động lại không cần người; (3) dọn unit drill +
+khôi phục `payment-api`; (4) đo lại `scripts/measure_diagnosis_health.py --compare
+/tmp/baseline_truoc_cooldown.json`.
 
 **CI/CD — user hỏi, đã kiểm chứng, TẠM GÁC theo yêu cầu user:** job `omni-gcp-deploy` có
 `<triggers/>` RỖNG, Jenkins không có plugin Gitea/generic-webhook, và build #55/#56/#57 đều
