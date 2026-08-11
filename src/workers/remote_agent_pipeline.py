@@ -20,7 +20,12 @@ from typing import Any
 from anomaly.remote_host_baseline import REMOTE_Z_THRESHOLD
 from pkg.domain.taxonomy import UNKNOWN as _DOMAIN_UNKNOWN, normalize_domain
 from pkg.reasoning.domain_signals import detect_domain
-from pkg.reasoning.evidence_cluster import upsert_cluster
+from pkg.reasoning.diagnosis_cooldown import should_diagnose
+from pkg.reasoning.evidence_cluster import (
+    get_seen_state,
+    mark_cluster_diagnosed,
+    upsert_cluster,
+)
 from pkg.reasoning.evidence_fingerprint import fingerprint_evidence
 from services.audit_ledger.chain_writer import write_audit_block
 from services.audit_ledger.signer import AuditLedgerError
@@ -335,6 +340,34 @@ async def handle_remote_agent_evidence(
     needs_research = triage.route in _RESEARCH_ROUTES or (
         triage.route in ("KNOWN_BASELINE", "KNOWN_WITH_FIX") and triage.urgency in _NOTIFY_TIERS
     )
+    # ── Cooldown theo fingerprint (Đ52) ───────────────────────────────────
+    # Lưới `_NOTIFY_TIERS` phía trên CỐ Ý chỉ chặn lặp mức thấp, nên một sự cố đang
+    # diễn ra ở mức high/critical bị chẩn đoán lại mỗi chu kỳ collect (20s), vô hạn.
+    # Đo trên UAT 2026-08-11: 989 lượt chẩn cho 33 vấn đề duy nhất (lặp 96.7%), đẩy
+    # nhu cầu LLM lên 115% công suất ⇒ 74.3% lượt chết timeout. Cooldown ở ĐÂY (trước
+    # khi tốn LLM) chứ không ở khâu gửi Telegram: chặn ở khâu gửi thì vẫn tốn nguyên
+    # chi phí suy luận và hàng đợi vẫn tràn — chỉ im lặng hơn chứ không chẩn đúng hơn.
+    # Leo thang và lượt-trước-thất-bại vẫn xuyên qua được (xem `should_diagnose`).
+    if needs_research and triage.urgency in _NOTIFY_TIERS:
+        try:
+            _seen = await get_seen_state(ctx.redis, fp)
+        except Exception as exc:  # fail-open: lỗi đọc state không được bịt sự cố
+            logger.warning("[RAP] cooldown_state_read_failed fp=%s err=%s", fp, exc)
+            _seen = None
+        _cd = should_diagnose(seen_state=_seen, urgency=triage.urgency)
+        if not _cd.diagnose:
+            logger.info(
+                "[RAP] diagnosis_cooldown fp=%s domain=%s urgency=%s con=%.0fs count=%d",
+                fp, domain, triage.urgency, _cd.cooldown_remaining_s, cluster.count,
+            )
+            await mark_stage(
+                ctx.redis, trace, "LLM", "skip",
+                detail=(f"cooldown {int(_cd.cooldown_remaining_s)}s — da chan doan "
+                        f"fingerprint nay, khong lap lai"),
+                domain=_early_domain, signal_kind="diagnostic",
+            )
+            return f"remote_agent:diagnosis_cooldown:{triage.urgency}"
+
     if needs_research and triage.urgency in _NOTIFY_TIERS:
         chat_id = getattr(ctx, "telegram_chat_id", None) or getattr(
             ctx.settings, "telegram_admin_chat_id", None
@@ -355,6 +388,8 @@ async def handle_remote_agent_evidence(
                     model=model,
                     num_ctx=num_ctx,
                     chat_id=int(chat_id),
+                    fingerprint=fp,
+                    urgency=triage.urgency,
                 ),
                 name=f"diag-{trace[:12]}",
             ))
@@ -445,6 +480,50 @@ async def _persist_trace_advisory(redis: Any, trace: str, advisory: Any, domain:
     await redis.setex(f"{_TRACE_ADVISORY_KEY}{trace}", _TRACE_ADVISORY_TTL, json.dumps(doc, ensure_ascii=False, default=str))
 
 
+def _verdict_from_session(session: Any) -> str:
+    """Rút verdict cho cooldown: 'diagnosed' nếu ra kết luận thật, 'llm_error' nếu không.
+
+    Đọc confidence chứ không đọc cờ `degraded` — đo trên UAT 2026-08-11: chỉ 32/989 ca
+    có `degraded=True` trong khi 767 ca có confidence 0.0 do LLM chết, nên cờ đó không
+    phản ánh sự thật và không dùng để phân nhánh cooldown được.
+    """
+    final = session.get("final") if isinstance(session, dict) else None
+    if not isinstance(final, dict):
+        return "llm_error"
+    try:
+        conf = float(final.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        conf = 0.0
+    return "diagnosed" if conf > 0.0 else "llm_error"
+
+
+async def _mark_diagnosed_best_effort(
+    ctx: WorkerHandlerContext,
+    fingerprint: str,
+    session: Any,
+    urgency: str,
+    trace: str,
+) -> None:
+    """Ghi mốc cooldown. Best-effort: lỗi ở đây không được làm hỏng đường chẩn đoán.
+
+    Đánh đổi có chủ đích: ghi hỏng ⇒ fingerprint đó bị chẩn lại sớm (tốn LLM), KHÔNG
+    phải bị bịt. Luôn nghiêng về phía tốn tài nguyên hơn là bỏ sót sự cố.
+    """
+    if not fingerprint:
+        return
+    try:
+        final = session.get("final") if isinstance(session, dict) else {}
+        await mark_cluster_diagnosed(
+            ctx.redis,
+            fingerprint,
+            verdict=_verdict_from_session(session),
+            root_cause=str((final or {}).get("root_cause") or ""),
+            urgency=urgency,
+        )
+    except Exception as exc:
+        logger.warning("[RAP] mark_diagnosed_failed trace=%s fp=%s err=%s", trace, fingerprint, exc)
+
+
 async def _run_diagnosis_and_notify(
     ctx: WorkerHandlerContext,
     ev_doc: dict,
@@ -454,6 +533,8 @@ async def _run_diagnosis_and_notify(
     model: str,
     num_ctx: int,
     chat_id: int,
+    fingerprint: str = "",
+    urgency: str = "",
 ) -> None:
     """Background task: run multi-turn diagnosis loop then emit Telegram.
 
@@ -471,6 +552,7 @@ async def _run_diagnosis_and_notify(
         await _run_diagnosis_and_notify_inner(
             ctx=ctx, ev_doc=ev_doc, agent_id=agent_id, trace=trace,
             llm=llm, model=model, num_ctx=num_ctx, chat_id=chat_id,
+            fingerprint=fingerprint, urgency=urgency,
         )
 
 
@@ -483,6 +565,8 @@ async def _run_diagnosis_and_notify_inner(
     model: str,
     num_ctx: int,
     chat_id: int,
+    fingerprint: str = "",
+    urgency: str = "",
 ) -> None:
     """Thân thật của `_run_diagnosis_and_notify` — luôn chạy trong trace scope."""
     from services.analyst.diagnosis_loop import run_diagnosis_loop
@@ -526,6 +610,14 @@ async def _run_diagnosis_and_notify_inner(
         if _turns is None and isinstance(session, dict):
             _turns = session.get("total_turns")
         await mark_stage(ctx.redis, trace, "SCHEMA", "ok", detail=f"diagnosis session stored turns={_turns}", domain=_early_domain, signal_kind="diagnostic")
+
+        # Ghi mốc cooldown NGAY khi vòng chẩn đoán kết thúc — trước mọi nhánh
+        # return phía dưới (no-real-finding, CRAT fail-closed). Chi phí LLM đã tiêu
+        # rồi, nên mốc phải được ghi bất kể kết quả có được phát đi hay không; ghi
+        # muộn hơn là để rò một nhánh và cơn bão lặp quay lại qua đúng nhánh đó.
+        # `verdict` phân biệt chẩn-xong với chẩn-hỏng: `should_diagnose` dùng nó để
+        # chọn giữa COOLDOWN_S và RETRY_COOLDOWN_S.
+        await _mark_diagnosed_best_effort(ctx, fingerprint, session, urgency, trace)
 
         # CRAT fail-closed (AGENTS.md INVARIANT: write_audit_block() MUST succeed
         # before Telegram emit / action dispatch — applies to this lane too, not
@@ -594,6 +686,10 @@ async def _run_diagnosis_and_notify_inner(
     except Exception as exc:
         logger.error("[RAP] diagnosis_loop_error trace=%s err=%s", trace, exc)
         await mark_stage(ctx.redis, trace, "LLM", "fail", detail=f"diagnosis_loop_error: {exc}", domain=_early_domain, signal_kind="diagnostic")
+        # Vòng chẩn đoán nổ giữa chừng: chi phí LLM đã tiêu một phần. Ghi mốc hỏng để
+        # `RETRY_COOLDOWN_S` giãn lần thử kế — không ghi thì mọi ca lỗi sẽ thử lại sau
+        # đúng 20s và tự tái tạo cơn bão mà cooldown sinh ra để dập.
+        await _mark_diagnosed_best_effort(ctx, fingerprint, None, urgency, trace)
 
 
 async def _dispatch_auto_recovery_if_eligible(

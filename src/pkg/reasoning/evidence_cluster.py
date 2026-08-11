@@ -155,8 +155,15 @@ async def mark_cluster_diagnosed(
     fingerprint: str,
     verdict: str,
     root_cause: str,
+    urgency: str = "",
 ) -> None:
-    """Update the cross-agent seen record with the LLM diagnosis result."""
+    """Update the cross-agent seen record with the LLM diagnosis result.
+
+    ``urgency`` là mức độ tại thời điểm chẩn đoán — `diagnosis_cooldown.should_diagnose`
+    so nó với mức độ hiện tại để cho ca LEO THANG xuyên qua cooldown. Thiếu trường này
+    thì mọi lần lặp đều trông như "không leo thang" và một sự cố đang trở nặng sẽ bị nén
+    im lặng suốt cooldown.
+    """
     seen_key = _KEY_SEEN.format(fingerprint=fingerprint)
     raw = await redis.get(seen_key)
     if not raw:
@@ -166,6 +173,7 @@ async def mark_cluster_diagnosed(
         "verdict": verdict,
         "root_cause": root_cause[:200],
         "ts": time.time(),
+        "urgency": urgency,
     }
     # Refresh TTL on diagnosis to keep hot patterns in memory longer
     await redis.set(seen_key, json.dumps(state), ex=_SEEN_TTL_S)
