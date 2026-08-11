@@ -102,6 +102,7 @@ async def find_known_fix_candidate(
     score_threshold: float,
     host_scope: frozenset[str] | None = None,
     valid_tools: Any = None,
+    tenant_id: str | None = None,
 ) -> tuple[KnownFixCandidate | None, str]:
     """Vector search trong `action_experience`, trả ứng viên ĐẦU TIÊN qua được
     cả hai lớp kiểm — KHÔNG thực thi (xem `KnownFixCandidate`). Trả
@@ -111,12 +112,24 @@ async def find_known_fix_candidate(
     `TOOL_REGISTRY` (tool trong-process, dùng cho cluster). Remote-agent phải
     truyền `auto_recovery_bridge._SUPPORTED_CAPABILITIES` vì đó là universe
     tên hoàn toàn khác (`systemd.restart_unit`, không phải `k8s_rollout_restart`).
+
+    `tenant_id`: bắt buộc truyền cho làn remote-agent (mỗi tenant một khách
+    hàng thật) — thiếu tham số này thì `action_experience` là MỘT pool DÙNG
+    CHUNG cho mọi tenant (đã xác nhận đây là hành vi thật trước fix này,
+    2026-08-11: fix cho payment-api học được ở tenant A bị recall lại và SUÝT
+    tự thực thi cho tenant B, chỉ chặn được nhờ ngưỡng confidence, không phải
+    nhờ cách ly). `None`/thiếu → tenant mặc định (`DEFAULT_TENANT_ID`), giữ
+    tương thích ngược cho `resolve_known_fix()` (làn K8s cluster nội bộ, chưa
+    có khái niệm tenant khách hàng).
     """
     from execution.memory_normalize import canonical_symptom_text
     from rag.pgvector_store import COLLECTION_ACTION_EXPERIENCE, EMBED_DIM
+    from rag.redis_vector_store import scoped_collection_name
 
     if valid_tools is None:
         from workers.tools import TOOL_REGISTRY as valid_tools  # noqa: N813
+
+    collection_name = scoped_collection_name(COLLECTION_ACTION_EXPERIENCE, tenant_id or "default")
 
     try:
         strip_pods = bool(getattr(ctx.settings, "memory_canonical_strip_pods", True))
@@ -126,7 +139,7 @@ async def find_known_fix_candidate(
         if len(vec) != EMBED_DIM:
             vec = (vec + [0.0] * EMBED_DIM)[:EMBED_DIM]
         resp = await ctx.vector_store.query_points(
-            collection_name=COLLECTION_ACTION_EXPERIENCE,
+            collection_name=collection_name,
             query=vec,
             limit=3,
             score_threshold=score_threshold,

@@ -129,7 +129,7 @@ def _args_hash(args: dict[str, Any]) -> str:
 
 async def _upsert_action_experience(
     ctx: Any, *, trace_id: str, command_id: str, capability: str, unit: str,
-    outcome: dict[str, Any], ok: bool,
+    outcome: dict[str, Any], ok: bool, tenant_id: str = "default",
 ) -> None:
     """Teach the reflex (``remote_known_fix.try_remote_known_fix`` /
     ``known_fix_resolver.find_known_fix_candidate``) from a REAL, CRAT-audited
@@ -149,11 +149,19 @@ async def _upsert_action_experience(
     đọc — "đã thử cách này, hỏng vì X". ``auto_execute`` cũng để ``False`` cho
     nhánh hỏng như một lớp chặn thứ hai.
 
+    ``tenant_id`` (thêm 2026-08-11, chuẩn bị demo đa-tenant): trước đây hàm
+    này ghi thẳng vào collection ``action_experience`` KHÔNG scope theo tenant
+    — phát hiện qua dry-run thật: bài học của tenant A bị recall lại cho tenant
+    B (chặn được nhờ ngưỡng confidence 0.75, KHÔNG phải nhờ cách ly, hai lớp
+    phòng thủ khác nhau). Nay scope qua ``scoped_collection_name`` giống hệt
+    cơ chế ``recall_playbook_advisory`` đã dùng cho các collection khác.
+
     Best-effort by design: a learning-write failure must not turn an already
     CRAT-audited, already-published outcome into a retry."""
     try:
         from execution.memory_normalize import canonical_symptom_text
         from rag.pgvector_store import COLLECTION_ACTION_EXPERIENCE, EMBED_DIM, PointStruct
+        from rag.redis_vector_store import scoped_collection_name
 
         reason = str(outcome.get("reason") or "")[:500]
         evidence = "; ".join(str(e) for e in (outcome.get("evidence") or []))[:800]
@@ -196,7 +204,7 @@ async def _upsert_action_experience(
             "ts": str(int(time.time())),
         }
         await ctx.vector_store.upsert(
-            collection_name=COLLECTION_ACTION_EXPERIENCE,
+            collection_name=scoped_collection_name(COLLECTION_ACTION_EXPERIENCE, tenant_id),
             points=[PointStruct(id=point_id, vector=vec, payload=payload)],
         )
     except Exception as exc:  # noqa: BLE001 — learning write is best-effort
@@ -360,6 +368,7 @@ async def reconcile_one(ctx: Any, tenant_id: str, command_id: str) -> str:
         ctx, trace_id=trace_id, command_id=command_id,
         capability=str(meta.get("capability") or "systemd.restart_unit"),
         unit=str(unit), outcome=outcome, ok=ok,
+        tenant_id=tenant_id,
     )
 
     # Mark the trace terminal BEFORE publishing. handle_action_feedback_envelope

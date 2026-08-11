@@ -1,5 +1,81 @@
 # Current Session Handoff
 
+**Cập nhật:** 2026-08-11 (Đ55 — script demo cafe + fix cách ly tenant thật trong action_experience.
+**Full suite 7348 pass, 0 fail — đang commit + deploy.** Đ53/Đ54 giữ nguyên bên dưới, đã deploy/
+verify xong. Buổi cafe với CTO cũ CHƯA CHỐT NGÀY — user xác nhận "còn linh hoạt", không vội.)
+
+### Đ55 — Script demo live cho buổi cafe với CTO cũ (2026-08-11, ĐANG LÀM)
+
+**Bối cảnh:** nối tiếp Đ54 — user có đầu mối thật (sếp cũ, vận hành hạ tầng doctorcheck.vn, y tế
+VN). User yêu cầu: không dùng slide, cần **script chứng minh được** những gì sẽ nói khi gặp cafe —
+mở rộng thêm: phải chứng minh **3 mức độ tự trị** (shadow/assist/auto) với Telegram đúng ở từng
+mức, agent **làm được gì/không làm được gì** (cấm ở mức nào), và **thật sự hiểu hệ thống** (không
+đoán mù). Hình thức đã chốt: gửi video ngắn trước để đo hứng thú, rồi gặp cafe demo LIVE trên laptop.
+
+**Đã tạo (untracked, chưa commit):**
+- `scripts/demo/cafe_demo_preflight.sh` — chạy Ở NHÀ trước khi đi, check 7 điều kiện. Đã chạy
+  thật, PASS toàn bộ sau khi fix 1 bug thật: `omni-gateway` là Argo Rollout
+  (`kubectl get rollout`), không phải Deployment — script cũ dùng `kubectl get deploy omni-gateway`
+  luôn FAIL dù pod thực tế khoẻ mạnh.
+- `scripts/demo/cafe_demo_payment_api.sh` — script chạy LIVE trước mặt CTO: dừng thật
+  `payment-api.service` trên VM `cust-app` (tenant `loyalty-uat`, agent thật) → tail log thật từ
+  pod `omni-fullstack` → chờ tự phục hồi → verify trạng thái thật → cho xem entry audit chain thật
+  → dọn dẹp cuối. Bug thật đã bắt qua dry-run (không chỉ đọc code): `wait -n` không chạy được trên
+  bash 3.2 mặc định macOS — đã đổi sang `sleep 240` (tương thích bash 3.2).
+
+**Phát hiện quan trọng cho vận hành demo — cooldown 900s (Đ52):** chạy đúng kịch bản 2 lần liên
+tiếp trong <15 phút khiến cooldown theo fingerprint chặn hoàn toàn lần 2 — Telegram im lặng dù hệ
+thống đúng thiết kế. CHƯA thêm bước clear cooldown vào preflight — còn treo.
+
+**Fix thật đã tìm+vá qua chính quá trình chuẩn bị demo (Đ55, KHÔNG phải giả lập):**
+- Lúc đầu nghi ngờ "discovery snapshot rỗng cho cả 3 VM" — **SAI, do tôi tra nhầm Redis key**
+  (dùng hostname `cust-app` thay vì agent_id đầy đủ `loyalty-uat_cust-app`). Snapshot thật có 32
+  service, có `payment-api`. Đã xin lỗi + sửa lại thông tin cho user ngay khi phát hiện.
+- **Fix thật, đã verify bằng chính log production**: `action_experience` (collection quyết định
+  known-fix reflex có tự dispatch hay không) trước đây là **MỘT pool KHÔNG cách ly theo tenant** —
+  bắt được qua log thật `event=auto_recovery_skipped reason=confidence_below_threshold ...
+  confidence=0.71` trong lúc tenant `loyalty-uat` chưa từng có kinh nghiệm riêng: candidate 0.71
+  đến từ dữ liệu tenant KHÁC (từ các đợt drill `staging-sim`/`default` trước đó), chỉ bị chặn nhờ
+  ngưỡng confidence 0.75, KHÔNG phải nhờ cách ly. Đã vá: `find_known_fix_candidate()` +
+  `_upsert_action_experience()` nay nhận `tenant_id`, dùng `scoped_collection_name()` giống hệt cơ
+  chế `recall_playbook_advisory` đã dùng cho các collection khác. `reconcile_one` truyền thẳng
+  `tenant_id` (tham số có sẵn của chính nó) — KHÔNG đọc từ `meta` dict (meta không hề có field này,
+  thử đọc từ đó sẽ luôn fallback "default" và không fix được gì).
+- 2 test cũ trong `test_remote_command_outcome_learning.py` sửa lại theo hành vi mới (collection
+  nay là `action_experience:t1` không phải `action_experience` cho tenant "t1"); 1 test mới trong
+  `test_remote_known_fix.py` khoá lại collection_name được scope đúng qua vector_store.query_points.
+  **Full suite 7348 pass, 0 fail.**
+- System Twin (`omni:aoip:system_model:{tenant}`, khác hẳn discovery snapshot ở trên) xác nhận SỐNG
+  THẬT cho tenant `loyalty-uat`: 92 facts, ví dụ `host:cust-app runs_service rpcbind conf=0.85`,
+  `host:cust-db connects_to host:cust-app conf=0.7` — nhưng **KHÔNG có fact nào tên `payment-api`**
+  (nó thấy process `python3` chung chung, không gắn được tên systemd unit cụ thể) — hạn chế thật,
+  chưa fix, cần biết khi thiết kế phần "chứng minh hiểu hệ thống" của demo.
+
+**CHƯA làm/còn treo (Đ55):**
+- Chưa deploy bản fix cách ly tenant lên UAT + verify sống bằng kubectl exec (theo đúng kỷ luật
+  Đ52/Đ53 — làm ngay sau khi ghi chú này).
+- Chưa seed lại action_experience RIÊNG cho `loyalty-uat` (vòng chẩn đoán cũ trước fix ghi vào pool
+  chung, không tính) — cần 1 lần drill sạch SAU khi deploy để tenant có kinh nghiệm thật của chính nó.
+- Chưa làm: Telegram card nói rõ tier hiện tại (shadow/assist/auto) + quyết định ALLOW/SUGGEST/HITL
+  cho từng đề xuất — mới dừng ở tra cứu `pkg/autonomy/tier_gate.py` (3 tier: shadow/assist/auto,
+  ma trận tier×risk, `systemd.restart_unit`=LOW risk).
+- Chưa làm: câu chuyện "cấm ở mức nào" — sự thật hiện tại là làn VM/AOIP chỉ có ĐÚNG 3 capability
+  (`systemd.restart_unit/reset_failed/journal_vacuum`, toàn LOW risk, `_SUPPORTED_CAPABILITIES` trong
+  `auto_recovery_bridge.py`) — nghĩa là KHÔNG có ví dụ MEDIUM/HIGH nào để demo "bị chặn" trên chính
+  làn VM này (khác K8s lane có `DANGEROUS_TOOLS`). Cần quyết định: nói thật giới hạn này (an toàn
+  vì phạm vi hẹp = thiết kế, không phải thiếu sót), hay cần thêm capability MEDIUM để demo HITL.
+- Chưa viết storyboard video ngắn (task #51).
+- Chưa commit `scripts/demo/`.
+
+**Next step ngay:** commit tất cả (fix cách ly tenant + scripts/demo), deploy, verify sống, seed
+lại 1 vòng drill sạch cho loyalty-uat, rồi hỏi user ưu tiên tiếp giữa: (a) tier-aware Telegram
+wording, (b) câu chuyện "cấm ở mức nào", (c) storyboard video — vì buổi cafe chưa chốt ngày nên
+không cần vội một lượt làm hết.
+
+**Next step:** chờ vòng diagnosis loop nền hiện tại xong (xem có tự phục hồi + Telegram không) →
+nếu cooldown là nguyên nhân duy nhất từng chặn, thêm bước clear cooldown vào preflight → dry-run
+sạch 1 lần cuối → viết storyboard video → commit.
+
 **Cập nhật:** 2026-08-11 (Đ53 — fix Telegram + nối known-fix reflex vào nhánh service/application.
 **Full suite 7347 pass, 0 fail. Commit `e8fc230` đã push cả 2 remote, build Jenkins #61+#62 SUCCESS,
 verify sống bằng `kubectl exec` trong pod `omni-fullstack` xác nhận cả 3 thay đổi.** Đ52 giữ nguyên

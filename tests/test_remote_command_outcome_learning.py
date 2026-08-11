@@ -150,7 +150,10 @@ async def test_completed_command_upserts_action_experience(ctx, audit_ok):
 
     assert len(ctx.vector_store.upserts) == 1
     call = ctx.vector_store.upserts[0]
-    assert call["collection_name"] == "action_experience"
+    # Đ55: action_experience nay scope theo tenant ("t1" != default tenant) —
+    # trước fix này mọi tenant ghi chung 1 collection, xem docstring
+    # _upsert_action_experience cho sự cố thật đã xảy ra vì thiếu cách ly.
+    assert call["collection_name"] == "action_experience:t1"
     payload = call["points"][0].payload
     assert payload["exec_outcome"] == "success"
     assert payload["auto_execute"] is True
@@ -171,6 +174,7 @@ async def test_upserted_point_round_trips_through_known_fix_resolver(ctx, audit_
         score_threshold=0.5,
         host_scope=frozenset({"payment-api.service"}),
         valid_tools=arb._SUPPORTED_CAPABILITIES,
+        tenant_id="t1",
     )
     assert reason == "ok"
     assert candidate is not None
@@ -217,6 +221,7 @@ async def test_failed_experience_is_never_returned_as_a_fix_candidate(ctx, audit
         score_threshold=0.5,
         host_scope=frozenset({"payment-api.service"}),
         valid_tools=arb._SUPPORTED_CAPABILITIES,
+        tenant_id="t1",
     )
     assert candidate is None, "cách sửa đã thất bại bị đem ra dùng lại"
     assert reason != "ok"

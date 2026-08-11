@@ -34,8 +34,10 @@ class _FakeResponse:
 class _FakeVectorStore:
     def __init__(self, points: list[_FakePoint]):
         self._points = points
+        self.last_query_kwargs: dict[str, Any] = {}
 
     async def query_points(self, **kwargs: Any) -> _FakeResponse:
+        self.last_query_kwargs = kwargs
         return _FakeResponse(self._points)
 
 
@@ -191,6 +193,36 @@ async def test_valid_candidate_dispatches_via_durable_channel(
     assert captured["agent_id"] == "agent-1"
     assert captured["tenant_id"] == "tenant-1"
     assert captured["trace_id"] == "trace-1"
+
+
+@pytest.mark.asyncio
+async def test_action_experience_search_scoped_by_tenant(
+    fake_redis: FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Đ55: action_experience trước đây là MỘT pool dùng chung mọi tenant —
+    fix cho tenant A bị recall lại cho tenant B (chặn được nhờ ngưỡng
+    confidence, không phải nhờ cách ly). Vector search phải nhắm đúng
+    collection đã scope theo tenant_id, không phải collection unscoped."""
+    async def _fake_dispatch(**kwargs: Any) -> dict:
+        return {"dispatched": True, "reason": "dispatched", "command_id": "c1", "state": "ACCEPTED"}
+
+    monkeypatch.setattr("workers.auto_recovery_bridge.dispatch_if_eligible", _fake_dispatch)
+    points = [
+        _FakePoint(0.88, {
+            "exec_outcome": "success", "tool": "systemd.restart_unit",
+            "auto_execute": True, "args": {"unit": "nginx"},
+        })
+    ]
+    vs = _FakeVectorStore(points)
+    ctx = SimpleNamespace(
+        redis=fake_redis, settings=_settings(), llm=_FakeLLM(),
+        vector_store=vs, kafka=_FakeKafka(),
+    )
+    await try_remote_known_fix(
+        ctx, query_text="cpu cao", score_threshold=0.55, host_scope=frozenset({"nginx"}),
+        agent_id="agent-1", tenant_id="acme-corp", trace_id="trace-1",
+    )
+    assert vs.last_query_kwargs["collection_name"] == "action_experience:acme-corp"
 
 
 @pytest.mark.asyncio

@@ -49,6 +49,7 @@ async def try_remote_known_fix(
         score_threshold=score_threshold,
         host_scope=host_scope,
         valid_tools=_SUPPORTED_CAPABILITIES,
+        tenant_id=tenant_id,
     )
     if candidate is None:
         return {"resolved": False, "reason": reason}
