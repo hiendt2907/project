@@ -196,6 +196,66 @@ def _reset_service_state_memory() -> None:
     _known_stopped_units.clear()
 
 
+# Kiểu `Type=` của một daemon THƯỜNG TRÚ. Cố ý dùng ALLOWLIST chứ không denylist:
+# kiểu lạ mặc định bị coi là "không phải daemon" ⇒ nghiêng về ÍT nhiễu. Bỏ sót một
+# daemon kiểu hiếm vẫn được edge-trigger bắt lại ngay khi nó dừng trong lúc agent theo
+# dõi — nên đánh đổi này không tạo điểm mù mới.
+_DAEMON_TYPES = frozenset({"simple", "notify", "forking", "exec", "dbus", "notify-reload"})
+
+
+async def _collect_already_down_units() -> list[str]:
+    """Unit `enabled` + `inactive` NGAY TỪ ĐẦU — outage có trước khi agent khởi động.
+
+    Edge-trigger về bản chất không thể thấy loại này: không có "chu kỳ trước" để so.
+    Ca thật 2026-08-11: `payment-api` chết lúc 12:53, agent restart 13:14 ⇒ collector
+    trả "all monitored services OK" trong khi dịch vụ vẫn đang chết.
+
+    Ghi chú gốc cho rằng cách này bất khả thi vì nhiễu ("15 unit... KHÔNG có thuộc tính
+    systemd nào phân biệt daemon thường trú với chạy một lần"). Đo lại trên `cust-app`
+    2026-08-11: 18 unit `enabled`+`inactive`, áp CẢ HAI bộ lọc thì còn **đúng 1**
+    (`payment-api`) — 0 false positive:
+      - `ConditionResult=no` loại 13 (`systemd-pcrlock-*`×7, `timesyncd`, `sysext`, …)
+      - `Type` ngoài `_DAEMON_TYPES` loại `dmesg`(idle) + `e2scrub_reap`(oneshot)
+      - unit template `@.service` loại `getty@`
+    Tức `Type` + `ConditionResult` CỘNG LẠI thì phân biệt được — ghi chú gốc chỉ đúng khi
+    dùng riêng `ConditionResult`.
+    """
+    out, err, rc = await _run([
+        "systemctl", "list-unit-files", "--type=service",
+        "--state=enabled", "--no-legend", "--no-pager", "--plain",
+    ], timeout=20.0)
+    if rc != 0:
+        logger.warning("[collector.services] list-unit-files enabled unavailable: %s", err[:200])
+        return []
+
+    down: list[str] = []
+    for line in out.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        unit_full = parts[0]
+        if "@." in unit_full:      # template, không phải unit chạy được
+            continue
+        act, _, _ = await _run(["systemctl", "is-active", unit_full], timeout=5.0)
+        if act.strip() == "active":
+            continue
+        out_p, _, rc_p = await _run(
+            ["systemctl", "show", "-p", "ConditionResult", "-p", "Type",
+             "-p", "RemainAfterExit", unit_full],
+            timeout=5.0,
+        )
+        props = dict(
+            l.split("=", 1) for l in out_p.splitlines() if "=" in l
+        ) if rc_p == 0 else {}
+        # systemd tự nói unit này không áp dụng cho máy này ⇒ inactive là ĐÚNG.
+        if props.get("ConditionResult") == "no":
+            continue
+        if props.get("Type", "") not in _DAEMON_TYPES:
+            continue
+        down.append(unit_full.removesuffix(".service"))
+    return down
+
+
 async def _collect_units_that_stopped() -> tuple[list[str], list[str]]:
     """Unit vừa CHUYỂN từ đang chạy sang dừng — outage mà `--state=failed` không thấy.
 
@@ -245,8 +305,10 @@ async def _collect_units_that_stopped() -> tuple[list[str], list[str]]:
     _known_stopped_units.difference_update(u.removesuffix(".service") for u in now_active)
 
     if prev is None:
-        # Chu kỳ đầu sau khi agent khởi động: chưa có gì để SO, nhưng vẫn phải báo lại
-        # những outage đã biết (rỗng nếu tiến trình vừa khởi động).
+        # Chu kỳ đầu sau khi agent khởi động: chưa có gì để SO. Quét level-triggered để
+        # không mù trước outage ĐÃ TỒN TẠI từ trước — chỉ chạy đúng 1 lần mỗi vòng đời
+        # tiến trình nên chi phí `systemctl show` mỗi unit là chấp nhận được.
+        _known_stopped_units.update(await _collect_already_down_units())
         return sorted(_known_stopped_units), []
 
     # Phép TRỪ trên tập — không giả định thứ tự đầu ra của bất kỳ lệnh nào. Ghép theo vị

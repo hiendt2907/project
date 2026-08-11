@@ -135,3 +135,75 @@ async def test_reset_state_xoa_ca_tri_nho_outage(monkeypatch):
 
     svc._reset_service_state_memory()
     assert (await svc._collect_units_that_stopped())[0] == []
+
+
+# ── Outage ĐÃ TỒN TẠI trước khi agent khởi động ──────────────────────────────
+#
+# Edge-trigger về bản chất không thể thấy loại này: không có "chu kỳ trước" để so.
+# Đo trên cust-app 2026-08-11: 18 unit `enabled`+`inactive`, nhưng áp CẢ HAI bộ lọc
+# (`ConditionResult != no` và Type thuộc allowlist daemon) thì còn ĐÚNG 1 — payment-api,
+# tức 0 false positive. Đây là phản chứng cho ghi chú gốc ("không có thuộc tính systemd
+# nào phân biệt daemon với chạy-một-lần"): `Type` + `ConditionResult` cộng lại thì được.
+
+def _fake_run_enabled_inactive(enabled_units, active_units, props):
+    async def _run(cmd, stdin=None, timeout=8.0):
+        if cmd[:2] == ["systemctl", "list-units"] and "--state=active" in cmd:
+            return ("\n".join(f"{u} loaded active running" for u in active_units), "", 0)
+        if cmd[:2] == ["systemctl", "list-unit-files"]:
+            return ("\n".join(f"{u} enabled enabled" for u in enabled_units), "", 0)
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return ("active" if cmd[-1] in active_units else "inactive", "", 0)
+        if cmd[:2] == ["systemctl", "show"]:
+            p = props.get(cmd[-1], {})
+            return ("\n".join(f"{k}={v}" for k, v in p.items()), "", 0)
+        return ("", "", 0)
+    return _run
+
+
+_REAL_VM_PROPS = {
+    # daemon thật đang chết — PHẢI báo
+    "payment-api.service": {"ConditionResult": "yes", "Type": "simple", "RemainAfterExit": "no"},
+    # nhiễu thật quan sát được trên cust-app — KHÔNG được báo
+    "dmesg.service": {"ConditionResult": "yes", "Type": "idle", "RemainAfterExit": "no"},
+    "e2scrub_reap.service": {"ConditionResult": "yes", "Type": "oneshot", "RemainAfterExit": "no"},
+    "systemd-timesyncd.service": {"ConditionResult": "no", "Type": "notify", "RemainAfterExit": "no"},
+    "systemd-pcrlock-machine-id.service": {"ConditionResult": "no", "Type": "oneshot", "RemainAfterExit": "yes"},
+    "ubuntu-advantage.service": {"ConditionResult": "no", "Type": "simple", "RemainAfterExit": "no"},
+}
+
+
+async def test_outage_co_truoc_khi_agent_khoi_dong_van_phai_thay(monkeypatch):
+    """Agent restart lúc dịch vụ đã chết ⇒ vẫn phải phát hiện, không mù.
+
+    Trước bản vá: `prev is None` ⇒ `return [], []` ⇒ sự cố không bao giờ được báo.
+    Đây là ca thật đã gặp: payment-api chết lúc 12:53, agent restart 13:14, collector
+    trả "all monitored services OK".
+    """
+    enabled = list(_REAL_VM_PROPS)
+    monkeypatch.setattr(
+        svc, "_run", _fake_run_enabled_inactive(enabled, [], _REAL_VM_PROPS)
+    )
+    stopped, _ = await svc._collect_units_that_stopped()
+    assert stopped == ["payment-api"], f"phai thay dung payment-api, nhan duoc {stopped}"
+
+
+async def test_khong_keo_theo_nhieu_tu_unit_he_thong(monkeypatch):
+    """0 false positive trên đúng bộ dữ liệu VM thật — bất biến chống nhiễu."""
+    enabled = list(_REAL_VM_PROPS)
+    monkeypatch.setattr(
+        svc, "_run", _fake_run_enabled_inactive(enabled, [], _REAL_VM_PROPS)
+    )
+    stopped, _ = await svc._collect_units_that_stopped()
+    for noisy in ("dmesg", "e2scrub_reap", "systemd-timesyncd",
+                  "systemd-pcrlock-machine-id", "ubuntu-advantage"):
+        assert noisy not in stopped, f"{noisy} la nhieu, khong duoc bao"
+
+
+async def test_dich_vu_khoe_thi_khong_bao_gi(monkeypatch):
+    """Mọi thứ chạy bình thường ⇒ im lặng tuyệt đối."""
+    enabled = list(_REAL_VM_PROPS)
+    monkeypatch.setattr(
+        svc, "_run",
+        _fake_run_enabled_inactive(enabled, ["payment-api.service"], _REAL_VM_PROPS),
+    )
+    assert (await svc._collect_units_that_stopped())[0] == []

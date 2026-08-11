@@ -57,6 +57,40 @@ Bán kính nổ chặn ĐỘC LẬP 2 tầng, cố ý không gộp: (1) Omni ch�
 `systemd-journald.service`). ConfigMap `omni-worker-config` GIỮ NGUYÊN `false` để cluster dựng lại
 từ nó phải câm. Cộng `min_dispatch_confidence` + CRAT fail-closed.
 
+**🔴 LỖI NỀN TẢNG #5 — hệ thống MÙ trước sự cố đang diễn ra (nghiêm trọng nhất phiên này)**
+
+Đo trên VM thật 13:16: `payment-api` ở trạng thái `enabled`+`inactive` (outage sống) nhưng
+collector trả `"all monitored services OK"` / `result=PASSED`.
+
+Nguyên nhân: `_collect_units_that_stopped()` EDGE-TRIGGERED (`gone = prev - now_active`) — bắn
+đúng 1 lần lúc chuyển trạng thái, sau đó unit không còn trong `prev` lẫn `now_active` nên rỗng
+vĩnh viễn. Code tự mâu thuẫn với comment của chính nó ở `services.py:307` ("enabled + inactive
+cũng là FAILED").
+
+Hậu quả: (1) sự cố kéo dài báo 1 lần, mà 77% lượt chẩn đoán chết vì LLM timeout ⇒ mất khỏi radar;
+(2) agent restart lúc dịch vụ đang chết ⇒ KHÔNG BAO GIỜ phát hiện; (3) vòng tự khắc phục không
+chạy lại được. **Lỗi này chỉ lộ ra vì phép thử vòng khép kín TREO thay vì chạy** — nếu coi "treo"
+là đang chờ thì đã bỏ qua.
+
+Vá 2 lớp:
+- `_known_stopped_units` — nhớ unit đã xác nhận dừng, báo lại mỗi chu kỳ tới khi chạy lại (commit `0fdcf37`)
+- `_collect_already_down_units()` — quét level-triggered 1 lần lúc `prev is None`, bịt lỗ "outage
+  có trước khi agent khởi động" (**CHƯA COMMIT** — còn trong working tree)
+
+Phản chứng ghi chú gốc ("không có thuộc tính systemd nào phân biệt daemon với chạy-một-lần"): đo
+trên cust-app 18 unit `enabled`+`inactive`, áp CẢ HAI bộ lọc còn **đúng 1** (`payment-api`), 0 false
+positive — `ConditionResult=no` loại 13, `Type` ngoài `_DAEMON_TYPES` loại `dmesg`(idle)/
+`e2scrub_reap`(oneshot), template loại `getty@`. Ghi chú gốc chỉ đúng khi dùng RIÊNG `ConditionResult`.
+Dùng ALLOWLIST `_DAEMON_TYPES` chứ không denylist: kiểu lạ ⇒ coi là không-phải-daemon (nghiêng về
+ít nhiễu); daemon kiểu hiếm vẫn được edge-trigger bắt khi nó dừng lúc agent đang theo dõi.
+
+Verify sống trên VM sau vá: `result=FAILED`, `stopped=['payment-api']`, đúng 1 unit không nhiễu.
+8 test mới, 1412 test vùng liên quan pass. Code đã copy sang `cust-app` + restart `aoip-agent`;
+**CHƯA đẩy sang `cust-db`/`cust-edge`**. Backup file gốc: `/tmp/services.py.bak` trên cust-app.
+
+**⚠️ WORKING TREE CHƯA COMMIT:** `src/remote_agent/collectors/services.py` (level-trigger) +
+`tests/test_service_outage_persistence.py` (3 test cuối). Commit trước khi làm gì khác.
+
 **🔑 BA CỔNG CHẶN MUTATE — phải mở CẢ BA, tìm ra bằng đo thật (đừng phải dò lại lần nữa):**
 
 | # | Cổng | Ở đâu | Cách mở | Trạng thái |
