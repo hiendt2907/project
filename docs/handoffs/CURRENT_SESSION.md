@@ -1,9 +1,50 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-11 (Đ50 — **HOÀN TẤT TOÀN BỘ 6/6 PHASE, verify sống trên 3 VM thật**.
-`omni-remote-agent.service` đã gỡ hẳn khỏi cust-app/cust-db/cust-edge; runtime duy nhất trên VM
-khách hàng nay là `aoip-agent.service` (`aoip.agent.employee`). Double-fire evidence đã chấm dứt
-(đo được: 6-7 → 3 lần/60s trên cả 3 VM, đúng `interval=20s`). Chi tiết ở mục Đ50 dưới.)
+**Cập nhật:** 2026-08-11 (Đ51 — **AUDIT ĐÃ CHẠY THẬT, HOÀN TẤT**. Không sửa code production, chỉ
+đo đạc + ghi báo cáo. Kết quả: 2.2% tin Telegram có giá trị. Chi tiết ngay dưới, Đ50 giữ nguyên.)
+
+### Đ51 — Audit 9 domain × Telegram evidence — HOÀN TẤT, ĐO THẬT (2026-08-11)
+
+**Output:** `docs/audit/domain_telegram_evidence_audit_2026-08-11.md` (đầy đủ, có lệnh tái kiểm ở §8).
+Plan gốc: `plans/domain-deep-dive-audit-2026-08-11.md` (đã thực thi, không cần chạy lại).
+
+**Số đo thật — 989 diagnosis session trong Redis, không ước lượng:**
+
+| Chỉ số | Giá trị |
+|---|---|
+| Tin Telegram **thực sự hữu ích** | **22/989 = 2.2%** (6h gần nhất: 3.0%) |
+| Confidence = 0.0 | 767 = 77.6% (6h gần nhất: 81%) |
+| Remediation "generic fallback" (`df -h`/`free -h`) | 909 = 91.9% |
+| Được gửi Telegram | **989 = 100%** (không cái nào bị chặn) |
+| Lượt LLM chết timeout | 2059/2773 = 74.3% |
+| Trễ evidence→Telegram | trung vị **8.3 phút**, p90 14.6, max 23.2 |
+
+**Nguyên nhân gốc — đo được, không suy đoán:** `OMNI_LLM_NUM_PARALLEL=1` ⇒ LLM xử lý tuần tự.
+Đo 3 request đồng thời: 18s/37s/51s (xếp hàng tuyến tính hoàn hảo). 1 lượt = 24s ⇒ công suất
+~150 lượt/giờ, nhu cầu thật ~173 lượt/giờ = **115% công suất** ⇒ hàng đợi vô hạn ⇒ vượt
+`llm_chat_timeout_sec=120s`. Khớp ghi chú có sẵn ở `diagnosis_loop.py:214`.
+
+**Bug thứ 2 (độc lập, sửa rẻ):** `remote_diagnosis_emitter.py:69` `diagnosis_has_real_finding()`
+KHÔNG kiểm tra confidence — chuỗi "Diagnosis inconclusive…" thoả điều kiện ⇒ trả True ⇒ gửi.
+Đó là lý do tỉ lệ gửi 100% thay vì ~2%. **Bug thứ 3:** cờ `degraded` chỉ True 32/989 dù 767 ca
+LLM chết ⇒ không dùng được để lọc.
+
+**Phần chạy TỐT (đừng sửa nhầm):** thu thập evidence, định tuyến domain, 1423 lệnh chẩn đoán chạy
+thật trên VM (allowlist chặn `nc` đúng), CRAT fail-closed, và **cổng 3σ trên đường Prometheus
+(`gw-prom-*`) chặn false-positive chính xác** — nên dùng làm hình mẫu cho đường `ra-*`.
+
+**Sai lầm đã tự phát hiện + ghi lại trong audit §3.3:** tôi từng nghi cảnh báo `service` lúc
+10:54–10:58 là "cảnh báo ma" về unit đã xoá ở Đ50. Sai — evidence thu lúc 10:43–10:44, unit xoá
+lúc 10:48:47; cảnh báo THẬT, chỉ đến muộn 10–15 phút. Chính độ trễ tạo ảo giác đó.
+
+**Phủ domain thực tế:** `service` 507 + `application` 444 = 96.2% toàn bộ tải. `security` 20,
+`network` 8, `database` 6, `os_host` 2, `storage` 2. `kubernetes` 0 session (5 trace nhưng bị 3σ
+chặn đúng), `hardware` 0 (không có collector — giới hạn kiến trúc, đúng như CLAUDE.md).
+
+**Next step:** audit đã đóng, KHÔNG tự sửa gì. 3 hướng chờ user quyết (audit §7): (1) thêm ngưỡng
+confidence vào cổng lọc — vài dòng, cắt ngay ~92% nhiễu; (2) hạ tải LLM xuống dưới công suất
+(tăng NUM_PARALLEL / thêm cổng định lượng trước LLM / giảm tần suất probe `service_systemd_units`
+đang chiếm 51% tải); (3) sửa cờ `degraded`. Cộng 4 rủi ro tồn đọng từ Đ50 vẫn nguyên.
 
 ### Đ50 — HOÀN TẤT (2026-08-11)
 
