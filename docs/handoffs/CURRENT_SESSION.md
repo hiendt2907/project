@@ -57,17 +57,46 @@ Bán kính nổ chặn ĐỘC LẬP 2 tầng, cố ý không gộp: (1) Omni ch�
 `systemd-journald.service`). ConfigMap `omni-worker-config` GIỮ NGUYÊN `false` để cluster dựng lại
 từ nó phải câm. Cộng `min_dispatch_confidence` + CRAT fail-closed.
 
+**🔑 BA CỔNG CHẶN MUTATE — phải mở CẢ BA, tìm ra bằng đo thật (đừng phải dò lại lần nữa):**
+
+| # | Cổng | Ở đâu | Cách mở | Trạng thái |
+|---|---|---|---|---|
+| 1 | Allowlist agent | env `omni-fullstack` | `OMNI_LAB_AUTO_EXECUTE_AGENTS` | ✅ `42d82c7` |
+| 2 | `runtime_flag` per-tenant | Postgres `omni_admin.runtime_flag` | `POST /autonomy/mutation` | ✅ đã bật |
+| 3 | Master kill-switch | env **POD GATEWAY** (Rollout riêng!) | `OMNI_AUTO_EXECUTE_ENABLED` | ✅ `c370e02` (build #60) |
+| 4 | tier × risk gate | Redis/PG | `POST /autonomy/tier` | ✅ `shadow`→`assist` |
+
+**Bẫy đã vấp (ghi để không lặp):** đặt `OMNI_AUTO_EXECUTE_ENABLED=true` trên `omni-fullstack` là
+CHƯA ĐỦ — `_master_auto_execute_enabled()` ở `gateway/routes/agent_runtime.py:223` đọc env của
+**chính pod gateway**, một Rollout độc lập (`k8s/gitops/omni-gateway-rollout.yaml`). Triệu chứng:
+`auto_recovery_dispatched ... http=423`, log KHÔNG nói lý do, phải đọc code mới ra. May là
+`POST /autonomy/mutation` tự khai `requested=true effective=false reason=master_kill_switch_off`.
+
+**Vì sao chọn tier `assist` chứ không `auto`:** `systemd.restart_unit` = risk **LOW**; bảng
+`evaluate_tier_gate` cho `assist`→ALLOW với LOW, còn `auto` mở luôn MEDIUM (nới quá mức cần).
+Với `assist`, mọi thao tác MEDIUM/HIGH vẫn buộc HITL. Tên tier canonical chỉ có 3:
+`shadow|assist|auto` — `minimal`/`autonomous` KHÔNG hợp lệ, rơi vào nhánh fail-closed → SUGGEST.
+
+**Bằng chứng chuỗi tự khắc phục (drill 12:53:27 dừng `payment-api` trên cust-app):**
+- 12:53:47 (20s sau) `diagnosis_loop launched` — phát hiện đúng chu kỳ collect
+- chẩn đoán: **confidence 0.9**, 3 lượt, root cause đúng ("terminated with signal=TERM status 15"),
+  `remediation_steps[0]` = `sudo systemctl start payment-api` — KHÔNG generic fallback
+- `auto_recovery_dispatched ... command_id=cmd-391686cdec054aa2 http=423` ← cổng 3 chặn
+- 2 fingerprint riêng (`service_systemd_units` + `network_listeners`) cùng bắt được sự cố — hợp lệ,
+  không phải lỗ đua; trace `network` trả `no_suggested_recovery` (đúng, nó chỉ thấy cổng 8080 đóng)
+
 **⚠️ CẦN DỌN — trạng thái drill còn để lại trên `cust-app`:**
 - `payment-api.service` đang **dừng** (chủ ý: để thử vòng khép kín auto-execute sau build #59).
-- `omni-cooldown-drill.service` — unit rác do tôi tạo, đang `enabled`+`failed`. Dọn bằng:
-  `orb -m cust-app -u root sh -c 'systemctl disable --now omni-cooldown-drill.service;
-  rm -f /etc/systemd/system/omni-cooldown-drill.service; systemctl daemon-reload;
-  systemctl reset-failed'`
+- `omni-cooldown-drill.service` — ✅ ĐÃ DỌN lúc 12:52 (disable + rm + daemon-reload + reset-failed);
+  xác nhận `systemctl list-units --type=service --state=failed,activating` trả về RỖNG.
 
-**Next step:** (1) chờ build #59 → đếm lại số lượt trùng, kỳ vọng 1 thay vì 4; (2) thử vòng khép
-kín: `payment-api` đang dừng, Omni phải TỰ khởi động lại không cần người; (3) dọn unit drill +
-khôi phục `payment-api`; (4) đo lại `scripts/measure_diagnosis_health.py --compare
-/tmp/baseline_truoc_cooldown.json`.
+**Next step:** (1) chờ build **#60** (kill-switch gateway — cổng cuối) → xác minh vòng khép kín:
+`payment-api` đang dừng, Omni phải TỰ khởi động lại, kiểm bằng `orb -m cust-app -u root systemctl
+is-active payment-api` chứ không chỉ đọc log; (2) nếu vẫn không chạy, đọc lý do 423 ở log gateway
+(`kubectl logs -l app=omni-gateway --all-containers | grep 423`) — 3 cổng đã mở hết nên nguyên nhân
+sẽ là cổng thứ 4 chưa biết; (3) khôi phục `payment-api` nếu hệ thống không tự làm được, và nói RÕ
+là chưa tự làm được; (4) đo lại `.venv/bin/python scripts/measure_diagnosis_health.py --hours 3
+--compare /tmp/baseline_truoc_cooldown.json`.
 
 **CI/CD — user hỏi, đã kiểm chứng, TẠM GÁC theo yêu cầu user:** job `omni-gcp-deploy` có
 `<triggers/>` RỖNG, Jenkins không có plugin Gitea/generic-webhook, và build #55/#56/#57 đều

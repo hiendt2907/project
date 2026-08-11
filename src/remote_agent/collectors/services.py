@@ -173,11 +173,27 @@ def _parse_haproxy_prom_metrics(prom_text: str, hostname: str) -> dict[str, Any]
 # chạy" KHÔNG suy được từ metadata systemd — xem docstring dưới.
 _prev_active_units: set[str] | None = None
 
+# Unit ĐÃ XÁC NHẬN dừng và CHƯA chạy lại — outage đang diễn ra.
+#
+# Vì sao cần, đo được trên UAT 2026-08-11: `payment-api` ở trạng thái `enabled`+`inactive`
+# (đang chết thật) nhưng collector trả "all monitored services OK"/`PASSED`. Phép trừ tập
+# `gone = prev - now_active` là EDGE-TRIGGERED: nó bắn đúng một lần lúc chuyển trạng thái,
+# các chu kỳ sau unit không còn trong `prev` lẫn `now_active` nên `gone` rỗng vĩnh viễn.
+# Hậu quả thật: (1) sự cố kéo dài chỉ được báo 1 lần, mà 77% lượt chẩn đoán chết vì LLM
+# timeout ⇒ sự cố biến mất khỏi radar; (2) vòng tự khắc phục không bao giờ chạy lại được
+# vì không còn evidence.
+#
+# Chỉ chứa unit ĐÃ QUA bộ lọc oneshot/`RemainAfterExit` ở dưới, nên nó KHÔNG làm sống lại
+# 15 unit nhiễu (`systemd-pcrlock-*`, `dmesg` Type=idle) mà cách "quét enabled+inactive"
+# từng gây ra — xem docstring `_collect_units_that_stopped`.
+_known_stopped_units: set[str] = set()
+
 
 def _reset_service_state_memory() -> None:
-    """Chỉ dùng cho test — xoá trí nhớ chu kỳ trước."""
+    """Chỉ dùng cho test — xoá trí nhớ chu kỳ trước VÀ danh sách outage đang mở."""
     global _prev_active_units
     _prev_active_units = None
+    _known_stopped_units.clear()
 
 
 async def _collect_units_that_stopped() -> tuple[list[str], list[str]]:
@@ -222,8 +238,16 @@ async def _collect_units_that_stopped() -> tuple[list[str], list[str]]:
 
     prev = _prev_active_units
     _prev_active_units = now_active
+
+    # Unit đã biết đang dừng mà nay chạy lại ⇒ hết sự cố, thôi báo. Không xoá là cảnh
+    # báo kẹt vĩnh viễn — tệ hơn không có cảnh báo.
+    _known_stopped_units.difference_update(now_active)
+    _known_stopped_units.difference_update(u.removesuffix(".service") for u in now_active)
+
     if prev is None:
-        return [], []  # chu kỳ đầu: chưa có gì để so
+        # Chu kỳ đầu sau khi agent khởi động: chưa có gì để SO, nhưng vẫn phải báo lại
+        # những outage đã biết (rỗng nếu tiến trình vừa khởi động).
+        return sorted(_known_stopped_units), []
 
     # Phép TRỪ trên tập — không giả định thứ tự đầu ra của bất kỳ lệnh nào. Ghép theo vị
     # trí (`zip` với đầu ra `systemctl is-active <nhiều unit>`) từng làm sai âm thầm:
@@ -231,7 +255,9 @@ async def _collect_units_that_stopped() -> tuple[list[str], list[str]]:
     # unit khác. Đã trả giá 2026-07-30 — `nginx` bị dừng nhưng công cụ báo `dmesg`.
     gone = prev - now_active
     if not gone:
-        return [], []
+        # KHÔNG return [] ở đây: outage phát hiện từ chu kỳ trước vẫn đang mở và phải
+        # được báo lại. Đây chính là dòng từng làm sự cố kéo dài tàng hình.
+        return sorted(_known_stopped_units), []
 
     stopped: list[str] = []
     skipped_oneshot: list[str] = []
@@ -253,7 +279,9 @@ async def _collect_units_that_stopped() -> tuple[list[str], list[str]]:
             continue
         stopped.append(unit_full.removesuffix(".service"))
 
-    return stopped, skipped_oneshot
+    # Ghi nhớ để các chu kỳ sau vẫn báo, tới khi unit chạy lại.
+    _known_stopped_units.update(stopped)
+    return sorted(_known_stopped_units), skipped_oneshot
 
 
 async def collect_systemd_units(hostname: str) -> dict[str, Any] | None:
