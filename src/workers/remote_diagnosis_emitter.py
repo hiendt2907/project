@@ -187,18 +187,31 @@ def _render_section3_diagnosed(turns: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _render_section4_remediation(final: dict[str, Any]) -> str:
+_TIER_LABELS: dict[str, str] = {
+    "shadow": "SHADOW (chỉ quan sát)",
+    "assist": "ASSIST (rủi ro thấp tự động)",
+    "auto": "AUTO (vận hành đầy đủ)",
+}
+
+
+def _render_section4_remediation(
+    final: dict[str, Any], *, tier_info: dict[str, str] | None = None
+) -> str:
     # Đ53: bản cũ khẳng định TUYỆT ĐỐI "Omni không tự thực thi" / "mọi thay đổi cần
     # approval" — đúng ở tier `shadow` nhưng SAI kể từ khi tier `assist` + auto-execute
     # được bật (Đ52): payment-api đã được Omni tự khởi động lại thật, không người duyệt.
     # Thẻ này phát ra TRƯỚC khi biết auto-recovery có chạy hay không (dispatch xảy ra
     # sau khi Telegram đã emit — xem `_dispatch_auto_recovery_if_eligible`), nên không
-    # thể khẳng định chắc "đã xong" ở đây. Chỉ nói đúng nhất tại thời điểm phát: đây là
-    # ĐỀ XUẤT, các bước rủi ro thấp có thể được Omni tự thực hiện theo chính sách hiện
-    # hành. Kết quả thật đến sau qua tin nhắn riêng — xem
-    # `remote_command_outcome_loop._notify_telegram_outcome`.
+    # thể khẳng định chắc "đã xong" ở đây.
+    #
+    # Đ55: `tier_info` (khi caller resolve được) thay câu chung chung "CÓ THỂ tự thực
+    # hiện" bằng quyết định THẬT cho đúng tenant + đúng capability đề xuất — cùng
+    # `gate_decision_for_tool()` mà gateway dùng để chặn/duyệt dispatch thật
+    # (`gateway/routes/agent_runtime.py::_enforce_tier_gate`), không phải suy đoán
+    # riêng ở tầng render. Thiếu tier_info (lỗi resolve, hoặc không có suggested_recovery
+    # để tính risk_class) → giữ nguyên câu chung chung cũ, không bịa quyết định.
     steps = final.get("remediation_steps", [])
-    lines = ["🛠️ <b>CẦN LÀM (đề xuất — bước rủi ro thấp có thể được Omni tự thực hiện)</b>"]
+    lines = ["🛠️ <b>CẦN LÀM</b>"]
     if not steps:
         lines.append("• Không có bước remediation cụ thể — cần điều tra thêm")
     else:
@@ -208,10 +221,31 @@ def _render_section4_remediation(final: dict[str, Any]) -> str:
             else:
                 action = str(step)
             lines.append(f"{i}. {_e(_truncate(action, 200))}")
-    lines.append(
-        "\n⚠️ <i>Bước rủi ro trung bình/cao luôn cần bạn duyệt; kết quả tự khắc "
-        "phục (nếu có) sẽ báo riêng khi hoàn tất</i>"
-    )
+
+    if tier_info is not None:
+        tier = str(tier_info.get("tier") or "")
+        decision = str(tier_info.get("decision") or "")
+        risk_class = str(tier_info.get("risk_class") or "")
+        tier_label = _e(_TIER_LABELS.get(tier, tier))
+        if decision == "ALLOW":
+            lines.append(
+                f"\n✅ <i>Tier {tier_label} — rủi ro {_e(risk_class)}, Omni SẼ TỰ THỰC HIỆN "
+                "bước này; kết quả báo riêng khi xong</i>"
+            )
+        elif decision == "HITL":
+            lines.append(
+                f"\n⏸️ <i>Tier {tier_label} — rủi ro {_e(risk_class)}, CẦN BẠN DUYỆT trước "
+                "khi Omni thực hiện</i>"
+            )
+        else:
+            lines.append(
+                f"\n👁️ <i>Tier {tier_label} — Omni CHỈ đề xuất, KHÔNG tự thực hiện gì</i>"
+            )
+    else:
+        lines.append(
+            "\n⚠️ <i>Bước rủi ro trung bình/cao luôn cần bạn duyệt; kết quả tự khắc "
+            "phục (nếu có) sẽ báo riêng khi hoàn tất</i>"
+        )
     return "\n".join(lines)
 
 
@@ -234,10 +268,16 @@ def _render_section5_footer(session: dict[str, Any]) -> str:
     )
 
 
-def render_diagnosis_session(session: dict[str, Any]) -> str:
+def render_diagnosis_session(
+    session: dict[str, Any], *, tier_info: dict[str, str] | None = None
+) -> str:
     """Render a complete DiagnosisSession to Telegram HTML.
 
     INVARIANT INV_TELEGRAM_FULL: All 5 sections present.
+
+    ``tier_info`` (Đ55): `{"tier", "decision", "risk_class"}` đã resolve sẵn bởi
+    `emit_diagnosis_to_telegram` — hàm này giữ pure/sync, không tự resolve tier
+    (cần Redis/PG, phải async).
     """
     agent_id = session.get("agent_id", "unknown")
     alert_hint = _truncate(session.get("alert_hint", ""), 120)
@@ -269,11 +309,43 @@ def render_diagnosis_session(session: dict[str, Any]) -> str:
         _render_section1_problem(final),
         _render_section2_impact(final),
         _render_section3_diagnosed(turns),
-        _render_section4_remediation(final),
+        _render_section4_remediation(final, tier_info=tier_info),
         _render_section5_footer(session),
     ]
 
     return "\n\n".join(s for s in sections if s)
+
+
+async def _resolve_tier_info(
+    ctx: WorkerHandlerContext, session: dict[str, Any], tenant_id: str
+) -> dict[str, str] | None:
+    """Resolve tier×risk quyết định THẬT cho đề xuất remediation của session này,
+    dùng đúng `gate_decision_for_tool()` mà gateway áp cho dispatch thật
+    (`_enforce_tier_gate`). Trả None nếu không có suggested_recovery để tính risk
+    (không có gì để nói) hoặc resolve lỗi (fail-open về wording chung chung cũ,
+    không chặn gửi Telegram vì lỗi ở bước phụ này)."""
+    final = session.get("final") or {}
+    suggested = final.get("suggested_recovery") or {}
+    capability = str(suggested.get("capability") or "")
+    if not capability:
+        return None
+    try:
+        from pkg.autonomy.tier_gate import gate_decision_for_tool, resolve_tier
+
+        tier = await resolve_tier(
+            settings=ctx.settings,
+            repo=getattr(ctx, "admin_repo", None),
+            redis=ctx.redis,
+            tenant_id=tenant_id,
+        )
+        decision, risk_class = gate_decision_for_tool(capability, tier=tier)
+        return {"tier": tier, "decision": decision, "risk_class": risk_class}
+    except Exception as exc:  # noqa: BLE001 — best-effort, không chặn gửi thẻ
+        logger.warning(
+            "[diag-emit] tier_info_resolve_failed trace=%s err=%s",
+            session.get("trace_id"), exc,
+        )
+        return None
 
 
 async def emit_diagnosis_to_telegram(
@@ -299,7 +371,8 @@ async def emit_diagnosis_to_telegram(
         return
 
     trace_id = session.get("trace_id", "?")
-    message = render_diagnosis_session(session)
+    tier_info = await _resolve_tier_info(ctx, session, tenant_id)
+    message = render_diagnosis_session(session, tier_info=tier_info)
 
     # Mở case TRƯỚC khi gửi — best-effort tuyệt đối, lỗi sổ ca không được chặn
     # đường gửi Telegram (giống open_advisory_case's own docstring).
