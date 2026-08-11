@@ -30,7 +30,7 @@ spec:
             runAsUser: 10001
           containers:
             - name: crat-check
-              image: 10.43.239.205/library/multi-agent-system:0f25e6d
+              image: 10.43.239.205/library/multi-agent-system:c63fa16
               imagePullPolicy: IfNotPresent
               command:
                 - python3
