@@ -158,6 +158,74 @@ async def handle_discovery_evidence(
     return ""
 
 
+async def _try_remote_known_fix_reflex(
+    ctx: WorkerHandlerContext,
+    *,
+    tenant_id: str,
+    hostname: str,
+    agent_id: str,
+    domain: str,
+    alert_hint: str,
+    raw: str,
+    trace: str,
+) -> bool:
+    """True nếu một cách sửa đã kiểm chứng (`action_experience`) vừa được PHÁT
+    LỆNH cho đúng host này — kết quả thật đến sau qua
+    `remote_command_outcome_loop`, caller khi đó bỏ qua nguyên vòng LLM.
+
+    Đối xứng với `knowledge_pipeline._try_known_fix_reflex` (nhánh metric-
+    deviation, os_host); đây là bản cho nhánh service/application. Cùng đòi
+    hỏi discovery snapshot có thật — không snapshot nghĩa là chưa biết host
+    này chạy service gì, đi thẳng đường LLM đầy đủ (an toàn hơn liều thực thi
+    trên một host chưa biết gì về nó).
+    """
+    from execution.memory_normalize import canonical_symptom_text
+    from remote_agent.discovery import load_discovery_snapshot
+    from workers.remote_known_fix import try_remote_known_fix
+
+    try:
+        snapshot = await load_discovery_snapshot(ctx.redis, tenant_id=tenant_id, agent_id=agent_id)
+    except Exception as exc:
+        logger.warning(
+            "[RAP] known_fix_reflex snapshot_load_failed host=%s agent=%s err=%s",
+            hostname, agent_id, exc,
+        )
+        return False
+    if not snapshot:
+        return False
+
+    known = {str(s.get("name")) for s in snapshot.get("services", []) if s.get("name")}
+    if not known:
+        return False
+    # `systemd.restart_unit` nhận unit bare nhưng không chắc quy ước của mọi
+    # bản ghi cũ trong action_experience — chấp nhận cả hai dạng.
+    host_scope = frozenset(known) | frozenset(f"{n}.service" for n in known)
+
+    query = canonical_symptom_text(
+        f"domain={domain} host={hostname} alert={alert_hint or raw[:200]}",
+        strip_pods=False,
+    )
+    import uuid
+
+    reflex_trace = f"kf-{uuid.uuid4().hex[:12]}"
+    threshold = float(getattr(ctx.settings, "action_experience_score_threshold", 0.55))
+    result = await try_remote_known_fix(
+        ctx,
+        query_text=query,
+        score_threshold=threshold,
+        host_scope=host_scope,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        trace_id=reflex_trace,
+    )
+    if result.get("resolved"):
+        logger.info(
+            "[RAP] known_fix_reflex dispatched trace=%s host=%s domain=%s command_id=%s reflex_trace=%s",
+            trace, hostname, domain, result.get("command_id"), reflex_trace,
+        )
+    return bool(result.get("resolved"))
+
+
 async def handle_remote_agent_evidence(
     ctx: WorkerHandlerContext,
     ev_doc: dict[str, Any],
@@ -177,6 +245,8 @@ async def handle_remote_agent_evidence(
     probe = str(ev_doc.get("probe") or "unknown")
     alert_hint = str(ev_doc.get("alert_hint") or "")
     raw = str(ev_doc.get("raw") or "")
+    tenant_id = str(ev_doc.get("tenant_id") or "default")
+    hostname = str(ev_doc.get("namespace") or "") or agent_id
     # Domain nguồn TỰ KHAI, dùng cho các mark_stage chạy TRƯỚC detect_domain().
     # Không nhận ra ⇒ rỗng (không ghi "unknown"): rỗng còn được lấp về sau.
     _early_domain = _domain_or_empty(ev_doc.get("domain"))
@@ -197,10 +267,8 @@ async def handle_remote_agent_evidence(
         try:
             from anomaly.remote_host_baseline import update_remote_host_baseline
 
-            host = str(ev_doc.get("namespace") or "") or agent_id
-            tenant_id = str(ev_doc.get("tenant_id") or "default")
             zscores = await update_remote_host_baseline(
-                ctx.redis, tenant_id=tenant_id, host=host, fact=extracted
+                ctx.redis, tenant_id=tenant_id, host=hostname, fact=extracted
             )
             if zscores:
                 # Enrich a copy, never mutate the caller's extracted_fact in place.
@@ -340,6 +408,33 @@ async def handle_remote_agent_evidence(
     needs_research = triage.route in _RESEARCH_ROUTES or (
         triage.route in ("KNOWN_BASELINE", "KNOWN_WITH_FIX") and triage.urgency in _NOTIFY_TIERS
     )
+
+    # ── Known-fix reflex (Đ53) ──────────────────────────────────────────────
+    # Trước khi tốn nguyên vòng LLM 8 lượt cho một sự cố Omni đã từng TỰ SỬA
+    # thành công (ghi lại trong action_experience qua remote_command_outcome_loop),
+    # thử phản xạ nhanh — đối xứng với `knowledge_pipeline._try_known_fix_reflex`
+    # (nhánh metric-deviation, os_host) nhưng đây là bản cho nhánh service/
+    # application chiếm ~96% traffic thật (audit Đ51). KHÔNG tái dùng
+    # `triage.recall`: đó là collection playbook khác (dùng để định route) —
+    # `action_experience` mới là nơi lưu fix ĐÃ THỰC THI + đã kiểm chứng kết quả.
+    if needs_research and triage.urgency in _NOTIFY_TIERS:
+        if await _try_remote_known_fix_reflex(
+            ctx,
+            tenant_id=tenant_id,
+            hostname=hostname,
+            agent_id=agent_id,
+            domain=domain,
+            alert_hint=alert_hint,
+            raw=raw,
+            trace=trace,
+        ):
+            await mark_stage(
+                ctx.redis, trace, "LLM", "skip",
+                detail="known_fix_reflex dispatched — bo qua vong LLM day du",
+                domain=_early_domain, signal_kind="diagnostic",
+            )
+            return f"remote_agent:{triage.route}:known_fix_reflex"
+
     # ── Cooldown theo fingerprint (Đ52) ───────────────────────────────────
     # Lưới `_NOTIFY_TIERS` phía trên CỐ Ý chỉ chặn lặp mức thấp, nên một sự cố đang
     # diễn ra ở mức high/critical bị chẩn đoán lại mỗi chu kỳ collect (20s), vô hạn.
