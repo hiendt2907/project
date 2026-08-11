@@ -1,11 +1,9 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-11 (Đ55 — script demo cafe + fix cách ly tenant thật trong action_experience.
-**Commit `0f25e6d` push cả 2 remote, build Jenkins #63 SUCCESS, verify sống bằng kubectl exec trong
-pod `omni-fullstack-64cbf98ccd-jp9hk` xác nhận cả `find_known_fix_candidate`/`_upsert_action_experience`
-đều có tham số `tenant_id` + gọi `scoped_collection_name` thật trong image đang chạy.** Đ53/Đ54 giữ
-nguyên bên dưới, đã deploy/verify xong. Buổi cafe với CTO cũ CHƯA CHỐT NGÀY — user xác nhận "còn
-linh hoạt", không vội.)
+**Cập nhật:** 2026-08-11 (Đ55 — script demo cafe + fix cách ly tenant + Telegram tier-aware.
+**2 commit `0f25e6d`+`c63fa16` push cả 2 remote, build Jenkins #63+#64 SUCCESS, cả hai đã verify
+sống bằng kubectl exec.** Đ53/Đ54 giữ nguyên bên dưới, đã deploy/verify xong. Buổi cafe với CTO cũ
+CHƯA CHỐT NGÀY — user xác nhận "còn linh hoạt", không vội.)
 
 ### Đ55 — Script demo live cho buổi cafe với CTO cũ (2026-08-11, ĐANG LÀM)
 
@@ -54,24 +52,36 @@ thống đúng thiết kế. CHƯA thêm bước clear cooldown vào preflight �
   (nó thấy process `python3` chung chung, không gắn được tên systemd unit cụ thể) — hạn chế thật,
   chưa fix, cần biết khi thiết kế phần "chứng minh hiểu hệ thống" của demo.
 
-**Đã xong (2026-08-11, verify sống):** commit `0f25e6d` push cả 2 remote, Jenkins build #63
-SUCCESS, `kubectl exec` trong pod `omni-fullstack-64cbf98ccd-jp9hk` xác nhận cả
-`find_known_fix_candidate`/`_upsert_action_experience` đã có tham số `tenant_id` +
-`scoped_collection_name` thật trong image đang chạy — không chỉ tin "SUCCESS" suông.
+**Đã xong (2026-08-11, verify sống):**
+1. Fix cách ly tenant trong `action_experience` — commit `0f25e6d`, build #63 SUCCESS, kubectl exec
+   xác nhận `find_known_fix_candidate`/`_upsert_action_experience` có `tenant_id` + gọi
+   `scoped_collection_name` thật trong image đang chạy.
+2. Telegram tier-aware — commit `c63fa16`, build #64 SUCCESS. `_resolve_tier_info()` mới trong
+   `remote_diagnosis_emitter.py`: gọi ĐÚNG `gate_decision_for_tool()`/`resolve_tier()` mà gateway
+   dùng để chặn/duyệt dispatch thật (`_enforce_tier_gate` trong `agent_runtime.py`) — không suy
+   đoán riêng ở tầng render. Section 4 (CẦN LÀM) nay in rõ tier hiện tại + quyết định
+   ALLOW/SUGGEST/HITL cho đúng capability đề xuất, thay câu chung chung cũ. Best-effort: lỗi resolve
+   không chặn gửi Telegram, chỉ rơi về wording chung chung. 8 test mới
+   (`test_diagnosis_card_tier_aware.py`). kubectl exec xác nhận `render_diagnosis_session` có tham
+   số `tier_info`, render đúng chữ "AUTO"/"TỰ THỰC HIỆN" khi truyền tier_info thật.
+   **Full suite 7356 pass, 0 fail** cả 2 lần.
 
 **CHƯA làm/còn treo (Đ55):**
 - Chưa seed lại action_experience RIÊNG cho `loyalty-uat` (vòng chẩn đoán cũ trước fix ghi vào pool
   chung, không tính — collection `action_experience:loyalty-uat` giờ RỖNG, ĐÚNG như thiết kế mới,
-  chỉ là tenant chưa có kinh nghiệm nào của riêng nó). Cần 1 lần drill sạch để seed.
-- Chưa làm: Telegram card nói rõ tier hiện tại (shadow/assist/auto) + quyết định ALLOW/SUGGEST/HITL
-  cho từng đề xuất — mới dừng ở tra cứu `pkg/autonomy/tier_gate.py` (3 tier: shadow/assist/auto,
-  ma trận tier×risk, `systemd.restart_unit`=LOW risk).
+  chỉ là tenant chưa có kinh nghiệm nào của riêng nó). Cần 1 lần drill sạch để seed VÀ để thấy card
+  Telegram tier-aware mới trên 1 ca thật (chưa có ca nào chạy qua code mới).
 - Chưa làm: câu chuyện "cấm ở mức nào" — sự thật hiện tại là làn VM/AOIP chỉ có ĐÚNG 3 capability
   (`systemd.restart_unit/reset_failed/journal_vacuum`, toàn LOW risk, `_SUPPORTED_CAPABILITIES` trong
   `auto_recovery_bridge.py`) — nghĩa là KHÔNG có ví dụ MEDIUM/HIGH nào để demo "bị chặn" trên chính
   làn VM này (khác K8s lane có `DANGEROUS_TOOLS`). Cần quyết định: nói thật giới hạn này (an toàn
   vì phạm vi hẹp = thiết kế, không phải thiếu sót), hay cần thêm capability MEDIUM để demo HITL.
 - Chưa viết storyboard video ngắn (task #51).
+
+**Next step:** trigger 1 vòng drill sạch cho loyalty-uat (payment-api down/up trên cust-app) để (a)
+seed action_experience riêng cho tenant này, (b) xác nhận card Telegram tier-aware hiện đúng
+"AUTO — TỰ THỰC HIỆN" trên ca thật đầu tiên qua code mới. Chú ý cooldown 900s nếu VM đã bị test
+gần đây.
 
 **Next step:** hỏi user ưu tiên tiếp giữa: (a) seed drill sạch cho loyalty-uat + tier-aware
 Telegram wording, (b) câu chuyện "cấm ở mức nào", (c) storyboard video — buổi cafe chưa chốt ngày
