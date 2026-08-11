@@ -1,6 +1,123 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-10 (Đ49 — ĐÃ ĐÓNG. Blueprint dọn dẹp + hoàn thiện Omni tự vận hành (Track A+B,
+**Cập nhật:** 2026-08-11 (Đ50 — **HOÀN TẤT TOÀN BỘ 6/6 PHASE, verify sống trên 3 VM thật**.
+`omni-remote-agent.service` đã gỡ hẳn khỏi cust-app/cust-db/cust-edge; runtime duy nhất trên VM
+khách hàng nay là `aoip-agent.service` (`aoip.agent.employee`). Double-fire evidence đã chấm dứt
+(đo được: 6-7 → 3 lần/60s trên cả 3 VM, đúng `interval=20s`). Chi tiết ở mục Đ50 dưới.)
+
+### Đ50 — HOÀN TẤT (2026-08-11)
+
+**Kết quả cuối, verify bằng lệnh thật trên cả 3 VM:**
+
+| Kiểm chứng | cust-app | cust-db | cust-edge |
+|---|---|---|---|
+| Evidence rate TRƯỚC → SAU (lần/60s, đơn=3) | 6 → **3** | 7 → **3** | 6 → **3** |
+| Process agent còn lại | 1 | 1 | 1 |
+| `systemctl status omni-remote-agent` | `could not be found` | `could not be found` | `could not be found` |
+| `/opt/omni-remote-agent/remote_agent/` còn nguyên | ✅ | ✅ | ✅ |
+| `aoip-agent.service` | active | active | active |
+| Soak NRestarts=0 + registry tươi | 30' PASS | 25' PASS | 25' PASS |
+
+**Bằng chứng cơ chế chống-regression hoạt động** — chạy lại đúng lệnh đã gây bug 2026-08-04:
+`orb -m cust-app -u root systemctl enable --now omni-remote-agent.service` →
+`Failed to enable unit: Unit file omni-remote-agent.service does not exist.` (exit 1).
+Trước cutover lệnh này thành công IM LẶNG và tạo process trùng — đó là lý do fix 2026-07-22
+(`disable` thôi) đã regress còn lần này thì không thể.
+
+Test: 1184 pass (`-k "agent or enroll or catalog or grounding"`). `payment-api.service` trên
+cust-app đã khôi phục `active` sau drill.
+
+**Phase 1 ✅ — ROOT CAUSE XÁC ĐỊNH TUYỆT ĐỐI (không suy đoán).** Thủ phạm KHÔNG nằm trong script
+nào của repo — là 1 lệnh thủ công chạy 1 lần bởi phiên Claude Code trước:
+`for m in cust-edge cust-app cust-db; do orb -m "$m" -u root systemctl enable --now
+omni-remote-agent.service; done` lúc `2026-08-04T14:42:50.988Z`. Bằng chứng khớp 4 nguồn: mtime
+symlink 3 VM (edge .549 → app .650 → db .770, đúng thứ tự loop), journal systemd, transcript
+`48a26b0d-e15d-469d-baf6-013954b7f800.jsonl`, ngữ cảnh user "Bật và xoá đi". **Nguyên nhân sâu
+xa: CLAUDE.md mô tả SAI rằng 2 unit là một cái đổi tên** → chọn nhầm unit. 3 nghi phạm đặt ra
+trong plan đều KHÔNG phải thủ phạm khởi phát (chi tiết trong audit doc). Bài học: grep repo không
+bao giờ tìm ra loại lỗi này.
+
+**Phase 2 ✅ (cust-app)** — evidence rate **6→3 lần/60s** (interval=20s ⇒ 3 đúng kỳ vọng),
+process còn đúng 1 (`aoip.agent.employee`), drill thật payment-api down → `domain=service`
+`urgency=critical`, **0** cảnh báo `agent OFFLINE`.
+**Phase 3 ✅ (cust-db, cust-edge)** — cust-db **7→3**; cust-edge **6→4** (ghi nhận trung thực:
+KHÔNG đúng 1/2 chính xác, nghi do cadence collector `security` riêng — nhưng process=1 là bằng
+chứng quyết định). Capability registry đủ: cust-db có `database`, cust-edge có `services`/`network`.
+**LƯU Ý: cả 3 VM hiện đang ở trạng thái `stop` (chưa `disable`, chưa xoá unit)** — rollback tức
+thời bằng `systemctl start omni-remote-agent.service` nếu cần.
+
+**Phase 5a/5b/5c ✅** — CLAUDE.md + ADR-001 sửa đúng trạng thái đích; 3 script chuyển sang
+`aoip-agent`; **dòng `rm -rf "$INSTALL_DIR/$p"` (dòng 84 `omni-agent-update-fleet.sh`) CỐ Ý giữ
+nguyên** (routine code-sync hợp lệ, khác hẳn cảnh báo "không rm /opt/omni-remote-agent"); syntax
+bash+python pass.
+
+**Rollback path duy nhất nếu cần quay lui:** `docs/audit/backup-units/` chứa bản sao nguyên văn
+unit file lấy từ từng VM trước khi xoá (repo KHÔNG có template nào khác tái tạo được). Xem
+README trong thư mục đó. Lưu ý: bật lại unit cũ SONG SONG với `aoip-agent` sẽ tái tạo đúng bug
+double-fire — phải stop `aoip-agent` trước.
+
+⚠️ **Ghi nhớ vĩnh viễn:** `/opt/omni-remote-agent/` vẫn là thư mục cài đặt ĐANG DÙNG (tên là lịch
+sử) — `aoip.agent.employee` import code `remote_agent/` bên trong đó làm thư viện. Không bao giờ
+`rm -rf` thư mục này khi "dọn agent cũ".
+
+**Rủi ro tồn đọng — CHƯA fix, có chủ đích ngoài phạm vi (cần quyết định riêng):**
+1. **Hardening**: `aoip-agent.service` chạy **root, không sandbox** (không `ProtectSystem`/
+   `NoNewPrivileges`), trong khi template `scripts/omni-agent.service` đã có hardening nhưng
+   không dùng. PoC RCE root từng xuyên thủng 2026-07-31. Xem `docs/audit/SRE_READINESS_2026-08.md`
+   mục B7.
+2. **ADR-001 §5**: `src/gateway/routes/agent_runtime.py` vẫn duplicate command-lifecycle logic của
+   `aoip.agent.delivery.DurableCommandChannel`. Lý do kỹ thuật ban đầu đã hết hiệu lực từ `409dcb2`.
+3. **`aoip.agent.daemon`** (canonical target dài hạn ADR-001 §1) vẫn CHƯA từng deploy thật.
+4. **Không có cơ chế phát hiện double-fire**: registry Redis dùng chung `agent_id` nên luôn 1
+   key/host bất kể mấy process gửi — chính phép đo này tạo false-negative cho fix 2026-07-22.
+   Đề xuất: so tần suất evidence thực nhận với `collect_interval` khai báo.
+
+**Next step:** Đ50 đã đóng. Không có việc tồn dở. 4 rủi ro trên chờ user quyết định ưu tiên.
+
+## Đ50 — Loyalty-UAT tenant cutover + phát hiện bug dual-agent VM (2026-08-11)
+
+**Việc đã làm, tất cả xác nhận sống trên GCP UAT + 3 VM lab:**
+1. Xóa tenant `staging-sim` (Postgres `omni_admin.tenant` + toàn bộ bảng phụ thuộc theo đúng thứ
+   tự FK), tạo tenant mới `loyalty-uat` (nhớ tạo kèm `tenant_plan` — quên bước này lần đầu gây
+   lỗi "không có entitlement agent hoạt động", đã tự phát hiện + fix).
+2. Provision 3 agent credential mới (`loyalty-uat_cust-app/db/edge`) qua enroll-token flow
+   (`POST /autonomy/tenants/{t}/enroll-tokens` rồi `POST /webhook/agent/enroll`), cập nhật
+   `run.env` trên cả 3 VM, restart `omni-remote-agent.service` — verify 200 OK + registry Redis
+   sống cho cả 3.
+3. Chạy drill thật (dừng `payment-api.service` trên `cust-app`) với agent online thật (khác hẳn
+   Admin Simulator trước đó) — `diagnosis_loop` khởi động đúng `agent_online=True`, nhưng cả 2
+   lượt LLM đều timeout (120-240s, `qwen3:8b -np 1`) → không ra kết luận. Xác nhận: bottleneck
+   LLM tồn tại độc lập với việc agent online/offline, không phải bug mới.
+4. **Phát hiện bug lớn hơn phạm vi ban đầu:** cả 3 VM đang chạy **2 systemd unit song song**
+   — `omni-remote-agent.service` (gốc, lỗi thời) VÀ `aoip-agent.service` (`aoip.agent.employee`,
+   đã chốt target theo ADR-001) — cả 2 cùng `enabled+active`, double-fire toàn bộ evidence. Đây
+   là **regression** của 1 fix đã tưởng xong 2026-07-22
+   (`docs/architecture/AUDIT_autonomous_sre_team_2026_07_22.md` Lane B). KHÔNG phải do phiên này
+   gây ra — xác nhận trạng thái này đã tồn tại từ trước khi tôi đụng vào VM.
+5. Đã dọn 1 process rác thật sự riêng biệt: `omni-remote-agent-replay01.service` (tenant
+   `tenant-replay-01`, trỏ domain lab đã retired `ai-agent.local`, luôn fail) — xóa hẳn khỏi
+   cust-app + cust-edge. Đã restart `aoip-agent.service` trên cả 3 VM để nhận credential mới.
+6. Điều tra Dex 500 (login provider portal) → root cause là 1 lần `redis.exceptions.ConnectionError`
+   thoáng qua trùng khớp lúc tôi chạy loạt `kubectl exec` xóa/tạo tenant dồn dập — KHÔNG phải bug
+   cấu hình. Verify sống: `/auth/login` → 302 đúng, `redis.ping()` → True. Không cần sửa gì.
+7. **Đã lập plan đầy đủ** (KHÔNG code, đúng yêu cầu user) để dọn dứt điểm dual-agent:
+   `plans/consolidate-vm-agent-remote-to-aoip-employee-2026-08-11.md` — 6 phase, đã qua
+   adversarial review (architect agent), sửa 4 CRITICAL finding. Root cause thật của regression
+   rất có thể là `scripts/e2e_onboarding_full_flow.py` dòng 345-347 (chạy vô điều kiện
+   `systemctl enable/start omni-remote-agent`) — khả tín hơn giả thuyết ban đầu (rollback drill
+   thủ công quên hoàn tác). Quyết định đã chốt với user: target = `aoip.agent.employee` (không
+   build `aoip.agent.daemon` mới), gỡ hẳn `omni-remote-agent.service` (không giữ rollback path),
+   gộp sửa CLAUDE.md dòng 411 (sai, nói 2 unit là 1) + ghi nợ ADR-001 §5. **CẢNH BÁO sống còn ghi
+   trong plan:** 2 unit chia sẻ chung thư mục `/opt/omni-remote-agent/` trên VM (aoip-agent
+   import code remote_agent làm thư viện) — tuyệt đối không `rm -rf` thư mục đó, chỉ xóa unit
+   file, nếu không sẽ outage cả 3 VM.
+
+**Next step:** Chờ user xác nhận trước khi chạy Phase 1 (điều tra root-cause) của plan Đ50 —
+KHÔNG tự ý bắt đầu thực thi. Task #24/#39 (test domain service + phân tích 5 câu hỏi) coi như đã
+trả lời trong hội thoại nhưng CHƯA ghi lại thành báo cáo cố định — nếu resume, có thể bỏ qua
+(không phải blocker) trừ khi user hỏi lại.
+
+Đ49 — ĐÃ ĐÓNG. Blueprint dọn dẹp + hoàn thiện Omni tự vận hành (Track A+B,
 `plans/omni-finish-autonomous-sre-and-repo-cleanup-2026-08-10.md`) VÀ gộp FinGuard→Smart SIEM nội
 bộ (S0-S4, `plans/finguard-to-smart-siem-merge-2026-08-04.md`) — theo yêu cầu trực tiếp của user
 "merge luôn vào omni đi, nó là tính năng có sẵn và phải có của omni, không phải thêm tính năng

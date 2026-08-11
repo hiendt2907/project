@@ -9,6 +9,28 @@
 **Ngày:** 2026-07-03
 **Trạng thái:** Accepted — **MIGRATION HOÀN TẤT trên fleet lab (2026-07-13, Sprint NV-SRE IT-4→IT-7)**
 
+> **Cập nhật 2026-08-11 — CUTOVER DỨT ĐIỂM, unit cũ đã GỠ HẲN:**
+> `omni-remote-agent.service` **đã bị xoá khỏi cả 3 VM lab** (không còn `disabled` giữ làm rollback
+> path như bản cập nhật IT-7 dưới đây từng dự định). **Lý do đổi quyết định:** chính việc
+> "giữ-disabled-làm-rollback" đã khiến bug 2-agent-song-song tái phát — ngày 2026-08-04 một lệnh
+> `systemctl enable --now omni-remote-agent.service` chạy trên cả 3 VM (chọn nhầm unit vì
+> `CLAUDE.md` khi đó mô tả sai rằng 2 unit chỉ là một cái đổi tên) đã hồi sinh unit cũ **im lặng**,
+> gây double-fire toàn bộ evidence suốt 7 ngày. Sau khi gỡ hẳn, đúng lệnh đó sẽ báo lỗi
+> `Unit file omni-remote-agent.service does not exist.` thay vì âm thầm tạo process trùng.
+> Bằng chứng root-cause đầy đủ (mtime symlink + journal + transcript):
+> `docs/audit/regression_agent_dual_process_2026-08-11.md`. Kế hoạch thực thi:
+> `plans/consolidate-vm-agent-remote-to-aoip-employee-2026-08-11.md`.
+>
+> Runtime production duy nhất trên VM khách hàng: `aoip-agent.service` → `aoip.agent.employee`.
+> **`aoip.agent.daemon` (§1 bên dưới, canonical target dài hạn) vẫn CHƯA từng deploy thật** — chỉ
+> tồn tại trong demo/proof script. Không đổi trạng thái này trong đợt cutover 2026-08-11.
+>
+> **Nợ kỹ thuật §5 vẫn CHƯA fix (tính tới 2026-08-11):** `src/gateway/routes/agent_runtime.py`
+> vẫn duplicate command-lifecycle logic của `aoip.agent.delivery.DurableCommandChannel` (state
+> transition, fencing, visibility timeout, idempotency). Lý do kỹ thuật ban đầu (Gateway không
+> import được `aoip`) đã hết hiệu lực từ commit `409dcb2`, nhưng việc hợp nhất cần một task/ADR
+> riêng — **cố ý nằm ngoài phạm vi** đợt cutover này (ràng buộc "không thêm tính năng mới").
+
 > **Cập nhật 2026-07-13 (IT-7 sprint close):** cả 3 VM lab (cust-edge/cust-app/cust-db) chạy
 > `aoip.agent.employee` (unit `aoip-agent.service`, 1 process 2 vòng: telemetry reuse
 > `remote_agent.run_agent()` as-library + AOIP durable command daemon) — agent 1.3.2, drift

@@ -7,7 +7,7 @@ Flow (metric sprint #3):
   2. Phát one-time enroll token (POST /autonomy/tenants/{tid}/enroll-tokens, admin).
   3. Đổi token lấy credential per-agent (aoip.agent.enrollment — ADR-001).
   4. Render run.env qua canonical provisioning module (không f-string tay).
-  5. Push run.env lên VM qua `orb -m` + restart omni-remote-agent.service
+  5. Push run.env lên VM qua `orb -m` + restart aoip-agent.service
      (bỏ qua nếu idempotent rewrite — không bounce agent vô ích).
 
 Usage:
@@ -39,7 +39,11 @@ from remote_agent_provisioning import (  # noqa: E402
 from aoip.agent.enrollment import EnrollmentError, enroll_agent  # noqa: E402
 
 INSTALL_DIR = "/opt/omni-remote-agent"
-UNIT = "omni-remote-agent"
+# Unit thật trên fleet là aoip-agent.service (aoip.agent.employee) — KHÔNG phải
+# omni-remote-agent.service, đã gỡ hẳn khỏi cả 3 VM 2026-08-11 (ADR-001 cutover).
+# INSTALL_DIR giữ nguyên tên cũ vì đó vẫn là thư mục cài đặt thật đang dùng —
+# aoip.agent.employee import code remote_agent/ bên trong đó làm thư viện.
+UNIT = "aoip-agent"
 
 
 def _orb(machine: str, *args: str, timeout: int = 20) -> subprocess.CompletedProcess:

@@ -39,6 +39,10 @@ from remote_agent_provisioning import AgentProvisioningSpec, render_run_env  # n
 GATEWAY       = os.getenv("OMNI_GATEWAY_URL", "http://gateway.ai-agent.local")
 NAMESPACE     = os.getenv("OMNI_K8S_NS", "multi-agent")
 TARGET_VM     = "cust-db"
+# Unit thật trên fleet = aoip-agent.service (aoip.agent.employee). Trước 2026-08-11
+# script này hardcode "omni-remote-agent" — chính đường enable/start đó là lớp bug đã
+# gây 2 agent chạy song song (docs/audit/regression_agent_dual_process_2026-08-11.md).
+AGENT_UNIT    = "aoip-agent"
 TENANT_ID     = "staging-sim"
 AGENT_ID      = f"{TENANT_ID}_cust-db"   # staging-sim_cust-db
 HOSTNAME      = "cust-db"
@@ -176,15 +180,15 @@ def tc_ob01_clean_remove(key: str) -> TC:
     tc = TC("TC-OB01")
 
     # 1. Stop systemd service
-    r = _orb("systemctl", "stop", "omni-remote-agent")
+    r = _orb("systemctl", "stop", AGENT_UNIT)
     if r.returncode == 0:
-        tc.ok("systemctl stop omni-remote-agent")
+        tc.ok(f"systemctl stop {AGENT_UNIT}")
     else:
         # Service may already be stopped
         tc.ok("stop command issued (may already be stopped)", r.stderr[:80])
 
     # 2. Disable service
-    _orb("systemctl", "disable", "omni-remote-agent")
+    _orb("systemctl", "disable", AGENT_UNIT)
 
     # 3. Verify process dead
     time.sleep(3)
@@ -343,17 +347,17 @@ def tc_ob02_fresh_install(key: str) -> TC:
 
     # 6. Reload + start systemd service (reuse existing unit file)
     _orb("systemctl", "daemon-reload")
-    _orb("systemctl", "enable", "omni-remote-agent")
-    r = _orb("systemctl", "start", "omni-remote-agent", timeout=15)
+    _orb("systemctl", "enable", AGENT_UNIT)
+    r = _orb("systemctl", "start", AGENT_UNIT, timeout=15)
     if r.returncode == 0:
-        tc.ok("omni-remote-agent.service started")
+        tc.ok(f"{AGENT_UNIT}.service started")
     else:
         tc.fail("service start failed", r.stderr[:200])
         return tc
 
     # 7. Verify service is running
     time.sleep(5)
-    status_r = _orb("systemctl", "is-active", "omni-remote-agent")
+    status_r = _orb("systemctl", "is-active", AGENT_UNIT)
     if "active" in status_r.stdout:
         tc.ok("service is active")
     else:
@@ -387,7 +391,7 @@ def tc_ob03_registration(key: str) -> TC:
 
     if not agent_data:
         tc.fail(f"{AGENT_ID} not registered after 40s",
-                "kiểm tra service logs: orb run -m cust-db journalctl -u omni-remote-agent -n 30")
+                f"kiểm tra service logs: orb -m cust-db sudo journalctl -u {AGENT_UNIT} -n 30")
         return tc
 
     tc.ok(f"{AGENT_ID} registered")

@@ -11,8 +11,13 @@
 #
 # Nên đây là đường CẬP NHẬT: thay code, giữ `run.env` + `venv`.
 #
+# Unit thật trên fleet là `aoip-agent.service` (aoip.agent.employee) — KHÔNG phải
+# `omni-remote-agent.service` (đã gỡ hẳn khỏi 3 VM 2026-08-11, xem ADR-001). Thư mục
+# cài đặt vẫn là /opt/omni-remote-agent vì aoip.agent.employee import code
+# remote_agent/ bên trong đó làm thư viện — tên thư mục là lịch sử, không phải nhầm.
+#
 # Không tự bật lại service: trạng thái chạy/dừng là quyết định vận hành, script chỉ
-# đổi code. Bật lại bằng `systemctl start omni-remote-agent` khi đã sẵn sàng.
+# đổi code. Bật lại bằng `systemctl start aoip-agent` khi đã sẵn sàng.
 
 set -euo pipefail
 
@@ -68,8 +73,10 @@ for m in "${MACHINES[@]}"; do
         continue
     fi
 
-    was_active="$(orb -m "$m" systemctl is-active omni-remote-agent.service 2>/dev/null || true)"
-    [[ "$was_active" == "active" ]] && orb -m "$m" sudo systemctl stop omni-remote-agent.service
+    # PHẢI stop trước khi rm -rf payload bên dưới: agent đang chạy đã load module
+    # remote_agent vào bộ nhớ, thay file dưới chân tiến trình sống là không an toàn.
+    was_active="$(orb -m "$m" systemctl is-active aoip-agent.service 2>/dev/null || true)"
+    [[ "$was_active" == "active" ]] && orb -m "$m" sudo systemctl stop aoip-agent.service
 
     # Xoá payload cũ trước khi giải nén: rsync-không-delete để lại file đã bị xoá ở
     # bản mới, và một module chết còn sót có thể vẫn import được.
@@ -100,7 +107,7 @@ print(\"     domain:\", \", \".join(doms))
     fi
 
     if [[ "$was_active" == "active" ]]; then
-        orb -m "$m" sudo systemctl start omni-remote-agent.service
+        orb -m "$m" sudo systemctl start aoip-agent.service
         echo "  service: bật lại (trước đó đang chạy)"
     else
         echo "  service: để nguyên '$was_active' — script không tự bật"

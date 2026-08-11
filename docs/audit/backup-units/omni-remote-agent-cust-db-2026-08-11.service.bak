@@ -1,0 +1,16 @@
+[Unit]
+Description=Omni Remote Agent
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/omni-remote-agent
+EnvironmentFile=/opt/omni-remote-agent/run.env
+ExecStart=/opt/omni-remote-agent/venv/bin/python -m remote_agent.agent
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/var/log/omni-agent.log
+StandardError=append:/var/log/omni-agent.log
+
+[Install]
+WantedBy=multi-user.target

@@ -404,11 +404,28 @@ claim "mọi topic PartitionCount=1" đã lỗi thời — `omni-knowledge-evide
 `auto_offset_reset="earliest"` + không multi-broker failover). Không còn là drift tài liệu, chỉ là
 throughput headroom thấp cho lab hiện tại — không cần sửa gấp.
 
-### VM/Agent truth (2026-07-02, giải quyết)
+### VM/Agent truth (2026-07-02, cập nhật 2026-08-11)
 Access method đúng là `orb -m <machine> <command>` (không phải SSH thẳng tới IP). Cả 3 VM lab đã
 audit trực tiếp: `cust-edge` (nginx :80, NFS, portmapper), `cust-app` (app :8080), `cust-db` (MySQL
-:3306 + Redis :6379, cả hai bind localhost-only). Agent chạy qua systemd unit
-`omni-remote-agent.service` (tên khác `aoip-agent` — đừng tìm nhầm unit).
+:3306 + Redis :6379, cả hai bind localhost-only).
+
+⚠️ **Unit systemd đúng là `aoip-agent.service` (chạy `aoip.agent.employee`) — KHÔNG phải
+`omni-remote-agent.service`.** Đây là HAI service KHÁC NHAU, không phải một cái đổi tên (mô tả cũ
+ở dòng này ghi *"`omni-remote-agent.service` (tên khác `aoip-agent`)"* là SAI, và chính câu sai đó
+đã trực tiếp gây ra sự cố 2 agent chạy song song suốt 7 ngày — xem
+`docs/audit/regression_agent_dual_process_2026-08-11.md`):
+- `aoip-agent.service` → `aoip.agent.employee` — **runtime production duy nhất trên VM khách
+  hàng** (1 process 2 vòng: telemetry reuse `remote_agent.run_agent()` **làm thư viện** + durable
+  command/mutation daemon). Deploy thật từ Sprint IT-7, canonical theo ADR-001.
+- `omni-remote-agent.service` → `remote_agent.agent` — unit gốc đã lỗi thời, **đã gỡ hẳn khỏi cả 3
+  VM lab ngày 2026-08-11** (không giữ làm rollback path, có chủ đích — giữ-disabled từng khiến bug
+  double-agent tái phát). Nếu thấy unit này sống lại ở đâu = có script/lệnh cũ đang gọi nhầm.
+
+⚠️ **`/opt/omni-remote-agent/` vẫn là thư mục cài đặt ĐANG DÙNG** (tên thư mục giữ theo lịch sử,
+đừng để tên đánh lừa): `aoip.agent.employee` import trực tiếp code `remote_agent/` bên trong đó.
+TUYỆT ĐỐI không `rm -rf /opt/omni-remote-agent` khi "dọn agent cũ" — sẽ giết luôn agent đang chạy.
+
+Chi tiết migration + lý do: `plans/consolidate-vm-agent-remote-to-aoip-employee-2026-08-11.md`.
 
 ### Productization Iteration 1 — System Twin (2026-07-02)
 `omni:aoip:system_model:{tenant}` trống hoàn toàn dù O1/O2A/O2B claim DONE — root cause là
