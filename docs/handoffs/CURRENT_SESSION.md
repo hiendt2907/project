@@ -1,9 +1,39 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-11 (Đ53 — fix Telegram + audit luồng tự học RAG. **Full suite 7343 pass, 0
-fail — đang commit + deploy.** Đ52 giữ nguyên bên dưới.)
+**Cập nhật:** 2026-08-11 (Đ53 — fix Telegram + nối known-fix reflex vào nhánh service/application.
+**Full suite 7347 pass, 0 fail. Commit `e8fc230` đã push cả 2 remote, build Jenkins #61+#62 SUCCESS,
+verify sống bằng `kubectl exec` trong pod `omni-fullstack` xác nhận cả 3 thay đổi.** Đ52 giữ nguyên
+bên dưới. Sau Đ53: session chuyển sang brainstorm chiến lược sản phẩm — xem mục "Đ54" cuối phần này.)
 
-### Đ53 — Fix Telegram + audit RAG học lỗi — CODE XONG, CHƯA COMMIT (2026-08-11)
+### Đ54 — Brainstorm chiến lược: có nên tiếp tục + hướng bán được (2026-08-11)
+
+**Không phải task code.** User hỏi thẳng "dự án có đáng tiếp tục không, hướng nào bán được".
+Đã search thị trường thật (không đoán): Resolve AI **có thật** — $125M Series A, valuation $1B
+(Lightspeed dẫn đầu, 4/2/2026), khách hàng thật Coinbase/DoorDash/MongoDB/MSCI/Salesforce/Zscaler.
+Cùng tầng còn có Datadog Bits AI SRE, PagerDuty SRE Agent, Azure/AWS/New Relic/Dynatrace agent,
+Cleric, Traversal, NeuBird, BigPanda, NudgeBee (self-hosted, gần kiến trúc Omni nhất).
+
+**Kết luận đưa cho user:** đừng định vị Omni là "AI SRE tổng quát" — Resolve AI đã chiếm vị trí đó
+với đội ngũ + vốn lớn hơn nhiều bậc, khách hàng của họ (enterprise đã có sẵn observability) không
+phải đối tượng Omni nên nhắm. Khuyến nghị thu hẹp vào khoảng trống thật: **SMB/tổ chức chưa có sẵn
+observability stack**, kênh **MSP** (B2B2B, một Omni phục vụ N tenant), và **data residency**
+(metadata-only — khác biệt với SaaS Mỹ). Từ chối đề xuất "Competitive Architecture Matrix 30-50
+capability" của user (lấy từ ChatGPT) vì đó là phân tích không tạo doanh thu — khuyến nghị thay
+bằng tìm 1 design-partner thật trong 2-4 tuần.
+
+**User đã quyết (lượt trước Đ54):** "chỉ cắm đúng con aoip agent vào, còn hạ tầng tôi lo" — xác
+nhận mô hình SaaS lõi tập trung (Omni core do user vận hành) + footprint khách hàng tối thiểu (chỉ
+agent). Đã khớp kiến trúc hiện có (multi-tenant qua `tenant_id`, Postgres `omni_admin`). 3 việc
+phải xong TRƯỚC khi đưa agent ra khỏi VM lab vào máy khách thật — **CHƯA làm, chỉ mới nêu**:
+1. Gói cài đặt 1 lệnh (hiện tại cài tay qua `orb -m`, chưa có installer thật).
+2. `aoip-agent.service` chạy root, không sandbox (`ProtectSystem`/`NoNewPrivileges` thiếu) — chấp
+   nhận được ở VM lab, **bắt buộc phải vá trước khi chạm máy khách thật**.
+3. Chưa đo footprint CPU/RAM của agent trên host khách — cần số liệu cụ thể để làm lời hứa bán hàng.
+
+**Next step:** chờ user trả lời câu hỏi đang treo (có kênh MSP/SMB nào ở VN chưa, hay từ số 0) rồi
+mới quyết bước kỹ thuật tiếp theo — KHÔNG tự ý bắt đầu vá hardening/installer khi chưa rõ hướng đi.
+
+### Đ53 — Fix Telegram + audit RAG học lỗi — ĐÃ DEPLOY + VERIFY SỐNG (2026-08-11)
 
 **Yêu cầu user:** (1) fix Telegram, (2) kiểm tra luồng tự học ghi RAG có giảm tải LLM không,
 (3) giải thích các mô hình RAG hiện có.
@@ -46,15 +76,23 @@ vendor_knowledge, cli_hil_context, os_hard_fail_diagnostic, playbooks, semcache)
 `redis_brain.py` (multi-turn RAG session, không gọi LLM) tồn tại nhưng không có call site trong
 `remote_agent_pipeline.py`/`remote_triage.py` — chưa đấu vào đường VM khách.
 
-**Full suite: 7343 pass, 0 fail.** Đang commit + push + kích Jenkins build + verify deploy UAT.
+**Cập nhật 2026-08-11 (sau đợt brainstorm):** mục (4) ở trên **ĐÃ LÀM** — `_try_remote_known_fix_reflex`
+mới trong `remote_agent_pipeline.py`, gọi trước cả cooldown fingerprint khi
+`needs_research and urgency in NOTIFY_TIERS`: tra `action_experience` (không phải collection
+playbook mà triage dùng để định route), có discovery snapshot xác nhận resource đúng host thì
+dispatch thẳng qua `auto_recovery_bridge.dispatch_if_eligible` (CRAT fail-closed không đổi) và bỏ
+qua nguyên vòng LLM 8 lượt. Không snapshot/không candidate → rơi về đường cũ, hành vi không đổi.
+4 test mới (`tests/test_remote_known_fix_reflex.py`). **Full suite 7347 pass, 0 fail.** Commit
+`e8fc230`, push cả 2 remote (gitea+github), build Jenkins #62 SUCCESS (~11 phút). Verify sống bằng
+`kubectl exec` trong pod `omni-fullstack-dd6bd8c95-7gcpt`: `_try_remote_known_fix_reflex` có thật
+trong image đang chạy, `_render_section4_remediation` không còn câu "Omni không tự thực thi",
+`_notify_telegram_outcome` có thật — cả 3 thay đổi Đ53 đều sống, không chỉ "rollout successful".
 
-**Next step:** (1) sau khi build xong, xác nhận image tag mới trong pod `omni-fullstack` +
-`omni-gateway` bằng `kubectl exec ... python -c "import ..."` như Đ52 — KHÔNG tự tin "rollout
-successful" là đủ; (2) verify sống: trigger 1 sự cố thật, xem tin Telegram ban đầu không còn câu
-"Omni không tự thực thi", và sau khi auto-recovery chạy xong có tin ✅/❌ riêng; (3) nếu có thời
-gian: điều tra kho SOP rỗng (tìm nguồn JSONL 1019 mục cũ, hoặc xác nhận đã mất vĩnh viễn);
-(4) cân nhắc nối `try_remote_known_fix` vào `remote_agent_pipeline.py` để recall thật sự tiết kiệm
-LLM cho traffic critical/high — đây là việc CHƯA làm, chỉ mới phát hiện và báo cáo.
+**Còn treo, CHƯA làm (mục 3 cũ):** kho SOP (`itops_sop_ledger`, CLAUDE.md ghi "1019 mục") vẫn 0
+doc trên cluster — chưa điều tra tiếp, chưa rõ mất từ khi nào, KHÔNG tự ý ingest lại.
+
+**Next step:** xem mục "Đ54" phía trên — session đã chuyển sang brainstorm chiến lược sản phẩm,
+chưa quay lại việc kỹ thuật nào mới.
 
 
 
