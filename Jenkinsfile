@@ -306,7 +306,14 @@ EOF
           # apply runs — bootstrap by hand once per cluster if missing:
           #   kubectl create secret generic omni-chaos-lab -n multi-agent \
           #     --from-literal=pg-app-password="$(openssl rand -hex 16)"
-          kubectl apply -f k8s/deployments/telegram-bot-secret.yaml
+          # Bootstrap-once, giống omni-pg-secret ở trên — trước đây `kubectl apply`
+          # vô điều kiện MỖI build, nên bất kỳ lần nào ai `kubectl create secret`
+          # tay bằng token Telegram thật (giá trị thật KHÔNG commit vào git, file
+          # này chỉ giữ placeholder rỗng) đều bị build kế tiếp ghi đè về rỗng —
+          # bug thật đã trả giá: Telegram câm suốt nhiều build sau khi bật (Đ49,
+          # 2026-08-11, phát hiện qua test 9-domain không thấy tin nhắn nào).
+          kubectl get secret telegram-bot -n multi-agent >/dev/null 2>&1 || \
+            kubectl apply -f k8s/deployments/telegram-bot-secret.yaml
           kubectl apply -f k8s/deployments/omni-gateway.yaml
           # omni-gateway runs as an Argo Rollouts Rollout instead (see "Deploy
           # Argo Rollouts" stage + k8s/gitops/omni-gateway-rollout.yaml) — the
