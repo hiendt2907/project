@@ -86,6 +86,32 @@ spec:
               value: "omni-fullstack"
             - name: OMNI_EXECUTOR_FORCE_NSENTER
               value: "true"
+            # ── Tự khắc phục KHÔNG cần người duyệt (Đ52, 2026-08-11) ──────────
+            # Bật theo quyết định trực tiếp của chủ hệ thống. Trước đó GCP chưa
+            # từng bật: đo thật 2026-08-11 cho thấy Omni chẩn đúng `payment-api`
+            # bị SIGTERM (confidence 0.9) và ĐÃ muốn tự chữa, nhưng dừng ở
+            # `auto_recovery_skipped reason=agent_not_in_lab_allowlist` — chuỗi
+            # evidence→chẩn đoán→phương án chạy đủ, chỉ đứt đúng chặng thực thi.
+            #
+            # ConfigMap `omni-worker-config` CỐ Ý giữ nguyên "false" (mặc định
+            # fail-closed): một cluster dựng lại từ ConfigMap mà thiếu file này
+            # phải câm chứ không được tự ý mutate. Override chỉ sống ở đây.
+            #
+            # Bán kính nổ được chặn ĐỘC LẬP ở hai tầng, cố ý không gộp:
+            #   1. Omni chọn AGENT  — allowlist ngay dưới, chỉ 3 VM lab.
+            #   2. VM  chọn UNIT   — `AOIP_ALLOWED_SYSTEMD_UNITS` trong run.env
+            #      trên từng máy (hiện: payment-api.service, systemd-journald).
+            # Kể cả khi allowlist dưới đây bị mở nhầm toàn bộ, agent vẫn từ chối
+            # mọi unit ngoài danh sách của chính nó.
+            # Cộng thêm: ngưỡng confidence tối thiểu (`min_dispatch_confidence`)
+            # và CRAT fail-closed vẫn chặn trước khi bất kỳ lệnh nào chạy.
+            - name: OMNI_AUTO_EXECUTE_ENABLED
+              value: "true"
+            # Tên agent = "<tenant>_<host>". Tenant đổi staging-sim → loyalty-uat
+            # ngày 2026-08-11, nên danh sách cũ trong CLAUDE.md (staging-sim_*)
+            # đã VÔ HIỆU — đó chính là lý do allowlist trượt ở lần đo trên.
+            - name: OMNI_LAB_AUTO_EXECUTE_AGENTS
+              value: "loyalty-uat_cust-app,loyalty-uat_cust-db,loyalty-uat_cust-edge"
             - name: OMNI_AUDIT_PRIVATE_KEY_PATH
               value: /etc/omni/audit/private_key.pem
             - name: TELEGRAM_BOT_TOKEN

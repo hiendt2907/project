@@ -21,6 +21,7 @@ import pytest
 
 from pkg.reasoning.diagnosis_cooldown import (
     COOLDOWN_S,
+    IN_FLIGHT_TIMEOUT_S,
     RETRY_COOLDOWN_S,
     CooldownDecision,
     should_diagnose,
@@ -120,6 +121,60 @@ def test_lan_truoc_that_bai_thi_thu_lai_som_hon_nhung_KHONG_ngay_lap_tuc():
 def test_cooldown_that_bai_phai_ngan_hon_cooldown_thanh_cong():
     """Chẩn hỏng thì thử lại sớm hơn chẩn xong — nếu không, quan hệ này vô nghĩa."""
     assert 0 < RETRY_COOLDOWN_S < COOLDOWN_S
+
+
+# ── Lỗ đua in-flight: đo được trên UAT thật, không phải giả định ─────────────
+
+def test_dang_chan_do_thi_khong_khoi_dong_them_luot_moi():
+    """Vòng chẩn đoán ĐANG chạy ⇒ bản lặp không được khởi động vòng thứ hai.
+
+    Đo trên UAT 2026-08-11 (drill `omni-cooldown-drill.service` failed thường trực):
+    **3 vòng chẩn đoán khởi động cách nhau đúng 20 giây** — bằng chu kỳ collect. Nguyên
+    nhân: mốc cooldown chỉ được ghi SAU khi vòng chẩn đoán kết thúc (~2-4 phút), nên mọi
+    bản lặp trong cửa sổ đó đều đọc `last_diagnosis=null` và rơi vào nhánh
+    `never_diagnosed`. Cooldown ghi-sau chỉ đóng được nửa vấn đề.
+    """
+    d = should_diagnose(
+        seen_state=_seen(last_diag_ts=time.time() - 30, verdict="in_progress"),
+        urgency="high",
+    )
+    assert d.diagnose is False
+    assert d.reason == "diagnosis_in_flight"
+
+
+def test_vong_chan_doan_treo_qua_lau_thi_phai_cho_thu_lai():
+    """Vòng chẩn đoán chết giữa chừng (pod restart) ⇒ không được khoá vĩnh viễn.
+
+    Nếu tin `in_progress` vô thời hạn, một lần crash sẽ bịt fingerprint đó cho tới khi
+    key Redis hết hạn 7 ngày.
+    """
+    d = should_diagnose(
+        seen_state=_seen(
+            last_diag_ts=time.time() - IN_FLIGHT_TIMEOUT_S - 1, verdict="in_progress"
+        ),
+        urgency="high",
+    )
+    assert d.diagnose is True
+    assert d.reason == "in_flight_stale"
+
+
+def test_leo_thang_xuyen_qua_ca_khi_dang_chan_do():
+    """Bất biến an toàn không được yếu đi vì thêm nhánh in-flight."""
+    d = should_diagnose(
+        seen_state=_seen(last_diag_ts=time.time() - 5, verdict="in_progress",
+                         urgency="high"),
+        urgency="critical",
+    )
+    assert d.diagnose is True
+    assert d.reason == "escalated"
+
+
+def test_in_flight_timeout_phai_dai_hon_mot_vong_chan_doan_that():
+    """Đo thật: vòng chẩn đoán dài nhất quan sát được ~4 phút (2 lượt × timeout 120s).
+
+    Ngưỡng phải dài hơn con số đó, nếu không nó sẽ mở khoá giữa chừng và lỗ đua quay lại.
+    """
+    assert IN_FLIGHT_TIMEOUT_S > 4 * 60
 
 
 # ── Chống dữ liệu bẩn ────────────────────────────────────────────────────────

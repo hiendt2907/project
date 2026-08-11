@@ -1,7 +1,53 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-11 (Đ51 — **AUDIT ĐÃ CHẠY THẬT, HOÀN TẤT**. Không sửa code production, chỉ
-đo đạc + ghi báo cáo. Kết quả: 2.2% tin Telegram có giá trị. Chi tiết ngay dưới, Đ50 giữ nguyên.)
+**Cập nhật:** 2026-08-11 (Đ52 — cooldown chẩn đoán **đã code + test + deploy UAT thật**, đang
+drill để kiểm chứng. Đ51 audit giữ nguyên bên dưới.)
+
+### Đ52 — Cooldown chẩn đoán theo fingerprint — ĐANG KIỂM CHỨNG (2026-08-11)
+
+**Đã xong:** commit `8ab9375` + `769b910`. Build Jenkins **#58 SUCCESS**, image
+`10.43.239.205/library/multi-agent-system:8ab9375` đã chạy trên pod
+`omni-fullstack-8655857f66-bsn6q` — verify sống bằng `kubectl exec` import module thật
+(`COOLDOWN_S=900 RETRY=180`, pipeline có đủ `should_diagnose`/`_mark_diagnosed_best_effort`/
+`_verdict_from_session`). Test: 24 test mới, **7303 test toàn bộ pass, 0 fail**.
+
+**Root cause (nối tiếp audit Đ51):** `mark_cluster_diagnosed()`/`get_seen_state()`/trường
+`last_diagnosis` đã tồn tại sẵn trong `pkg/reasoning/evidence_cluster.py` nhưng **KHÔNG có call
+site nào** — hạ tầng cooldown viết rồi mà chưa bao giờ đấu dây. Xác nhận trên Redis thật trước
+drill: **0/60** key `omni:evcluster:seen:*` có `last_diagnosis` khác `null`.
+
+**Lỗi thiết kế tự bắt được giữa đường (ghi lại để không lặp):** bản đầu cho "lượt trước thất bại"
+bỏ qua cooldown HOÀN TOÀN. Nhưng 77.7% lượt đang thất bại ⇒ mọi ca hỏng retry sau 20s ⇒ tải không
+giảm ⇒ cooldown vô tác dụng đúng lúc cần nhất. Đã đổi thành `RETRY_COOLDOWN_S=180` và khoá bằng
+test `test_lan_truoc_that_bai_thi_thu_lai_som_hon_nhung_KHONG_ngay_lap_tuc`.
+
+⚠️ **PHÉP ĐO BỊ NHIỄU — chưa được kết luận cooldown có tác dụng.** Sau khi deploy, tải tự giảm về
+gần 0 nhưng **KHÔNG phải nhờ cooldown**: Đ50 đã xoá `omni-remote-agent`/`replay01` vốn là nguồn
+sinh lỗi log, nên `remote_log_errors` nay trả `PASSED` và thoát sớm ở
+`remote_agent_pipeline.py:232` (trace không có stage nào). Baseline trước deploy đã lưu ở
+`/tmp/baseline_truoc_cooldown.json` (204 session/3h, 23 cảnh báo duy nhất, lặp 88.7%, hữu ích
+3.4%, LLM chết 77.7%, trễ trung vị 591s) — nhưng so trực tiếp với sau deploy là **sai phương
+pháp**, phải nói rõ.
+
+**Đang làm:** drill thật `systemctl stop payment-api` trên `cust-app` lúc 11:50:13 để tạo sự cố
+lặp lại thật, kiểm 3 điều: (1) lần đầu có chẩn đoán + ghi `last_diagnosis`; (2) lần lặp bị chặn
+với log `diagnosis_cooldown`; (3) leo thang vẫn xuyên qua.
+
+**Next step:** đọc kết quả drill. **Nhớ khôi phục `systemctl start payment-api` trên cust-app khi
+xong** (drill này đã để lại dịch vụ dừng). Sau đó mới đo lại bằng
+`scripts/measure_diagnosis_health.py --compare`. Nếu cooldown không nổ ⇒ báo đúng là chưa chứng
+minh được, không tô hồng. Công cụ đo: `scripts/measure_diagnosis_health.py` (chỉ đọc).
+
+**Chưa push** `769b910` (chờ build xong để tránh race non-fast-forward đã làm fail build #50).
+
+**CI/CD — user hỏi, đã kiểm chứng, TẠM GÁC theo yêu cầu user:** job `omni-gcp-deploy` có
+`<triggers/>` RỖNG, Jenkins không có plugin Gitea/generic-webhook, và build #55/#56/#57 đều
+`Started by user` ⇒ push KHÔNG tự build. Đây là **CỐ Ý**, không phải thiếu sót — `Jenkinsfile`
+dòng 217-220 ghi rõ lý do: chính Jenkins tự push commit `ci: bump image tags` về gitea, bật
+trigger ngây thơ sẽ tạo vòng build vô hạn. Muốn tự động phải cắt vòng lặp trước (lọc commit của
+`jenkins-ci`, hoặc `[skip ci]` + stage tự thoát, hoặc bump ở branch riêng).
+
+### Đ51 — Audit 9 domain × Telegram evidence — HOÀN TẤT, ĐO THẬT (2026-08-11)
 
 ### Đ51 — Audit 9 domain × Telegram evidence — HOÀN TẤT, ĐO THẬT (2026-08-11)
 

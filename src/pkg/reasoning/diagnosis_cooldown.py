@@ -50,6 +50,22 @@ _URGENCY_RANK: dict[str, int] = {
 # LLM tình cờ timeout một lần.
 RETRY_COOLDOWN_S = 180
 
+# Verdict đánh dấu "một vòng chẩn đoán ĐANG chạy cho fingerprint này".
+#
+# Vì sao cần, đo được chứ không phải giả định: mốc cooldown chỉ ghi được SAU khi vòng
+# chẩn đoán kết thúc (~2-4 phút), trong khi agent phát lại mỗi 20 giây. Drill trên UAT
+# 2026-08-11 (`omni-cooldown-drill.service` failed thường trực) cho ra **3 vòng chẩn
+# đoán khởi động cách nhau đúng 20 giây** — mọi bản lặp trong cửa sổ đó đọc
+# `last_diagnosis=null` rồi rơi vào `never_diagnosed`. Cooldown chỉ-ghi-sau đóng được
+# đúng một nửa vấn đề; đánh dấu TRƯỚC khi chạy mới bịt nốt nửa còn lại.
+IN_FLIGHT_VERDICT = "in_progress"
+
+# Trần cho một vòng chẩn đoán. Dài hơn vòng dài nhất quan sát được (~4 phút = 2 lượt ×
+# `llm_chat_timeout_sec` 120s) đủ xa để không mở khoá giữa chừng, nhưng hữu hạn: nếu pod
+# chết giữa vòng, mốc `in_progress` không được phép bịt fingerprint đó tới khi key Redis
+# hết hạn 7 ngày.
+IN_FLIGHT_TIMEOUT_S = 600
+
 # Verdict cho biết lượt chẩn đoán TRƯỚC không ra được kết luận.
 _FAILED_VERDICTS = frozenset({"llm_error", "parse_error", "error", "inconclusive", ""})
 
@@ -104,8 +120,18 @@ def should_diagnose(
     if _rank(urgency) > _rank(last.get("urgency")):
         return CooldownDecision(True, "escalated")
 
+    verdict = str(last.get("verdict") or "").strip().lower()
+
+    # Một vòng chẩn đoán đang chạy ⇒ đừng khởi động vòng thứ hai cho cùng vấn đề.
+    if verdict == IN_FLIGHT_VERDICT:
+        if elapsed >= IN_FLIGHT_TIMEOUT_S:
+            return CooldownDecision(True, "in_flight_stale")
+        return CooldownDecision(
+            False, "diagnosis_in_flight", IN_FLIGHT_TIMEOUT_S - elapsed
+        )
+
     # Lượt trước không ra kết luận ⇒ dùng quãng nghỉ NGẮN (xem RETRY_COOLDOWN_S).
-    if str(last.get("verdict") or "").strip().lower() in _FAILED_VERDICTS:
+    if verdict in _FAILED_VERDICTS:
         if elapsed >= RETRY_COOLDOWN_S:
             return CooldownDecision(True, "retry_after_failure")
         return CooldownDecision(

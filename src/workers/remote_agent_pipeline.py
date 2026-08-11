@@ -20,7 +20,7 @@ from typing import Any
 from anomaly.remote_host_baseline import REMOTE_Z_THRESHOLD
 from pkg.domain.taxonomy import UNKNOWN as _DOMAIN_UNKNOWN, normalize_domain
 from pkg.reasoning.domain_signals import detect_domain
-from pkg.reasoning.diagnosis_cooldown import should_diagnose
+from pkg.reasoning.diagnosis_cooldown import IN_FLIGHT_VERDICT, should_diagnose
 from pkg.reasoning.evidence_cluster import (
     get_seen_state,
     mark_cluster_diagnosed,
@@ -377,6 +377,15 @@ async def handle_remote_agent_evidence(
         num_ctx = int(getattr(getattr(ctx, "settings", None), "llm_num_ctx", 8192) or 8192)
 
         if llm is not None and chat_id is not None:
+            # Đặt mốc "đang chẩn" TRƯỚC khi tạo task, không phải sau khi vòng chạy
+            # xong. Vòng chẩn đoán mất ~2-4 phút còn agent phát lại mỗi 20 giây, nên
+            # nếu chỉ ghi mốc lúc kết thúc thì mọi bản lặp trong cửa sổ đó đọc
+            # `last_diagnosis=null` và khởi động thêm một vòng nữa. Đo trên UAT
+            # 2026-08-11 (drill unit failed thường trực): 3 vòng khởi động cách nhau
+            # đúng 20 giây — cooldown ghi-sau đóng được đúng một nửa vấn đề.
+            # Ghi TRƯỚC nên phải best-effort: lỗi ghi mốc không được chặn đường chẩn
+            # đoán (fail-open — thà chẩn trùng còn hơn bỏ sót sự cố).
+            await _mark_in_flight_best_effort(ctx, fp, triage.urgency, trace)
             await mark_stage(ctx.redis, trace, "LLM", "ok", detail="multi-turn diagnosis loop launched", domain=_early_domain, signal_kind="diagnostic")
             _track_bg_task(asyncio.create_task(
                 _run_diagnosis_and_notify(
@@ -495,6 +504,30 @@ def _verdict_from_session(session: Any) -> str:
     except (TypeError, ValueError):
         conf = 0.0
     return "diagnosed" if conf > 0.0 else "llm_error"
+
+
+async def _mark_in_flight_best_effort(
+    ctx: WorkerHandlerContext,
+    fingerprint: str,
+    urgency: str,
+    trace: str,
+) -> None:
+    """Đánh dấu "đang chẩn đoán" để bản lặp kế tiếp không khởi động vòng thứ hai.
+
+    Mốc này tự hết hiệu lực sau `IN_FLIGHT_TIMEOUT_S` nên một vòng chết giữa chừng
+    (pod restart) không bịt fingerprint đó vĩnh viễn.
+    """
+    if not fingerprint:
+        return
+    try:
+        await mark_cluster_diagnosed(
+            ctx.redis, fingerprint,
+            verdict=IN_FLIGHT_VERDICT,
+            root_cause="",
+            urgency=urgency,
+        )
+    except Exception as exc:
+        logger.warning("[RAP] mark_in_flight_failed trace=%s fp=%s err=%s", trace, fingerprint, exc)
 
 
 async def _mark_diagnosed_best_effort(
