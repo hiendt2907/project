@@ -71,6 +71,40 @@ else
   bad "cust-app KHÔNG có trong allowlist — demo sẽ chỉ dừng ở mức đề xuất, không tự sửa"
 fi
 
+echo "── 8. Cooldown fingerprint (Đ52, 900s) cho đúng drill payment-api ──────
+"
+# Đ55: phát hiện thật — chạy đúng kịch bản 2 lần trong <15 phút khiến cooldown
+# chặn hoàn toàn lần 2, Telegram im lặng dù hệ thống đúng thiết kế. Script này
+# CHỈ BÁO cáo còn bao lâu — không tự xoá (đúng hợp đồng "chỉ kiểm tra, không
+# sửa gì" của cả file). Fingerprint dưới đây đã quan sát ỔN ĐỊNH qua 3 lần
+# drill payment-api/cust-app hôm nay 2026-08-11 (cùng probe+nội dung evidence
+# → cùng hash) — nếu nội dung log agent gửi đổi khác đi, fingerprint có thể
+# đổi theo và bước này sẽ không còn đúng key để kiểm; không phải lỗi nghiêm
+# trọng (rơi về báo "không thấy cooldown cũ" = coi như sạch), chỉ là giả định
+# cần biết.
+kubectl exec -n multi-agent deploy/omni-fullstack -c omni-fullstack -- python -c "
+import asyncio, redis.asyncio as redis, json, time
+FP = 'service_systemd_units:86b3cca77b44'
+async def main():
+    r = redis.from_url('redis://redis.multi-agent.svc.cluster.local:6379', decode_responses=True)
+    raw = await r.get(f'omni:evcluster:seen:{FP}')
+    if not raw:
+        print('  OK khong co ban ghi cu — sach, khong bi cooldown chan')
+        return
+    d = json.loads(raw)
+    ld = d.get('last_diagnosis')
+    if not ld:
+        print('  OK chua tung chan doan fingerprint nay — sach')
+        return
+    age = time.time() - ld.get('ts', 0)
+    remain = 900 - age
+    if remain > 0:
+        print(f'  FAIL con cooldown ~{int(remain)}s nua — demo live se IM LANG neu chay ngay bay gio')
+        raise SystemExit(1)
+    print(f'  OK cooldown da het tu {int(-remain)}s truoc — an toan de demo')
+asyncio.run(main())
+" && ok "cooldown fingerprint drill payment-api: sạch" || bad "cooldown còn hiệu lực — đợi hết giờ hoặc đổi VM/unit khác cho demo"
+
 echo
 if [ "$FAIL" -eq 0 ]; then
   echo "════ TẤT CẢ PASS — sẵn sàng đi cafe demo ════"
