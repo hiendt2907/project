@@ -1,8 +1,11 @@
 # Current Session Handoff
 
 **Cập nhật:** 2026-08-11 (Đ55 — script demo cafe + fix cách ly tenant thật trong action_experience.
-**Full suite 7348 pass, 0 fail — đang commit + deploy.** Đ53/Đ54 giữ nguyên bên dưới, đã deploy/
-verify xong. Buổi cafe với CTO cũ CHƯA CHỐT NGÀY — user xác nhận "còn linh hoạt", không vội.)
+**Commit `0f25e6d` push cả 2 remote, build Jenkins #63 SUCCESS, verify sống bằng kubectl exec trong
+pod `omni-fullstack-64cbf98ccd-jp9hk` xác nhận cả `find_known_fix_candidate`/`_upsert_action_experience`
+đều có tham số `tenant_id` + gọi `scoped_collection_name` thật trong image đang chạy.** Đ53/Đ54 giữ
+nguyên bên dưới, đã deploy/verify xong. Buổi cafe với CTO cũ CHƯA CHỐT NGÀY — user xác nhận "còn
+linh hoạt", không vội.)
 
 ### Đ55 — Script demo live cho buổi cafe với CTO cũ (2026-08-11, ĐANG LÀM)
 
@@ -51,11 +54,15 @@ thống đúng thiết kế. CHƯA thêm bước clear cooldown vào preflight �
   (nó thấy process `python3` chung chung, không gắn được tên systemd unit cụ thể) — hạn chế thật,
   chưa fix, cần biết khi thiết kế phần "chứng minh hiểu hệ thống" của demo.
 
+**Đã xong (2026-08-11, verify sống):** commit `0f25e6d` push cả 2 remote, Jenkins build #63
+SUCCESS, `kubectl exec` trong pod `omni-fullstack-64cbf98ccd-jp9hk` xác nhận cả
+`find_known_fix_candidate`/`_upsert_action_experience` đã có tham số `tenant_id` +
+`scoped_collection_name` thật trong image đang chạy — không chỉ tin "SUCCESS" suông.
+
 **CHƯA làm/còn treo (Đ55):**
-- Chưa deploy bản fix cách ly tenant lên UAT + verify sống bằng kubectl exec (theo đúng kỷ luật
-  Đ52/Đ53 — làm ngay sau khi ghi chú này).
 - Chưa seed lại action_experience RIÊNG cho `loyalty-uat` (vòng chẩn đoán cũ trước fix ghi vào pool
-  chung, không tính) — cần 1 lần drill sạch SAU khi deploy để tenant có kinh nghiệm thật của chính nó.
+  chung, không tính — collection `action_experience:loyalty-uat` giờ RỖNG, ĐÚNG như thiết kế mới,
+  chỉ là tenant chưa có kinh nghiệm nào của riêng nó). Cần 1 lần drill sạch để seed.
 - Chưa làm: Telegram card nói rõ tier hiện tại (shadow/assist/auto) + quyết định ALLOW/SUGGEST/HITL
   cho từng đề xuất — mới dừng ở tra cứu `pkg/autonomy/tier_gate.py` (3 tier: shadow/assist/auto,
   ma trận tier×risk, `systemd.restart_unit`=LOW risk).
@@ -65,12 +72,10 @@ thống đúng thiết kế. CHƯA thêm bước clear cooldown vào preflight �
   làn VM này (khác K8s lane có `DANGEROUS_TOOLS`). Cần quyết định: nói thật giới hạn này (an toàn
   vì phạm vi hẹp = thiết kế, không phải thiếu sót), hay cần thêm capability MEDIUM để demo HITL.
 - Chưa viết storyboard video ngắn (task #51).
-- Chưa commit `scripts/demo/`.
 
-**Next step ngay:** commit tất cả (fix cách ly tenant + scripts/demo), deploy, verify sống, seed
-lại 1 vòng drill sạch cho loyalty-uat, rồi hỏi user ưu tiên tiếp giữa: (a) tier-aware Telegram
-wording, (b) câu chuyện "cấm ở mức nào", (c) storyboard video — vì buổi cafe chưa chốt ngày nên
-không cần vội một lượt làm hết.
+**Next step:** hỏi user ưu tiên tiếp giữa: (a) seed drill sạch cho loyalty-uat + tier-aware
+Telegram wording, (b) câu chuyện "cấm ở mức nào", (c) storyboard video — buổi cafe chưa chốt ngày
+nên không cần vội làm hết một lượt.
 
 **Next step:** chờ vòng diagnosis loop nền hiện tại xong (xem có tự phục hồi + Telegram không) →
 nếu cooldown là nguyên nhân duy nhất từng chặn, thêm bước clear cooldown vào preflight → dry-run
