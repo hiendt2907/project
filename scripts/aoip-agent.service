@@ -1,25 +1,46 @@
-# AOIP employee unit (Sprint NV-SRE IT-4) — thay thế omni-remote-agent.service trên
-# VM pilot. Mẫu theo unit THẬT đang chạy (KHÔNG phải omni-agent.service lý thuyết):
-# WorkingDirectory=/opt/omni-remote-agent, EnvironmentFile=run.env, chạy root,
-# log append /var/log/omni-agent.log.
+# AOIP employee unit — Gate 0 hardening (docs/audit/SRE_READINESS_2026-08.md F-005/B7,
+# xem plan lưu trong docs/audit/gate0-agent-hardening-verify.md sau khi cutover).
+# Trước đây chạy root, không hardening; nay non-root + ProtectSystem=strict.
 #
-# Khác biệt duy nhất so với unit cũ:
-# - ExecStart chạy aoip.agent.employee (1 process 2 vòng: telemetry reuse
-#   remote_agent + durable command daemon).
-# - StateDirectory=aoip → /var/lib/aoip cho inbox durable (mặc định
-#   AOIP_AGENT_INBOX=/var/lib/aoip/inbox).
-# - AOIP_AGENT_MODE=observe_only tường minh (fail-safe, KHÔNG mutation).
+# KHÔNG có NoNewPrivileges=true — cố ý. Nó vô hiệu hoá setuid của MỌI binary exec
+# sau đó, kể cả /usr/bin/sudo (hành vi kernel/systemd đã biết). Toàn bộ capability
+# recovery/mutate (src/aoip/recovery.py, src/aoip/capabilities/*.py,
+# src/aoip/remote_linux_backend.py) và tự-restart sau update
+# (src/aoip/agent/updater.py::_default_restart) đều gọi qua
+# "sudo systemctl/journalctl/ss" — bật NoNewPrivileges sẽ làm toàn bộ fail
+# permission-denied âm thầm. Đừng "dọn dẹp cho gọn" rồi bật lại dòng này.
 #
-# Rollback drill: systemctl disable --now aoip-agent && systemctl enable --now
-# omni-remote-agent — unit cũ giữ nguyên trên VM, không xóa trong pilot.
+# Sudoers scope hẹp đi kèm: scripts/omni-agent.sudoers (cài tại
+# /etc/sudoers.d/omni-agent, NOPASSWD đích danh 5 lệnh, không có "ALL").
+#
+# Khác biệt so với unit cũ (root, thay thế omni-remote-agent.service):
+# - User=omni-agent/Group=omni-agent + SupplementaryGroups đọc journal/log.
+# - ProtectSystem=strict + PrivateTmp/ProtectHome, ReadWritePaths thu hẹp đúng
+#   /opt/omni-remote-agent (self-update + crash-loop guard cần ghi ở đây);
+#   venv/ khoá read-only riêng vì self-update không đụng interpreter.
+# - ExecStart/WorkingDirectory/log path GIỮ NGUYÊN (aoip.agent.employee,
+#   /opt/omni-remote-agent, /var/log/omni-agent.log) — không đổi module.
+#
+# Rollback: backup unit gốc từng VM ở docs/audit/backup-units/ trước cutover
+# (repo không giữ bản root làm mẫu tái tạo — xem trình tự trong plan Gate 0).
 
 [Unit]
-Description=AOIP Agent (employee: telemetry + durable command daemon)
+Description=AOIP Agent (employee: telemetry + durable command daemon) — non-root hardened
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+User=omni-agent
+Group=omni-agent
+SupplementaryGroups=systemd-journal adm utmp
+# systemd-journal: đọc journal (collectors/security.py `journalctl _COMM=sudo`)
+# adm:            đọc /var/log/syslog và tương tự (OMNI_AGENT_LOG_PATHS collector)
+# utmp:           đọc /var/log/btmp cho collect_auth_failures — thiếu thì collector
+#                 fail-open (log warning, không crash) nhưng evidence domain=security
+#                 tụt âm thầm. Verify `getent group <tên>` tồn tại trên VM trước khi
+#                 enable — bỏ group nào không có, đừng để service refuse-to-start.
+
 WorkingDirectory=/opt/omni-remote-agent
 EnvironmentFile=/opt/omni-remote-agent/run.env
 Environment=AOIP_AGENT_MODE=observe_only
@@ -31,9 +52,16 @@ Restart=always
 RestartSec=10
 TimeoutStopSec=30
 StateDirectory=aoip
+StateDirectoryMode=0750
 StandardOutput=append:/var/log/omni-agent.log
 StandardError=append:/var/log/omni-agent.log
 SyslogIdentifier=aoip-agent
+
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/omni-remote-agent /var/log/omni-agent.log
+ReadOnlyPaths=/opt/omni-remote-agent/venv
 
 [Install]
 WantedBy=multi-user.target

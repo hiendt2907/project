@@ -1,11 +1,74 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-11 (Đ55 — ĐÓNG. Script demo cafe + fix cách ly tenant + Telegram tier-aware +
-talking points. **3 commit `0f25e6d`/`c63fa16`/`58f2731` push cả 2 remote, build Jenkins #63+#64
-SUCCESS, cả hai đã verify sống bằng kubectl exec. Full suite 7356 pass, 0 fail.** Đ53/Đ54 giữ
-nguyên bên dưới, đã deploy/verify xong. Buổi cafe với CTO cũ CHƯA CHỐT NGÀY — user xác nhận "còn
-linh hoạt", không vội. Toàn bộ scripts/demo/ đã tồn tại + đã dry-run/verify sống, sẵn sàng dùng bất
-cứ lúc nào user chốt ngày.)
+**Cập nhật:** 2026-08-12 (Đ56 — Gate 0 agent hardening: PHẦN CODE/ARTIFACT XONG + TEST XANH,
+**PHẦN CUTOVER 3 VM LAB BỊ CHẶN CỨNG, CHƯA LÀM ĐƯỢC**. Session này chạy trên VM GCP `omni-k3s-vm`
+sau một khoảng trống dài — phát hiện VM GCP chưa từng pull kể từ Đ32, đã fetch+merge lên Đ55 (105
+commit). Chi tiết đầy đủ ở mục Đ56 ngay dưới. Đ55 giữ nguyên bên dưới, không đổi gì.)
+
+### Đ56 — Gate 0: agent hardening non-root, code xong, cutover VM bị chặn (2026-08-12)
+
+**Bối cảnh:** phiên `/remote-control` mới trên VM GCP, brainstorm nợ kỹ thuật → quyết định vá
+Gate 0 trước (audit `SRE_READINESS_2026-08.md` F-005/B7: agent thật `aoip-agent.service` chạy
+root, không hardening — một bug validator tương lai = toàn quyền root trên máy khách). Kế hoạch
+đầy đủ đã duyệt, lưu tại `/root/.claude/plans/jiggly-weaving-kazoo.md` trên VM này (KHÔNG nằm
+trong git repo, chỉ local).
+
+**Phát hiện quan trọng lúc điều tra:** bug PoC RCE root 3/3 (awk, 2026-07-31) mà audit
+`SRE_READINESS_2026-08.md` trích dẫn **đã được vá từ trước** (commit `1ca82da`, cùng đêm phát
+hiện) — audit dùng nó làm bằng chứng lịch sử cho luận điểm kiến trúc (phòng thủ đơn lớp), không
+phải lỗ hổng còn sống. Gate 0 thật sự cần là lớp OS thứ 2 (non-root + `ProtectSystem=strict`), để
+MỘT bug validator tương lai không tự động là root.
+
+**Đã làm xong (local, an toàn, chưa đụng VM lab, 4 file, CHƯA COMMIT):**
+1. `src/aoip/agent/updater.py:150` — thêm `sudo` vào `_default_restart()` (self-restart sau
+   update sẽ fail permission-denied khi agent chạy non-root nếu thiếu). Kèm test mới
+   `TestDefaultRestart` trong `tests/test_aoip_agent_updater.py`.
+2. `scripts/omni-agent.sudoers` (file mới) — sudoers drop-in, đúng 5 lệnh NOPASSWD scope hẹp,
+   khớp `config/aoip_agent_gate.env` thật (`AOIP_GATE_ALLOWED_FAILURE_MODES=process_down,
+   failed_state_stale,disk_pressure_journal` — KHÔNG cấp sẵn kill/config-rollback vì 2 failure
+   mode đó chưa bật).
+3. `scripts/aoip-agent.service` — cập nhật tại chỗ thành bản hardened: `User=omni-agent`,
+   `ProtectSystem=strict`, `ReadWritePaths` thu hẹp, **KHÔNG có `NoNewPrivileges=true`** (phát
+   hiện quan trọng: nó vô hiệu hoá setuid của `sudo`, sẽ làm toàn bộ recovery/mutate/self-restart
+   fail permission-denied âm thầm — ghi rõ lý do bằng comment trong unit).
+4. `scripts/aoip-agent-harden-migrate.sh` (file mới) — script migrate idempotent, KHÔNG dùng
+   `scripts/omni-agent-install.sh` làm nền (đã thử, phát hiện đó là công cụ fresh-install cho
+   `remote_agent.agent` độc lập — venv/config/registry-check của nó sẽ phá cây thư mục agent
+   đang chạy thật nếu áp dụng cho migrate). Script chỉ làm: tạo user, chown, cài sudoers, cài
+   unit + `daemon-reload` — KHÔNG tự restart (restart/verify/drill/soak để làm riêng, có kiểm
+   chứng từng bước, không gộp mù).
+
+**Verify đã chạy:** `.venv/bin/python -m pytest tests/test_aoip_agent_updater.py -q` → 22 passed,
+0 fail (venv được tạo mới trên VM này lúc này — VM GCP trước đó CHƯA TỪNG có `.venv`, cũng là một
+gap môi trường mới phát hiện, không chặn gì, chỉ ghi nhận).
+
+**BỊ CHẶN CỨNG — Task cutover thật lên `cust-db`/`cust-edge`/`cust-app` (3 VM lab OrbStack):**
+VM GCP này (nơi Claude đang chạy) **không có đường kỹ thuật nào tới 3 VM lab**. `orb` CLI không
+tồn tại trên VM GCP — OrbStack chỉ chạy trên MacBook. `tailscale status` xác nhận node
+`macbook-pro-ca-hiendang` **offline** (last seen 3h trước lúc kiểm). Ngay cả khi MacBook online,
+lệnh `orb -m <vm>` bắt buộc chạy TỪ chính MacBook, không remote-exec qua Tailscale được.
+
+**Đang chờ user chọn hướng** (đã hỏi cuối lượt trước, CHƯA có câu trả lời):
+1. User tự chạy cutover trên MacBook, theo đúng trình tự trong plan mục 4 (3 file đã có sẵn ở
+   `scripts/`: `aoip-agent.service`, `omni-agent.sudoers`, `aoip-agent-harden-migrate.sh`) — dán
+   output lại để Claude verify.
+2. Bật lại Tailscale trên MacBook rồi thử điều khiển gián tiếp qua `ssh macbook-pro-ca-hiendang orb -m ...`.
+3. Tạm dừng ở đây, để phần cutover VM cho phiên sau.
+
+### Next step
+
+1. Khi user trả lời hướng xử lý ở trên → tiếp tục Task #4-6 (cutover `cust-db` → `cust-edge` →
+   `cust-app`, thứ tự này vì `cust-app` là host demo cafe, làm sau cùng — xem plan mục 4 cho lệnh
+   + tiêu chí verify từng bước) rồi Task #7 (bằng chứng blast-radius `systemd-run` + viết
+   `docs/audit/gate0-agent-hardening-verify.md`).
+2. Commit 4 file đã sửa/thêm (`src/aoip/agent/updater.py`, `tests/test_aoip_agent_updater.py`,
+   `scripts/aoip-agent.service`, `scripts/omni-agent.sudoers`, `scripts/aoip-agent-harden-migrate.sh`)
+   — CHƯA commit, đang chờ vì muốn gộp cùng nhịp với cutover thật để tránh commit code chưa từng
+   chạy trên VM lab nào (dù test unit đã xanh). Nếu user muốn commit ngay (tách khỏi cutover) —
+   được, đã verify bằng test, khớp standing authorization.
+3. Plan đầy đủ + toàn bộ lệnh cutover từng bước: `/root/.claude/plans/jiggly-weaving-kazoo.md`
+   (chỉ tồn tại LOCAL trên VM GCP này, không sync qua git — nếu VM này mất, plan mất theo, cân
+   nhắc chép nội dung vào `docs/audit/` nếu việc cutover kéo dài qua nhiều phiên).
 
 ### Đ55 — Script demo live cho buổi cafe với CTO cũ (2026-08-11, ĐÃ ĐÓNG)
 

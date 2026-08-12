@@ -1,0 +1,43 @@
+# /etc/sudoers.d/omni-agent
+#
+# Gate 0 hardening (docs/audit/SRE_READINESS_2026-08.md F-005 / B7) — agent chạy
+# non-root (user omni-agent, xem aoip-agent.service), cần đúng 5 lệnh này escalate
+# qua sudo. KHÔNG dùng "ALL" ở bất kỳ vị trí nào — mỗi dòng khớp CHÍNH XÁC lệnh +
+# tham số cố định mà code thực sự gọi:
+#   - AOIP_SELF_RESTART   -> src/aoip/agent/updater.py::_default_restart()
+#   - AOIP_APP_RESTART    -> src/aoip/recovery.py::_sd_apply() (operator process_down)
+#   - AOIP_APP_RESETFAIL  -> src/aoip/recovery.py::_sd_reset_failed_apply()
+#                            (operator failed_state_stale)
+#   - AOIP_JOURNAL_VACUUM -> src/aoip/recovery.py (operator disk_pressure_journal,
+#                            capability systemd_journal_vacuum.py)
+#   - AOIP_PORT_SCAN      -> src/aoip/remote_linux_backend.py:26 (collector, chạy
+#                            mỗi collect interval — cần NOPASSWD, không có TTY)
+#
+# ⚠️ Nguồn scope thật là config/aoip_agent_gate.env (AOIP_GATE_ALLOWED_FAILURE_MODES,
+# AOIP_ALLOWED_SYSTEMD_UNITS). Đổi 1 trong 2 biến đó -> PHẢI cập nhật file này song
+# song, 2 lớp allowlist (Python + sudoers) phải khớp nhau hoặc capability fail âm
+# thầm dù validator Python đã pass.
+#
+# CỐ Ý CHƯA CẤP: kill (operator resource_runaway) và config-rollback (operator
+# config_drifted) — cả 2 failure_mode KHÔNG có trong AOIP_GATE_ALLOWED_FAILURE_MODES
+# hiện tại. Thêm Cmnd_Alias tương ứng khi nào 2 mode đó được bật thật, không cấp
+# trước "phòng khi cần".
+#
+# Trước khi cài trên 1 VM: xác nhận path binary khớp layout thật
+#   command -v systemctl journalctl ss sudo
+# (giả định chuẩn Ubuntu/Debian /usr/bin — sudoers KHÔNG resolve qua $PATH).
+#
+# Cài: visudo -c -f <file này>   (validate cú pháp TRƯỚC)
+#      install -m 0440 -o root -g root <file này> /etc/sudoers.d/omni-agent
+
+Cmnd_Alias AOIP_SELF_RESTART   = /usr/bin/systemctl restart aoip-agent.service
+Cmnd_Alias AOIP_APP_RESTART    = /usr/bin/systemctl restart payment-api.service
+Cmnd_Alias AOIP_APP_RESETFAIL  = /usr/bin/systemctl reset-failed payment-api.service
+Cmnd_Alias AOIP_JOURNAL_VACUUM = /usr/bin/journalctl --vacuum-size=*
+Cmnd_Alias AOIP_PORT_SCAN      = /usr/bin/ss -Htlnp
+
+omni-agent ALL=(root) NOPASSWD: AOIP_SELF_RESTART, AOIP_APP_RESTART, AOIP_APP_RESETFAIL, \
+    AOIP_JOURNAL_VACUUM, AOIP_PORT_SCAN
+
+Defaults:omni-agent !requiretty
+Defaults:omni-agent secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

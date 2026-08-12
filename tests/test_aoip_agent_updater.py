@@ -17,6 +17,7 @@ import subprocess
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -232,6 +233,24 @@ class TestUpdateExecutor:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert (tmp_path / "rel" / "pending.json").exists()
+
+
+# ── self-restart (Gate 0 hardening: agent chạy non-root, cần sudo) ──────────
+
+class TestDefaultRestart:
+    async def test_invokes_systemctl_via_sudo(self, monkeypatch):
+        """Gate 0: agent chạy non-root, tự-restart phải qua sudoers NOPASSWD
+        scoped đích danh unit này (AOIP_SELF_RESTART) — thiếu "sudo" thì
+        systemctl restart fail permission-denied âm thầm dưới user thường."""
+        monkeypatch.setattr(updater, "_RESTART_DELAY_S", 0)
+        proc = AsyncMock()
+        proc.wait = AsyncMock(return_value=0)
+        with patch(
+            "aoip.agent.updater.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ) as mock_exec:
+            await updater._default_restart()
+        mock_exec.assert_awaited_once_with("sudo", "systemctl", "restart", updater._SERVICE_NAME)
 
 
 # ── reconciler (resume sau restart) ──────────────────────────────────────────

@@ -147,7 +147,9 @@ async def _default_restart() -> None:
     """Yêu cầu systemd restart chính service này. Process hiện tại sẽ chết —
     entry inbox đang RUNNING, resume sau boot xử lý tiếp (by design)."""
     await asyncio.sleep(_RESTART_DELAY_S)
-    proc = await asyncio.create_subprocess_exec("systemctl", "restart", _SERVICE_NAME)
+    # sudo: agent chạy non-root (Gate 0 hardening) — self-restart cần escalate qua
+    # sudoers NOPASSWD scoped đích danh AOIP_SELF_RESTART cho unit này.
+    proc = await asyncio.create_subprocess_exec("sudo", "systemctl", "restart", _SERVICE_NAME)
     await proc.wait()
 
 
