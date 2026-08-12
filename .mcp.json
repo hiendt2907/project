@@ -5,7 +5,7 @@
       "args": ["-y", "mcp-server-kubernetes@4.1.2"],
       "env": {
         "ALLOW_ONLY_READONLY_TOOLS": "true",
-        "K8S_CONTEXT": "orbstack",
+        "K8S_CONTEXT": "default",
         "K8S_NAMESPACE": "multi-agent",
         "MASK_SECRETS": "true"
       }
