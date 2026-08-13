@@ -199,6 +199,13 @@ mới rõ ràng.
   `required_evidence` + `MUTATE_TOOL_ALLOWLIST` (xoay vòng credential khi remediation SIEM/security
   — xem `src/workers/analyst_agentic_loop.py`). Không mở rộng quyền Secrets ngoài phạm vi tool này.
   Executor: NEVER cluster-admin.
+  ⚠️ **Nhãn RBAC lỗi thời, xác nhận 2026-08-13 (Đ62)**: `k8s/deployments/omni-fullstack-rbac.yaml`
+  tự gắn annotation `omni.io/env: lab` + `omni.io/note: "Lab-only. Do not bind in prod."` trên
+  chính `ClusterRole`/`ClusterRoleBinding omni-executor-mutate-lab` này — nhưng đây là MỘT manifest
+  DUY NHẤT (không có bản `.gcp.yaml` song song), đang bind thật trên cluster GCP mà đầu file này
+  gọi là Core/production. Nhãn không khớp môi trường thật, dễ gây hiểu lầm khi audit bảo mật (đọc
+  nhãn tưởng ClusterRole này chỉ tồn tại ở lab). Chưa xác định lại có nên đổi nhãn cho khớp thực tế
+  hay tách file GCP riêng — cần quyết định kiến trúc, chưa làm.
 - `OMNI_LLM_NUM_CTX` default 8192. Dùng `build_llm_options(ctx)` — không inline getattr.
 - Autonomy tier: `resolve_tier` ưu tiên Redis cache `omni:cfg:tier:{tenant}` > PG > env. Đổi env phải DEL cache.
 
@@ -287,6 +294,17 @@ OMNI_AUTO_ROLLBACK_ENABLED:   true
 OMNI_SIEM_SUGGEST_ONLY:       false
 OMNI_LAB_AUTO_EXECUTE_AGENTS: staging-sim_cust-app,staging-sim_cust-edge,staging-sim_cust-db
 ```
+
+⚠️ **Giá trị `OMNI_LAB_AUTO_EXECUTE_AGENTS` ở trên đã LỖI THỜI kể từ audit 2026-08-13 (Đ62/Đ64)** —
+`kubectl get deployment omni-fullstack -n multi-agent` xác nhận trực tiếp giá trị hiệu lực THẬT
+hiện nay là tenant `loyalty-uat`, không phải `staging-sim`:
+```
+OMNI_LAB_AUTO_EXECUTE_AGENTS: loyalty-uat_cust-app,loyalty-uat_cust-db,loyalty-uat_cust-edge
+```
+Không rõ đổi từ khi nào giữa 2026-08-03 và 2026-08-13 (không có entry handoff nào ghi lại việc đổi
+tenant lab) — cơ chế allowlist/blast-radius-control vẫn y nguyên như mô tả dưới đây, chỉ đổi TÊN
+tenant. Đoạn tường thuật sự cố 401 bên dưới (dòng ~315-335) giữ nguyên `staging-sim` vì đó là ghi
+chép lịch sử đúng tại thời điểm sự cố xảy ra (2026-08-03) — không sửa lại thành `loyalty-uat`.
 
 Đây là **chủ đích** (không phải drift kiểu 2026-06-11) — chỉ mở autonomous mutate cho đúng 3 VM
 lab qua allowlist `OMNI_LAB_AUTO_EXECUTE_AGENTS`, đúng cơ chế blast-radius control mà

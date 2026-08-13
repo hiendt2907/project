@@ -1,23 +1,40 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-13 (Đ63 — DONE: fix root cause `case_ledger.domain` luôn `unknown` (gap #2
-của Đ62). Full suite `pytest tests/ -q --ignore=tests/integration`: 7355 passed, 2 failed — cả 2
-fail xác nhận PRE-EXISTING/không liên quan (fail giống hệt trên `main` sạch trước khi sửa, verify
-bằng `git stash` + chạy lại 2 test đó riêng: `test_aoip_agent_updater.py::...tar_hash`,
-`test_remote_agent.py::...collects_lane7` — cả hai đụng tar-determinism/network probe thật của máy
-chạy test, không đụng gì tới case_ledger/advisory_ack/pipeline_stages). Đã commit+push cả hai
-remote. Đ62 — audit toàn dự án: 2 gap MỚI mức Cao (monitor namespace sập vì hết CPU node — CHƯA
-FIX; `case_ledger.domain` — ĐÃ FIX ở Đ63), 2 gap MỚI mức Trung (tenant auto-execute allowlist
-trong CLAUDE.md lỗi thời; nhãn RBAC "lab-only" bind nhầm trên cluster production — cả hai CHƯA
-FIX). Đ61 — fix Telegram callback (nút Đúng/Sai HITL) không được nhận: bật lại
+**Cập nhật:** 2026-08-13 (Đ64 — DONE: sửa CLAUDE.md cho gap #3/#4 của Đ62 (tenant allowlist lỗi
+thời + nhãn RBAC "lab-only" bind sai môi trường) — doc-only, không đụng cluster/code. Đ63 — DONE:
+fix root cause `case_ledger.domain` luôn `unknown` (gap #2 của Đ62). Full suite `pytest tests/ -q
+--ignore=tests/integration`: 7355 passed, 2 failed — cả 2 fail xác nhận PRE-EXISTING/không liên
+quan (fail giống hệt trên `main` sạch trước khi sửa, verify bằng `git stash` + chạy lại 2 test đó
+riêng: `test_aoip_agent_updater.py::...tar_hash`, `test_remote_agent.py::...collects_lane7` — cả
+hai đụng tar-determinism/network probe thật của máy chạy test, không đụng gì tới
+case_ledger/advisory_ack/pipeline_stages). Đã commit+push cả hai remote. Đ62 — audit toàn dự án: 2
+gap MỚI mức Cao (monitor namespace sập vì hết CPU node — CHƯA FIX; `case_ledger.domain` — ĐÃ FIX ở
+Đ63), 2 gap MỚI mức Trung (tenant auto-execute allowlist trong CLAUDE.md lỗi thời — ĐÃ FIX ở Đ64;
+nhãn RBAC "lab-only" bind nhầm trên cluster production — GHI CHÚ ở Đ64, chưa quyết định sửa nhãn
+hay tách manifest). Đ61 — fix Telegram callback (nút Đúng/Sai HITL) không được nhận: bật lại
 `OMNI_TELEGRAM_POLLING_ENABLED`, verify sống. Đ60 — re-index RAG sang NIM 1024-dim DONE. Đ59
 (rollback + chuyển NIM) DONE bên dưới.)
 
-### Đ63 — Fix `case_ledger.domain` luôn `unknown` (2026-08-13) — DONE
+### Đ64 — Sửa CLAUDE.md: tenant allowlist lỗi thời + nhãn RBAC sai môi trường (2026-08-13) — DONE
 
-**Next step:** quay lại các gap còn lại của Đ62 — #1 (monitor namespace sập, CPU node
-oversubscription, mức Cao) hoặc #3/#4 (sửa CLAUDE.md — tenant allowlist lỗi thời, nhãn RBAC
-lab-only bind sai môi trường, mức Trung). Cả ba đều CHƯA làm.
+Doc-only, không đụng cluster/code.
+
+- **Gap #3 (tenant allowlist)**: thêm cảnh báo ⚠️ ngay dưới block `OMNI_LAB_AUTO_EXECUTE_AGENTS`
+  cũ trong mục "Kill-switch" — giá trị hiệu lực thật (`kubectl get deployment omni-fullstack`,
+  xác nhận trực tiếp 2026-08-13) là tenant `loyalty-uat_*`, không phải `staging-sim_*` như CLAUDE.md
+  cũ ghi. KHÔNG sửa lại đoạn tường thuật sự cố 401 (~dòng 315-335 cũ) — đó là ghi chép lịch sử đúng
+  tại thời điểm sự cố xảy ra 2026-08-03, sửa lại thành `loyalty-uat` sẽ làm sai lịch sử.
+- **Gap #4 (nhãn RBAC)**: thêm ghi chú trong mục INVARIANTS, ngay dưới đoạn RBAC hiện có —
+  `k8s/deployments/omni-fullstack-rbac.yaml` (`ClusterRole`/`ClusterRoleBinding
+  omni-executor-mutate-lab`) tự gắn annotation `omni.io/note: "Lab-only. Do not bind in prod."`
+  nhưng đây là manifest DUY NHẤT, không có bản `.gcp.yaml` riêng — đang bind thật trên cluster GCP
+  production. Chưa quyết định hướng xử lý (đổi nhãn hay tách file) — để lại cho lần sau, chỉ ghi
+  nhận cho đúng.
+
+**Next step:** gap #1 của Đ62 còn lại — monitor namespace (grafana/loki/mimir/tempo) sập vì CPU
+node oversubscription, mức Cao, CHƯA FIX. Cần giải quyết tận gốc CPU-oversubscription (không chỉ
+scale-0-tạm như đã làm ở Đ61) — có thể cần giảm resource requests của một số Deployment hoặc tăng
+node.
 
 **Files đã sửa (đã commit):**
 - `src/pkg/observability/pipeline_stages.py` — thêm `get_trace_domain(redis, trace_id)`, đọc lại
