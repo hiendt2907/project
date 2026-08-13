@@ -1,7 +1,46 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-13 (Đ60 — re-index RAG sang NIM 1024-dim DONE, verify full luồng
-sự cố→chẩn đoán→RAG bằng test thật trên gateway. Đ59 (rollback + chuyển NIM) DONE bên dưới.)
+**Cập nhật:** 2026-08-13 (Đ61 — fix Telegram callback (nút Đúng/Sai HITL) không được nhận: bật lại
+`OMNI_TELEGRAM_POLLING_ENABLED`, verify sống. Đ60 — re-index RAG sang NIM 1024-dim DONE. Đ59
+(rollback + chuyển NIM) DONE bên dưới.)
+
+### Đ61 — Fix Telegram callback (nút Đúng/Sai HITL) không được nhận (2026-08-13)
+
+**Triệu chứng:** user bấm nút Đúng/Sai trên card Telegram nhưng hệ thống không ghi nhận/cập nhật
+quyết định — đây là đường agent xin quyền thực thi (HITL approve/reject).
+
+**Nguyên nhân gốc rễ (xác nhận, không suy đoán):** `telegram_loop` (`src/workers/omni_worker.py:1123`,
+vòng polling `getUpdates` nhận `callback_query`) không được đăng ký trong `_worker_background_tasks`
+vì `OMNI_TELEGRAM_POLLING_ENABLED=false` trong ConfigMap `omni-worker-config` (namespace
+`multi-agent`, file `k8s/deployments/omni-worker-configmap.gcp.yaml`). **Ghi chú CLAUDE.md cũ**
+("Deployment env override thành true") **đã SAI/lỗi thời** — kiểm tra trực tiếp Deployment
+`omni-fullstack` không có override nào, giá trị hiệu lực thật là `false` từ ConfigMap — cần sửa lại
+đoạn đó trong CLAUDE.md. Bằng chứng thực nghiệm: bảng `omni_admin.hitl_decision` có 4 dòng kẹt
+`PENDING` từ 2026-08-10/11, `actor=NULL`, chưa từng update. Code xử lý callback
+(`src/workers/hitl_telegram.py::handle_hitl_callback`) hoàn toàn đúng logic (ghi CRAT, dispatch
+Kafka, `record_hitl_decision`, xoá Redis pending, `answer_callback_query`), và `callback_data`
+(`hitl:{decision}:{pending_id}`) khớp đúng giữa nơi tạo card và nơi parse — chỉ đứt ở chỗ vòng lặp
+cha chưa từng chạy.
+
+**Fix:** đổi `OMNI_TELEGRAM_POLLING_ENABLED` → `"true"` trong
+`k8s/deployments/omni-worker-configmap.gcp.yaml`, commit+push cả `gitea` và `origin`
+(`3709fa2`). Gotcha gặp phải: `kubectl apply` tay bị ArgoCD self-heal ghi đè lại (Application
+`omni-core`, source `k8s/gitops` bao gồm đúng file này trong `directory.include` glob) — phải
+push git trước rồi mới patch-sync ArgoCD thì giá trị mới mới giữ được. Rollout restart
+`omni-fullstack` 2 lần bị `FailedScheduling: Insufficient cpu` (vấn đề CPU-oversubscription đã
+biết ở Đ47/Đ59-CPU) — xử lý tạm bằng `kubectl scale grafana,loki,mimir,tempo -n monitor
+--replicas=0` trong lúc pod mới lên lịch, rồi scale lại `1` ngay sau. **Verify sống:** env pod
+`OMNI_TELEGRAM_POLLING_ENABLED=true`; gọi `getWebhookInfo` qua Bot API xác nhận `url=""` (đúng cơ
+chế polling, không phải webhook) và `pending_update_count=0` — hàng đợi rỗng vì chính pod đang chủ
+động tiêu thụ qua `getUpdates`, bằng chứng gián tiếp nhưng chắc chắn rằng loop đang chạy (nếu không
+có ai poll, hàng đợi sẽ tích tụ).
+
+**Chưa làm:** chưa có bằng chứng bấm nút thật (cần user tự bấm 1 nút trên Telegram để confirm
+`hitl_decision` chuyển từ PENDING sang APPROVED/REJECTED thật) — nên coi đây là fix đã verify ở
+tầng cơ chế (polling đang chạy), chưa verify ở tầng "nút bấm → DB update" đầu-cuối bằng người dùng
+thật. 4 dòng `hitl_decision` PENDING cũ (2026-08-10/11) coi như đã hết hạn (Redis pending TTL
+7200s từ lâu) — nếu còn card cũ trên Telegram, bấm nút sẽ không map lại được `action_body`, cần
+escalate lại thủ công nếu vẫn cần.
 
 ### Đ60 — Re-index RAG (768→1024) + verify full luồng chẩn đoán qua gateway thật (2026-08-13)
 

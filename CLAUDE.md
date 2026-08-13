@@ -299,8 +299,11 @@ cache/PG theo đúng invariant `resolve_tier`. Precedence: ConfigMap (default an
 `env:` override (nay CÓ tồn tại, có chủ đích, scoped) < Redis cache (nguồn hiệu lực thật cho tier
 riêng).
 
-`OMNI_TELEGRAM_POLLING_ENABLED`: ConfigMap `"false"` nhưng Deployment env override `"true"` —
-drift đã biết, carry sang từ Đ7/Đ8, vẫn chưa xử lý (không liên quan tới lô kill-switch trên).
+`OMNI_TELEGRAM_POLLING_ENABLED`: claim cũ ("ConfigMap false nhưng Deployment env override true")
+đã SAI, kiểm tra lại trực tiếp Deployment không có override nào — **ĐÃ FIX 2026-08-13 (Đ61)**: giá
+trị ConfigMap `omni-worker-config` (GCP) nay là `"true"` thật (trước đó là `"false"`, khiến
+`telegram_loop` không đăng ký ⇒ nút Đúng/Sai HITL trên Telegram không được nhận — xem Đ61 trong
+`docs/handoffs/CURRENT_SESSION.md`).
 
 **Thêm 1 biến sống chưa từng ghi ở đây trước audit 2026-08-03**: `OMNI_EXECUTOR_FORCE_NSENTER=true`
 trên Deployment `omni-fullstack`. Đây là một lớp gate ĐỘC LẬP với kill-switch/allowlist ở trên —
