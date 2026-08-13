@@ -185,3 +185,26 @@ async def mark_stage(
             status,
             exc,
         )
+
+
+async def get_trace_domain(redis: Any, trace_id: str) -> str:
+    """Đọc lại domain đã ghi qua ``mark_stage(..., domain=...)`` cho trace này.
+
+    Nguồn thật của "domain kỹ thuật" (một trong 9 domain canonical) là ``__meta__``
+    của trace, không phải ``proof_lane`` (trục B: resource/state/app_log) hay
+    ``envelope.lane`` (trục A, đã gỡ khỏi tầng trace). Dùng ở bất kỳ chỗ nào cần ghi
+    domain xuống nơi khác (VD ``case_ledger.domain``) muộn hơn EVIDENCE stage, để
+    khỏi lẫn lại đúng bug mà `mark_stage()` docstring đã cảnh báo. Best-effort: lỗi
+    Redis hoặc trace chưa có meta → chuỗi rỗng, không ném exception.
+    """
+    if not trace_id or len(trace_id) > 128:
+        return ""
+    try:
+        raw_meta = await redis.hget(f"{_KEY_PREFIX}{trace_id}", "__meta__")
+        if not raw_meta:
+            return ""
+        meta = json.loads(raw_meta)
+        return str(meta.get("domain") or "")
+    except Exception as exc:  # noqa: BLE001 — đọc domain best-effort
+        log.debug("pipeline_stages: get_trace_domain redis error trace=%s err=%s", trace_id, exc)
+        return ""

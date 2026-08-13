@@ -65,14 +65,14 @@ class FakeConn:
             return hits[0] if hits else None
         if sql.startswith("INSERT INTO omni_admin.case_ledger"):
             (case_id, tenant_id, pattern_key, lane, alertname, posture,
-             occurrence_no, prior_case_id, crat_ref) = args
+             occurrence_no, prior_case_id, crat_ref, domain) = args
             if case_id in self.rows:  # ON CONFLICT DO NOTHING
                 return None
             self.rows[case_id] = {
                 "case_id": case_id, "tenant_id": tenant_id, "pattern_key": pattern_key,
                 "lane": lane, "alertname": alertname, "posture": posture,
                 "occurrence_no": occurrence_no, "prior_case_id": prior_case_id,
-                "crat_ref": crat_ref, "opened_at": datetime.now(timezone.utc),
+                "crat_ref": crat_ref, "domain": domain, "opened_at": datetime.now(timezone.utc),
                 "diagnosis_verdict": None, "remedy_verdict": None,
                 "diagnosis_source": None, "diagnosis_actor": None,
                 "remedy_source": None, "remedy_actor": None, "recurred": False,

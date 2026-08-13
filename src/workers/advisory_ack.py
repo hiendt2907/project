@@ -14,6 +14,7 @@ import json
 import logging
 from typing import Any
 
+from pkg.observability.pipeline_stages import get_trace_domain
 from services.audit_ledger.chain_writer import write_audit_block
 from services.audit_ledger.crat_event_types import CRAT_EVENT_ADVISORY_DECISION
 from services.audit_ledger.signer import AuditLedgerError
@@ -152,6 +153,10 @@ async def open_advisory_case(
     pattern_key = advisory_pattern_key({"lane": lane, "alertname": alertname})
     if not pattern_key:
         return {}
+    # `lane` ở tham số hàm này LÀ proof_lane (trục B), chỉ dùng để gom pattern_key —
+    # domain kỹ thuật thật (một trong 9 domain canonical) phải đọc riêng từ trace
+    # meta, không suy từ lane. Xem docstring `CaseLedgerStore.open_case()`.
+    domain = await get_trace_domain(getattr(ctx, "redis", None), trace_id)
     try:
         prior = await store.last_case_for_pattern(tenant_id=tenant_id, pattern_key=pattern_key)
         row = await store.open_case(
@@ -161,6 +166,7 @@ async def open_advisory_case(
             posture="DIAGNOSED",
             lane=lane,
             alertname=alertname,
+            domain=domain,
         )
     except Exception as exc:  # noqa: BLE001 — sổ ca hỏng không được chặn đường phát advisory
         logger.warning("advisory_ack: open_case fail trace=%s err=%s", trace_id, exc)

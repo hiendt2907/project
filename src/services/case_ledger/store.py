@@ -41,6 +41,7 @@ class CaseLedgerStore:
         lane: str = "",
         alertname: str = "",
         crat_ref: str | None = None,
+        domain: str = "",
     ) -> dict[str, Any]:
         """Mở ca NGAY LÚC Omni phát biểu — trước khi biết đúng sai.
 
@@ -52,6 +53,16 @@ class CaseLedgerStore:
 
         ``occurrence_no``/``prior_case_id`` tính trong cùng câu lệnh từ lịch sử
         cùng ``pattern_key`` — trí nhớ không phụ thuộc caller nhớ truyền vào.
+
+        ``lane`` ở đây LÀ ``proof_lane`` (trục B: resource/state/app_log) — dùng để
+        gom nhóm ``pattern_key`` cùng ``advisory_pattern_key()``, KHÔNG phải domain
+        kỹ thuật. ``domain`` là tham số riêng, độc lập, lấy từ trace meta
+        (``get_trace_domain()``) — ghi thẳng vào cột ``domain`` ở INSERT thay vì để
+        migration 0014 suy nó từ ``lane`` (sai, vì lane ở đây không phải trục A mà
+        hàm ``lane_to_domain()`` mong đợi — mọi giá trị proof_lane đều rơi vào
+        nhánh ELSE → 'unknown', khiến cột domain vô dụng cho MỌI ca mở qua đường
+        này). Không đụng ``lane``/``pattern_key`` — đó vẫn là cơ chế gom nhóm hoạt
+        động đúng theo thiết kế ban đầu.
         """
         if posture not in VALID_POSTURES:
             raise ValueError(f"posture khong hop le: {posture!r}")
@@ -86,12 +97,12 @@ class CaseLedgerStore:
                 row = await conn.fetchrow(
                     "INSERT INTO omni_admin.case_ledger "
                     "(case_id, tenant_id, pattern_key, lane, alertname, posture, "
-                    " occurrence_no, prior_case_id, crat_ref) "
-                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) "
+                    " occurrence_no, prior_case_id, crat_ref, domain) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) "
                     "ON CONFLICT (case_id) DO NOTHING "
                     "RETURNING *",
                     case_id, tenant_id, pattern_key, lane, alertname, posture,
-                    occurrence_no, prior_case_id, crat_ref,
+                    occurrence_no, prior_case_id, crat_ref, domain,
                 )
                 if row is None:  # đã tồn tại — trả hàng cũ, KHÔNG sửa
                     row = await conn.fetchrow(

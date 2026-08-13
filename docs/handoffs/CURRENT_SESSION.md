@@ -1,11 +1,45 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-13 (Đ62 — audit toàn dự án: 2 gap MỚI mức Cao (monitor namespace sập vì hết
-CPU node; `case_ledger.domain` 100% `unknown` do lệch trục lane), 2 gap MỚI mức Trung (tenant
-auto-execute allowlist trong CLAUDE.md lỗi thời; nhãn RBAC "lab-only" bind nhầm trên cluster
-production) — CHƯA FIX, chỉ mới ghi nhận. Đ61 — fix Telegram callback (nút Đúng/Sai HITL) không
-được nhận: bật lại `OMNI_TELEGRAM_POLLING_ENABLED`, verify sống. Đ60 — re-index RAG sang NIM
-1024-dim DONE. Đ59 (rollback + chuyển NIM) DONE bên dưới.)
+**Cập nhật:** 2026-08-13 (Đ63 — DONE: fix root cause `case_ledger.domain` luôn `unknown` (gap #2
+của Đ62). Full suite `pytest tests/ -q --ignore=tests/integration`: 7355 passed, 2 failed — cả 2
+fail xác nhận PRE-EXISTING/không liên quan (fail giống hệt trên `main` sạch trước khi sửa, verify
+bằng `git stash` + chạy lại 2 test đó riêng: `test_aoip_agent_updater.py::...tar_hash`,
+`test_remote_agent.py::...collects_lane7` — cả hai đụng tar-determinism/network probe thật của máy
+chạy test, không đụng gì tới case_ledger/advisory_ack/pipeline_stages). Đã commit+push cả hai
+remote. Đ62 — audit toàn dự án: 2 gap MỚI mức Cao (monitor namespace sập vì hết CPU node — CHƯA
+FIX; `case_ledger.domain` — ĐÃ FIX ở Đ63), 2 gap MỚI mức Trung (tenant auto-execute allowlist
+trong CLAUDE.md lỗi thời; nhãn RBAC "lab-only" bind nhầm trên cluster production — cả hai CHƯA
+FIX). Đ61 — fix Telegram callback (nút Đúng/Sai HITL) không được nhận: bật lại
+`OMNI_TELEGRAM_POLLING_ENABLED`, verify sống. Đ60 — re-index RAG sang NIM 1024-dim DONE. Đ59
+(rollback + chuyển NIM) DONE bên dưới.)
+
+### Đ63 — Fix `case_ledger.domain` luôn `unknown` (2026-08-13) — DONE
+
+**Next step:** quay lại các gap còn lại của Đ62 — #1 (monitor namespace sập, CPU node
+oversubscription, mức Cao) hoặc #3/#4 (sửa CLAUDE.md — tenant allowlist lỗi thời, nhãn RBAC
+lab-only bind sai môi trường, mức Trung). Cả ba đều CHƯA làm.
+
+**Files đã sửa (đã commit):**
+- `src/pkg/observability/pipeline_stages.py` — thêm `get_trace_domain(redis, trace_id)`, đọc lại
+  domain đã ghi qua `mark_stage(..., domain=...)` từ `omni:trace:stages:{trace}.__meta__`.
+- `src/services/case_ledger/store.py` — `CaseLedgerStore.open_case()` thêm tham số `domain: str =
+  ""`, ghi thẳng vào cột `domain` lúc INSERT (trước đây cột này KHÔNG có trong câu INSERT, chỉ
+  được migration 0014 backfill một lần bằng `lane_to_domain(lane)` — sai vì `lane` truyền vào thực
+  chất là `proof_lane` trục B, không phải lane trục A mà hàm đó mong đợi, nên luôn ra `unknown`).
+- `src/workers/advisory_ack.py` — `open_advisory_case()` gọi `get_trace_domain(ctx.redis,
+  trace_id)` lấy domain thật, truyền vào `store.open_case(..., domain=domain)`. KHÔNG đụng
+  `lane`/`pattern_key` — cơ chế gom nhóm theo proof_lane vẫn giữ nguyên, đúng thiết kế ban đầu của
+  `advisory_pattern_key()`.
+- 4 file test có fake DB tự viết tay (`tests/test_case_ledger_store.py`,
+  `tests/test_case_ledger_hitl_wiring.py`, `tests/test_diag_emit_case_ledger_wiring.py`,
+  `tests/test_advisory_case_verdict.py`) — cập nhật fake `INSERT INTO omni_admin.case_ledger` để
+  unpack đúng 10 cột (trước đó 9) và lưu `domain` vào dict giả lập hàng. 119 test liên quan xanh.
+
+**Quyết định có chủ đích, không backfill 305 dòng cũ:** dữ liệu `case_ledger.domain='unknown'`
+hiện có (305 dòng tính đến lúc audit Đ62, có thể tăng) giữ nguyên — trace meta có TTL 3600s nên
+domain thật của các ca cũ đã mất, không có cách nào phục hồi đúng. Đoán bừa rồi ghi đè còn tệ hơn
+để `unknown` — đúng tinh thần mà chính migration `0014_lane_to_domain.sql` đã nêu. Chỉ case MỞ MỚI
+từ giờ mới có domain đúng.
 
 ### Đ62 — Audit toàn dự án: chưa nối vào / đang lủng (2026-08-13)
 
