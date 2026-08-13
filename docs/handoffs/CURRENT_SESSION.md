@@ -1,8 +1,62 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-13 (Đ61 — fix Telegram callback (nút Đúng/Sai HITL) không được nhận: bật lại
-`OMNI_TELEGRAM_POLLING_ENABLED`, verify sống. Đ60 — re-index RAG sang NIM 1024-dim DONE. Đ59
-(rollback + chuyển NIM) DONE bên dưới.)
+**Cập nhật:** 2026-08-13 (Đ62 — audit toàn dự án: 2 gap MỚI mức Cao (monitor namespace sập vì hết
+CPU node; `case_ledger.domain` 100% `unknown` do lệch trục lane), 2 gap MỚI mức Trung (tenant
+auto-execute allowlist trong CLAUDE.md lỗi thời; nhãn RBAC "lab-only" bind nhầm trên cluster
+production) — CHƯA FIX, chỉ mới ghi nhận. Đ61 — fix Telegram callback (nút Đúng/Sai HITL) không
+được nhận: bật lại `OMNI_TELEGRAM_POLLING_ENABLED`, verify sống. Đ60 — re-index RAG sang NIM
+1024-dim DONE. Đ59 (rollback + chuyển NIM) DONE bên dưới.)
+
+### Đ62 — Audit toàn dự án: chưa nối vào / đang lủng (2026-08-13)
+
+Audit chủ động (subagent, đọc trực tiếp cluster qua `kubectl` + query Postgres + đọc code, không
+suy đoán từ tài liệu cũ). Toàn bộ dưới đây là **phát hiện, chưa fix** — ghi lại để làm việc tiếp.
+
+**1. [Cao] Namespace `monitor` sập hoàn toàn — hết CPU node.** `kubectl get pods -n monitor`:
+grafana/loki/mimir/tempo đều `0/1 Pending`, `FailedScheduling: Insufficient cpu`.
+`omni-k3s-vm` CPU requests 3935m/4000m (98%). prometheus/alertmanager/kube-state-metrics/
+node-exporter/promtail vẫn Running. Không có giám sát observability (dashboard/log/trace) cho
+production ngay lúc audit. Đây là hệ quả tiếp diễn của CPU-oversubscription đã biết ở Đ47/Đ59-CPU
+(từng phải scale 0 tạm các pod này để rollout `omni-fullstack` lên lịch được ở Đ61) — nhưng lần
+này chúng đứng yên ở `Pending`, không tự phục hồi.
+
+**2. [Cao] `omni_admin.case_ledger.domain` = `'unknown'` cho 100% (305/305) dòng.** Root cause:
+`telegram_advisory_emitter.py:451` / `remote_diagnosis_emitter.py:383` truyền `lane_label`/
+`session["lane"]` (thực chất là **proof_lane trục B**: `resource/state/app_log`, xem cảnh báo
+"lane là BA trục" trong `pkg/domain/taxonomy.py`) vào `open_advisory_case(lane=...)` →
+`src/services/case_ledger/store.py:34` ghi thẳng vào cột `lane`. Migration `0014_lane_to_domain.sql`
+hàm `lane_to_domain()` chỉ nhận biết lane **trục A** (`sys_resource/app_http/siem_security/
+sys_hard_fail`); giá trị thật trong cột (303 rỗng, 2 `state`) không khớp case nào → luôn rơi vào
+`ELSE→'unknown'`. Hệ quả: mọi báo cáo/competency phân loại theo domain trong case ledger
+(`pattern_key_domain`, `/advocacy`) vô nghĩa từ trước tới giờ, không ai phát hiện vì không có lỗi
+runtime rõ ràng.
+
+**3. [Trung] CLAUDE.md ghi sai tenant trong `OMNI_LAB_AUTO_EXECUTE_AGENTS`.** Deployment
+`omni-fullstack` thật đang chạy `loyalty-uat_cust-app,loyalty-uat_cust-db,loyalty-uat_cust-edge`;
+CLAUDE.md (mục Kill-switch) vẫn ghi `staging-sim_cust-app,staging-sim_cust-edge,staging-sim_cust-db`
+— lỗi thời, cần sửa CLAUDE.md (không phải sửa cluster).
+
+**4. [Trung] ClusterRole `omni-executor-mutate-lab` tự gắn nhãn "lab-only" nhưng bind trên cluster
+production.** `kubectl get clusterrole omni-executor-mutate-lab -o yaml`: annotation
+`omni.io/note: Lab-only. Do not bind in prod.`, label `omni.io/env: lab`. Nhưng
+`ClusterRoleBinding omni-fullstack-executor-mutate-lab` đang bind SA `omni-fullstack` trên chính
+cluster GCP mà CLAUDE.md gọi là Core/production. Nhãn RBAC gây hiểu lầm khi audit bảo mật — cần
+hoặc đổi nhãn cho khớp thực tế, hoặc xác nhận lại phạm vi dùng thật của ClusterRole này.
+
+**5. [Đã biết, cập nhật]** SIEM: `omni-siem-chains` vẫn 0 offset, `playbook` vẫn 0 dòng — đúng như
+CLAUDE.md đã ghi. Nhưng câu "case_ledger chưa mở ca cho domain này" trong CLAUDE.md (mục domain
+`security`) đã lỗi thời — `case_ledger` đã có 305 dòng, chỉ là cột `domain` bị hỏng (xem #2), không
+phải chưa mở ca.
+
+**Thấp, chỉ xác nhận lại, không cần hành động ngay:** `ui/` root cũ (~25 route Next) vẫn còn trong
+source nhưng không CI/Makefile nào chạm tới — dead code, không gây drift runtime. Kafka 12/14 topic
+có consumer sống, 2 topic còn lại (audit log) ghi-only theo đúng thiết kế. Topology Deployment khớp
+hoàn toàn CLAUDE.md, không Deployment lạ/CrashLoop.
+
+**Next step đề xuất (ưu tiên theo thứ tự):** #1 (khôi phục observability — cần giải CPU
+oversubscription tận gốc, không chỉ scale-0-tạm) → #2 (sửa `open_advisory_case` dùng đúng
+`detect_domain()`/domain thật thay vì `proof_lane`, cân nhắc backfill 305 dòng cũ hoặc chấp nhận
+mất dữ liệu lịch sử) → #3/#4 (sửa tài liệu, không cần thay đổi hạ tầng).
 
 ### Đ61 — Fix Telegram callback (nút Đúng/Sai HITL) không được nhận (2026-08-13)
 
