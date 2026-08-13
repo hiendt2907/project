@@ -55,7 +55,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: omni-fullstack
-          image: 10.43.239.205/library/multi-agent-system:bb33dd1
+          image: 10.43.239.205/library/multi-agent-system:c63fa16
           imagePullPolicy: Always
           ports:
             - name: metrics
