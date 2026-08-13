@@ -1,9 +1,70 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-13 (Đ59 — user đổi ý, KHÔNG dừng dự án nữa. Đã: (1) rollback toàn bộ
-`omni-k3s-vm` từ backup Đ57 (namespace xoá ở Đ58 đã quay lại nguyên trạng), (2) chuyển LLM
-backend Omni từ Ollama/MacBook (đang tắt) sang NVIDIA NIM. Đ56/Đ57/Đ58 giữ nguyên bên dưới làm
-lịch sử.)
+**Cập nhật:** 2026-08-13 (Đ60 — re-index RAG sang NIM 1024-dim DONE, verify full luồng
+sự cố→chẩn đoán→RAG bằng test thật trên gateway. Đ59 (rollback + chuyển NIM) DONE bên dưới.)
+
+### Đ60 — Re-index RAG (768→1024) + verify full luồng chẩn đoán qua gateway thật (2026-08-13)
+
+**Re-index RAG: DONE, không mất dữ liệu.** 5 collection có dữ liệu thật đã re-embed qua NIM
+(`nvidia/nv-embedqa-e5-v5`) và tạo lại HNSW index đúng DIM 1024: `diagnostic_history` (1094/1094),
+`infra_topology` (205/205), `itops_error_ledger` (4/4), `action_experience` (15/15),
+`action_experience:loyalty-uat` (5/5) — tổng 1323 doc, 0 thất bại. Script:
+`/tmp/reindex_nim.py` + `/tmp/fix_action_experience.py` chạy trực tiếp trong pod
+`omni-fullstack` (không commit vào repo — one-off, xoá theo pod restart tự nhiên). Lưu ý phát hiện
+giữa chừng: 2 collection `action_experience*` có `text_content` rỗng (chỉ " ") cho các entry
+`memory_kind=playbook` — nội dung thật nằm trong `omni_payload.symptom_text`/`lesson`, phải đọc
+fallback từ đó mới embed đúng (đã xử lý, không phải bug ở NIM/re-index, là cách ghi dữ liệu cũ).
+10 collection còn lại trong `FT._LIST` đều `num_docs=0` (chưa từng có dữ liệu, kể cả
+`itops_sop_ledger` mà tài liệu cũ nhắc "1019 SOP entries" — con số đó là của môi trường/thời điểm
+khác, KHÔNG áp dụng cho cluster GCP hiện tại, đã xác nhận trực tiếp bằng `FT.INFO`).
+
+**Verify full luồng thật qua `/simulate/scenario/service` (gateway thật, Kafka thật, KHÔNG mock)**
+— vì `orb` (OrbStack CLI) không có trên VM GCP này nên không tự chạy được `scripts/diag-test-vm.sh`
+(cần VM lab trên MacBook user); dùng route `/simulate/scenario/{scenario}` thay thế — chính route
+này CŨNG là production code thật (đẩy đúng Kafka topic `omni-diagnostic-evidence`, đúng envelope
+`remote_agent`), không phải mock riêng cho test.
+
+- **Lần 1 (sự cố mới, agent_id=e2e-test-cust-edge, tenant=e2e-test)**: trace `sim-service-
+  fb1cbed1cf03`. Pipeline thật: `INGEST→EVIDENCE→RAG(skip, no_hit)→LLM(multi-turn diagnosis loop,
+  2 lượt, cả 2 lượt gọi NIM thật outcome=ok)→SCHEMA(session stored)→CRAT(audit block written)→
+  DISPATCH(Telegram)`. Xác nhận LLM ReAct loop chạy thật qua NIM, không phải qua Ollama cũ.
+- **Ghi bài học (`action_experience`)**: xác nhận cơ chế thật `_upsert_action_experience()`
+  (`workers/remote_command_outcome_loop.py:130`) chỉ chạy sau khi có OUTCOME THẬT từ agent qua
+  lệnh dispatch — agent giả (`e2e-test-cust-edge`) không tồn tại nên không có outcome thật để ghi
+  tự động. Để verify cơ chế RAG-recall mà không cần VM thật, đã **seed tay** 1 bản ghi đúng schema
+  thật (`memory_kind=playbook`, `exec_outcome=success`, `auto_execute=true`,
+  `tool=systemd.restart_unit`) + 1 discovery snapshot giả (services=[nginx]) cho agent test — script
+  `/tmp/seed_known_fix.py`, đã xoá dọn sau khi test xong (tenant `e2e-test` cô lập, không đụng dữ
+  liệu tenant thật).
+- **Lần 2 (cùng sự cố, cùng agent)**: trace `sim-service-bd5fea65adb0`. **RAG stage: `ok
+  recall=0.752 route=KNOWN_WITH_FIX`** — xác nhận re-index hoạt động đúng, nhận ra đây là sự cố đã
+  biết. Nhưng **LLM stage vẫn chạy đầy đủ (không skip)** — điều tra trực tiếp bằng cách gọi thẳng
+  `pkg.reasoning.known_fix_resolver.find_known_fix_candidate()` với đúng tham số production dùng:
+  **tìm thấy candidate đúng, score=0.78, qua hết 2 lớp kiểm (placeholder + host_scope)** — nghĩa là
+  tầng RAG-match của cơ chế reflex hoạt động đúng 100%. Lý do KHÔNG auto-dispatch trong lần chạy
+  live: `auto_recovery_bridge.dispatch_if_eligible()` chặn ở allowlist
+  `OMNI_LAB_AUTO_EXECUTE_AGENTS` (chỉ đúng 3 agent thật:
+  `loyalty-uat_cust-app/cust-db/cust-edge`) — agent giả `e2e-test-cust-edge` không nằm trong danh
+  sách nên bị từ chối dispatch, **ĐÚNG THIẾT KẾ** (chặn blast-radius cho agent không xác thực),
+  không phải bug. Hệ quả: pipeline fallback về LLM đầy đủ thay vì auto-execute mù — hành vi AN
+  TOÀN, đúng ý đồ kiến trúc.
+
+**Kết luận verify:** cả 2 nửa của luồng "sự cố→chẩn đoán→RAG→tái dùng" đã CHỨNG MINH hoạt động
+đúng bằng dữ liệu thật (không đoán): (1) LLM ReAct loop qua NIM thật, (2) RAG tìm đúng bài học đã
+biết với điểm số hợp lý sau re-index. Phần DUY NHẤT chưa demo được end-to-end là bước "auto-execute
+mà không hỏi LLM" cho một sự cố LẶP LẠI trên **agent thật** (không phải agent giả) — cần 1 trong 3
+VM lab thật (`orb -m cust-edge/cust-app/cust-db` trên MacBook user, hoặc agent GCP tương ứng) để
+demo trọn vẹn, vì allowlist cố ý chặn agent không xác thực — đây là rào an toàn, không sửa.
+
+### Next step (Đ60)
+
+1. Nếu muốn demo trọn vẹn bước auto-execute cuối: chạy `bash scripts/diag-test-vm.sh cust-edge
+   nginx 90` (hoặc target tương đương) HAI LẦN trên máy có `orb` (MacBook user) — lần 2 sẽ tự
+   động qua reflex nếu agent đó có mặt trong `OMNI_LAB_AUTO_EXECUTE_AGENTS` (đã xác nhận cả 3 agent
+   `loyalty-uat_cust-*` đều có).
+2. Các next step Đ59 (resize VM cho CPU, GitHub) — xem mục Đ59 gốc bên dưới, không đổi.
+
+---
 
 ### Đ59 — Rollback k3s từ backup + chuyển LLM sang NVIDIA NIM (2026-08-13)
 
