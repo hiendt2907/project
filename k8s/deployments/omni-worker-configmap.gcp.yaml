@@ -156,7 +156,11 @@ data:
   VLLM_MODEL: "meta/llama-3.1-8b-instruct"
   OMNI_LLM_NUM_PARALLEL: "1"
   OMNI_TELEGRAM_ENABLED: "true"
-  OMNI_TELEGRAM_POLLING_ENABLED: "false"
+  # Đ61 (2026-08-13): tắt="false" khiến telegram_loop (getUpdates, nhận
+  # callback_query nút Đúng/Sai HITL) không bao giờ được đăng ký trong
+  # _worker_background_tasks — xác nhận bằng bảng omni_admin.hitl_decision có
+  # nhiều dòng kẹt PENDING vĩnh viễn, không phải bug logic ở handle_hitl_callback.
+  OMNI_TELEGRAM_POLLING_ENABLED: "true"
   OMNI_CHAT_MODEL: "meta/llama-3.1-8b-instruct"
   OMNI_MODEL_REASONING_ENGINE: "meta/llama-3.1-70b-instruct"
   OMNI_MODEL_HEAVY_LIFTER: "meta/llama-3.1-70b-instruct"
