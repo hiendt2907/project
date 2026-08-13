@@ -80,7 +80,7 @@ pipeline {
           docker run --rm -v "$(pwd):/repo" -v "$(pwd)/.pip-cache:/root/.cache/pip" -w /repo python:3.11-slim bash -c "
             apt-get update -qq && apt-get install -y -qq procps >/dev/null &&
             useradd -m ciuser &&
-            chmod -R a+r /root/.cache/pip &&
+            chmod -R a+rwx /root/.cache/pip &&
             chown -R ciuser:ciuser /repo/dist &&
             pip install -q -r requirements.txt -r requirements-gateway.txt &&
             su ciuser -c 'PYTHONPATH=src python -m pytest tests/ --ignore=tests/integration --ignore=tests/real_services --ignore=tests/test_track2a_k8s_sdk.py --ignore=tests/test_track2b_diagnostic_proactive.py --deselect tests/test_feedback_full_agentic_planner.py::test_emit_agentic_mutate_if_any_passes_attempt_count_to_emit -q'
