@@ -128,21 +128,40 @@ cho `git@github.com` (`~/.ssh/` chỉ có `authorized_keys`, không có identity
 gap môi trường có sẵn, không phải lỗi phát sinh trong phiên. Cần user tự `git push origin main`
 từ máy có key, hoặc cấp key/token cho VM này nếu muốn tự động hoá đủ 2 remote từ đây.
 
+**KẾT QUẢ CUỐI (build 69, SUCCESS):** verify sống bằng `kubectl exec omni-fullstack-668fb764bd-kwdqt
+... cat /app/src/llm/factory.py` — code NIM (`provider`/`api_key`/rate-limiter) có mặt thật trong
+image `bae5c68` đang chạy; log pod có dòng `event=llm_call ... outcome=ok ... endpoint=/v1/chat/
+completions` (không còn 401). `omni-fullstack` 2/2 Running, `omni-gateway` rollout Healthy 1 pod
+(canary 5/5 bước, đã `promote` tay để không kẹt ở step pause). ArgoCD app `omni-core`: Synced/
+Healthy.
+
+**Nợ lại chưa xử lý, cố ý không đụng thêm để tránh vòng lặp workaround vô hạn:** phát hiện quan
+trọng cuối phiên — **istio-proxy sidecar (native sidecar initContainer, KHÔNG nằm trong
+`spec.containers` nên rất dễ bị bỏ sót khi tự tính tổng CPU) cộng dồn ~1300m CPU request trên
+toàn cluster** (13 pod có sidecar × 100m) — đây là phần CHÍNH giải thích vì sao node 4-core cứ
+liên tục báo `Insufficient cpu` mỗi khi có pod mới cần schedule suốt phiên này (Jenkins pod, rồi
+`omni-fullstack` rollout, rồi `monitor` stack sau khi scale lại) dù `kubectl top nodes` luôn cho
+thấy usage thực tế chỉ ~25%. Đã tạm thời scale `monitor` (prometheus/grafana/tempo/mimir/loki)
+xuống 0 rồi lại 1 hai lần trong phiên để nhường chỗ — sau lần cuối, `prometheus` + toàn bộ
+DaemonSet nhỏ (`alertmanager`/`node-exporter`/`promtail`/`kube-state-metrics`) đã Running, nhưng
+**`grafana`/`loki`/`mimir`/`tempo` vẫn đang Pending** (thiếu ~355m so với headroom thật). KHÔNG ép
+buộc schedule thêm bằng cách hạ istiod/omni-fullstack/jenkins — 3 cái đó cần chạy thường trực.
+**Khuyến nghị thật cho user**: tăng CPU của `omni-k3s-vm` (GCP instance resize) là fix đúng gốc —
+việc scale monitor lên/xuống tay chỉ là băng bó tạm thời, sẽ tái diễn ở MỌI lần deploy/restart pod
+sau này trên node 4-core hiện tại.
+
 ### Next step (Đ59)
 
-1. Xác nhận build 69 (`omni-gcp-deploy`, đang chạy lúc ghi dòng này) PASS hết — đặc biệt xác nhận
-   bằng `kubectl exec omni-fullstack ... cat /app/src/llm/factory.py` rằng code NIM THẬT SỰ có
-   trong image lần này (đừng chỉ tin tag khớp, xem mục 3 ở trên), và log pod không còn dòng
-   `AuthenticationError...401`.
-2. Nếu build 69 lại timeout ở bước "Wait for ArgoCD rollout" vì CPU (xem mục 2 ở trên): áp dụng
-   lại workaround scale `monitor` namespace xuống 0 tạm thời, xoá pod Pending, chờ schedule, scale
-   `monitor` lại 1. Cân nhắc đề xuất user tăng CPU VM nếu việc này cứ lặp lại mỗi lần deploy.
-3. Hỏi user có muốn tiến hành FT.DROPINDEX + re-embed RAG ngay (mất ~30 phút+, tốn budget rate
+1. **Ưu tiên cao nhất còn lại**: `grafana`/`loki`/`mimir`/`tempo` (namespace `monitor`) đang
+   Pending vì thiếu CPU — hỏi user có muốn resize VM GCP không (fix gốc), hoặc nếu chưa, có thể
+   tạm chấp nhận monitor thiếu 4 component này (prometheus/alertmanager vẫn sống, core dashboard/
+   log/trace tạm mất) cho tới khi resize.
+2. Hỏi user có muốn tiến hành FT.DROPINDEX + re-embed RAG ngay (mất ~30 phút+, tốn budget rate
    limit NIM free-tier) hay để RAG tạm "lỗi to nhưng an toàn" tới khi có quyết định — ĐỪNG tự ý
    drop index.
-4. `git push origin main` (GitHub) đang thiếu các commit của phiên này — cần user tự làm từ máy
+3. `git push origin main` (GitHub) đang thiếu các commit của phiên này — cần user tự làm từ máy
    có SSH key, hoặc cấp key cho VM.
-5. Backup archive Đ57 vẫn còn nguyên trên VM, vẫn CHƯA copy ra ngoài — nếu sau này quay lại ý định
+4. Backup archive Đ57 vẫn còn nguyên trên VM, vẫn CHƯA copy ra ngoài — nếu sau này quay lại ý định
    xoá VM, phải làm bước này trước (xem Next step Đ57 gốc, không đổi).
 
 ---
