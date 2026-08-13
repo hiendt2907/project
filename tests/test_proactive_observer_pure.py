@@ -54,6 +54,32 @@ def test_quick_verify_output():
     assert po._quick_verify_output("ok but badword", "badword") is False
 
 
+def test_quick_verify_output_catches_k8s_rollout_restart_not_found_with_default_keywords():
+    """Regression: k8s_rollout_restart trả '[DATA] deployment_not_found ...' khi Deployment
+    không tồn tại — không chứa 'error'/'failed'/từ khoá cũ nào, nên trước fix bị coi là
+    THÀNH CÔNG (verified=True), khiến Telegram báo sai [AUTO-FIX-LEARNING] và ghi ngược
+    pattern hỏng vào action_experience. Default keywords (settings.py) phải bắt được nó.
+    """
+    from workers.settings import WorkerSettings
+
+    fail_keywords = WorkerSettings.model_fields["proactive_verify_keywords_fail"].default
+    tool_output = (
+        "[DATA] deployment_not_found deployment='nginx-test' ns=multi-agent\n"
+        "[DIAGNOSIS] Không có Deployment."
+    )
+    assert po._quick_verify_output(tool_output, fail_keywords) is False
+
+    ambiguous_output = "[DATA] ambiguous_deployment\n- `a/b`\n[DIAGNOSIS] Nhiều deployment khớp."
+    assert po._quick_verify_output(ambiguous_output, fail_keywords) is False
+
+    kubectl_fail_output = "[DATA] kubectl_exit_1\n[DIAGNOSIS] stderr=some transient issue\nstdout="
+    assert po._quick_verify_output(kubectl_fail_output, fail_keywords) is False
+
+    # Success case vẫn phải qua được — không được vá quá tay làm dương tính giả.
+    success_output = "[DATA] rollout_restart_ok deployment=nginx ns=default\n[DIAGNOSIS] Đã restart."
+    assert po._quick_verify_output(success_output, fail_keywords) is True
+
+
 def test_result_status():
     assert po._result_status("[status] business_hit") == "business_hit"
     assert po._result_status("[STATUS] EMPTY_RESULT") == "empty_result"

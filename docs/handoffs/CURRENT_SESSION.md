@@ -1,6 +1,29 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-13 (Đ65 — DONE: gap #1 cuối cùng của Đ62 — user tự resize VM
+**Cập nhật:** 2026-08-13 (Đ66 — DONE: fix bug thật — user chỉ ra message Telegram
+`[AUTO-FIX-LEARNING] ... tool=k8s_rollout_restart score=0.75` báo THÀNH CÔNG trong khi nội dung
+`[DATA] deployment_not_found` là THẤT BẠI. Root cause: `_quick_verify_output()`
+(`proactive_observer.py:156`) chỉ nhận diện fail qua whitelist từ khoá cũ
+(`error,exception,traceback,failed,forbidden,timeout,empty result,result rỗng`), không khớp vocab
+thất bại thật của `k8s_rollout_restart` (`deployment_not_found`/`ambiguous_deployment`/
+`confirm_required`) → verified sai thành True → (1) Telegram báo sai + (2) NGHIÊM TRỌNG HƠN:
+`_allow_learning_upsert()` ăn theo verified=True nên ghi ngược bản ghi lỗi vào `action_experience`
+như pattern "đã sửa đúng", gây tái dùng lại chính cái fix hỏng ở lần sau. Fix: bổ sung từ khoá fail
+thật (`not_found,ambiguous,confirm_required,stale_state,khong_co_quyen,no_data,no_redis,
+kubectl_exit_`) vào default `proactive_verify_keywords_fail` (`src/workers/settings.py`). Thêm
+test regression tái hiện đúng message user đưa ra
+(`tests/test_proactive_observer_pure.py::test_quick_verify_output_catches_k8s_rollout_restart_not_found_with_default_keywords`).
+Full suite `pytest tests/ -q --ignore=tests/integration`: 7356 passed, chỉ 2 fail pre-existing đã
+biết từ Đ63 (`test_aoip_agent_updater.py::...tar_hash`, `test_remote_agent.py::...collects_lane7`,
+không liên quan). Đã commit + push cả hai remote. Lưu ý: đường dây gửi Telegram tự nó ĐÃ hợp nhất
+(chỉ 1 client `src/ingest/telegram.py` `send_message()`) — không cần "đồng bộ đường gửi" như yêu
+cầu gốc của user, bug nằm ở tầng nội dung/verify logic, không phải tầng transport. **Next step**:
+không có việc tồn đọng cụ thể từ audit — nếu muốn, có thể audit lại các call site Telegram khác
+(liệt kê ở lượt phân loại trước khi user chỉ ra bug) xem còn message nào khác báo sai nội dung
+tương tự không (chưa kiểm tra hết, chỉ mới xử lý đúng 1 trường hợp `k8s_rollout_restart` cụ thể
+user đưa ra).
+
+### Đ65 — DONE: gap #1 cuối cùng của Đ62 — user tự resize VM
 `omni-k3s-vm` 4→8 vCPU qua gcloud (`set-machine-type` → `e2-custom-8-16384`, có downtime ngắn lúc
 stop/start). Verify trực tiếp qua kubectl: node allocatable CPU 4→8, cả 4 pod
 `grafana/loki/mimir/tempo` tự chuyển `Pending`→`1/1 Running` (không cần thao tác gì thêm, k3s tự
