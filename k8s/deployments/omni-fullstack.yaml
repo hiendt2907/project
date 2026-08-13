@@ -145,6 +145,18 @@ spec:
                   name: omni-gateway-secret
                   key: OMNI_GATEWAY_API_KEY
                   optional: true
+            # Đ58 (2026-08-13): MacBook (Ollama host) tắt — chuyển LLM sang NVIDIA
+            # NIM (hosted, OpenAI-compat). Key qua Vault secret/omni-nim-secret,
+            # xem k8s/gitops/omni-nim-external-secret.yaml. optional: true để pod
+            # vẫn khởi động được nếu ExternalSecret chưa sync kịp (fail-open ở mức
+            # boot, KHÔNG phải fail-open ở mức gọi LLM — thiếu key thì openai SDK
+            # tự trả lỗi auth khi gọi, không silent).
+            - name: OMNI_NIM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: omni-nim-secret
+                  key: api_key
+                  optional: true
           securityContext:
             privileged: true
             runAsUser: 0

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import struct
 import time
@@ -25,7 +26,7 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/kb", tags=["kb"])
 
-EMBED_DIM = 768
+EMBED_DIM = int(os.environ.get("OMNI_EMBED_DIM", "768"))  # must match redis_vector_store.EMBED_DIM
 
 # Collection surfaced in the KB tab. `vendor_knowledge` is the write target for new
 # entries; the rest are existing knowledge partitions shown read-through ("cũ").

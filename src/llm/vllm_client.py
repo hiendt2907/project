@@ -10,6 +10,8 @@ Ollama's /v1/chat/completions and /v1/embeddings are OpenAI-standard.
 
 from __future__ import annotations
 
+import asyncio
+import collections
 import logging
 import os
 import time
@@ -24,6 +26,31 @@ logger = logging.getLogger(__name__)
 
 # Ollama doesn't enforce an API key; openai client requires a non-empty string.
 _API_KEY = "ollama"
+
+
+class _RateLimiter:
+    """Sliding-window async limiter — caps requests/minute across chat+embed calls.
+
+    Added for NVIDIA NIM's free-tier 40 rpm cap (shared across both endpoints on
+    one API key). No-op for Ollama (rpm=None on VLLMClient → limiter unset).
+    """
+
+    def __init__(self, rpm: int) -> None:
+        self._rpm = max(1, rpm)
+        self._lock = asyncio.Lock()
+        self._timestamps: collections.deque[float] = collections.deque()
+
+    async def acquire(self) -> None:
+        async with self._lock:
+            while True:
+                now = time.monotonic()
+                while self._timestamps and now - self._timestamps[0] >= 60.0:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < self._rpm:
+                    self._timestamps.append(now)
+                    return
+                sleep_for = 60.0 - (now - self._timestamps[0]) + 0.05
+                await asyncio.sleep(max(0.05, sleep_for))
 
 # Default context window passed as max_tokens when options.num_ctx is absent.
 DEFAULT_MAX_TOKENS = 4096
@@ -138,12 +165,27 @@ class VLLMClient(BaseModel):
         description="Ollama embeddings base URL (with or without /v1 suffix).",
     )
     timeout_s: float = Field(default=120.0, ge=1.0)
+    provider: str = Field(
+        default="ollama",
+        description="'ollama' (local, no auth, native /api/chat think-toggle) or "
+        "'nim' (NVIDIA NIM — Bearer auth, OpenAI-compat only, rate-limited).",
+    )
+    api_key: str = Field(default=_API_KEY, description="Bearer token; dummy 'ollama' for local Ollama.")
+    rate_limit_rpm: int | None = Field(
+        default=None,
+        description="Client-side requests/min cap shared by chat+embed (e.g. NIM free tier 40rpm). None = unbounded.",
+    )
+    embed_extra_body: dict[str, Any] | None = Field(
+        default=None,
+        description="Extra body merged into /v1/embeddings (e.g. NIM nv-embedqa input_type/truncate).",
+    )
 
     model_config = {"arbitrary_types_allowed": True}
 
     _chat_client: openai.AsyncOpenAI = PrivateAttr()
     _embed_client: openai.AsyncOpenAI = PrivateAttr()
     _native_client: httpx.AsyncClient = PrivateAttr()
+    _rate_limiter: "_RateLimiter | None" = PrivateAttr(default=None)
 
     def model_post_init(self, _context: Any) -> None:
         # max_retries=0: openai SDK mặc định retry 2 lần (3 lần thử tổng), MỖI lần chờ tới
@@ -156,17 +198,18 @@ class VLLMClient(BaseModel):
         # gọi" logic lại âm thầm biến thành 3 request xếp hàng, tự khuếch đại chính cơn quá
         # tải gây ra lỗi. Tắt hẳn, để caller quyết định có retry hay không.
         chat = openai.AsyncOpenAI(
-            api_key=_API_KEY,
+            api_key=self.api_key,
             base_url=_base_url(self.base_url),
             timeout=self.timeout_s,
             max_retries=0,
         )
         embed = openai.AsyncOpenAI(
-            api_key=_API_KEY,
+            api_key=self.api_key,
             base_url=_base_url(self.embed_url),
             timeout=self.timeout_s,
             max_retries=0,
         )
+        self._rate_limiter = _RateLimiter(self.rate_limit_rpm) if self.rate_limit_rpm else None
         try:
             native = httpx.AsyncClient(timeout=self.timeout_s)
         except Exception:
@@ -289,7 +332,10 @@ class VLLMClient(BaseModel):
         kind_label = _kind_label(llm_call_kind, fmt_json)
         prompt_text = _prompt_text(messages)
 
-        if think_val is False:
+        if self._rate_limiter is not None:
+            await self._rate_limiter.acquire()
+
+        if think_val is False and self.provider == "ollama":
             return await self._chat_ollama_native(
                 model=model,
                 messages=messages,
@@ -495,9 +541,11 @@ class VLLMClient(BaseModel):
         Returns ``{"embeddings": [[float, ...]]}`` — same shape as OllamaClient
         so ``_embedding_from_response`` in handlers is unchanged.
         """
-        response = await self._embed_client.embeddings.create(
-            model=model,
-            input=input,
-        )
+        if self._rate_limiter is not None:
+            await self._rate_limiter.acquire()
+        kwargs: dict[str, Any] = {"model": model, "input": input}
+        if self.embed_extra_body:
+            kwargs["extra_body"] = self.embed_extra_body
+        response = await self._embed_client.embeddings.create(**kwargs)
         vectors = [d.embedding for d in response.data]
         return {"embeddings": vectors}

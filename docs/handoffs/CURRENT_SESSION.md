@@ -1,9 +1,155 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-12 (Đ56 — Gate 0 agent hardening: PHẦN CODE/ARTIFACT XONG + TEST XANH,
-**PHẦN CUTOVER 3 VM LAB BỊ CHẶN CỨNG, CHƯA LÀM ĐƯỢC**. Session này chạy trên VM GCP `omni-k3s-vm`
-sau một khoảng trống dài — phát hiện VM GCP chưa từng pull kể từ Đ32, đã fetch+merge lên Đ55 (105
-commit). Chi tiết đầy đủ ở mục Đ56 ngay dưới. Đ55 giữ nguyên bên dưới, không đổi gì.)
+**Cập nhật:** 2026-08-13 (Đ59 — user đổi ý, KHÔNG dừng dự án nữa. Đã: (1) rollback toàn bộ
+`omni-k3s-vm` từ backup Đ57 (namespace xoá ở Đ58 đã quay lại nguyên trạng), (2) chuyển LLM
+backend Omni từ Ollama/MacBook (đang tắt) sang NVIDIA NIM. Đ56/Đ57/Đ58 giữ nguyên bên dưới làm
+lịch sử.)
+
+### Đ59 — Rollback k3s từ backup + chuyển LLM sang NVIDIA NIM (2026-08-13)
+
+**Bối cảnh:** Đ57/Đ58 (xem bên dưới) đã backup toàn bộ cluster rồi xoá 9 namespace app để tạm
+dừng dự án. User quay lại, yêu cầu khôi phục toàn bộ, sau đó báo Omni lỗi vì MacBook (host Ollama)
+đã tắt — yêu cầu chuyển sang NVIDIA NIM.
+
+**1. Rollback k3s (đã DONE, verify sống):** Chọn phương án rollback toàn bộ thay vì khôi phục chọn
+lọc (user tự chọn, chấp nhận mất ~15h dữ liệu monitor/cert-manager phát sinh sau thời điểm backup):
+`systemctl stop k3s` → move aside `state.db` + `storage/` hiện tại (giữ lại, không xoá, hậu tố
+`.pre-restore-<ts>`) → ghi đè bằng `sqlite/state.db` + giải nén `storage/local-path-storage.tar.gz`
+từ `~/k3s-backup-20260812-082206.tar.gz` → `systemctl start k3s`. Kết quả: cả 15 namespace (9 app
++ monitor + 4 core) Active trở lại, pod lần lượt Running (churn ContainerCreating/PodInitializing
+bình thường khi tất cả pod cùng khởi động lại 1 lượt). Archive backup vẫn còn nguyên trên VM, CHƯA
+copy ra ngoài — vẫn là việc tồn đọng (xem Next step Đ57 cũ, chưa đổi).
+
+**2. Chuyển LLM Omni sang NVIDIA NIM (đã code + config + Vault, ĐANG deploy):**
+- Root cause lỗi: `OMNI_VLLM_BASE_URL`/`OMNI_OLLAMA_BASE_URL` trỏ Tailscale IP MacBook
+  (`100.93.3.96:11434`) — MacBook tắt nên toàn bộ chat/embeddings đứng.
+- `src/llm/vllm_client.py`: thêm field `provider`/`api_key`/`rate_limit_rpm`/`embed_extra_body`
+  vào `VLLMClient`. `_chat_ollama_native` (route `think=False` sang `/api/chat` thô) giờ CHỈ chạy
+  khi `provider=="ollama"` — NIM không có endpoint này. Thêm `_RateLimiter` (sliding-window 60s,
+  giữ trong `asyncio.Lock`) dùng chung cho cả chat lẫn embed, chặn client-side trước khi đụng rate
+  limit free-tier NIM.
+- `src/llm/factory.py`: đọc `OMNI_LLM_PROVIDER`/`OMNI_NIM_API_KEY`/`OMNI_NIM_RATE_LIMIT_RPM` từ
+  env, mọi call site `build_llm_client()` hiện có tự động ăn theo, không cần sửa từng nơi gọi.
+- `src/pkg/rag/ollama_embed.py` (helper gateway-safe, urllib thuần, không import openai/workers):
+  thêm nhánh NIM riêng (`_embed_sync_nim`, OpenAI-shape response `data[0].embedding`, khác hẳn
+  Ollama `{embeddings:[[...]]}`), `EMBED_DIM` đổi thành đọc `OMNI_EMBED_DIM` env thay vì hardcode
+  768.
+- **EMBED_DIM 768→1024 (nomic-embed-text → nvidia/nv-embedqa-e5-v5) — ĐỒNG BỘ 3 nơi từng hardcode
+  riêng lẻ**, giờ đều đọc `OMNI_EMBED_DIM`: `src/rag/redis_vector_store.py` (nguồn chính, dùng cho
+  HNSW `FT.CREATE ... DIM`), `src/pkg/clustering/incident_cluster.py` (`_EMBED_DIM`), `src/gateway/
+  routes/kb.py` (`EMBED_DIM`). `pgvector_store.py` chỉ re-export từ `redis_vector_store` nên tự
+  động ăn theo.
+- **Model ID đã verify SỐNG bằng curl thật với đúng API key trước khi ghi vào ConfigMap** (không
+  đoán): `meta/llama-3.1-8b-instruct` (200 OK, ~0.4s) → slot tần suất cao (chat mặc định/helper/
+  diag-evidence); `meta/llama-3.1-70b-instruct` (200 OK, ~16s) → slot ít gọi hơn (reasoning
+  engine/autonomous decider), tách 2 model để không đụng rate limit 40rpm free-tier. ĐÃ THỬ VÀ
+  LOẠI: `qwen/qwen2.5-7b-instruct` (404 dù có trang doc — không có trên hosted endpoint),
+  `meta/llama-3.3-70b-instruct` (timeout 30s), `nvidia/llama-3.1-nemotron-70b-instruct` (404 "not
+  found for account"), `mistralai/mixtral-8x22b-instruct-v0.1` (410 Gone, EOL 2026-05-21). Embed:
+  `nvidia/nv-embedqa-e5-v5` verify sống (200 OK, đúng response shape).
+- **Secret qua Vault, không plaintext git** (user dán key thẳng vào chat — KHÔNG đưa vào bất kỳ
+  file git nào): Vault đã unseal thủ công (`vault-unseal-bootstrap` Secret trong ns `vault`, đúng
+  cronjob `vault-auto-unseal` */2min đang dùng — cronjob tự chạy được lần kế tiếp, không cần làm
+  tay nữa cho các lần restart sau). Ghi `vault kv put secret/omni-nim-secret api_key=...` bằng
+  root token cũng lấy từ `vault-unseal-bootstrap`. `k8s/gitops/omni-nim-external-secret.yaml` (mới)
+  — ExternalSecret sync `secret/omni-nim-secret` → K8s Secret `omni-nim-secret` (cùng pattern
+  `aoip-dex-secret.yaml`). `omni-fullstack.yaml` thêm `OMNI_NIM_API_KEY` qua `secretKeyRef`
+  (`optional: true` — chỉ để pod không crash-loop nếu ExternalSecret chưa sync kịp lúc boot, KHÔNG
+  phải fail-open khi gọi LLM: thiếu key thì openai SDK tự trả lỗi auth rõ ràng lúc gọi).
+- `k8s/deployments/omni-worker-configmap.gcp.yaml`: `OMNI_LLM_PROVIDER=nim` (công tắc thật, đọc ở
+  `factory.py`) + toàn bộ `OMNI_VLLM_BASE_URL`/`OMNI_OLLAMA_BASE_URL`/`VLLM_BASE_URL` đổi sang
+  `https://integrate.api.nvidia.com/v1`, `OMNI_VLLM_STREAM_FOR_SLI` tắt (true→false, để giảm chi
+  phí/độ phức tạp gọi hosted API rate-limited), 6 field model đổi theo 2 model đã verify ở trên,
+  `OMNI_EMBED_MODEL=nvidia/nv-embedqa-e5-v5`, `OMNI_EMBED_DIM=1024`.
+
+**⚠️ CHƯA XONG — rủi ro thật, đọc trước khi coi Đ59 là DONE:** HNSW index trong Redis
+(`idx:itops_sop_ledger` + các collection khác, ~1019 SOP entry) được tạo với `DIM 768` từ trước.
+`_ensure_index()` trong `redis_vector_store.py` là create-if-not-exists (`ft(idx).info()` thành
+công → tái dùng nguyên trạng) — đổi `OMNI_EMBED_DIM=1024` KHÔNG tự động migrate index cũ. Sau khi
+deploy, vector NIM 1024-dim ghi/query vào index 768-dim cũ sẽ lỗi ở tầng RediSearch (kích thước
+blob không khớp DIM khai báo) — lỗi to, không phải im lặng, nhưng RAG (SOP/k8s_expert/action_
+experience/...) sẽ KHÔNG hoạt động cho tới khi có người chủ động: (1) `FT.DROPINDEX` từng index
+cũ, để `_ensure_index()` tạo lại đúng DIM 1024 ở lần gọi kế tiếp, VÀ (2) re-embed lại toàn bộ nội
+dung cũ (chạy lại `training/sop_ingest.py` và các script ingest tương ứng qua NIM) — việc này tốn
+thời gian thật vì bị giới hạn 40rpm (~1019 entry / 40 ≈ 26 phút tối thiểu, serialize qua
+`_RateLimiter`). CHƯA làm bước này trong phiên — cố ý chưa làm vì đây là thao tác gần như phá huỷ
+dữ liệu RAG hiện có nếu làm vội, cần user xác nhận trước khi drop index thật.
+
+### Next step (Đ59)
+
+1. Xác nhận build+deploy qua Jenkins (`omni-gcp-deploy`, KHÔNG tự trigger từ git push — phải bấm
+   Build Now / gọi API tay, xem cảnh báo đầu `CLAUDE.md`) đã chạy xong, pod `omni-fullstack` mới
+   lên với image mới, log không còn báo lỗi kết nối `100.93.3.96:11434`.
+2. Hỏi user có muốn tiến hành FT.DROPINDEX + re-embed RAG ngay (mất ~30 phút+, tốn budget rate
+   limit NIM free-tier) hay để RAG tạm "lỗi to nhưng an toàn" tới khi có quyết định — ĐỪNG tự ý
+   drop index.
+3. Backup archive Đ57 vẫn còn nguyên trên VM, vẫn CHƯA copy ra ngoài — nếu sau này quay lại ý định
+   xoá VM, phải làm bước này trước (xem Next step Đ57 gốc, không đổi).
+
+---
+
+### Đ57 — Backup toàn bộ k3s trước khi xoá hệ thống (2026-08-12)
+
+**Bối cảnh:** user báo tạm dừng dự án Omni để chuyển sang dự án khác, sẽ xoá toàn bộ hạ tầng
+(`omni-k3s-vm` trên GCP). Yêu cầu: tạo 1 file backup toàn bộ hệ thống k3s trước khi xoá.
+
+**Đã làm:**
+- File mới `scripts/backup/k3s_full_backup.sh` (đã `chmod +x`, CHƯA commit) — backup toàn diện,
+  không chỉ export YAML: (1) `kubectl get -o yaml` mọi resource namespaced + cluster-scoped ở tất
+  cả namespace (gồm Secrets); (2) live copy sqlite datastore của k3s
+  (`/var/lib/rancher/k3s/server/db/state.db`, qua `python3 sqlite3.Connection.backup()` vì máy
+  không có sqlite3 CLI, chỉ có lib); (3) `/etc/rancher/k3s` (config/token/TLS); (4) tar toàn bộ
+  `/var/lib/rancher/k3s/storage` (~13G, local-path PV data — đây là chỗ chứa Postgres/Vault file
+  storage/Vaultwarden sqlite/Harbor registry blobs+db/Gitea repos+db/Jenkins home/
+  Grafana-Loki-Mimir-Prometheus-Tempo, gộp hết vào 1 bước thay vì dump từng app); (5) `pg_dumpall`
+  logic của `omni_admin` (bổ sung, không thay cho raw PGDATA copy ở trên); (6) `helm list -A` +
+  values từng release. Output nén `tar.gz` + `.sha256` tại `$HOME/k3s-backup-<timestamp>.tar.gz`.
+- Đã chạy thật (`sudo -n` hoạt động, không cần mật khẩu). Chạy nền vì bước tar 13G lâu — xem output
+  tại `Bash` background task id `brf1ckqgd` (`/tmp/claude-*/tasks/brf1ckqgd.output`) khi session
+  tiếp tục nếu bị ngắt giữa chừng.
+
+**Đã xong (2026-08-12, cùng phiên):** archive backup hoàn tất, xác minh toàn vẹn —
+`/home/hiendang/k3s-backup-20260812-082206.tar.gz` (6.7GB), sha256 kèm theo (`.sha256`). Đã kiểm
+tra thật (giải nén lại, không chỉ tin log): gzip toàn vẹn OK; `storage/local-path-storage.tar.gz`
+(7.1GB, PV data thật của Postgres/Vault/Vaultwarden/Harbor/Gitea/Jenkins/monitoring stack) có mặt
+đầy đủ dù log script báo "WARNING: PV storage tar failed" — xác nhận đó là false alarm (tar exit
+non-zero vì file DB đổi lúc đang đọc, archive vẫn nguyên vẹn); Secret đã giải mã base64 có mặt (vd
+12 secret ở `multi-agent`, 12 ở `vault`); ArgoCD Applications + ExternalSecrets đã resolve template
+runtime thật có mặt; `/etc/rancher/k3s/k3s.yaml` (kubeconfig+CA) có mặt. Gap thật duy nhất:
+`pg-dump/omni_admin_all.sql` = 0 byte (pg_dumpall lỗi auth/exec, KHÔNG mất dữ liệu vì PGDATA thô
+đã có trong `storage/`, chỉ là không có bản dump SQL logic dễ đọc).
+
+**QUAN TRỌNG — CHƯA XONG, đừng xoá VM tới khi việc này xác nhận DONE:** archive backup hiện CHỈ
+nằm trên chính `omni-k3s-vm` sắp xoá — nếu xoá VM trước khi copy archive ra ngoài, backup mất theo,
+vô nghĩa. Đã hỏi user chọn phương án (`gsutil` lên GCS bucket / `scp` về máy / chưa quyết) —
+**user chọn "Chưa xoá VM ngay"**, tức là dừng ở bước này, CHƯA chọn phương án copy, CHƯA cho phép
+xoá bất cứ gì. Không tự ý chọn phương án hay tiến hành xoá VM ở phiên sau nếu chưa hỏi lại user.
+
+**Không nằm trong backup này (cân nhắc thêm nếu cần trước khi xoá hẳn):**
+- `docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` — file local, không commit git, không tự động vào
+  tarball trừ khi copy tay (nó nằm trong repo dir nên `git`/repo backup riêng sẽ không thấy nó vì
+  gitignore, nhưng nó VẪN nằm trên đĩa VM — cần backup riêng nếu muốn giữ).
+- Vault unseal key / root token — không rõ có ghi ở đâu ngoài trí nhớ user; nếu mất, dữ liệu Vault
+  trong `storage/` tar ở trên (Seal Type shamir, Storage Type file) sẽ không unseal được dù còn
+  file. Cần hỏi user đã lưu unseal key ở nơi khác chưa.
+- Code repo (`/home/hiendang/project`) — đã có 2 remote (`gitea` nội bộ trong chính cluster sắp
+  xoá, và `origin` GitHub độc lập) — GitHub còn sống sau khi xoá VM nên code KHÔNG mất, chỉ cần
+  đảm bảo mọi commit đã push `origin` trước khi xoá (xem quy tắc 2-remote trong `CLAUDE.md`).
+
+### Next step
+
+1. Kiểm tra output nền của `k3s_full_backup.sh` (task `brf1ckqgd`) đã DONE chưa, xem MANIFEST +
+   kích thước archive cuối cùng.
+2. Hỏi user: copy archive ra khỏi VM bằng cách nào (GCS bucket có sẵn? scp về máy?) — PHẢI làm
+   bước này trước khi cho phép xoá VM.
+3. Hỏi user về Vault unseal key / root token đã lưu ở đâu ngoài VM chưa.
+4. Xác nhận `git push origin main` (GitHub) đã có đủ mọi commit trước khi xoá VM (kể cả 4 file Gate
+   0 Đ56 nếu user muốn commit trước khi dừng).
+5. Sau khi backup xác nhận an toàn ở ngoài VM, việc xoá hệ thống là hành động phá huỷ — PHẢI hỏi
+   xác nhận rõ ràng trước khi thực hiện bất kỳ lệnh xoá nào (`terraform destroy`, `gcloud compute
+   instances delete`, v.v.), theo đúng Git/Infra Safety Protocol.
+
+---
 
 ### Đ56 — Gate 0: agent hardening non-root, code xong, cutover VM bị chặn (2026-08-12)
 

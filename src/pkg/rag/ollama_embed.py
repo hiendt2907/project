@@ -1,7 +1,12 @@
-"""Gateway-safe Ollama embedding helper (stdlib urllib only — no httpx/openai, no workers import).
+"""Gateway-safe embedding helper (stdlib urllib only — no httpx/openai, no workers import).
 
 Used by the gateway KB route and the KB seed script to embed text into the same
-768-dim space (nomic-embed-text) that the RedisVectorStore HNSW index expects.
+vector space that the RedisVectorStore HNSW index expects. Provider is env-driven
+(OMNI_LLM_PROVIDER): "ollama" (default, nomic-embed-text, 768-dim, native /api/embed)
+or "nim" (NVIDIA NIM nv-embedqa-e5-v5, 1024-dim, OpenAI-compat /v1/embeddings +
+Bearer auth). EMBED_DIM must match OMNI_EMBED_DIM used by redis_vector_store.py —
+switching provider requires recreating the HNSW index and re-embedding existing
+entries (dimension is fixed at index-creation time).
 """
 
 from __future__ import annotations
@@ -14,7 +19,17 @@ import urllib.request
 from typing import Any
 
 DEFAULT_EMBED_MODEL = "nomic-embed-text"
-EMBED_DIM = 768
+NIM_DEFAULT_EMBED_MODEL = "nvidia/nv-embedqa-e5-v5"
+NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+EMBED_DIM = int(os.environ.get("OMNI_EMBED_DIM", "768"))
+
+
+def _provider() -> str:
+    return (os.environ.get("OMNI_LLM_PROVIDER") or "ollama").strip().lower()
+
+
+def _nim_api_key() -> str:
+    return (os.environ.get("OMNI_NIM_API_KEY") or "").strip()
 
 
 def _ollama_base_url() -> str:
@@ -61,20 +76,54 @@ def _embed_sync(text: str, *, base_url: str, model: str, timeout: float) -> list
         raise RuntimeError(f"ollama embed failed: {e}") from e
 
 
+def _vector_from_openai_response(doc: dict[str, Any]) -> list[float]:
+    data = doc.get("data")
+    if isinstance(data, list) and data:
+        emb = data[0].get("embedding")
+        if isinstance(emb, list) and emb:
+            return [float(x) for x in emb]
+    raise ValueError("nim embed response missing embedding")
+
+
+def _embed_sync_nim(text: str, *, model: str, timeout: float, input_type: str) -> list[float]:
+    key = _nim_api_key()
+    if not key:
+        raise RuntimeError("OMNI_NIM_API_KEY missing (required when OMNI_LLM_PROVIDER=nim)")
+    payload = json.dumps(
+        {"input": [text], "model": model, "input_type": input_type, "truncate": "END"}
+    ).encode()
+    req = urllib.request.Request(
+        f"{NIM_BASE_URL}/embeddings",
+        data=payload,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — pinned NIM host
+        return _vector_from_openai_response(json.loads(resp.read().decode()))
+
+
 async def embed_text(
     text: str,
     *,
     base_url: str | None = None,
-    model: str = DEFAULT_EMBED_MODEL,
+    model: str | None = None,
     timeout: float = 30.0,
+    input_type: str = "passage",
 ) -> list[float]:
-    """Embed *text* via Ollama; returns a 768-dim float vector. Raises on failure."""
+    """Embed *text*; returns an EMBED_DIM-length float vector. Raises on failure."""
     if not text or not text.strip():
         raise ValueError("cannot embed empty text")
-    url = (base_url or _ollama_base_url()).rstrip("/")
-    vec = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: _embed_sync(text, base_url=url, model=model, timeout=timeout)
-    )
+    if _provider() == "nim":
+        mdl = model or os.environ.get("OMNI_EMBED_MODEL") or NIM_DEFAULT_EMBED_MODEL
+        vec = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _embed_sync_nim(text, model=mdl, timeout=timeout, input_type=input_type)
+        )
+    else:
+        url = (base_url or _ollama_base_url()).rstrip("/")
+        mdl = model or DEFAULT_EMBED_MODEL
+        vec = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _embed_sync(text, base_url=url, model=mdl, timeout=timeout)
+        )
     if len(vec) != EMBED_DIM:
         raise ValueError(f"embed dim mismatch: got {len(vec)}, expected {EMBED_DIM}")
     return vec

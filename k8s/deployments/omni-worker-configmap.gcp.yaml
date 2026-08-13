@@ -126,26 +126,45 @@ data:
   OMNI_CLUSTER_FULL_ACCESS: "false"
   OMNI_LLM_FIRST_AUTONOMY_ENABLED: "true"
   OMNI_LEGACY_DETERMINISTIC_FALLBACK: "false"
-  # Ollama stays on the MacBook (Apple Silicon GPU) — reached from this GCP VM
-  # over the Tailscale tailnet instead of OrbStack's host.orb.internal DNS.
-  OMNI_VLLM_BASE_URL: "http://100.93.3.96:11434/v1"
-  OMNI_VLLM_EMBED_URL: "http://100.93.3.96:11434/v1"
-  OMNI_OLLAMA_BASE_URL: "http://100.93.3.96:11434/v1"
-  OMNI_VLLM_STREAM_FOR_SLI: "true"
+  # Đ58 (2026-08-13): MacBook (Ollama host, Apple Silicon GPU) tắt — chuyển
+  # sang NVIDIA NIM (hosted, OpenAI-compat, https://integrate.api.nvidia.com/v1).
+  # OMNI_LLM_PROVIDER=nim là công tắc thật (src/llm/factory.py) — chuyển 2 field
+  # base_url dưới sang NIM là không đủ nếu thiếu dòng này, factory sẽ vẫn dùng
+  # api_key giả "ollama" và không bật rate limiter.
+  #
+  # 2 model tách biệt theo tần suất gọi, tối ưu để KHÔNG đụng rate limit free
+  # tier 40 rpm (OMNI_NIM_RATE_LIMIT_RPM là giới hạn phía client, dùng chung 1
+  # sliding-window cho cả chat+embed trên 1 key — xem _RateLimiter trong
+  # src/llm/vllm_client.py): model nhẹ cho các slot gọi tần suất cao (chat mặc
+  # định/helper/diag-evidence), model nặng CHỈ cho 2 slot quyết định ít gọi hơn
+  # (reasoning engine + autonomous decider). Cả 4 model ID đã verify SỐNG bằng
+  # curl thật với đúng API key này trước khi ghi vào đây (2026-08-13):
+  # meta/llama-3.1-8b-instruct (~0.4s), meta/llama-3.1-70b-instruct (~16s) đều
+  # 200 OK; qwen/qwen2.5-7b-instruct 404 (không có trên hosted endpoint dù có
+  # trang doc), meta/llama-3.3-70b-instruct timeout 30s, nvidia/llama-3.1-nemotron
+  # -70b-instruct 404 "not found for account", mixtral-8x22b 410 Gone (EOL
+  # 2026-05-21) — cả 4 cái này ĐỪNG dùng lại mà không verify trước.
+  OMNI_LLM_PROVIDER: "nim"
+  OMNI_NIM_RATE_LIMIT_RPM: "40"
+  OMNI_VLLM_BASE_URL: "https://integrate.api.nvidia.com/v1"
+  OMNI_VLLM_EMBED_URL: "https://integrate.api.nvidia.com/v1"
+  OMNI_OLLAMA_BASE_URL: "https://integrate.api.nvidia.com/v1"
+  OMNI_VLLM_STREAM_FOR_SLI: "false"
   OMNI_LLM_SLI_METRICS_ENABLED: "true"
-  VLLM_BASE_URL: "http://100.93.3.96:11434/v1"
-  VLLM_EMBED_URL: "http://100.93.3.96:11434/v1"
-  VLLM_MODEL: "qwen3:8b"
+  VLLM_BASE_URL: "https://integrate.api.nvidia.com/v1"
+  VLLM_EMBED_URL: "https://integrate.api.nvidia.com/v1"
+  VLLM_MODEL: "meta/llama-3.1-8b-instruct"
   OMNI_LLM_NUM_PARALLEL: "1"
   OMNI_TELEGRAM_ENABLED: "true"
   OMNI_TELEGRAM_POLLING_ENABLED: "false"
-  OMNI_CHAT_MODEL: "qwen3:8b"
-  OMNI_MODEL_REASONING_ENGINE: "qwen3:8b"
-  OMNI_MODEL_HEAVY_LIFTER: "qwen3:8b"
-  OMNI_MODEL_HELPER: "qwen3:8b"
-  OMNI_DIAG_EVIDENCE_LLM_MODEL: "qwen3:8b"
-  OMNI_AUTONOMOUS_DECIDER_MODEL: "qwen3:8b"
-  OMNI_EMBED_MODEL: "nomic-embed-text"
+  OMNI_CHAT_MODEL: "meta/llama-3.1-8b-instruct"
+  OMNI_MODEL_REASONING_ENGINE: "meta/llama-3.1-70b-instruct"
+  OMNI_MODEL_HEAVY_LIFTER: "meta/llama-3.1-70b-instruct"
+  OMNI_MODEL_HELPER: "meta/llama-3.1-8b-instruct"
+  OMNI_DIAG_EVIDENCE_LLM_MODEL: "meta/llama-3.1-8b-instruct"
+  OMNI_AUTONOMOUS_DECIDER_MODEL: "meta/llama-3.1-70b-instruct"
+  OMNI_EMBED_MODEL: "nvidia/nv-embedqa-e5-v5"
+  OMNI_EMBED_DIM: "1024"
   # 1800 (30') đo được là quá dày: mỗi vòng synth lại TOÀN BỘ pod+service bằng LLM
   # (93 entity × ~9.5s tuần tự vì Ollama num_parallel=1 ≈ 15' LLM chạy liên tục cho
   # mỗi chu kỳ 30') và tranh hàng đợi với advisory thật. Dedup theo fingerprint đã

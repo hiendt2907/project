@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 _CLUSTER_SCORE_THRESHOLD = 0.82  # Cosine similarity for cluster membership
 _CLUSTER_META_TTL = 86400 * 7    # 7 days
 _CLUSTER_COLLECTION = "omni_incident_clusters"
-_EMBED_DIM = 768                  # nomic-embed-text dimensions
+_EMBED_DIM = int(os.environ.get("OMNI_EMBED_DIM", "768"))  # must match redis_vector_store.EMBED_DIM
 
 
 async def assign_to_cluster(

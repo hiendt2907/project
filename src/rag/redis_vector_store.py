@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import struct
 import uuid
@@ -40,8 +41,10 @@ def set_rag_empty_result_hook(fn) -> None:
     global _inc_rag_empty
     _inc_rag_empty = fn
 
-# nomic-embed-text (Ollama) = 768 dims
-EMBED_DIM = 768
+# nomic-embed-text (Ollama) = 768 dims; nv-embedqa-e5-v5 (NVIDIA NIM) = 1024 dims.
+# Switching OMNI_LLM_PROVIDER requires recreating the HNSW index (dim is fixed at
+# FT.CREATE time) and re-embedding existing entries — see pkg/rag/ollama_embed.py.
+EMBED_DIM = int(os.environ.get("OMNI_EMBED_DIM", "768"))
 
 COLLECTION_SOP = "itops_sop_ledger"
 COLLECTION_SOP_V2 = "itops_sop_ledger_v2"
