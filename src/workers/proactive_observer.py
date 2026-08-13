@@ -154,19 +154,13 @@ def _pattern_key_from_event(ev: "AnomalyEvent") -> str:
 
 
 def _quick_verify_output(text: str, fail_keywords_csv: str) -> bool:
-    t = (text or "").lower()
-    if "[status] business_hit" in t:
-        return True
-    if "[status] empty_result" in t or "[status] error" in t:
-        return False
-    if any(k in t for k in ("thiếu args", "missing arg", "invalid args", "required", "missing required")):
-        return False
-    if not t.strip():
-        return False
-    for kw in [k.strip().lower() for k in (fail_keywords_csv or "").split(",") if k.strip()]:
-        if kw and kw in t:
-            return False
-    return True
+    """True = coi là thành công. Phân loại thật uỷ quyền cho ``classify_tool_output``
+    (nguồn thật duy nhất, dùng chung với ``tool_registry.is_error_output``) — hàm này
+    chỉ còn map "fail" → False, "ok"/"unknown" → True để giữ đúng chữ ký/hành vi cũ.
+    """
+    from workers.tool_output_status import classify_tool_output
+
+    return classify_tool_output(text, fail_keywords_csv) != "fail"
 
 
 def _result_status(text: str) -> str:

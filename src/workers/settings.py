@@ -1388,21 +1388,17 @@ class WorkerSettings(BaseSettings):
         description="If god/lab mode, bypass fallback policy+confidence deny but still audit all actions.",
     )
     proactive_verify_keywords_fail: str = Field(
-        default=(
-            "error,exception,traceback,failed,forbidden,timeout,empty result,result rỗng,"
-            "not_found,ambiguous,confirm_required,stale_state,khong_co_quyen,no_data,no_redis,"
-            "kubectl_exit_"
-        ),
+        default="error,exception,traceback,failed,forbidden,timeout,empty result,result rỗng",
         description=(
-            "CSV keywords to classify quick post-check failure in proactive fallback. "
-            "Phải khớp đúng vocab thật của các tool trong PROACTIVE_MUTATE_TOOLS "
-            "(k8s_rollout_restart/k8s_scale_deployment/k8s_patch_resource/kubectl_cluster) — "
-            "danh sách cũ chỉ có từ khoá tiếng Anh chung chung, bỏ sót các mã trạng thái thất bại "
-            "thật mà k8s_tools.py/kubectl_cluster.py trả về (VD `deployment_not_found`,"
-            "`ambiguous_deployment`, `kubectl_exit_1`). Hậu quả từng xảy ra thật: một lần "
-            "k8s_rollout_restart thất bại vì deployment không tồn tại vẫn bị `_quick_verify_output` "
-            "coi là thành công, báo Telegram `[AUTO-FIX-LEARNING]` sai VÀ ghi ngược pattern hỏng "
-            "vào action_experience — lần sau tái sử dụng lại đúng cái fix sai đó."
+            "CSV fallback keywords cho free-text KHÔNG theo convention `[DATA] <token>`/"
+            "`[STATUS] ok|fail` (VD output PromQL/vendor-knowledge). Với tool có convention đó "
+            "(k8s_tools.py, k8s_cluster_tools.py, kubectl_cluster.py — gồm cả 4 tool trong "
+            "PROACTIVE_MUTATE_TOOLS), phân loại thật nằm ở `workers.tool_output_status."
+            "classify_tool_output()` — SỬA TOKEN LỖI MỚI Ở ĐÓ, không phải ở CSV này. Trước "
+            "2026-08-13 danh sách này từng được nhồi thêm token k8s (`not_found`, `ambiguous`, "
+            "`kubectl_exit_`...) để vá tạm, nhưng đó là hardcode nhân bản dễ lệch với "
+            "`tool_registry.py`'s check riêng — đã gộp về `tool_output_status.py` làm nguồn thật "
+            "duy nhất, CSV ở đây quay lại đúng vai trò ban đầu: lưới an toàn cho free-text."
         ),
     )
     llm_chat_timeout_sec: float = Field(

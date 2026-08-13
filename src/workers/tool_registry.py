@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 from pydantic import BaseModel
 
 from workers.tool_observation import prepare_tool_return_for_llm
+from workers.tool_output_status import classify_tool_output
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,11 @@ class ToolRegistry:
                 "[NEXT] Re-check args against the tool schema or pick an alternative tool; do not retry identical args.",
             )
         output = prepare_tool_return_for_llm(ctx, str(raw))
-        is_error_output = "[DATA] error" in output or "[DATA] api_error" in output
+        # Trước đây chỉ khớp đúng 2 chuỗi "[DATA] error"/"[DATA] api_error" — lọt token
+        # thất bại thật khác (VD "deployment_not_found") khiến idempotency lock không
+        # được nhả ra để retry. classify_tool_output() là nguồn phân loại thật duy nhất,
+        # dùng chung với proactive_observer._quick_verify_output.
+        is_error_output = classify_tool_output(output) == "fail"
 
         if is_mutating and r_client is not None and idempotency_key and is_error_output:
             # Tool reported failure — no mutation happened; unlock for retry.

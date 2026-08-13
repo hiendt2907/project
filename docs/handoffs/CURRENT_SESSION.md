@@ -1,6 +1,33 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-13 (Đ66 — DONE: fix bug thật — user chỉ ra message Telegram
+**Cập nhật:** 2026-08-13 (Đ67 — DONE: user yêu cầu "sửa triệt để" root cause của
+Đ66 (bản vá Đ66 chỉ thêm từ khoá vào 1 whitelist hardcode — vẫn còn hardcode, chỉ vá thêm lớp
+hardcode mới). Fix triệt để: tạo `src/workers/tool_output_status.py::classify_tool_output()` làm
+NGUỒN PHÂN LOẠI THẬT DUY NHẤT (đọc `[STATUS] ok/fail` tường minh → convention 3-trạng-thái cũ
+`business_hit/empty_result/error` → token có cấu trúc trên dòng `[DATA] <token>` (nhận diện họ
+token thất bại: not_found/ambiguous/confirm_required/stale_state/khong_co_quyen/no_data/no_redis/
+kubectl_exit_N≠0) → CSV fallback cho free-text thô). `proactive_observer.py::_quick_verify_output`
+giờ chỉ map kết quả hàm này. **Phát hiện thêm lúc rà lại (bug song sinh chưa ai biết)**:
+`tool_registry.py`'s `is_error_output` trước đó CHỈ khớp đúng 2 chuỗi `"[DATA] error"`/
+`"[DATA] api_error"` — cùng lớp bug, khiến idempotency lock KHÔNG được nhả ra để retry khi
+`k8s_rollout_restart` fail kiểu `deployment_not_found`. Đã nối `is_error_output` vào cùng
+`classify_tool_output()`. `settings.py::proactive_verify_keywords_fail` rút gọn lại đúng vai trò
+ban đầu (lưới an toàn cho free-text không theo convention `[DATA]`), bỏ các token k8s-specific đã
+nhồi tạm ở Đ66 (giờ nằm ở `tool_output_status.py`, một nguồn duy nhất, tránh 2 nơi lệch nhau).
+
+**Files đã sửa (đã commit)**: `src/workers/tool_output_status.py` (MỚI),
+`tests/test_tool_output_status.py` (MỚI, 10 test), `src/workers/proactive_observer.py`,
+`src/workers/tool_registry.py`, `src/workers/settings.py`.
+
+Full suite `pytest tests/ -q --ignore=tests/integration`: 7366 passed, chỉ 2 fail pre-existing đã
+biết từ Đ63 (`test_aoip_agent_updater.py::...tar_hash`, `test_remote_agent.py::...collects_lane7`,
+không liên quan). Đã commit + push cả hai remote. **Next step**: không có việc tồn đọng cụ thể —
+nếu muốn mở rộng, có thể áp `[STATUS] ok/fail` tường minh cho các tool khác ngoài
+`PROACTIVE_MUTATE_TOOLS` (hiện chỉ có 2 tool tra cứu PromQL dùng convention 3-trạng-thái, phần lớn
+tool còn lại dựa vào suy luận token `[DATA]` — đã đủ cho scope bug vừa sửa, chưa cần làm rộng hơn
+trừ khi phát hiện thêm gap tương tự).
+
+### Đ66 — DONE: fix bug thật — user chỉ ra message Telegram
 `[AUTO-FIX-LEARNING] ... tool=k8s_rollout_restart score=0.75` báo THÀNH CÔNG trong khi nội dung
 `[DATA] deployment_not_found` là THẤT BẠI. Root cause: `_quick_verify_output()`
 (`proactive_observer.py:156`) chỉ nhận diện fail qua whitelist từ khoá cũ
