@@ -123,7 +123,7 @@ pipeline {
           # still working with.
           IMAGE_TAG=$(git rev-parse --short HEAD)
           echo -n "$IMAGE_TAG" > .image_tag
-          docker build -t $HARBOR/multi-agent-system:$IMAGE_TAG -f Dockerfile .
+          docker build --build-arg GIT_COMMIT=$IMAGE_TAG -t $HARBOR/multi-agent-system:$IMAGE_TAG -f Dockerfile .
           docker build -t $HARBOR/omni-gateway:$IMAGE_TAG -f Dockerfile.gateway .
 
           # Build-speed fix 2026-08-10: the two Next.js portal images were
@@ -561,6 +561,7 @@ EOF
           kubectl apply -f k8s/gitops/vault-clustersecretstore.yaml
           kubectl apply -f k8s/gitops/omni-gateway-external-secret.yaml
           kubectl apply -f k8s/gitops/telegram-bot-external-secret.yaml
+          kubectl apply -f k8s/gitops/omni-nim-external-secret.yaml
         '''
       }
     }
