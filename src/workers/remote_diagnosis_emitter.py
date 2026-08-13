@@ -70,6 +70,15 @@ def diagnosis_has_real_finding(final: dict[str, Any]) -> bool:
     """False khi LLM kết luận KHÔNG có sự cố ⇒ không phát thẻ báo động.
 
     Bản ghi session vẫn được lưu ở Redis cho UI xem; chỉ chặn cái thẻ đỏ gây nhiễu.
+
+    Root cause thật (đo 2026-08-11, audit `docs/audit/domain_telegram_evidence_audit_2026-08-11.md`):
+    hàm này trước đây KHÔNG đọc `confidence`, nên chuỗi fallback "Diagnosis inconclusive…" (LLM
+    chết/timeout, không phải kết luận thật) vẫn có `root_cause` khác rỗng và không khớp
+    `_NO_ISSUE_RE` ⇒ trả True ⇒ gửi. Đó là lý do 989/989 session gửi Telegram dù chỉ 22/989 (2.2%)
+    thực sự hữu ích, và 767/989 (77.6%) có `confidence=0.0` do LLM chết. Ngưỡng `conf > 0.0` khớp
+    ĐÚNG tiền lệ đã dùng cho quyết định tương tự ở `remote_agent_pipeline.py::_verdict_from_session`
+    (Đ52) — nơi đó đã bỏ hẳn việc đọc cờ `degraded` vì đo được cờ đó chỉ True 32/989 dù 767 ca LLM
+    chết, nên không phản ánh sự thật. Không dùng `degraded` ở đây vì cùng lý do.
     """
     if not final:
         return False
@@ -77,6 +86,12 @@ def diagnosis_has_real_finding(final: dict[str, Any]) -> bool:
     if not rc:
         return False
     if _NO_ISSUE_RE.search(rc):
+        return False
+    try:
+        conf = float(final.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        conf = 0.0
+    if conf <= 0.0:
         return False
     return True
 

@@ -57,5 +57,22 @@ def test_no_issue_conclusion_not_a_real_finding(rc: str) -> None:
 
 def test_real_incident_is_a_finding() -> None:
     assert diagnosis_has_real_finding(
-        {"root_cause": "nginx down: upstream cust-app not found in config"}
+        {"root_cause": "nginx down: upstream cust-app not found in config", "confidence": 0.8}
     ) is True
+
+
+def test_zero_confidence_is_not_a_real_finding_even_with_root_cause_text() -> None:
+    """Regression 2026-08-13 (audit domain_telegram_evidence_audit_2026-08-11.md): LLM timeout/chết
+    vẫn tạo `root_cause` dạng "Diagnosis inconclusive..." (khác rỗng, không khớp _NO_ISSUE_RE) —
+    trước fix, hàm này bỏ qua `confidence` nên vẫn coi là finding thật ⇒ gửi Telegram 100% dù
+    77.6% ca thật có confidence=0.0.
+    """
+    assert diagnosis_has_real_finding(
+        {"root_cause": "Diagnosis inconclusive due to LLM timeout", "confidence": 0.0}
+    ) is False
+
+
+def test_missing_confidence_key_treated_as_zero() -> None:
+    assert diagnosis_has_real_finding(
+        {"root_cause": "nginx down: upstream cust-app not found in config"}
+    ) is False

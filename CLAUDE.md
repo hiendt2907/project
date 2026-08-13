@@ -199,13 +199,16 @@ mới rõ ràng.
   `required_evidence` + `MUTATE_TOOL_ALLOWLIST` (xoay vòng credential khi remediation SIEM/security
   — xem `src/workers/analyst_agentic_loop.py`). Không mở rộng quyền Secrets ngoài phạm vi tool này.
   Executor: NEVER cluster-admin.
-  ⚠️ **Nhãn RBAC lỗi thời, xác nhận 2026-08-13 (Đ62)**: `k8s/deployments/omni-fullstack-rbac.yaml`
-  tự gắn annotation `omni.io/env: lab` + `omni.io/note: "Lab-only. Do not bind in prod."` trên
-  chính `ClusterRole`/`ClusterRoleBinding omni-executor-mutate-lab` này — nhưng đây là MỘT manifest
-  DUY NHẤT (không có bản `.gcp.yaml` song song), đang bind thật trên cluster GCP mà đầu file này
-  gọi là Core/production. Nhãn không khớp môi trường thật, dễ gây hiểu lầm khi audit bảo mật (đọc
-  nhãn tưởng ClusterRole này chỉ tồn tại ở lab). Chưa xác định lại có nên đổi nhãn cho khớp thực tế
-  hay tách file GCP riêng — cần quyết định kiến trúc, chưa làm.
+  ⚠️ **Nhãn RBAC lỗi thời — ĐÃ SỬA 2026-08-13 (Đ68, phát hiện Đ62, gác quyết định ở Đ64)**:
+  `k8s/deployments/omni-fullstack-rbac.yaml` từng tự gắn `omni.io/env: lab` +
+  `omni.io/note: "Lab-only. Do not bind in prod."` trên `ClusterRole`/`ClusterRoleBinding
+  omni-executor-mutate-lab` — sai vì đây là MỘT manifest DUY NHẤT (không có bản `.gcp.yaml` song
+  song), đang bind thật trên cluster GCP production. Quyết định: **giữ nguyên tên
+  `omni-executor-mutate-lab`** (đổi tên là breaking change cho binding + mọi chỗ tham chiếu, rủi
+  ro cao hơn lợi ích), **không tách file GCP riêng** (cần rà lại toàn bộ đường sync ArgoCD
+  `directory.include`, để sau nếu thực sự cần) — chỉ gỡ label `omni.io/env: lab` và sửa lại
+  annotation cho khớp sự thật (đang bind thật trên cả lab và GCP, có chủ đích, đã gate đủ). Không
+  đụng `rules:`/verbs/resources thật của ClusterRole — chỉ sửa metadata.
 - `OMNI_LLM_NUM_CTX` default 8192. Dùng `build_llm_options(ctx)` — không inline getattr.
 - Autonomy tier: `resolve_tier` ưu tiên Redis cache `omni:cfg:tier:{tenant}` > PG > env. Đổi env phải DEL cache.
 

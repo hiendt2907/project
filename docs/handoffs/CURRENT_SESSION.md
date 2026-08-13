@@ -1,6 +1,65 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-13 (Đ67 — DONE: user yêu cầu "sửa triệt để" root cause của
+**Cập nhật:** 2026-08-13 (Đ68 — DONE: user cho "toàn quyền" xử lý các mục tồn
+đọng còn lại (sau khi tôi khảo sát ở lượt trước và báo cáo phần lớn cần quyết định/không truy cập
+được). Tôi CHỈ nhận 2 việc có bằng chứng bug thật + verify được, KHÔNG động tới các quyết định
+kiến trúc lớn khác (Vault, OrbStack retire, xoá `ui/`, resource requests GCP...) — giữ đúng
+nguyên tắc match scope, không lạm dụng "toàn quyền" để tự quyết định thay user những việc lớn.
+
+1. **Fix Telegram noise thật (Đ51's "Bug thứ 2")**: `remote_diagnosis_emitter.py::
+   diagnosis_has_real_finding()` không đọc `confidence`, nên fallback "Diagnosis inconclusive…"
+   (LLM chết/timeout) vẫn được coi là finding thật ⇒ gửi Telegram 100% dù chỉ 22/989=2.2% thực sự
+   hữu ích, 767/989=77.6% confidence=0.0 (đo thật Đ51). Thêm check `conf <= 0.0 → False` — ĐÚNG
+   TIỀN LỆ đã dùng ở `remote_agent_pipeline.py::_verdict_from_session` (Đ52, cùng lý do bỏ cờ
+   `degraded` vì đo được nó chỉ True 32/989 dù 767 ca LLM chết). Không tự chọn hướng (2)/(3) trong
+   3 hướng Đ51 từng nêu (hạ tải LLM / sửa cờ degraded) — chỉ áp dụng đúng 1 pattern đã được xác
+   nhận đúng trong chính codebase, không phát minh chính sách mới. Cập nhật test
+   `tests/test_remote_diagnosis_emitter_guards.py` (2 test mới + sửa 1 test cũ thiếu field
+   confidence). 17/17 test file này xanh, 40/40 test `remote_diagnosis`/`remote_agent_pipeline`
+   liên quan xanh.
+2. **Sửa nhãn RBAC lỗi thời** (`k8s/deployments/omni-fullstack-rbac.yaml`) — gỡ label
+   `omni.io/env: lab` + sửa annotation trên `ClusterRole`/`ClusterRoleBinding
+   omni-executor-mutate-lab` (đang bind thật trên GCP production nhưng tự gắn nhãn "lab-only, do
+   not bind in prod", gây hiểu lầm khi audit bảo mật — phát hiện ở Đ62, gác quyết định ở Đ64).
+   Quyết định: giữ nguyên TÊN (đổi tên là breaking change cho binding, rủi ro cao hơn lợi ích),
+   KHÔNG tách file `.gcp.yaml` riêng (cần rà lại đường sync ArgoCD `directory.include`, để sau) —
+   chỉ sửa label/annotation cho khớp sự thật. Verify: `python3 -c "yaml.safe_load_all(...)"` xác
+   nhận 14 document YAML vẫn hợp lệ; `git diff | grep` xác nhận KHÔNG có dòng thay đổi nào ngoài
+   label/comment/annotation (không đụng `rules:`/verbs/resources thật). Cập nhật CLAUDE.md mục
+   RBAC phản ánh đã sửa. **Full suite lần 1 bắt được 1 test cũ giả định label sai còn tồn tại**
+   (`tests/test_configmap_remediation.py::test_lab_rbac_labeled_lab_env` — assert
+   `"omni.io/env: lab" in content`) — đổi thành `test_lab_rbac_not_mislabeled_lab_only` (assert
+   NGƯỢC LẠI, khoá không cho ai gắn nhãn sai đó trở lại). Phát hiện thêm lúc đọc file test này:
+   có 1 file RBAC thứ hai `k8s/rbac-executor-least-privilege.yaml` (namespace-scoped, không
+   ClusterRoleBinding) — nhưng KHÔNG được ArgoCD/Jenkinsfile/Makefile nào áp dụng thật (chỉ có
+   comment "kubectl apply tay"), tức là file "ít quyền hơn" này chưa từng sống — xác nhận thêm
+   rằng `omni-fullstack-rbac.yaml` (file tôi vừa sửa) đúng là file RBAC thật duy nhất đang chạy.
+
+**Phát hiện lúc verify danh sách tồn đọng (QUAN TRỌNG cho phiên sau)**: 2 mục trong khảo sát ban
+đầu ("CPU oversubscription" và "RAG dim 768→1024") hoá ra ĐÃ LỖI THỜI — đã fix ở Đ65/Đ60 trong
+chính phiên hôm nay, chỉ là text cũ ở vị trí entry cũ (Đ47/Đ59, Đ trước Đ60) trong
+`CURRENT_SESSION.md` chưa được dọn. Bài học: file handoff dài, append-only, có nhiều chỗ "chưa
+làm" đã bị entry SAU đó (số Đ cao hơn) giải quyết nhưng không quay lại sửa text cũ — khi audit lại
+"việc tồn đọng", PHẢI đối chiếu với các entry MỚI HƠN (số Đ cao hơn / ngày gần hơn) trước khi tin,
+không chỉ tin nội dung tại đúng vị trí tìm thấy.
+
+**Việc CHƯA làm, đã báo cáo lại cho user chứ không tự quyết**: Gate 0 agent hardening code đã
+commit (`243a139`) nhưng cutover thật lên 3 VM lab (`cust-db/cust-edge/cust-app`) vẫn BỊ CHẶN — cần
+chạy từ MacBook user (OrbStack/Tailscale), VM GCP này không có đường kỹ thuật tới đó, không phải
+vấn đề quyền hạn. RBAC/Vault-auto-unseal/OrbStack-retire/xoá `ui/`/resource-requests-GCP-VM/
+double-fire-agent-detection/domain-security-seed-data — đều là quyết định kiến trúc hoặc việc lớn
+cần plan riêng, không tự làm dưới "toàn quyền" vì rủi ro/phạm vi vượt quá một lượt sửa nhanh.
+
+Full suite `pytest tests/ -q --ignore=tests/integration`: 7368 passed, chỉ 2 fail pre-existing đã
+biết từ Đ63 (`test_aoip_agent_updater.py::...tar_hash`, `test_remote_agent.py::...collects_lane7`,
+không liên quan). Đã commit + push cả hai remote. **Next step**: không có việc tồn đọng nào an
+toàn để tự làm tiếp — mọi mục còn lại trong danh sách khảo sát (RBAC file split, Vault
+auto-unseal, OrbStack retire, xoá `ui/`, resource requests GCP VM, double-fire agent detection,
+domain security seed data, 3 hướng giảm tải LLM còn lại của Đ51) đều cần quyết định kiến trúc từ
+user hoặc bị chặn kỹ thuật (Gate 0 cutover cần MacBook). Nếu muốn tiếp tục, nên chọn TỪNG mục cụ
+thể thay vì "toàn quyền" lần nữa — phạm vi các việc còn lại đủ lớn để cần plan riêng.
+
+### Đ67 — DONE: user yêu cầu "sửa triệt để" root cause của
 Đ66 (bản vá Đ66 chỉ thêm từ khoá vào 1 whitelist hardcode — vẫn còn hardcode, chỉ vá thêm lớp
 hardcode mới). Fix triệt để: tạo `src/workers/tool_output_status.py::classify_tool_output()` làm
 NGUỒN PHÂN LOẠI THẬT DUY NHẤT (đọc `[STATUS] ok/fail` tường minh → convention 3-trạng-thái cũ

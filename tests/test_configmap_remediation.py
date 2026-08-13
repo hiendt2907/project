@@ -346,9 +346,17 @@ def test_lab_rbac_has_create_verb_on_configmaps():
     assert "create" in content
 
 
-def test_lab_rbac_labeled_lab_env():
+def test_lab_rbac_not_mislabeled_lab_only():
+    """`omni-fullstack-rbac.yaml` bind thật trên CẢ lab lẫn GCP production (không có bản
+    `.gcp.yaml` riêng, xác nhận qua kubectl 2026-08-13, Đ62/Đ68) — trước đây có label
+    `omni.io/env: lab` khiến audit bảo mật đọc nhầm là "chỉ tồn tại ở lab". Đã gỡ label đó
+    (Đ68); test này khoá lại để không ai vô tình thêm nhãn sai đó trở lại.
+    """
     content = open(_LAB_RBAC).read()
-    assert "omni.io/env: lab" in content, "lab RBAC must be labeled omni.io/env: lab"
+    assert "omni.io/env: lab" not in content, (
+        "omni-fullstack-rbac.yaml bind thật trên production — không gắn lại nhãn "
+        "'omni.io/env: lab' (gây hiểu lầm khi audit bảo mật, xem CLAUDE.md mục RBAC)"
+    )
 
 
 def test_prod_rbac_has_no_clusterrolebinding():

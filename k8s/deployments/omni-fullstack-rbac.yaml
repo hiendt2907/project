@@ -1,6 +1,12 @@
 # Fullstack SA — aggregates RBAC from analyst, prober, executor, and worker roles.
 # Used exclusively by omni-fullstack deployment (OMNI_WORKER_ROLE=full).
-# Lab only: includes executor-mutate-lab ClusterRoleBinding for cross-namespace mutations.
+#
+# ⚠️ Nhãn "lab" xác nhận LỖI THỜI 2026-08-13 (Đ62/Đ64 audit): manifest này KHÔNG có bản
+# `.gcp.yaml` song song — cùng một file này đang bind thật trên cả lab OrbStack lẫn cluster
+# GCP production. Các annotation/label "lab-only"/"do not bind in prod" bên dưới còn sót từ
+# lúc `omni-executor-mutate-lab` chỉ tồn tại ở lab — nay là một ngoại lệ CÓ CHỦ ĐÍCH đã gate
+# bằng required_evidence + MUTATE_TOOL_ALLOWLIST (xem CLAUDE.md mục RBAC), không phải thứ cần
+# xoá trước khi lên prod. Giữ nguyên nhãn "lab" ở đây từng gây hiểu lầm khi audit bảo mật.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -11,7 +17,6 @@ metadata:
     app.kubernetes.io/component: omni-fullstack
     app.kubernetes.io/part-of: omni-platform
     omni.io/managed: "true"
-    omni.io/env: lab
 ---
 # Prober read access in multi-agent namespace (pods, logs, events, configmaps, netpol)
 apiVersion: rbac.authorization.k8s.io/v1
@@ -66,7 +71,10 @@ subjects:
     name: omni-fullstack
     namespace: multi-agent
 ---
-# Executor mutation rights — lab only (deployments patch, configmaps create/patch, secrets patch)
+# Executor mutation rights (deployments patch, configmaps create/patch, secrets patch).
+# Tên "-lab" là lịch sử (khối này từng chỉ tồn tại ở lab) — nay bind thật trên CẢ lab lẫn GCP
+# production, có chủ đích, gated bằng required_evidence + MUTATE_TOOL_ALLOWLIST (xem
+# omni-executor-mutate-lab ClusterRole bên dưới + CLAUDE.md mục RBAC). Không xoá trước prod.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -74,9 +82,8 @@ metadata:
   labels:
     app.kubernetes.io/component: omni-fullstack
     omni.io/managed: "true"
-    omni.io/env: lab
   annotations:
-    omni.io/note: "Lab only. Delete before promoting to prod."
+    omni.io/note: "Tên có hậu tố -lab vì lý do lịch sử; đang bind thật trên cả lab và GCP production, có chủ đích (xem CLAUDE.md mục RBAC). KHÔNG xoá trước khi lên prod — đã ở trên prod."
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -267,17 +274,24 @@ rules:
     resources: ["ingresses"]
     verbs: ["get", "list", "watch"]
 ---
-# (was executor-rbac-lab.yaml) LAB executor mutation rights — cluster-wide workload
-# mutation for cross-namespace remediation labs. Only the `rbac.authorization.k8s.io` group
-# below is READ-ONLY (2026-06-03 audit S1: write verbs removed there to prevent
-# self-escalation to cluster-admin). `secrets` patch/update IS intentionally granted — it
-# backs the gated `k8s_patch_secret` mutate tool (src/workers/k8s_cluster_tools.py,
+# (was executor-rbac-lab.yaml) Executor mutation rights — cluster-wide workload mutation for
+# cross-namespace remediation. Only the `rbac.authorization.k8s.io` group below is READ-ONLY
+# (2026-06-03 audit S1: write verbs removed there to prevent self-escalation to cluster-admin).
+# `secrets` patch/update IS intentionally granted — it backs the gated `k8s_patch_secret`
+# mutate tool (src/workers/k8s_cluster_tools.py,
 # required_evidence=["secret_ref_confirmed","credential_source_of_truth"], part of
 # MUTATE_TOOL_ALLOWLIST) used for credential rotation during SIEM/security remediation. Do
 # not narrow this without checking analyst_agentic_loop.py's security-remediation flow first
 # (2026-07-03 tech-debt sweep: corrected this comment, which previously read "RBAC resources
 # are READ-ONLY" for the whole ClusterRole — that was inaccurate for `secrets`/`configmaps`).
-# Delete this ClusterRole + the omni-fullstack-executor-mutate-lab binding before prod.
+#
+# ⚠️ Tên "-lab" + comment "delete before prod" là LỊCH SỬ, không còn đúng từ khi manifest này
+# hợp nhất thành nguồn duy nhất cho cả lab và GCP (không có bản `.gcp.yaml` riêng) — ClusterRole
+# này đang bind thật trên production, có chủ đích, đã gate đủ (xem trên). Xác nhận lại 2026-08-13
+# (Đ62/Đ64/Đ68): quyết định giữ nguyên tên (đổi tên là breaking change cho binding + mọi chỗ
+# tham chiếu `omni-executor-mutate-lab`, rủi ro cao hơn lợi ích của việc đổi tên) — chỉ sửa nhãn/
+# annotation cho khớp sự thật, không tách file GCP riêng (việc đó cần rà lại toàn bộ đường sync
+# ArgoCD `directory.include`, để lại làm sau nếu thực sự cần).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -285,9 +299,8 @@ metadata:
   labels:
     app.kubernetes.io/part-of: omni-platform
     omni.io/managed: "true"
-    omni.io/env: lab
   annotations:
-    omni.io/note: "Lab-only. Do not bind in prod."
+    omni.io/note: "Tên có hậu tố -lab vì lý do lịch sử; đang bind thật trên cả lab và GCP production, có chủ đích, đã gate bằng required_evidence + MUTATE_TOOL_ALLOWLIST (xem CLAUDE.md mục RBAC). KHÔNG xoá trước khi lên prod — đã ở trên prod."
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "replicasets", "daemonsets"]
