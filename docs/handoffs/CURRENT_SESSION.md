@@ -75,15 +75,74 @@ thời gian thật vì bị giới hạn 40rpm (~1019 entry / 40 ≈ 26 phút t�
 `_RateLimiter`). CHƯA làm bước này trong phiên — cố ý chưa làm vì đây là thao tác gần như phá huỷ
 dữ liệu RAG hiện có nếu làm vội, cần user xác nhận trước khi drop index thật.
 
+**Cập nhật thêm cùng phiên (sau khi viết đoạn trên) — 3 sự cố thật gặp khi build+deploy, đều đã xử
+lý, build 69 đang chạy khi ghi dòng này:**
+
+1. **CoreDNS watch stale sau rollback sqlite** — build 65/66 fail ở bước `git fetch` trong Jenkins:
+   `Could not resolve host: gitea.cicd.svc.cluster.local`. Root cause xác nhận bằng debug pod
+   (`nslookup` → NXDOMAIN dù Service `gitea` tồn tại thật trong `kubectl get svc`): CoreDNS pod
+   sống sót qua thao tác rollback datastore ở mục 1 nhưng watch cũ của nó với apiserver không tự
+   phục hồi đúng. Fix: `kubectl rollout restart deployment/coredns -n kube-system` — verify lại
+   bằng debug pod, resolve đúng ngay. Bài học: sau bất kỳ lần rollback/swap sqlite datastore nào,
+   restart CoreDNS luôn, đừng đợi lỗi mới phát hiện.
+
+2. **CPU capacity thật sự thiếu trên node 4-core** — `omni-k3s-vm` chỉ có 4 CPU allocatable. Sau
+   khi rollback đưa cả 15 namespace + Jenkins (giờ chạy in-cluster, permanent resident 500m, KHÔNG
+   có trong baseline cũ trước Đ47) sống cùng lúc, node request thường trực ~96-98% (dù usage thực
+   tế chỉ ~25%) — bất kỳ pod mới nào cần schedule (Jenkins pod tự nó, rồi tới `omni-fullstack` sau
+   rollout, tính cả istio-proxy sidecar 100m nó tự inject = tổng 600m chứ không phải 500m như
+   trong resources.requests khai báo) đều bị `FailedScheduling: Insufficient cpu`. Xử lý tạm thời
+   (làm 2 lần, mỗi lần cho một pod cần lên): `kubectl scale` namespace `monitor`
+   (prometheus/grafana/tempo/mimir/loki) xuống `replicas=0` vài phút, xoá pod Pending để buộc
+   scheduler thử lại ngay (không tự retry kịp dù có headroom), rồi scale monitor lại `replicas=1`
+   ngay sau khi pod cần thiết đã schedule xong. **Đây là workaround, không phải fix** — nếu không
+   có ai chủ động làm vậy, việc restart/redeploy BẤT KỲ pod nào trên node 4-core này (không riêng
+   omni-fullstack) có nguy cơ treo ở Pending. Khuyến nghị thật sự: tăng CPU của VM GCP hoặc giảm
+   `resources.requests` một số Deployment không cần 100-500m thật (nhiều chỗ đang xin nhiều hơn
+   usage thực đo được), CHƯA làm — cần quyết định của user vì đụng tới cost/kiến trúc GCP VM.
+
+3. **Bug CI/CD nghiêm trọng: Docker layer cache tái dùng COPY src/ dù code đã đổi** — phát hiện
+   sau khi build 68 "thành công" đẩy tag `bb33dd1` (đúng) nhưng pod chạy image đó vẫn 401 khi gọi
+   NIM dù `OMNI_NIM_API_KEY`/`OMNI_LLM_PROVIDER` env đúng 100% (verify tay bằng `printenv` +
+   `curl` cùng key ngoài container → 200 OK). `kubectl exec ... cat /app/src/llm/factory.py` lộ ra
+   file trong image KHÔNG có code NIM (`provider`/`api_key`) — vẫn là bản `243a139`, cũ hơn 2
+   commit. Log build 68 xác nhận: `Step 9/18 : COPY src/ /app/src/` → `Using cache` dù nội dung
+   `src/` thật sự đổi. Đây là legacy Docker builder (non-BuildKit, có warning deprecated trong
+   log) tái dùng cache sai. **Fix đã commit** (`Dockerfile` + `Jenkinsfile`, chưa verify build
+   69 xong lúc ghi dòng này): thêm `ARG GIT_COMMIT` + `RUN echo "$GIT_COMMIT" > /tmp/.git_commit`
+   ngay trước `COPY src/`, Jenkinsfile truyền `--build-arg GIT_COMMIT=$IMAGE_TAG` — mọi commit mới
+   giờ chắc chắn invalidate cache từ layer đó trở đi. **Bài học nghiêm trọng cho việc tin tưởng CI
+   trong tương lai**: tag image = git commit SHA KHÔNG đủ để đảm bảo code đúng đã deploy nếu build
+   dùng legacy Docker builder — phải verify bằng cách đọc trực tiếp file trong container
+   (`kubectl exec ... cat`), không chỉ tin `docker build` log "Successfully built" + tag khớp.
+
+4. **GitOps tag-bump push bị non-fast-forward 2 lần** — cả hai lần đều do CHÍNH session này push
+   thêm commit (pip-cache fix, cache-bust fix) TRONG LÚC một Jenkins build khác đang chạy dựa trên
+   commit cũ hơn. Bài học: khi một build `omni-gcp-deploy` đang chạy, KHÔNG push thêm gì lên
+   `gitea main` cho tới khi build đó kết thúc (thành công hay fail) — nếu fail, build tự động
+   revert commit tag-bump của chính nó (post{failure{}} trong Jenkinsfile), an toàn để rebase lên
+   trên rồi push tiếp.
+
+**GitHub (`origin`) vẫn CHƯA có các commit của phiên này** — máy VM này không có SSH private key
+cho `git@github.com` (`~/.ssh/` chỉ có `authorized_keys`, không có identity file/agent) — đây là
+gap môi trường có sẵn, không phải lỗi phát sinh trong phiên. Cần user tự `git push origin main`
+từ máy có key, hoặc cấp key/token cho VM này nếu muốn tự động hoá đủ 2 remote từ đây.
+
 ### Next step (Đ59)
 
-1. Xác nhận build+deploy qua Jenkins (`omni-gcp-deploy`, KHÔNG tự trigger từ git push — phải bấm
-   Build Now / gọi API tay, xem cảnh báo đầu `CLAUDE.md`) đã chạy xong, pod `omni-fullstack` mới
-   lên với image mới, log không còn báo lỗi kết nối `100.93.3.96:11434`.
-2. Hỏi user có muốn tiến hành FT.DROPINDEX + re-embed RAG ngay (mất ~30 phút+, tốn budget rate
+1. Xác nhận build 69 (`omni-gcp-deploy`, đang chạy lúc ghi dòng này) PASS hết — đặc biệt xác nhận
+   bằng `kubectl exec omni-fullstack ... cat /app/src/llm/factory.py` rằng code NIM THẬT SỰ có
+   trong image lần này (đừng chỉ tin tag khớp, xem mục 3 ở trên), và log pod không còn dòng
+   `AuthenticationError...401`.
+2. Nếu build 69 lại timeout ở bước "Wait for ArgoCD rollout" vì CPU (xem mục 2 ở trên): áp dụng
+   lại workaround scale `monitor` namespace xuống 0 tạm thời, xoá pod Pending, chờ schedule, scale
+   `monitor` lại 1. Cân nhắc đề xuất user tăng CPU VM nếu việc này cứ lặp lại mỗi lần deploy.
+3. Hỏi user có muốn tiến hành FT.DROPINDEX + re-embed RAG ngay (mất ~30 phút+, tốn budget rate
    limit NIM free-tier) hay để RAG tạm "lỗi to nhưng an toàn" tới khi có quyết định — ĐỪNG tự ý
    drop index.
-3. Backup archive Đ57 vẫn còn nguyên trên VM, vẫn CHƯA copy ra ngoài — nếu sau này quay lại ý định
+4. `git push origin main` (GitHub) đang thiếu các commit của phiên này — cần user tự làm từ máy
+   có SSH key, hoặc cấp key cho VM.
+5. Backup archive Đ57 vẫn còn nguyên trên VM, vẫn CHƯA copy ra ngoài — nếu sau này quay lại ý định
    xoá VM, phải làm bước này trước (xem Next step Đ57 gốc, không đổi).
 
 ---
