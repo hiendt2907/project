@@ -1,19 +1,60 @@
 # Current Session Handoff
 
-**Cập nhật:** 2026-08-13 (Đ64 — DONE: sửa CLAUDE.md cho gap #3/#4 của Đ62 (tenant allowlist lỗi
-thời + nhãn RBAC "lab-only" bind sai môi trường) — doc-only, không đụng cluster/code. Đ63 — DONE:
-fix root cause `case_ledger.domain` luôn `unknown` (gap #2 của Đ62). Full suite `pytest tests/ -q
+**Cập nhật:** 2026-08-13 (Đ65 — DONE: gap #1 cuối cùng của Đ62 — user tự resize VM
+`omni-k3s-vm` 4→8 vCPU qua gcloud (`set-machine-type` → `e2-custom-8-16384`, có downtime ngắn lúc
+stop/start). Verify trực tiếp qua kubectl: node allocatable CPU 4→8, cả 4 pod
+`grafana/loki/mimir/tempo` tự chuyển `Pending`→`1/1 Running` (không cần thao tác gì thêm, k3s tự
+schedule lại khi node có capacity). CPU requests sau resize: 4355m/8000m (54%, trước đó 98%) —
+hết oversubscription. **Tất cả 4 gap của Đ62 nay đã xử lý xong** (2 fix code/infra thật, 2 sửa
+tài liệu). Phát hiện thêm lúc verify: ADR 0002 ghi máy `e2-custom-8-16384` nhưng trước khi user
+resize, node đang thực tế chỉ 4 vCPU — nghĩa là VM từng bị hạ máy đâu đó giữa lúc migrate và giờ,
+không ai ghi lại; sau lần resize này, máy khớp lại đúng ADR 0002 nên KHÔNG cần sửa ADR. Đ64 —
+DONE: sửa CLAUDE.md cho gap #3/#4 của Đ62 (tenant allowlist lỗi thời + nhãn RBAC "lab-only" bind
+sai môi trường) — doc-only, không đụng cluster/code. Đ63 — DONE: fix root cause
+`case_ledger.domain` luôn `unknown` (gap #2 của Đ62). Full suite `pytest tests/ -q
 --ignore=tests/integration`: 7355 passed, 2 failed — cả 2 fail xác nhận PRE-EXISTING/không liên
 quan (fail giống hệt trên `main` sạch trước khi sửa, verify bằng `git stash` + chạy lại 2 test đó
 riêng: `test_aoip_agent_updater.py::...tar_hash`, `test_remote_agent.py::...collects_lane7` — cả
 hai đụng tar-determinism/network probe thật của máy chạy test, không đụng gì tới
-case_ledger/advisory_ack/pipeline_stages). Đã commit+push cả hai remote. Đ62 — audit toàn dự án: 2
-gap MỚI mức Cao (monitor namespace sập vì hết CPU node — CHƯA FIX; `case_ledger.domain` — ĐÃ FIX ở
-Đ63), 2 gap MỚI mức Trung (tenant auto-execute allowlist trong CLAUDE.md lỗi thời — ĐÃ FIX ở Đ64;
-nhãn RBAC "lab-only" bind nhầm trên cluster production — GHI CHÚ ở Đ64, chưa quyết định sửa nhãn
-hay tách manifest). Đ61 — fix Telegram callback (nút Đúng/Sai HITL) không được nhận: bật lại
+case_ledger/advisory_ack/pipeline_stages). Đã commit+push cả hai remote. Đ61 — fix Telegram callback (nút Đúng/Sai HITL) không được nhận: bật lại
 `OMNI_TELEGRAM_POLLING_ENABLED`, verify sống. Đ60 — re-index RAG sang NIM 1024-dim DONE. Đ59
 (rollback + chuyển NIM) DONE bên dưới.)
+
+### Đ65 — Resize `omni-k3s-vm` 4→8 vCPU, giải quyết gap #1 của Đ62 (2026-08-13) — DONE
+
+**Thực hiện:** user tự chạy (tôi không có quyền `gcloud compute` trong session — service-account
+gắn với VM bị `insufficient authentication scopes`, đã thử `instances list`/`describe` đều fail).
+Hướng dẫn đưa ra: `gcloud compute instances stop omni-k3s-vm --zone=asia-southeast1-c` →
+`set-machine-type --machine-type=e2-custom-8-16384` → `start`. User xác nhận đã chạy xong.
+
+**Verify (qua kubectl, `sudo cat /etc/rancher/k3s/k3s.yaml` → kubeconfig tạm, đúng cách audit Đ62
+đã dùng):**
+- `kubectl get node omni-k3s-vm` allocatable cpu: `4` → `8`.
+- `kubectl get pods -n monitor`: loki/mimir/tempo (đã kẹt `Pending` do `FailedScheduling:
+  Insufficient cpu` suốt >110 phút liên tục theo event history) tự được scheduler nhận trong
+  vòng <90s sau khi node báo capacity mới, qua trạng thái container-starting bình thường (503
+  readiness/liveness ~30-60s đầu) rồi lên `1/1 Running`. grafana đã `2/2 Running` sẵn từ trước
+  (không rõ tại sao grafana không bị Pending như 3 pod kia — có thể request thấp hơn, không điều
+  tra thêm vì không còn là vấn đề).
+- `kubectl describe node` Allocated resources sau resize: `cpu 4355m/8000m (54%)` — trước đó
+  3935m/4000m (98%). Hết oversubscription, còn nhiều headroom.
+
+**Phát hiện phụ lúc verify (không phải gap mới, chỉ giải thích một mâu thuẫn tưởng là gap):** trước
+khi resize, node thực tế chỉ có 4 vCPU dù ADR 0002 ghi máy tạo ban đầu là `e2-custom-8-16384` (8
+vCPU) — nghĩa là VM từng bị hạ xuống 4 vCPU ở đâu đó giữa lúc migrate (2026-08-04) và audit Đ62
+(2026-08-13), không ai ghi lại việc đó. Sau resize lần này, máy quay lại đúng 8 vCPU như ADR 0002
+mô tả — nên KHÔNG cần sửa ADR 0002, coi như đã "vá" lại đúng giá trị gốc. Nếu tương lai còn thấy
+VM tụt CPU không rõ lý do, đây là manh mối: có khả năng ai đó/script nào đó đã hạ máy xuống 4 vCPU
+mà không ghi log.
+
+**Không cần làm gì thêm** — không có Deployment nào cần sửa resource requests/limits, không cần
+scale lại thủ công (k3s scheduler tự làm). Namespace `monitor` full stack (alertmanager/grafana/
+kube-state-metrics/loki/mimir/node-exporter/prometheus/promtail/tempo) đều `Running` khoẻ.
+
+**Tất cả 4 gap của Đ62 (audit toàn dự án 2026-08-13) nay đã xử lý xong**, không còn gap tồn đọng
+từ audit đó. Next step: không có việc tồn đọng cụ thể — nếu muốn làm gì tiếp, cân nhắc audit vòng
+2 (phạm vi hẹp hơn, hoặc domain cụ thể) hoặc quay lại các mục "Chưa làm" khác đã rải rác trong các
+entry Đ trước đó (VD SIEM domain chưa đạt ✅ đầy đủ — `omni-siem-chains` chưa từng hình thành).
 
 ### Đ64 — Sửa CLAUDE.md: tenant allowlist lỗi thời + nhãn RBAC sai môi trường (2026-08-13) — DONE
 
