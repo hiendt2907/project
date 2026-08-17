@@ -44,6 +44,16 @@ def set_rag_empty_result_hook(fn) -> None:
 # nomic-embed-text (Ollama) = 768 dims; nv-embedqa-e5-v5 (NVIDIA NIM) = 1024 dims.
 # Switching OMNI_LLM_PROVIDER requires recreating the HNSW index (dim is fixed at
 # FT.CREATE time) and re-embedding existing entries — see pkg/rag/ollama_embed.py.
+#
+# ⚠️ Đã trả giá thật 2026-08-17 (roadmap A6): `_ensure_index()` chỉ tạo index nếu CHƯA tồn tại
+# (FT.INFO thành công → skip) — đổi OMNI_EMBED_DIM trên ConfigMap KHÔNG tự động re-create index
+# cũ. Kết quả: ghi 8000 vector 1024-dim vào index vẫn còn dim=768 từ trước → RediSearch từ chối
+# ÂM THẦM toàn bộ ("Could not add vector with blob size 4096 (expected size 3072)",
+# `FT.INFO <idx> | hash_indexing_failures`), `num_docs` giữ nguyên 0, không exception nào raise
+# lên tầng gọi ingest — nhìn qua tưởng ingest thành công (log "upserted 8000/8000") nhưng RAG tra
+# cứu vẫn trả về rỗng. Nếu đổi OMNI_EMBED_DIM lần nữa: PHẢI `FT.DROPINDEX idx:<collection>` (không
+# kèm DD, giữ lại doc) trước khi ingest, để `_ensure_index()` tạo lại đúng dim mới — RediSearch sẽ
+# tự backfill index cho các HASH key đã tồn tại khớp prefix, không cần chạy lại toàn bộ ingest.
 EMBED_DIM = int(os.environ.get("OMNI_EMBED_DIM", "768"))
 
 COLLECTION_SOP = "itops_sop_ledger"
