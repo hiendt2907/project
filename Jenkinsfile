@@ -225,8 +225,8 @@ EOF
 
           bump() {
             f="$1"; image="$2"
-            if grep -q "$image:latest\\|$image:[0-9a-f]\\{7,\\}" "$f" && ! grep -q "$image:$IMAGE_TAG\\b" "$f"; then
-              sed -i "s#$image:latest#$image:$IMAGE_TAG#g; s#$image:[0-9a-f]\\{7,\\}#$image:$IMAGE_TAG#g" "$f"
+            if grep -q "$image:latest\\|$image:[0-9a-f]\\{7,\\}\\|$image@sha256:[0-9a-f]\\{64\\}" "$f" && ! grep -q "$image:$IMAGE_TAG\\b" "$f"; then
+              sed -i "s#$image:latest#$image:$IMAGE_TAG#g; s#$image:[0-9a-f]\\{7,\\}#$image:$IMAGE_TAG#g; s#$image@sha256:[0-9a-f]\\{64\\}#$image:$IMAGE_TAG#g" "$f"
               CHANGED=1
               git add "$f"
             fi

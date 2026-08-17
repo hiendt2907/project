@@ -33,7 +33,16 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      backoffLimit: 2
+      # backoffLimit 2→6 (audit 2026-08-17): job chạy 02:00, namespace multi-agent có
+      # istio-injection=enabled + MutatingWebhookConfiguration istio-sidecar-injector
+      # failurePolicy=Fail — nếu node vừa reboot và istiod chưa Ready, MỌI pod creation
+      # trong namespace (kể cả job này) bị admission từ chối (502/no endpoints) cho tới khi
+      # istiod lên. backoffLimit=2 hết hạn quá nhanh (exponential backoff ~10s/20s) để chờ
+      # istiod phục hồi, và CronJob concurrencyPolicy=Forbid + không backfill nghĩa là job
+      # fail hôm đó mất hẳn bản backup, phải đợi tới 02:00 hôm sau. Đã xảy ra thật 3 lần
+      # (hôm nay + 4d + 8d trước). backoffLimit=6 (exponential backoff tới ~5-6 phút) đủ
+      # thời gian cho istiod phục hồi sau reboot trong đa số trường hợp thực tế quan sát được.
+      backoffLimit: 6
       template:
         metadata:
           labels:

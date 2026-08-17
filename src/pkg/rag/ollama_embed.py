@@ -33,6 +33,11 @@ def _nim_api_key() -> str:
 
 
 def _ollama_base_url() -> str:
+    # Default host.orb.internal chỉ đúng cho OrbStack lab; GCP production luôn set
+    # OMNI_OLLAMA_BASE_URL (NVIDIA NIM) qua ConfigMap. Nếu key đó từng biến mất khỏi ConfigMap,
+    # module này sẽ ÂM THẦM rơi về host lab không tồn tại trên GCP (audit 2026-08-17, chưa có
+    # fail-closed — thử thêm model_validator ở settings.py nhưng phá vỡ các test construct
+    # WorkerSettings tối giản nên đã rút lại; chỉ còn cảnh báo bằng comment).
     return (
         os.environ.get("OMNI_OLLAMA_BASE_URL")
         or os.environ.get("OLLAMA_BASE_URL")

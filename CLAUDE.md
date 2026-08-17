@@ -309,6 +309,16 @@ tenant lab) — cơ chế allowlist/blast-radius-control vẫn y nguyên như m�
 tenant. Đoạn tường thuật sự cố 401 bên dưới (dòng ~315-335) giữ nguyên `staging-sim` vì đó là ghi
 chép lịch sử đúng tại thời điểm sự cố xảy ra (2026-08-03) — không sửa lại thành `loyalty-uat`.
 
+⚠️ **`OMNI_AUTO_ROLLBACK_ENABLED`/`OMNI_SIEM_SUGGEST_ONLY=false` ở khối trên đã LỖI THỜI kể từ audit
+2026-08-17** — `kubectl get deployment omni-fullstack -o jsonpath='{...env}'` xác nhận trực tiếp
+Deployment env hiện tại KHÔNG có 2 biến này (chỉ còn `OMNI_AUTO_EXECUTE_ENABLED=true`,
+`OMNI_LAB_AUTO_EXECUTE_AGENTS`, `OMNI_EXECUTOR_FORCE_NSENTER=true` và vài biến khác không liên quan
+kill-switch). Giá trị hiệu lực thật của `OMNI_SIEM_SUGGEST_ONLY` hiện nay là `true` (đọc từ
+ConfigMap `omni-worker-config`, không có override) — SIEM đang ở chế độ suggest-only, không phải
+`false` như bảng trên ghi. Không rõ khi nào 2 biến này bị gỡ khỏi Deployment env giữa 2026-08-03 và
+2026-08-17 — không có entry handoff nào ghi lại. Giữ nguyên khối cũ bên trên làm lịch sử, không sửa
+lại.
+
 Đây là **chủ đích** (không phải drift kiểu 2026-06-11) — chỉ mở autonomous mutate cho đúng 3 VM
 lab qua allowlist `OMNI_LAB_AUTO_EXECUTE_AGENTS`, đúng cơ chế blast-radius control mà
 `auto_recovery_bridge.dispatch_if_eligible()` đã kiểm (xem Đ8 trong handoff). Namespace K8s vẫn
@@ -392,6 +402,14 @@ restart public, `--with-lab` mới đụng lab.
 
 `api.omnisre.xyz` / `agent.omnisre.xyz` **CHƯA public, cố ý.** Mở là phase riêng; chặn
 kỹ thuật phải xử lý trước: `/auth` và `_require_api_key` chưa có rate limit tầng app.
+⚠️ **Claim "chưa có rate limit" đã LỖI THỜI kể từ audit 2026-08-17** — `src/gateway/api.py:356
+_rate_limit_key`, `:361 _take_rate_limit_token`, `:671-677` áp dụng rate limit thật + metric
+`429_rate_limit`; `src/gateway/routes/agent_webhook.py:229 _check_rate_limit` tương tự. Đã verify
+sống trên GCP: mọi endpoint nhạy cảm của `gateway.omnisre.xyz` (`/autonomy/tenants`, `/crat/stats`,
+`/agents`, `/kpi/summary`, ...) trả 401 `{"detail":"Invalid or missing API key"}` khi thiếu key,
+tức có tầng auth + rate-limit đang chặn. Không rõ code này được thêm khi nào — chặn kỹ thuật để mở
+`api.omnisre.xyz`/`agent.omnisre.xyz` (mặt public riêng theo ADR 0001, MacBook) có thể đã bớt đi,
+nhưng đó là mặt public khác GCP — cần audit lại riêng nếu định mở 2 domain này.
 
 Không nằm trong git (mất là phải tạo lại tay): Secret `aoip-dex-public-config` +
 `aoip-provider-portal-public-secret`, role `platform_owner` seed thủ công trong Redis,
@@ -419,7 +437,13 @@ Correlation engine SIEM vẫn chạy trong `omni-fullstack` (loop `kafka_siem_co
 không đổi). Đường ingest mới: agent → gateway → `omni-siem-raw` trực tiếp (phase S2), không qua
 bridge nữa.
 
-RAG `omni:rag:sop` HLEN=1019 (khớp MEMORY.md). Redis AOF enabled. Knowledge pipeline active
+⚠️ **RAG `omni:rag:sop` HLEN=1019 đã LỖI THỜI, xác nhận SAI qua audit 2026-08-17** —
+`kubectl exec redis-0 -- redis-cli hlen omni:rag:sop` = **0**, và `--scan --pattern 'omni:rag*'`
+không trả về key nào (rỗng hoàn toàn). Nghi do sau re-index 768→1024 dim của Đ60, corpus SOP chưa
+từng được nạp lại — nhánh triage RAG tra SOP hiện tra về rỗng. `FT._LIST` vẫn liệt kê tên index
+(`itops_sop_ledger`/`itops_sop_ledger_v2`/`playbooks`) nhưng đều rỗng. Cần re-ingest corpus SOP,
+chưa xử lý — xem `docs/audit/omni_audit_2026-08-17.xlsx` dòng 18. Câu gốc dưới đây giữ nguyên làm
+lịch sử: RAG `omni:rag:sop` HLEN=1019 (khớp MEMORY.md). Redis AOF enabled. Knowledge pipeline active
 (`omni-knowledge-evidence`). **Cập nhật 2026-07-03** (đã xác minh lại `scripts/kafka_ensure_omni_topics.sh`):
 claim "mọi topic PartitionCount=1" đã lỗi thời — `omni-knowledge-evidence` dùng 3 partitions
 (dòng ~47-52, comment "Enforcing omni-knowledge-evidence config... partitions=3"), topic SIEM dùng

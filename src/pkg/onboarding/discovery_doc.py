@@ -554,10 +554,21 @@ def render_all_diagrams(doc: dict[str, Any], edges: Sequence[Any] = ()) -> str:
     )
 
 
+DIAGRAM_VERSION_TTL_SEC = 30 * 24 * 3600  # 30d — bounds /diagram/history retention (audit 2026-08-17)
+
+
 async def regenerate_diagrams(redis: Any, tenant_id: str) -> int:
     """A3: render 4 Mermaid diagram types from the accumulated doc + persisted
     SystemModel relational facts, save as a new immutable version (never
-    overwrite — diffable history). Returns the new version."""
+    overwrite — diffable history). Returns the new version.
+
+    Each version key carries DIAGRAM_VERSION_TTL_SEC — "never overwrite" only means
+    a version's content is immutable while it exists, not that it must live forever.
+    Before this TTL (audit 2026-08-17), keys had no expiry: 38k+ keys / ~115MB
+    accumulated on the shared Redis instance (maxmemory-policy=volatile-lru cannot
+    evict keys without a TTL), risking OOM writes-refused for the whole instance
+    (audit chain + RAG + hot cache) once maxmemory is hit.
+    """
     doc = await get_accumulated_doc(redis, tenant_id)
     from aoip.system_model_store import load_system_model
 
@@ -565,7 +576,9 @@ async def regenerate_diagrams(redis: Any, tenant_id: str) -> int:
     rendered = render_all_diagrams(doc, edges=model.edges)
     latest_key = DIAGRAM_LATEST_KEY.format(tenant_id=tenant_id)
     version = await redis.incr(latest_key)
-    await redis.set(DIAGRAM_KEY.format(tenant_id=tenant_id, version=version), rendered)
+    await redis.set(
+        DIAGRAM_KEY.format(tenant_id=tenant_id, version=version), rendered, ex=DIAGRAM_VERSION_TTL_SEC
+    )
     return int(version)
 
 

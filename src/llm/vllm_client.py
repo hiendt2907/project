@@ -158,11 +158,14 @@ class VLLMClient(BaseModel):
 
     base_url: str = Field(
         default="http://host.orb.internal:11434/v1",
-        description="Ollama chat/completions base URL (with or without /v1 suffix).",
+        description=(
+            "Ollama chat/completions base URL (with or without /v1 suffix). Default chỉ đúng "
+            "cho OrbStack lab — callers thực tế luôn truyền settings.vllm_base_url."
+        ),
     )
     embed_url: str = Field(
         default="http://host.orb.internal:11434/v1",
-        description="Ollama embeddings base URL (with or without /v1 suffix).",
+        description="Ollama embeddings base URL (with or without /v1 suffix). Xem base_url.",
     )
     timeout_s: float = Field(default=120.0, ge=1.0)
     provider: str = Field(

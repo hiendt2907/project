@@ -745,7 +745,11 @@ class WorkerSettings(BaseSettings):
         le=32,
         description="Parallel LLM slots (semaphore); env OMNI_LLM_NUM_PARALLEL.",
     )
-    # OrbStack DNS: pods reach Ollama on macOS host via host.orb.internal (see omni-worker-configmap).
+    # Default áp dụng khi thiếu cả OMNI_VLLM_BASE_URL/OMNI_OLLAMA_BASE_URL — chỉ đúng cho
+    # OrbStack lab (pod reach Ollama trên macOS host qua DNS host.orb.internal). GCP luôn set
+    # OMNI_OLLAMA_BASE_URL=https://integrate.api.nvidia.com/v1 qua ConfigMap nên default này
+    # không có hiệu lực ở production — nếu key đó biến mất khỏi ConfigMap, hệ thống sẽ ÂM THẦM
+    # rơi về host lab không tồn tại trên GCP thay vì lỗi rõ ràng (audit 2026-08-17).
     vllm_base_url: str = Field(
         default="http://host.orb.internal:11434/v1",
         validation_alias=AliasChoices("OMNI_VLLM_BASE_URL", "OMNI_OLLAMA_BASE_URL"),

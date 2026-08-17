@@ -41,7 +41,7 @@ spec:
       targetRevision: main
       path: k8s/deployments
       directory:
-        include: "{omni-fullstack.yaml,omni-onboarding.yaml,omni-worker-configmap.gcp.yaml,aoip-portals.gcp.yaml,aoip-portals-web.yaml}"
+        include: "{omni-fullstack.yaml,omni-onboarding.yaml,omni-worker-configmap.gcp.yaml,aoip-portals.gcp.yaml,aoip-portals-web.yaml,omni-fullstack-rbac.yaml}"
     - repoURL: http://gitea.cicd.svc.cluster.local:3000/hiendang/project.git
       targetRevision: main
       path: k8s/gitops

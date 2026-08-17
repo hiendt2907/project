@@ -15,8 +15,8 @@ spec:
     spec:
       containers:
         - name: web
-          image: 10.43.239.205/library/aoip-provider-web:latest
-          imagePullPolicy: Always
+          image: 10.43.239.205/library/aoip-provider-web@sha256:a1c977b103e4cc90d2b055fa7b6572fdfd89ed53b1b327f2a41c3d756826a5e8
+          imagePullPolicy: IfNotPresent
           ports: [{containerPort: 3001}]
           env:
             - {name: HOSTNAME, value: "0.0.0.0"}
@@ -61,8 +61,8 @@ spec:
     spec:
       containers:
         - name: web
-          image: 10.43.239.205/library/aoip-tenant-web:latest
-          imagePullPolicy: Always
+          image: 10.43.239.205/library/aoip-tenant-web@sha256:b4bf371d69953b76584937b4a06b25beba867bb8a60b3003f5bfa625901f2f59
+          imagePullPolicy: IfNotPresent
           ports: [{containerPort: 3002}]
           env:
             - {name: HOSTNAME, value: "0.0.0.0"}
