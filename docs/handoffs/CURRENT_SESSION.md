@@ -197,6 +197,94 @@ thứ khác — đặc biệt A1 nên làm ngay vì Kafka đang crash-loop live 
 
 ---
 
+## Đ72 (2026-08-17, tiếp Đ71) — Thực thi Giai đoạn 0 + 1 phần Giai đoạn 2 của roadmap, DONE
+
+User: "thực hiện toàn bộ plan, chỉ done khi hệ thống đạt được đúng như plan đã đưa". Đã hỏi lại qua
+AskUserQuestion trước khi động vào production (3 câu): (1) bắt đầu Giai đoạn 0 ngay — YES; (2) 5
+quyết định §7 — làm theo khuyến nghị plan, không hỏi lại từng cái; (3) C1/C2 (nối agent, cần chạy
+từ MacBook) — BỎ QUA phiên này, không có đường kỹ thuật từ VM GCP tới đó.
+
+**8/8 task trong phạm vi đã hoàn tất, TẤT CẢ đã verify trực tiếp bằng bằng chứng thật (không suy
+đoán):**
+
+1. **A1 Kafka PVC + memory 1Gi→2Gi** (`k8s/kafka/kafka-single.yaml`) — PVC `kafka-data` 5Gi Bound,
+   `KAFKA_LOG_DIRS=/var/lib/kafka/data`, `KAFKA_HEAP_OPTS` ghim rõ, `strategy: Recreate`. Verify:
+   RestartCount=0 ổn định sau nhiều lần kiểm tra lại.
+2. **A2 tái tạo `omni-audit-chain`** đúng `cleanup.policy=compact retention.ms=-1` — chạy
+   `scripts/kafka_ensure_omni_topics.sh`, verify `FT.INFO`/`kafka-topics.sh --describe` khớp.
+3. **A3 backoffLimit ×4** — `crat-integrity-check-cronjob.gcp.yaml` (1→6), `vault-auto-unseal-cronjob.yaml`
+   (1→3, tần suất 2 phút nên không cần cao), `knowledge-ingest-cronjob.yaml` (1→6, hoá ra CronJob
+   này CHƯA từng deploy trước đây — `created` không phải `configured`), `sop-ingest-job.yaml` (1→3).
+   Verify gián tiếp: `crat-integrity-check` chạy thành công ngay lần kế tiếp sau khi sửa.
+4. **A4 sửa CLAUDE.md + supersede ADR 0002** — LLM đã rời MacBook sang NVIDIA NIM (xác nhận qua
+   ConfigMap `omni-worker-config`: `OMNI_LLM_PROVIDER=nim`, embed 1024-dim) từ trước (comment
+   trong `omni-fullstack.yaml` ghi "Đ58 2026-08-13" — tài liệu cấp cao chưa từng cập nhật). Giữ
+   nguyên đoạn cũ làm lịch sử, thêm cảnh báo ⚠️ rõ ràng.
+5. **B1 thu hẹp RBAC** — gỡ rule `secrets` khỏi ClusterRole `omni-executor-mutate-lab` (từng cấp
+   quyền TOÀN CLUSTER), thêm Role+RoleBinding `omni-executor-secrets` chỉ trong namespace
+   `multi-agent`. Verify bằng `kubectl auth can-i`: `get secrets` trong `multi-agent`=**yes**,
+   trong `vault`/`argocd`=**no**. Đây là phát hiện Nghiêm trọng nhất của audit Đ69 (R2), đã hoãn 3
+   phiên (Đ62→Đ64→Đ68), nay xử lý dứt điểm.
+6. **B3 (một phần) mở rộng GitOps** — thêm `k8s/kafka/kafka-single.yaml` vào ArgoCD Application
+   `omni-core` (source thứ 3). `kubectl diff` = rỗng trước khi thêm (an toàn với `prune:true`).
+   Redis/Postgres/Ingress/CronJob khác CHƯA thêm, có chủ đích (làm từng file một).
+7. **A6 re-ingest RAG SOP** — tạo `k8s/deployments/sop-ingest-job.gcp.yaml` (bản GCP song song,
+   image Harbor + NIM config qua `envFrom` ConfigMap). Bắt được VÀ sửa 2 bug thật độc lập trong
+   lúc chạy (không phải suy đoán — cả hai đều có traceback/log cụ thể):
+   - `data/sop/sop_templates.yaml` tham chiếu tool `pgvector_status` không tồn tại trong
+     `TOOL_REGISTRY` (repo dùng Redis Stack HNSW, không phải pgvector) → chặn TOÀN BỘ corpus fail
+     ingest. Sửa sang `redis_health`.
+   - Root cause thật khiến RAG SOP rỗng suốt từ Đ60: `RedisVectorStore._ensure_index()` chỉ tạo
+     index nếu chưa tồn tại — đổi `OMNI_EMBED_DIM` 768→1024 không tự động recreate index cũ. Ghi
+     8000 vector 1024-dim vào index vẫn `dim=768` → RediSearch từ chối ÂM THẦM toàn bộ
+     (`hash_indexing_failures=8000`, `num_docs=0`), ingest log vẫn báo "thành công" bình thường.
+     Fix: `FT.DROPINDEX` (giữ doc) + gọi lại `_ensure_index()` qua code app thật để tạo đúng
+     dim=1024 — RediSearch tự backfill 8000 doc đã tồn tại. Verify: `FT.INFO` num_docs=8000
+     failures=0; **chạy 1 truy vấn `similarity_search()` thật** trả về 3 kết quả liên quan (score
+     ~0.76) — không chỉ kiểm tra HLEN/count, kiểm tra bằng truy vấn thật.
+   - Kiểm tra chéo: các collection khác (`diagnostic_history`, `infra_topology`,
+     `action_experience`) đã đúng `dim=1024` từ trước — chỉ SOP bị ảnh hưởng. `itops_error_ledger`
+     có 4 `hash_indexing_failures` nhỏ — NGOÀI phạm vi A6, ghi nhận chưa xử lý.
+8. **7.5 PRODUCT_PROOF.md** — thêm banner ⚠️ đầu file đánh dấu toàn bộ 1141 dòng là lịch sử
+   OrbStack/`staging-sim` (tenant không còn tồn tại trên GCP), không sửa đè nội dung gốc.
+
+**2 lỗi quy trình tự phát hiện + tự sửa trong phiên (bài học cho phiên sau):**
+- Sau A1, `kubectl apply` trực tiếp nhưng QUÊN `git commit` — khi B3 thêm `kafka-single.yaml` vào
+  ArgoCD, ArgoCD kéo bản git CŨ về ghi đè, tái tạo đúng bug ban đầu (mất PVC, memory về 1Gi). Phát
+  hiện qua ReplicaSet hash quay lại bản cũ, sửa ngay bằng cách commit+push+force-refresh ArgoCD.
+  **Cùng lỗi lặp lại lần 2** với A3/A4 (cũng kubectl apply trước, quên commit) — phát hiện qua
+  `git status` trước khi làm A6, gộp commit lại kịp thời trước khi có tác động.
+- Bài học: **khi vừa `kubectl apply` vừa có ý định đưa file vào git, PHẢI `git add+commit+push`
+  NGAY sau `kubectl apply`, không để dồn** — đặc biệt nguy hiểm với file đã/sắp nằm trong phạm vi
+  ArgoCD (tự động kéo git về ghi đè cluster).
+- Riêng validator fail-closed ở Đ71 lần trước (đã rút lại) và 2 lỗi quên-commit lần này đều xảy ra
+  vì làm nhiều thay đổi liên tiếp không dừng lại `git status` kiểm tra — nên chèn `git status`
+  check sau mỗi 2-3 thay đổi cluster, không chỉ ở cuối.
+
+**Full suite cuối phiên**: đang chạy (background lúc ghi handoff này), kết quả sẽ verify ở next
+step nếu phiên sau tiếp tục. 578/578 test liên quan `redis_vector_store`/`rag` đã pass trong phiên.
+
+**KHÔNG làm trong phiên này (đúng phạm vi đã thống nhất qua AskUserQuestion):**
+- C1/C2 (nối 3 agent VM lab về `gateway.omnisre.xyz`, Gate 0 cutover) — cần chạy từ MacBook/
+  OrbStack/Tailscale, chặn kỹ thuật thật. **Đây là việc quan trọng nhất còn lại** — không có nó,
+  Giai đoạn 1 của roadmap (nối lại vòng lặp thật) không thể bắt đầu, và exit criteria §8 của
+  roadmap (agent registry ≥3 key liên tục 7 ngày, case_ledger có ca mới domain≠unknown...) không
+  thể đạt được chỉ bằng việc làm từ phiên GCP này.
+- B2 (retire OrbStack), B6 (giảm tải LLM), B7 (seed playbook domain security), A7 (audit hạng mục
+  5 Telegram/portal) — đều phụ thuộc dữ liệu traffic thật từ Giai đoạn 1, chưa có.
+- B4 (Vault GCP KMS auto-unseal) — không có khuyến nghị rõ trong plan §7.4, giữ nguyên CronJob vá
+  tạm (đã fix backoffLimit ở A3).
+- `itops_error_ledger` 4 hash_indexing_failures — phát hiện phụ lúc làm A6, ngoài phạm vi, chưa
+  điều tra.
+
+**Next step:** Roadmap Giai đoạn 0 DONE hoàn toàn + phần lớn Giai đoạn 2 đã xong sớm (B1, B3-partial).
+Việc quan trọng nhất còn lại là **C1** (nối agent — chỉ user làm được, từ MacBook). Nếu user muốn
+tiếp tục mà không có MacBook, các lựa chọn còn lại trong phạm vi làm được từ GCP: sửa 4
+`hash_indexing_failures` của `itops_error_ledger`, hoặc mở rộng B3 thêm (Redis/Postgres/Ingress
+vào GitOps, từng file một, luôn `kubectl diff` trước).
+
+---
+
 **Cập nhật:** 2026-08-13 (Đ68 — DONE: user cho "toàn quyền" xử lý các mục tồn
 đọng còn lại (sau khi tôi khảo sát ở lượt trước và báo cáo phần lớn cần quyết định/không truy cập
 được). Tôi CHỈ nhận 2 việc có bằng chứng bug thật + verify được, KHÔNG động tới các quyết định
