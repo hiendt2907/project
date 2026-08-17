@@ -191,6 +191,14 @@ mới rõ ràng.
 - **CRAT Fail-Closed**: `write_audit_block()` MUST succeed trước Telegram emit / action dispatch.
 - `kafka_evidence_loop` dùng `auto_offset_reset="earliest"` — KHÔNG đổi thành `latest`.
 - `omni-audit-chain` topic cần message key (compact policy).
+- **`INV_KAFKA_DURABLE`** (thêm 2026-08-17, roadmap Giai đoạn 0 A1): `k8s/kafka/kafka-single.yaml`
+  BẮT BUỘC có PVC mount tại `KAFKA_LOG_DIRS` — KHÔNG được để trống (Deployment không volume nghĩa
+  là log.dirs mặc định của image rơi vào container filesystem ephemeral). Đã trả giá thật: Kafka
+  OOM crash-loop 29+ lần (image cũ giới hạn `limits.memory: 1Gi`) xoá sạch mọi topic/offset mỗi
+  lần restart, bao gồm cả `omni-audit-chain` — mất compact policy, phải tái tạo bằng
+  `scripts/kafka_ensure_omni_topics.sh`. Từ 2026-08-17: PVC `kafka-data` 5Gi + `limits.memory: 2Gi`
+  + `KAFKA_HEAP_OPTS` ghim rõ. Nếu sửa memory limit lần nữa, luôn kiểm `kubectl get pod -l app=kafka`
+  RestartCount ổn định ≥24h trước khi coi là xong — đừng chỉ tin log khởi động sạch.
 - `INV_NO_RESTART_ON_BROKEN_SPEC` · `INV_READ_BEFORE_MUTATE` · `INV_NAMESPACE_ISOLATION` · `ERR_REA_NO_PHYSICAL_PROOF` · `ERR_GOV_UNAUTHORIZED_MUTATION`
 - `INV_KNOWLEDGE_NOT_ALERT` — **nới có kiểm soát 2026-07-30**: `METRIC_SAMPLE` nay ĐƯỢC phân
   tích (baseline + phát hiện lệch, thuần số, KHÔNG LLM); chỉ khi lệch mới nâng thành
