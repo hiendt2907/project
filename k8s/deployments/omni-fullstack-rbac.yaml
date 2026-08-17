@@ -93,6 +93,43 @@ subjects:
     name: omni-fullstack
     namespace: multi-agent
 ---
+# `secrets` patch/update tách ra khỏi ClusterRole omni-executor-mutate-lab (2026-08-17, roadmap
+# B1) — trước đó `secrets: get/list/watch/patch/update` nằm trong ClusterRole nên đọc/sửa được
+# secret ở MỌI namespace (vault/argocd/cicd/Harbor...), không chỉ multi-agent. Ứng dụng đã tự
+# giới hạn qua OMNI_AUTONOMOUS_ALLOWED_NAMESPACES=multi-agent nên năng lực thật KHÔNG đổi — đây
+# chỉ là gỡ lớp phòng thủ RBAC thừa đang mở rộng hơn nhu cầu, không phải thu hẹp chức năng.
+# Verify trước khi merge: audit `Forbidden` trong log 48h sau khi apply — nếu có dòng nào request
+# secrets ngoài namespace multi-agent bị chặn, đó là chỗ cần điều tra riêng, không tự nới lại.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: omni-executor-secrets
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/component: omni-fullstack
+    omni.io/managed: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: omni-fullstack-executor-secrets
+  namespace: multi-agent
+  labels:
+    app.kubernetes.io/component: omni-fullstack
+    omni.io/managed: "true"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: omni-executor-secrets
+subjects:
+  - kind: ServiceAccount
+    name: omni-fullstack
+    namespace: multi-agent
+---
 # Node metrics read (metrics.k8s.io/nodes, cluster-scoped)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -311,9 +348,11 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "patch", "update"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "watch", "patch", "update"]
+  # `secrets` gỡ khỏi ClusterRole 2026-08-17 (roadmap B1) — chuyển sang Role namespace-scoped
+  # `omni-executor-secrets` (namespace multi-agent) ngay phía trên ClusterRoleBinding
+  # omni-fullstack-executor-mutate-lab trong file này. Trước đó rule này cho phép đọc/sửa secrets
+  # ở MỌI namespace cluster-wide dù ứng dụng chỉ thật sự cần trong multi-agent
+  # (OMNI_AUTONOMOUS_ALLOWED_NAMESPACES=multi-agent).
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
     verbs: ["get", "list", "watch"]
