@@ -514,6 +514,18 @@ resource sống. **Câu hỏi:** làm từng file một có verify (an toàn, ch
 `exclude` (nhanh, rủi ro cao hơn)? *Khuyến nghị: từng file một, bắt đầu từ `k8s/kafka/kafka-single.yaml`
 ngay sau A1.*
 
+**Cập nhật 2026-08-17 (Đ72, cùng phiên)**: đã thêm `kafka-single.yaml`, `redis-standalone.yaml`,
+`omni-postgres.yaml` — cả 3 đều `kubectl diff`=rỗng trước khi thêm, verify sau khi ArgoCD sync:
+pod không restart, PVC/dữ liệu nguyên vẹn (case_ledger vẫn 305 dòng). **Ingress ĐÃ ĐÁNH GIÁ,
+QUYẾT ĐỊNH HOÃN**: 11 Ingress sống trên cluster rải rác qua ≥4 file khác nhau
+(`k8s/gitops/monitoring-basicauth-ingress.yaml`, `argocd-ingress.yaml`, `vaultwarden.yaml`,
+`k8s/ingress/omnisre-gcp.yaml`), trải trên 4 namespace (`argocd`/`monitor`/`vaultwarden`/
+`multi-agent`) — khác hẳn Kafka/Redis/Postgres (mỗi cái 1 file tự chứa, 1:1 rõ ràng). Đây là
+routing công khai của toàn bộ platform (`*.omnisre.xyz`) — rủi ro nếu sai cao hơn nhiều so với
+lợi ích, và `kubectl diff` xác nhận **hiện KHÔNG có drift nào** ở cả 4 file (rủi ro của việc
+"không làm" hiện tại = thấp). Hoãn có chủ đích, không phải bỏ sót — cần dành riêng 1 phiên để map
+chính xác file→namespace→Ingress trước khi thêm.
+
 ### 7.4 Vault auto-unseal
 Giữ CronJob vá tạm (đã fix `backoffLimit` ở A3) hay đầu tư GCP KMS auto-unseal (ADR 0002 #3)?
 
