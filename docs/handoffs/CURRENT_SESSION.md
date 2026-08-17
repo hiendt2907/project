@@ -82,7 +82,8 @@ trong phiên này** — mọi thứ trên là ĐO, chưa SỬA.
 
 **Next step** (thứ tự đã thống nhất với user):
 1. ~~Thêm kiểm `finish_reason`~~ — **XONG**, xem khối "Đã làm" cuối mục này.
-2. Bỏ `|| true` ở `Makefile:258`; ghim benchmark chạy đúng tham số production (1024/8192) thay vì
+2. ~~Bỏ `|| true` ở `Makefile:258`~~ — **XONG**, xem khối (c). Nguyên văn mục cũ giữ lại bên dưới
+   để biết phạm vi ban đầu: bỏ `|| true` ở `Makefile:258`; ghim benchmark chạy đúng tham số production (1024/8192) thay vì
    default 512/4096; đổi chỉ số chính từ pass-rate sang avg_score.
 3. Sửa thiên lệch severity trong prompt (nguyên nhân đã quy kết: prompt, không phải model).
 4. Tầng dò năng lực host + fixture ~10 distro (chống hardcode cho one-command install).
@@ -140,6 +141,53 @@ khách hàng Manjaro (4 hardcode, capability profile, 4 tầng test, an toàn/ri
 banner đầu `CLAUDE.md`, và memory cá nhân `omni-quality-baseline-file`.
 **Quy tắc ghi vào file đó:** chỉ số tự chạy ra được + lệnh tái hiện + ngày; đổi ≥2 biến thì ghi rõ
 là không quy kết được. Phép đo mới thêm vào đó, KHÔNG rải ra handoff nữa.
+
+**(c) Gate chống thụt lùi — mục 2 của next step, XONG.**
+Điều tra ra **BA khiếm khuyết chồng nhau**, không phải một (mục 2 ban đầu chỉ nêu `|| true`):
+1. `|| true` ở `Makefile:258` nuốt kết quả.
+2. **`test_benchmark_pass_rate` dùng `_FakeLLMClient` — KHÔNG hề gọi model thật.** Nhãn cũ trong
+   Makefile ghi "Advisory live LLM benchmark (requires OMNI_OLLAMA_BASE_URL)" là SAI. Tức
+   **chưa từng có gate chất lượng thật nào** — bỏ mỗi `|| true` vẫn không bắt được bug truncation.
+3. Mã thoát `return 0 if report["passed"] == report["total"] else 1` đòi **23/23 case hoàn hảo**,
+   lần chạy tốt nhất từng đo (65.2%) vẫn thoát 1 ⇒ không dùng làm gate được.
+
+Sửa:
+- `Makefile`: bỏ `|| true`; 2 bước không-cần-LLM nay **chặn** (165 test pass); sửa nhãn cho đúng;
+  thêm target `benchmark-advisory-live` ghim `BENCHMARK_NUM_PREDICT=1024 BENCHMARK_NUM_CTX=8192`
+  (= production), thiếu `OMNI_NIM_API_KEY` thì in "BỎ QUA … đây là SKIP, không phải PASS" + thoát
+  khác 0. Đã thêm `benchmark-advisory-live` vào `.PHONY`.
+- `tests/benchmarks/run_advisory_benchmark.py`: report thêm `no_advisory_count` + `num_predict` +
+  `num_ctx`; chạy trần nay thoát 0; cờ `--gate` + hàm `_check_gate()` so với baseline.
+- `tests/benchmarks/baseline.json` (MỚI): avg_score 73.6, dung sai 5.0, `max_no_advisory` 0,
+  ghim num_predict 1024 / num_ctx 8192.
+- `tests/test_advisory_benchmark_gate.py` (MỚI): **11 test, pass**. Gồm
+  `test_the_actual_nim_regression_would_have_been_caught` tái hiện đúng số lần chạy hỏng hôm nay
+  (avg 14.1, 19 case không advisory) và khẳng định gate đỏ vì CẢ HAI lý do.
+
+**Thiết kế gate — CỐ Ý chống THỤT LÙI, không phải chất lượng tuyệt đối** (gate tuyệt đối trên
+pass-rate sẽ đỏ/xanh ngẫu nhiên do nhiễu rồi lại bị ai đó bọc `|| true` — lặp đúng cái bẫy vừa
+thoát). Hai điều kiện: `no_advisory_count > 0` ⇒ đỏ (tín hiệu hạ tầng, ít nhiễu nhất);
+`avg_score < 73.6 − 5.0` ⇒ đỏ. **Không hạ baseline để CI xanh** — chỉ cập nhật khi có lần đo mới
+tốt hơn, kèm ghi vào `docs/measurement/OMNI_QUALITY_BASELINE.md`.
+
+**Working tree lúc ghi (CHƯA commit):** `M Makefile`, `M docs/measurement/OMNI_QUALITY_BASELINE.md`,
+`M tests/benchmarks/run_advisory_benchmark.py`, `?? tests/benchmarks/baseline.json`,
+`?? tests/test_advisory_benchmark_gate.py`.
+
+**Gate thật đã chạy xong: `GATE: PASS`, exit 0** — kết quả `56.5% (13/23) avg_score=73.8
+no_advisory=0`, file `tests/benchmarks/results/benchmark_20260817_093018.json`.
+
+**⭐ Lần chạy này vô tình là bằng chứng thực nghiệm cho chính thiết kế gate.** Cùng model, cùng
+tham số, cách lần trước 28 phút (mọi biến giữ nguyên, chỉ còn ngẫu nhiên LLM):
+| Chỉ số | 09:02 | 09:30 | Biến động |
+|---|---|---|---|
+| pass_rate | 65.2% | 56.5% | **−8.7 điểm** |
+| avg_score | 73.6 | 73.8 | **+0.2 điểm** |
+
+pass-rate lệch **gấp ~43 lần** avg_score trên cùng dữ liệu. **Nếu gate đặt trên pass-rate thì lần
+chạy 09:30 đã ĐỎ OAN** trong khi hệ thống thực tế nhỉnh hơn. Đã ghi vào
+`docs/measurement/OMNI_QUALITY_BASELINE.md` mục 2 ("Bằng chứng quyết định"). Từ đây mọi báo cáo
+trích **avg_score trước, pass-rate sau**.
 
 ---
 

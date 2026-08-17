@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "Baseline chống thụt lùi cho `run_advisory_benchmark.py --gate`.",
+    "Đo thật ngày 2026-08-17 (Đ74), file gốc: results/benchmark_20260817_090230.json.",
+    "Chỉ cập nhật khi có lần đo MỚI TỐT HƠN, và phải ghi kèm vào",
+    "docs/measurement/OMNI_QUALITY_BASELINE.md. Không hạ baseline để CI xanh —",
+    "đó đúng là thứ đã biến gate cũ thành đồ trang trí.",
+    "",
+    "avg_score được chọn làm chỉ số chính thay cho pass_rate: pass-rate ở ngưỡng",
+    "70 nhiễu cực mạnh (avg nhích 3.9 điểm -> pass-rate nhảy 21.7 điểm vì nhiều",
+    "case nằm sát vạch). Xem mục 3.3 trong OMNI_QUALITY_BASELINE.md.",
+    "",
+    "max_no_advisory=0: bất kỳ case nào không sinh ra advisory đều là lỗi hạ tầng",
+    "hoặc cấu hình (JSON bị cắt ở num_predict, LLM lỗi), KHÔNG phải chuyện chất",
+    "lượng model. Chỉ số này nhảy 0 -> 19/23 khi đổi provider sang NIM và không ai",
+    "thấy. Nó là tín hiệu ít nhiễu nhất trong cả bộ, nên chặn cứng ở 0."
+  ],
+  "measured_at": "2026-08-17",
+  "model": "meta/llama-3.1-8b-instruct",
+  "provider": "nim",
+  "num_predict": 1024,
+  "num_ctx": 8192,
+  "avg_score": 73.6,
+  "avg_score_tolerance": 5.0,
+  "pass_rate": 0.6522,
+  "max_no_advisory": 0,
+  "source_result": "results/benchmark_20260817_090230.json"
+}

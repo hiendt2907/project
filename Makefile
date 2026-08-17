@@ -1,5 +1,5 @@
 # Root Makefile — minimal targets for CI and local evidence.
-.PHONY: lint-imports list-omni-postgres-backups restore-omni-postgres-verify verify-case-ledger deploy-landing sync-public sync-public-ui sync-public-backend sync-public-all agent-bundle agent-bundle-offline agent-keygen publish-agent-release tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap e2e-portal product-release-gate chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit print-image-digests teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
+.PHONY: lint-imports list-omni-postgres-backups restore-omni-postgres-verify verify-case-ledger deploy-landing sync-public sync-public-ui sync-public-backend sync-public-all agent-bundle agent-bundle-offline agent-keygen publish-agent-release tunnel-setup tunnel-teardown ssh-tunnel traefik-install traefik-uninstall nginx-uninstall hosts-update test-evidence omni-death-loop docker-worker docker-gateway deploy-worker deploy-fullstack deploy-ollama deploy-gateway deploy-services deploy-kafka deploy-prober-rbac deploy-netpol ensure-kafka-topics e2e-proactive e2e-incident-matrix e2e-nginx-missing-configmap e2e-portal product-release-gate chaos-rag-lab lab-nginx-cpu lab-nginx-cpu-overlap autonomy-gate env-mode-gate mutate-only-gate auto-execute-gate classifier-regression-gate phase-docs-gate nonimpact-guards-gate learning-loop-gate secret-gate secret-history-audit print-image-digests teardown-omni-postgres rollback rollback-verify pre-deploy-validate benchmark-advisory benchmark-advisory-live coverage coverage-html coverage-gate coverage-gate-strict coverage-waves coverage-project-real sbom chaos-drill chaos-drill-dry chaos-drill-rollback chaos-drill-rollback-dry chaos-drill-redis chaos-drill-kafka chaos-drill-llm chaos-drill-evidence-flood chaos-drill-pod-kill chaos-drill-all wait-omni-consumer-ready backend-verify-local backend-verify-job-infra backend-verify-job-apply backend-verify-job-run
 
 NS ?= multi-agent
 
@@ -251,12 +251,46 @@ secret-history-audit:
 	docker run --rm -v "$$(pwd):/repo" zricethezav/gitleaks:v8.18.2 detect --source=/repo --config=/repo/.gitleaks.toml --report-path=/repo/leak_report_history.json --verbose
 
 # Phase 5 gate: fail when autonomy verification regresses.
+#
+# Đ74 (2026-08-17) — sửa BA khiếm khuyết chồng nhau khiến mục tiêu này không đo
+# được gì suốt hơn một tháng:
+#   1. `|| true` ở cuối nuốt sạch kết quả ⇒ trượt không chặn gì.
+#   2. Nhãn cũ ghi "live LLM benchmark ... requires OMNI_OLLAMA_BASE_URL" là SAI:
+#      test_benchmark_pass_rate dùng _FakeLLMClient, KHÔNG hề gọi model thật. Nó
+#      là self-test của bộ chấm điểm, không phải phép đo chất lượng.
+#   3. Mã thoát của run_advisory_benchmark.py đòi 23/23 case hoàn hảo ⇒ lần chạy
+#      tốt nhất từng đo (65.2%) vẫn thoát 1, không dùng làm gate được.
+# Hệ quả: khi đổi provider sang NIM, 19/23 case rớt về 0 điểm vì JSON bị cắt ở
+# num_predict — không ai biết. Xem docs/measurement/OMNI_QUALITY_BASELINE.md.
 benchmark-advisory:
-	@echo "==> Advisory schema gate (always blocking — no LLM needed)"
+	@echo "==> [1/2] Advisory schema gate (chặn — không cần LLM)"
 	.venv/bin/python -m pytest tests/benchmarks/test_advisory_schema.py -q --tb=short
-	@echo "==> Advisory live LLM benchmark (informational — requires OMNI_OLLAMA_BASE_URL)"
-	.venv/bin/python -m pytest tests/benchmarks/test_advisory_quality.py::test_benchmark_pass_rate -q --tb=short 2>&1 || true
-	@echo "==> Tip: OMNI_OLLAMA_BASE_URL=http://localhost:11434 make benchmark-advisory"
+	@echo "==> [2/2] Self-test bộ chấm điểm với LLM GIẢ (chặn — không cần LLM thật)"
+	.venv/bin/python -m pytest tests/benchmarks/test_advisory_quality.py -q --tb=short
+	@echo "==> Cả hai bước trên KHÔNG đo chất lượng model thật."
+	@echo "    Muốn đo thật: make benchmark-advisory-live"
+
+# Phép đo chất lượng THẬT — gọi model production, chặn khi thụt lùi so với
+# tests/benchmarks/baseline.json. Tách target riêng vì cần credential + tốn quota
+# LLM, không hợp để chạy trong mọi vòng CI.
+#
+# Tham số PHẢI khớp production, nếu không phép đo không mô tả thứ đang chạy thật:
+# num_predict=1024 (settings.py omni_advisory_num_predict), num_ctx=8192
+# (OMNI_LLM_NUM_CTX). Default của harness là 512/4096 — chính chênh lệch này đã
+# tạo ra một con số 13% hoàn toàn sai lệch trước khi phát hiện.
+BENCH_MODEL ?= meta/llama-3.1-8b-instruct
+BENCH_LLM_URL ?= https://integrate.api.nvidia.com/v1
+benchmark-advisory-live:
+	@if [ -z "$$OMNI_NIM_API_KEY" ]; then \
+		echo "BỎ QUA: chưa có OMNI_NIM_API_KEY — đây là SKIP, không phải PASS."; \
+		echo "  export OMNI_NIM_API_KEY=\$$(kubectl get secret omni-nim-secret -n multi-agent \\"; \
+		echo "      -o go-template='{{index .data \"api_key\"|base64decode}}')"; \
+		exit 1; \
+	fi
+	OMNI_LLM_PROVIDER=nim PYTHONPATH=src \
+	BENCHMARK_NUM_PREDICT=1024 BENCHMARK_NUM_CTX=8192 \
+	.venv/bin/python tests/benchmarks/run_advisory_benchmark.py \
+	  --model "$(BENCH_MODEL)" --llm-url "$(BENCH_LLM_URL)" --gate
 
 coverage:  ## Run test coverage report
 	.venv/bin/python -m pytest tests/ --ignore=tests/integration --ignore=tests/real_services --cov=src --cov-report=term-missing --cov-report=html:htmlcov -q

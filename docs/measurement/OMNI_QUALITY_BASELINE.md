@@ -62,9 +62,24 @@ verification_steps 15. `pass` = score ≥ 70.
 |---|---|---|---|---|---|---|
 | 2026-07-16 | `qwen2.5-coder:7b` (Ollama) | 512 / 4096 | 43.5% (10/23) | 69.7 | 0 | `benchmark_20260716_155810.json` |
 | 2026-08-17 | `llama-3.1-8b` (NIM) | 512 / 4096 | **13.0% (3/23)** | 14.1 | **19/23** | `benchmark_20260817_085814.json` |
-| **2026-08-17** | **`llama-3.1-8b` (NIM)** | **1024 / 8192 = production** | **65.2% (15/23)** | **73.6** | **0** | `benchmark_20260817_090230.json` |
+| **2026-08-17 09:02** | **`llama-3.1-8b` (NIM)** | **1024 / 8192 = production** | **65.2% (15/23)** | **73.6** | **0** | `benchmark_20260817_090230.json` |
+| **2026-08-17 09:30** | **`llama-3.1-8b` (NIM)** | **1024 / 8192 = production** | **56.5% (13/23)** | **73.8** | **0** | `benchmark_20260817_093018.json` |
 
-**Con số production hiện hành: 65.2% / avg 73.6.** Vẫn dưới ngưỡng 70% pass-rate.
+**Con số production hiện hành: avg_score ~73.7, pass-rate dao động 56–65%.**
+
+### ⭐ Bằng chứng quyết định: pass-rate nhiễu, avg_score ổn định
+Hai dòng cuối là **cùng model, cùng tham số, chạy cách nhau 28 phút** — tức mọi biến đều giữ
+nguyên, chỉ còn ngẫu nhiên của LLM:
+
+| Chỉ số | 09:02 | 09:30 | Biến động |
+|---|---|---|---|
+| pass_rate | 65.2% | 56.5% | **−8.7 điểm** |
+| avg_score | 73.6 | 73.8 | **+0.2 điểm** |
+
+**pass-rate lệch gấp ~43 lần avg_score trên cùng dữ liệu.** Nếu gate đặt trên pass-rate thì lần
+chạy 09:30 đã ĐỎ OAN, trong khi hệ thống thực tế nhỉnh hơn một chút. Đây là lý do thực nghiệm
+(không phải lý thuyết) để `baseline.json` gate trên `avg_score`, và để mọi báo cáo về sau trích
+avg_score trước, pass-rate sau.
 
 ### Lệnh tái hiện
 ```bash
@@ -273,9 +288,41 @@ Thêm 2 test gần như không ai viết: **idempotency** (cài → cài lại =
   event=advisory_analyst_truncated trace=diag-case_001 num_predict=512 hint=tăng OMNI_ADVISORY_NUM_PREDICT
   ```
 
+**(c) Dựng gate chống thụt lùi — mục 2, XONG.** Hoá ra không phải MỘT mà **BA khiếm khuyết chồng
+nhau** khiến `make benchmark-advisory` không đo được gì suốt hơn một tháng:
+1. `|| true` ở `Makefile:258` nuốt sạch kết quả.
+2. **Nhãn cũ ghi "live LLM benchmark … requires OMNI_OLLAMA_BASE_URL" là SAI** —
+   `test_benchmark_pass_rate` dùng `_FakeLLMClient`, **không hề gọi model thật**. Nó là self-test
+   của bộ chấm điểm, không phải phép đo chất lượng. Tức **chưa từng có gate chất lượng thật nào**.
+3. Mã thoát `run_advisory_benchmark.py` là `0 if passed == total else 1` — **đòi 23/23 case hoàn
+   hảo**, nên lần chạy tốt nhất từng đo (65.2%) vẫn thoát 1. Không dùng làm gate được.
+
+Đã sửa cả ba:
+- `Makefile`: bỏ `|| true`, cả 2 bước không-cần-LLM nay **chặn** (165 test, pass); sửa nhãn cho
+  đúng sự thật; thêm target **`benchmark-advisory-live`** ghim sẵn tham số production
+  (`BENCHMARK_NUM_PREDICT=1024 BENCHMARK_NUM_CTX=8192`) — thiếu key thì **báo SKIP rõ ràng và
+  thoát khác 0**, không giả vờ PASS.
+- `run_advisory_benchmark.py`: thêm `no_advisory_count` + `num_predict`/`num_ctx` vào report;
+  chạy trần nay thoát 0; cờ `--gate` mới so với baseline.
+- `tests/benchmarks/baseline.json` (MỚI): baseline đo thật 2026-08-17.
+- `tests/test_advisory_benchmark_gate.py` (MỚI): 11 test.
+
+**Thiết kế gate — CỐ Ý là gate CHỐNG THỤT LÙI, không phải gate chất lượng tuyệt đối.** Lý do:
+mục 3.3 đã chứng minh pass-rate ở ngưỡng cố định nhiễu cực mạnh; một gate tuyệt đối đặt trên nó sẽ
+đỏ/xanh ngẫu nhiên rồi bị vô hiệu hoá — đúng số phận của `|| true` cũ. Chất lượng tuyệt đối là mục
+tiêu sản phẩm; CI chỉ nên chặn thụt lùi. Hai điều kiện:
+| Điều kiện | Ngưỡng | Vì sao |
+|---|---|---|
+| `no_advisory_count` | **> 0 là đỏ** | Tín hiệu hạ tầng/cấu hình, gần như nhị phân, ít nhiễu nhất. Chính chỉ số này nhảy 0→19/23 khi đổi sang NIM |
+| `avg_score` | < `73.6 − 5.0` là đỏ | Ổn định hơn pass-rate nhiều; biên dung sai vì biến động run-to-run có thật |
+
+Test `test_the_actual_nim_regression_would_have_been_caught` tái hiện đúng số của lần chạy hỏng
+(avg 14.1, 19 case không advisory) và khẳng định gate đỏ vì **cả hai** lý do.
+
+⚠️ **Không hạ baseline để CI xanh.** Chỉ cập nhật `baseline.json` khi có lần đo MỚI TỐT HƠN, và
+phải ghi kèm vào chính file này.
+
 ### ⬜ Còn lại, theo thứ tự đã thống nhất
-2. Bỏ `|| true` ở `Makefile:258`; ghim benchmark chạy đúng tham số production (1024/8192);
-   đổi chỉ số chính từ pass-rate sang avg_score.
 3. Sửa thiên lệch severity trong prompt (nguyên nhân đã quy kết: prompt, không phải model).
 4. Tầng dò năng lực host + fixture ~10 distro.
 5. Container matrix dry-run (`archlinux` = base Manjaro).

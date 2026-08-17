@@ -187,6 +187,11 @@ async def run_benchmark(model: str, llm_url: str) -> dict:
     total = len(results)
     pass_rate = round(passed / total, 4) if total else 0.0
     avg_score = round(sum(r["score"] for r in results) / total, 1) if total else 0.0
+    # Case không sinh ra advisory nào (JSON hỏng, bị cắt ở num_predict, hoặc LLM lỗi).
+    # Đây là tín hiệu HẠ TẦNG/CẤU HÌNH, gần như nhị phân và ít nhiễu hơn điểm số rất
+    # nhiều — nên nó là thứ đáng gate nhất. Đ74: chỉ số này nhảy 0 → 19/23 khi đổi
+    # provider sang NIM, mà không ai thấy vì kết quả benchmark bị `|| true` nuốt.
+    no_advisory = sum(1 for r in results if r.get("breakdown", {}).get("error") or r.get("error"))
 
     return {
         "model": model,
@@ -196,6 +201,9 @@ async def run_benchmark(model: str, llm_url: str) -> dict:
         "total": total,
         "pass_rate": pass_rate,
         "avg_score": avg_score,
+        "no_advisory_count": no_advisory,
+        "num_predict": int(os.getenv("BENCHMARK_NUM_PREDICT", "512")),
+        "num_ctx": int(os.getenv("BENCHMARK_NUM_CTX", "4096")),
         "results": results,
     }
 
@@ -211,11 +219,57 @@ def _publish_metrics(report: dict) -> None:
         pass
 
 
+BASELINE_PATH = Path(__file__).parent / "baseline.json"
+
+
+def _check_gate(report: dict) -> tuple[bool, list[str]]:
+    """So kết quả với baseline đã ghi. Trả (đạt, danh sách lý do trượt).
+
+    CỐ Ý là gate CHỐNG THỤT LÙI, không phải gate chất lượng tuyệt đối. Lý do: đo
+    ngày 2026-08-17 (Đ74) cho thấy pass-rate ở ngưỡng cố định 70 nhiễu cực mạnh —
+    trung bình nhích 3.9 điểm thì pass-rate nhảy 21.7 điểm, vì nhiều case nằm sát
+    vạch. Một gate tuyệt đối đặt trên chỉ số đó sẽ đỏ/xanh ngẫu nhiên rồi bị vô
+    hiệu hoá, đúng số phận của `|| true` cũ. Chất lượng tuyệt đối là mục tiêu sản
+    phẩm; CI chỉ nên chặn THỤT LÙI.
+    """
+    if not BASELINE_PATH.exists():
+        return True, []
+    base = json.loads(BASELINE_PATH.read_text())
+    reasons: list[str] = []
+
+    # (1) Tín hiệu hạ tầng — gần như nhị phân, ít nhiễu. Đây là thứ đã bắt hụt
+    #     suốt hơn một tháng, nên nó chặn cứng.
+    max_no_adv = int(base.get("max_no_advisory", 0))
+    got_no_adv = int(report.get("no_advisory_count", 0))
+    if got_no_adv > max_no_adv:
+        reasons.append(
+            f"{got_no_adv} case không sinh ra advisory (cho phép tối đa {max_no_adv}). "
+            "Thường là JSON bị cắt ở num_predict hoặc LLM lỗi — xem log "
+            "event=advisory_analyst_truncated / event=llm_response_truncated."
+        )
+
+    # (2) Điểm trung bình — ổn định hơn pass-rate nhiều, dùng biên dung sai vì
+    #     biến động run-to-run có thật (quan sát được ±30 điểm trên từng case).
+    tol = float(base.get("avg_score_tolerance", 5.0))
+    floor = float(base["avg_score"]) - tol
+    if float(report.get("avg_score", 0.0)) < floor:
+        reasons.append(
+            f"avg_score {report['avg_score']} < sàn {floor:.1f} "
+            f"(baseline {base['avg_score']} − dung sai {tol})."
+        )
+    return not reasons, reasons
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Advisory quality benchmark")
     parser.add_argument("--model", default=os.getenv("OMNI_OLLAMA_MODEL", "qwen2.5:7b"))
     parser.add_argument("--llm-url", default=os.getenv("OMNI_OLLAMA_BASE_URL", "http://localhost:11434"))
     parser.add_argument("--output", default=str(RESULTS_DIR))
+    parser.add_argument(
+        "--gate",
+        action="store_true",
+        help="Thoát khác 0 khi thụt lùi so với tests/benchmarks/baseline.json.",
+    )
     args = parser.parse_args()
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -227,7 +281,9 @@ def main() -> int:
 
     print("-" * 70)
     print(f"Result: {report['passed']}/{report['total']} passed "
-          f"({report['pass_rate'] * 100:.1f}%) avg_score={report['avg_score']:.1f}")
+          f"({report['pass_rate'] * 100:.1f}%) avg_score={report['avg_score']:.1f} "
+          f"no_advisory={report['no_advisory_count']} "
+          f"num_predict={report['num_predict']} num_ctx={report['num_ctx']}")
 
     ts = time.strftime("%Y%m%d_%H%M%S")
     out_path = Path(args.output) / f"benchmark_{ts}.json"
@@ -235,7 +291,23 @@ def main() -> int:
     print(f"Report saved: {out_path}")
 
     _publish_metrics(report)
-    return 0 if report["passed"] == report["total"] else 1
+
+    if not args.gate:
+        # Mã thoát cũ là `0 if passed == total else 1`, tức đòi 23/23 case hoàn
+        # hảo — lần chạy tốt nhất từng đo (65.2%) vẫn thoát 1. Không dùng làm
+        # gate được, nên nó bị bọc `|| true` rồi thành đồ trang trí. Chạy trần
+        # giờ luôn thoát 0; muốn chặn thì dùng --gate.
+        return 0
+
+    ok, reasons = _check_gate(report)
+    if ok:
+        print("GATE: PASS (không thụt lùi so với baseline)")
+        return 0
+    print("GATE: FAIL")
+    for r in reasons:
+        print(f"  - {r}")
+    print(f"  baseline: {BASELINE_PATH}")
+    return 1
 
 
 if __name__ == "__main__":
