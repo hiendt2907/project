@@ -147,6 +147,56 @@ sửa cho Postgres backup); (b) re-ingest RAG SOP corpus; (c) audit hạng mục
 
 ---
 
+## Đ71 (2026-08-17, tiếp Đ70) — Plan chiến lược qua subagent Opus, phát hiện MỚI: hệ thống mất kết nối agent 4 ngày + Kafka crash-loop không PVC
+
+User yêu cầu "bật sub agent model opus để lên kế hoạch, tầm nhìn, chiến lược, cách fix". Đã giao
+cho subagent Plan (model Opus, chạy nền, đọc CLAUDE.md + handoff + plans/ trước, rồi verify lại
+trực tiếp trên cluster GCP qua kubectl/redis-cli/psql read-only) — **không sửa code, không deploy**,
+chỉ RESEARCH + PLAN. Agent chạy read-only nên không tự ghi được file, tôi ghi hộ + **tự verify lại
+phần bằng chứng quan trọng nhất trước khi tin** (đúng nguyên tắc "cấm bịa" — phát hiện 1 claim SAI
+của agent và đã sửa lại trong file trước khi báo cáo, xem bên dưới).
+
+**Output:** `plans/omni-strategic-roadmap-2026-08-17.md` (roadmap đầy đủ: hiện trạng, tầm nhìn 3
+tầng Truth/Judgment/Action, phân loại việc tồn đọng theo rủi ro×effort, lộ trình 4 giai đoạn,
+7 rủi ro xếp hạng, 5 quyết định cần user chốt).
+
+**Phát hiện MỚI quan trọng nhất, KHÁC HẲN mọi audit trước đây (Đ62-Đ70 chỉ nhìn code/config, chưa
+ai nhìn "hệ thống có đang thực sự nhận traffic không"):**
+
+1. **Omni đã mất kết nối với TOÀN BỘ agent 4 ngày** — tự verify lại độc lập, khớp 100% với agent:
+   `redis-cli --scan 'omni:remote_agent:*'` = 0 key; `kubectl logs omni-gateway --since=24h | grep
+   -c 'agent/register\|agent/evidence'` = 0; `psql: select max(opened_at), count(*) filter (domain=
+   'unknown'), count(*) from case_ledger` = `2026-08-13 04:30:24 | 305 | 305`. Nghĩa là: **mọi fix
+   Đ63/Đ66/Đ67/Đ70 vừa deploy hôm nay đều CHƯA từng được một ca sự cố thật nào đi qua** — không
+   phải vì fix sai, mà vì không có input. `case_ledger.domain` vẫn 100% `unknown` **không phải vì
+   Đ63 chưa hiệu lực, mà vì 0 ca mới kể từ khi Đ63 lên production.**
+2. **Kafka: OOM crash-loop đang diễn ra ngay lúc viết plan** (RestartCount tăng 29→33 chỉ trong
+   ~40 phút quan sát, Exit 137, `limits.memory: 1Gi`, `k8s/kafka/kafka-single.yaml` — **Deployment
+   không có volume/PVC nào**, xác nhận qua `kubectl get deploy kafka -o jsonpath='{...volumes}'`
+   rỗng). Topic `omni-audit-chain` (bằng chứng SOX/PCI) **vẫn tồn tại và có 6 message** (đã tự sửa
+   lại — bản nháp đầu của agent claim "đã biến mất", SAI, phát hiện khi tôi tự verify lần 2), nhưng
+   **mất cấu hình `cleanup.policy=compact`** (`Configs:` rỗng) — nghi do Kafka auto-create lại
+   topic bằng default config sau một lần crash trước khi `kafka_ensure_omni_topics.sh` kịp chạy.
+3. **LLM đã rời MacBook sang NVIDIA NIM cloud mà CLAUDE.md/ADR 0002 chưa cập nhật** — ConfigMap GCP
+   xác nhận `OMNI_LLM_PROVIDER=nim`, `OMNI_OLLAMA_BASE_URL=https://integrate.api.nvidia.com/v1`,
+   `OMNI_EMBED_DIM=1024`. Tin tốt chiến lược: SPOF "LLM phụ thuộc MacBook" mà ADR 0002 từng chấp
+   nhận đã không còn — đổi hẳn phép tính retire OrbStack.
+
+**Bài học quy trình (áp dụng cho các phiên sau):** subagent Plan/Opus dù được giao "chỉ research"
+vẫn có thể đưa ra 1 claim sai (topic "biến mất" thay vì "mất config compact") — vì nó tổng hợp từ
+nhiều lệnh kubectl chạy trong ~15 phút, có thể bắt đúng lúc topic tạm thời chưa kịp auto-create lại
+sau 1 lần restart. **Trước khi báo cáo phát hiện "nghiêm trọng nhất" của một subagent cho user,
+luôn tự chạy lại ít nhất phép verify cho claim đầu bảng** — đã làm đúng ở đây, bắt được sai lệch
+trước khi nó lọt vào báo cáo cuối.
+
+**Next step:** không tự làm gì thêm — đây là tài liệu quyết định (§7 có 5 câu hỏi cần user chốt:
+thu hẹp RBAC, retire OrbStack, mức độ mở rộng GitOps, Vault auto-unseal, viết lại PRODUCT_PROOF).
+Đề xuất ưu tiên nếu user đồng ý: Giai đoạn 0 "cầm máu" (Kafka PVC → tái tạo audit-chain đúng compact
+→ backoffLimit 4 CronJob còn lại → sửa doc LLM) trước, vì rẻ (giờ, không phải ngày) và mở khoá mọi
+thứ khác — đặc biệt A1 nên làm ngay vì Kafka đang crash-loop live ngay lúc viết plan này.
+
+---
+
 **Cập nhật:** 2026-08-13 (Đ68 — DONE: user cho "toàn quyền" xử lý các mục tồn
 đọng còn lại (sau khi tôi khảo sát ở lượt trước và báo cáo phần lớn cần quyết định/không truy cập
 được). Tôi CHỈ nhận 2 việc có bằng chứng bug thật + verify được, KHÔNG động tới các quyết định
