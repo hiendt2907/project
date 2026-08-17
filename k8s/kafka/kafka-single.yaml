@@ -1,6 +1,13 @@
 # Single-node Kafka (KRaft) for lab — PLAINTEXT :9092, Service name `kafka`.
 # Image: apache/kafka (official; Bitnami tags often unavailable after registry moves).
 # Apply: kubectl apply -f k8s/kafka/kafka-single.yaml -n multi-agent
+#
+# PVC + KAFKA_LOG_DIRS added 2026-08-17 (roadmap Giai đoạn 0, A1): trước đó không có volume
+# nào — log.dirs mặc định của image (/tmp/kraft-combined-logs) sống trên container filesystem
+# ephemeral, nên MỌI lần OOM restart xoá sạch toàn bộ topic/offset/message, kể cả
+# omni-audit-chain (compact, bằng chứng CRAT/SOX/PCI). limits.memory 1Gi→2Gi vì log thực tế cho
+# thấy OOMKilled (exit 137) lặp lại nhiều lần ở 1Gi; KAFKA_HEAP_OPTS ghim rõ để JVM không chiếm
+# hết container memory, chừa chỗ cho page cache + overhead ngoài heap.
 ---
 apiVersion: v1
 kind: Service
@@ -18,6 +25,20 @@ spec:
       port: 9093
       targetPort: 9093
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-data
+  namespace: multi-agent
+  labels:
+    app: kafka
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,6 +48,8 @@ metadata:
     app: kafka
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: kafka
@@ -45,7 +68,7 @@ spec:
               memory: 512Mi
             limits:
               cpu: 1000m
-              memory: 1Gi
+              memory: 2Gi
           ports:
             - containerPort: 9092
               name: plaintext
@@ -76,3 +99,14 @@ spec:
               value: "1"
             - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
               value: "0"
+            - name: KAFKA_LOG_DIRS
+              value: "/var/lib/kafka/data"
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xmx1G -Xms512M"
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+      volumes:
+        - name: kafka-data
+          persistentVolumeClaim:
+            claimName: kafka-data
