@@ -16,12 +16,12 @@
 # CI (Jenkins: test/build/push/tag) and CD (ArgoCD: deploy/rollout) are now
 # properly split instead of Jenkins doing both.
 #
-# Three sources: k8s/deployments (plain Deployments), k8s/gitops (the
-# omni-gateway Rollout), k8s/kafka (Kafka PVC+Deployment, added 2026-08-17,
-# roadmap B3 — mở rộng GitOps coverage TỪNG FILE MỘT sau khi audit phát hiện
-# phần lớn hạ tầng vẫn "apply tay", ngoài selfHeal/prune, drift tự do; đây là
-# file ĐẦU TIÊN được thêm, các file khác — Redis/Postgres/Ingress/CronJob —
-# CHƯA thêm, có chủ đích, để verify từng bước một không phá gì bằng prune).
+# Three sources: k8s/deployments (plain Deployments, giờ gồm cả redis-standalone.yaml —
+# thêm 2026-08-17 sau kafka-single.yaml, cùng roadmap B3, cùng quy trình verify kubectl diff=rỗng
+# trước khi thêm), k8s/gitops (the omni-gateway Rollout), k8s/kafka (Kafka PVC+Deployment, thêm
+# đầu tiên trong loạt B3 — mở rộng GitOps coverage TỪNG FILE MỘT sau khi audit phát hiện phần lớn
+# hạ tầng vẫn "apply tay", ngoài selfHeal/prune, drift tự do). Postgres/Ingress/CronJob khác CHƯA
+# thêm, có chủ đích, để verify từng bước một không phá gì bằng prune.
 # omni-gateway.yaml itself is deliberately excluded from the first source's
 # `include` — that Deployment was replaced by the Rollout in
 # omni-gateway-rollout.yaml (see that file for why), and having both ArgoCD
@@ -32,9 +32,9 @@
 # directory again, a single low-frequency CronJob — not worth a source yet;
 # Jenkins still applies it directly after committing its tag bump here) and
 # aoip-dex.gcp.yaml (off-the-shelf ghcr.io/dexidp/dex image, this pipeline
-# never builds or tags it). Redis (redis-0 StatefulSet), Postgres
-# (omni-postgres-0 StatefulSet), k8s/ingress/*, other CronJobs — still
-# apply-by-hand, tracked as future B3 work in
+# never builds or tags it). Postgres (omni-postgres-0 StatefulSet — PVC dữ liệu
+# thật, cần cẩn trọng hơn, đang xét riêng), k8s/ingress/*, other CronJobs —
+# still apply-by-hand, tracked as future B3 work in
 # plans/omni-strategic-roadmap-2026-08-17.md, not this Application yet.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -48,7 +48,7 @@ spec:
       targetRevision: main
       path: k8s/deployments
       directory:
-        include: "{omni-fullstack.yaml,omni-onboarding.yaml,omni-worker-configmap.gcp.yaml,aoip-portals.gcp.yaml,aoip-portals-web.yaml,omni-fullstack-rbac.yaml}"
+        include: "{omni-fullstack.yaml,omni-onboarding.yaml,omni-worker-configmap.gcp.yaml,aoip-portals.gcp.yaml,aoip-portals-web.yaml,omni-fullstack-rbac.yaml,redis-standalone.yaml}"
     - repoURL: http://gitea.cicd.svc.cluster.local:3000/hiendang/project.git
       targetRevision: main
       path: k8s/gitops
