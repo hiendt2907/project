@@ -24,6 +24,7 @@ from pkg.reasoning.analyst_advisory_schema import (
     normalize_evidence_lane,
     normalize_layer,
 )
+from llm.vllm_client import TRUNCATED_FINISH_REASONS
 from services.audit_ledger.chain_writer import write_audit_block
 from services.audit_ledger.signer import AuditLedgerError
 from workers.advisory_grounding_gate import apply_advisory_grounding_gate
@@ -379,15 +380,34 @@ async def run_advisory_analyst(
         # Parse JSON response
         parsed = _parse_advisory_json(raw_llm)
         if not parsed:
-            logger.warning("event=advisory_analyst_parse_failed trace=%s", trace)
+            # Phân biệt HAI nguyên nhân hoàn toàn khác nhau nhưng trước đây gộp làm
+            # một: (a) model sinh ra thứ không phải JSON hợp lệ — lỗi năng lực/prompt;
+            # (b) JSON vốn đúng nhưng bị provider CẮT ở trần num_predict — lỗi cấu
+            # hình. Gộp lại khiến (b) im lặng hơn một tháng (Đ74: 19/23 golden case
+            # về 0 điểm sau khi đổi sang NIM, chẩn đoán nhầm là "model kém" cho tới
+            # khi đọc output thô). Provider luôn nói rõ qua finish_reason.
+            truncated = str((resp or {}).get("finish_reason") or "").lower() in TRUNCATED_FINISH_REASONS
+            if truncated:
+                logger.warning(
+                    "event=advisory_analyst_truncated trace=%s model=%s num_predict=%d chars=%d "
+                    "hint=tăng OMNI_ADVISORY_NUM_PREDICT",
+                    trace, model, num_predict, len(raw_llm),
+                )
+            else:
+                logger.warning("event=advisory_analyst_parse_failed trace=%s", trace)
             log_llm_trace(
                 ws,
                 trace=trace,
-                phase="advisory_analyst_parse_failed",
+                phase="advisory_analyst_truncated" if truncated else "advisory_analyst_parse_failed",
                 model=model,
                 raw_response=raw_llm[:1600],
                 parse_ok=False,
-                detail="Could not parse response as JSON",
+                detail=(
+                    f"LLM output truncated at num_predict={num_predict} "
+                    "(finish_reason=length) — JSON incomplete, not a model quality issue"
+                    if truncated
+                    else "Could not parse response as JSON"
+                ),
             )
             return None
 

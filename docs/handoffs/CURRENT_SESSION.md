@@ -78,9 +78,10 @@ Thêm: golden case còn trường `"lane": "SYS_HARD_FAIL"` — trục lane đã
 `mcp-server-kubernetes-4.1.2.tgz`, `scripts/backup/`) không đổi. **KHÔNG sửa file source nào
 trong phiên này** — mọi thứ trên là ĐO, chưa SỬA.
 
-**Next step** (thứ tự đã thống nhất với user, chưa bắt đầu mục nào):
-1. Thêm kiểm `finish_reason` trong `src/llm/vllm_client.py` + phân biệt `truncated` với
-   `parse_failed` ở `advisory_analyst_handler.py:382`. Rẻ nhất, chặn đúng lớp bug vừa mất 52 điểm.
+**✅ ĐÃ LÀM mục 1 (vá `finish_reason`) + tạo sổ đo tập trung — xem cuối mục Đ74.**
+
+**Next step** (thứ tự đã thống nhất với user):
+1. ~~Thêm kiểm `finish_reason`~~ — **XONG**, xem khối "Đã làm" cuối mục này.
 2. Bỏ `|| true` ở `Makefile:258`; ghim benchmark chạy đúng tham số production (1024/8192) thay vì
    default 512/4096; đổi chỉ số chính từ pass-rate sang avg_score.
 3. Sửa thiên lệch severity trong prompt (nguyên nhân đã quy kết: prompt, không phải model).
@@ -104,6 +105,41 @@ phục vụ script + tầng dò môi trường.
 `OMNI_LAB_AUTO_EXECUTE_AGENTS=loyalty-uat_*`; giữ `AOIP_AGENT_MODE=observe_only` (unit đã mặc
 định) + tier `shadow`. Lưu ý riêng tư: `collectors/logs.py:115` gửi `"sample": errors[-3:]` = **log
 thô rời khỏi máy** (`ProtectHome=true` chặn `/home`, nhưng vẫn nên thu hẹp `OMNI_AGENT_LOG_PATHS`).
+
+---
+
+### ✅ ĐÃ LÀM cuối phiên Đ74 (sau khi user duyệt "làm luôn")
+
+**(a) Vá `finish_reason` — mục 1 của next step, XONG + verify thật.**
+- `src/llm/vllm_client.py`: thêm `TRUNCATED_FINISH_REASONS` (`length`/`max_tokens`) +
+  `_note_finish_reason()`. Gắn vào **cả 3 đường trả về** — OpenAI-compat non-stream
+  (`completion.choices[0].finish_reason`), stream (bắt chunk cuối), và Ollama native
+  (`data["done_reason"]`, cùng nghĩa nhưng khác tên). Cả 3 nay trả thêm khoá `finish_reason`
+  trong dict — **thay đổi cộng thêm, caller cũ đọc `["message"]["content"]` không ảnh hưởng**.
+- `src/workers/advisory_analyst_handler.py`: nhánh parse-fail nay phân biệt
+  `event=advisory_analyst_truncated` (lỗi CẤU HÌNH, nêu luôn `num_predict` và cách sửa) với
+  `event=advisory_analyst_parse_failed` (lỗi NĂNG LỰC/prompt). Thiếu `finish_reason` ⇒ mặc định
+  coi là parse_failed, không kết luận bừa.
+- Test mới `tests/test_llm_finish_reason.py` — **10 test, pass**. 714 test liên quan
+  (`-k "llm or advisory or vllm"`) pass, không regression.
+- **Verify chạy thật** (tái hiện đúng kịch bản 512 token đã gây lỗi):
+  ```
+  event=llm_response_truncated model=meta/llama-3.1-8b-instruct call_kind=structured
+    format_json=True finish_reason=length max_tokens=512 content_chars=1976
+    hint=tăng num_predict (OMNI_ADVISORY_NUM_PREDICT) hoặc rút ngắn schema
+  event=advisory_analyst_truncated trace=diag-case_001 num_predict=512 chars=1976
+  ```
+  Trước bản vá, cùng kịch bản chỉ ra `event=advisory_analyst_parse_failed` chung chung.
+
+**(b) Sổ đo tập trung — `docs/measurement/OMNI_QUALITY_BASELINE.md` (MỚI).**
+User yêu cầu "mọi thứ trong session này ghi vào 1 file để đối chiếu, đọc được ở mọi session".
+File gồm 8 mục: đánh giá khả thi 3 trục · bảng đo advisory + lệnh tái hiện · 6 kết luận rút ra ·
+bệnh nền "suy giảm im lặng" + TTDOB · kiến trúc đo 5 tầng · 5 luật chống tự lừa · kế hoạch giả lập
+khách hàng Manjaro (4 hardcode, capability profile, 4 tầng test, an toàn/riêng tư) · việc còn lại.
+**Con trỏ gắn ở 3 nơi để chắc đọc được mọi phiên:** `MEMORY.md` (auto-load theo CLAUDE.md),
+banner đầu `CLAUDE.md`, và memory cá nhân `omni-quality-baseline-file`.
+**Quy tắc ghi vào file đó:** chỉ số tự chạy ra được + lệnh tái hiện + ngày; đổi ≥2 biến thì ghi rõ
+là không quy kết được. Phép đo mới thêm vào đó, KHÔNG rải ra handoff nữa.
 
 ---
 

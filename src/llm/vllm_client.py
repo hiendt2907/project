@@ -127,6 +127,50 @@ def _prompt_text(messages: list[dict[str, Any]]) -> str:
         return ""
 
 
+#: ``finish_reason`` values meaning "the model was cut off mid-answer", not
+#: "the model finished". OpenAI-compat (NIM/vLLM) says ``length``; Ollama's
+#: native /api/chat says ``done_reason: "length"``. Same meaning, two spellings.
+TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def _note_finish_reason(
+    finish_reason: str | None,
+    *,
+    model: str,
+    kind_label: str,
+    format_json: bool,
+    content: str,
+    max_tokens: int,
+) -> None:
+    """Log loudly when the provider truncated the answer.
+
+    Trả giá thật 2026-08-17 (Đ74): đổi model sang NIM ``llama-3.1-8b`` làm 19/23
+    golden case rớt xuống 0 điểm vì JSON advisory bị cắt ngang ở ``num_predict``
+    — model cũ ``qwen2.5-coder:7b`` viết súc tích nên vừa trần, model mới viết dài
+    nên vỡ. Provider ĐÃ báo ``finish_reason="length"`` trong mọi phản hồi, nhưng
+    trước bản vá này không chỗ nào trong repo đọc trường đó, nên tầng trên chỉ
+    thấy "JSON hỏng" và ghi ``advisory_analyst_parse_failed`` chung chung. Hệ quả:
+    một lỗi cấu hình sửa trong 1 phút đã im lặng suốt hơn một tháng.
+
+    Không raise: câu trả lời cụt vẫn có thể dùng được với caller chấp nhận text
+    tự do. Việc quyết định "cụt = hỏng" thuộc về caller yêu cầu JSON — xem
+    ``advisory_analyst_handler``.
+    """
+    if not finish_reason or finish_reason.lower() not in TRUNCATED_FINISH_REASONS:
+        return
+    logger.warning(
+        "event=llm_response_truncated model=%s call_kind=%s format_json=%s "
+        "finish_reason=%s max_tokens=%d content_chars=%d "
+        "hint=tăng num_predict (OMNI_ADVISORY_NUM_PREDICT) hoặc rút ngắn schema",
+        model,
+        kind_label,
+        format_json,
+        finish_reason,
+        max_tokens,
+        len(content),
+    )
+
+
 def _kind_label(llm_call_kind: Any, format_json: bool) -> str:
     """Resolve the ``call_kind`` metric/log label.
 
@@ -379,7 +423,19 @@ class VLLMClient(BaseModel):
                 completion_tokens=out_tok,
                 endpoint="/v1/chat/completions",
             )
-            return {"message": {"role": "assistant", "content": content}}
+            finish_reason = getattr(completion.choices[0], "finish_reason", None)
+            _note_finish_reason(
+                finish_reason,
+                model=model,
+                kind_label=kind_label,
+                format_json=fmt_json,
+                content=content,
+                max_tokens=max_tokens,
+            )
+            return {
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": finish_reason,
+            }
 
         kwargs["stream"] = True
         t_req = time.perf_counter()
@@ -388,6 +444,7 @@ class VLLMClient(BaseModel):
         parts: list[str] = []
         usage_tokens: int | None = None
         prompt_tokens: int | None = None
+        finish_reason: str | None = None
         async for chunk in stream_resp:
             try:
                 ch = chunk.choices[0] if chunk.choices else None
@@ -399,6 +456,10 @@ class VLLMClient(BaseModel):
                     if ttft is None:
                         ttft = time.perf_counter() - t_req
                     parts.append(piece)
+                # Chỉ chunk cuối mang finish_reason; các chunk trước là None.
+                fr = getattr(ch, "finish_reason", None)
+                if fr:
+                    finish_reason = fr
                 u = getattr(chunk, "usage", None)
                 if u is not None and getattr(u, "completion_tokens", None) is not None:
                     usage_tokens = int(u.completion_tokens or 0)
@@ -432,7 +493,18 @@ class VLLMClient(BaseModel):
             completion_tokens=out_tok,
             endpoint="/v1/chat/completions[stream]",
         )
-        return {"message": {"role": "assistant", "content": content}}
+        _note_finish_reason(
+            finish_reason,
+            model=model,
+            kind_label=kind_label,
+            format_json=fmt_json,
+            content=content,
+            max_tokens=max_tokens,
+        )
+        return {
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": finish_reason,
+        }
 
     async def _chat_ollama_native(
         self,
@@ -485,7 +557,21 @@ class VLLMClient(BaseModel):
             completion_tokens=out_tok,
             endpoint="/api/chat",
         )
-        return {"message": {"role": "assistant", "content": content}}
+        # Ollama gọi trường này là done_reason, giá trị "length" cùng nghĩa
+        # finish_reason="length" của OpenAI-compat.
+        finish_reason = data.get("done_reason")
+        _note_finish_reason(
+            finish_reason,
+            model=model,
+            kind_label=kind_label,
+            format_json=format_json,
+            content=content,
+            max_tokens=max_tokens,
+        )
+        return {
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": finish_reason,
+        }
 
     async def chat_plain(
         self,

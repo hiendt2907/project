@@ -2,6 +2,13 @@
 
 > **TRƯỚC MỌI TASK: đọc `MEMORY.md` + `docs/CODEBASE.md`.** Bản đồ nhanh ở memory `project_architecture_map`; chi tiết file-level ở `docs/CODEBASE.md`.
 
+> 📊 **Mọi tuyên bố về CHẤT LƯỢNG hoặc TÍNH KHẢ THI phải tra
+> [`docs/measurement/OMNI_QUALITY_BASELINE.md`](docs/measurement/OMNI_QUALITY_BASELINE.md) trước.**
+> Đó là sổ đo duy nhất, có số tự chạy ra được + lệnh tái hiện. Baseline hiện hành (2026-08-17):
+> advisory **65.2% pass / avg_score 73.6** trên NIM `llama-3.1-8b` ở tham số production
+> (`num_predict=1024`). Thêm phép đo mới vào file đó, KHÔNG rải ra handoff. Đừng suy đoán chất
+> lượng từ "test pass" — 7368 unit test xanh trong khi chất lượng chẩn đoán thật là 65%.
+
 > ⚠️ **HẠ TẦNG ĐÃ DI DỜI SANG GCP (2026-08-04) — đọc [`docs/adr/0002-gcp-k3s-full-migration.md`](docs/adr/0002-gcp-k3s-full-migration.md) TRƯỚC khi tin bất kỳ mô tả "OrbStack/MacBook" nào bên dưới.**
 > Core (gateway/fullstack/onboarding/portals/Dex/monitoring/GitOps đầy đủ:
 > Harbor/ArgoCD/Vault/Istio/Argo Rollouts/Vaultwarden) giờ chạy trên GCP VM
