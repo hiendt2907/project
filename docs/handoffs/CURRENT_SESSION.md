@@ -111,19 +111,39 @@ sau khi rút validator, full suite chỉ còn đúng 2 fail pre-existing đã bi
 push, CHƯA gọi Jenkins API.** File audit `docs/audit/omni_audit_2026-08-17.{xlsx,pptx}` vẫn chưa
 `git add`.
 
-**Next step (thứ tự bắt buộc):**
-1. Đợi kết quả `bbpv538so` — PHẢI chỉ còn đúng 2 fail pre-existing kể trên, không hơn, trước khi
-   commit. Nếu còn fail khác → còn regression, tiếp tục sửa.
-2. `git add` + commit các file đã sửa ở mục 1-7 (Đ70 phía trên) — không gộp audit xlsx/pptx vào
-   cùng commit, cân nhắc tách riêng hoặc hỏi user có muốn commit report vào repo không.
-3. `git push gitea main && git push origin main` (cả hai remote, theo AUTONOMY RULES).
-4. Gọi Jenkins API `http://100.67.117.19:30080` job `omni-gcp-deploy` "Build Now" — credential
-   chưa xác nhận có sẵn ở đâu trong phiên này, cần tìm (`docs/handoffs/GCP_CREDENTIALS_2026-08-04.md`
-   không commit, có thể cần đọc trực tiếp trên máy, hoặc dùng `curl` tới Jenkins UI nếu không cần
-   auth cho trigger — CHƯA kiểm tra).
-5. Verify sau deploy: `kubectl get deploy -o image` khớp tag mới = HEAD hiện tại; `case_ledger.domain`
-   không còn 100% `unknown` (cần đợi ca mới, không verify được ngay).
-6. Cập nhật lại handoff/TaskList khi Task #8 xong.
+**Task #8 HOÀN TẤT — deploy production thành công, verify sống:**
+- Full suite lần 2 sạch (7368 passed, đúng 2 fail pre-existing). Commit 2 lần:
+  `3c5cd2b` (7 fix code/git mục 1-7) + `e1561ae` (audit xlsx/pptx + handoff). Push cả
+  `gitea main` và `origin main` thành công.
+- Trigger Jenkins job `omni-gcp-deploy` qua API (`http://100.67.117.19:30080`, credential ở
+  `docs/handoffs/GCP_CREDENTIALS_2026-08-04.md` — user `hiendang`, không commit). Build #70
+  SUCCESS (~test pytest trong pipeline pass → build 5 image (multi-agent-system, omni-gateway,
+  2 portal web KHÔNG rebuild vì ui/ không đổi trong 13 commit) → push Harbor → ArgoCD auto-sync
+  → Argo Rollout `omni-gateway` canary 20%→pause60s→50%→pause60s→100%, tự động, không cần
+  promote tay).
+- **Verify trực tiếp sau deploy** (không suy đoán): `kubectl get deploy -o image` — TẤT CẢ
+  (`omni-fullstack`, `omni-onboarding`, `aoip-provider-portal`, `aoip-tenant-portal`, Rollout
+  `omni-gateway`) đều `:e1561ae` = đúng HEAD lúc deploy. `kubectl get application omni-core`:
+  `sync=Synced health=Healthy` (bao gồm cả 12 resource RBAC vừa thêm vào include ở mục 4, sync
+  sạch không lỗi). Tất cả pod `Running`/`2/2`. **`kubectl exec omni-fullstack -- ls
+  /app/src/workers/tool_output_status.py` → tồn tại + import OK** — bản vá Đ67 (nguồn gốc gap
+  13-commit ban đầu) giờ đã sống thật trên production, không còn chỉ nằm trong git.
+- CHƯA verify được: `case_ledger.domain` có còn 100% `unknown` hay không — cần đợi ca sự cố mới
+  phát sinh sau deploy để có dữ liệu, không kiểm tra ngay được trong phiên này.
+
+**Còn tồn đọng, KHÔNG thuộc phạm vi phiên này (user không chọn / chưa hỏi):**
+- Thu hẹp RBAC `omni-executor-mutate-lab` (`secrets` toàn cluster) — vẫn nguyên trạng.
+- `crat-integrity-check-cronjob.gcp.yaml` `backoffLimit: 1` — cùng root cause Istio webhook race
+  như omni-postgres-backup, CHƯA sửa (nằm ngoài lựa chọn AskUserQuestion, chỉ chọn "Postgres
+  backup"). Nên hỏi lại nếu muốn xử lý nốt.
+- RAG `omni:rag:sop` rỗng (HLEN=0) — đã ghi nhận trong CLAUDE.md, CHƯA re-ingest.
+- Hạng mục 5 audit (Telegram unified_incident_card/portal/advisory schema) — subagent audit gốc
+  không kịp làm, chưa ai làm.
+
+**Next step:** không có việc bắt buộc ngay — tất cả 8 task đã hoàn tất và verify sống. Nếu tiếp
+tục, ưu tiên gợi ý: (a) hỏi user có muốn sửa nốt `crat-integrity-check` backoffLimit (cùng bug đã
+sửa cho Postgres backup); (b) re-ingest RAG SOP corpus; (c) audit hạng mục 5 còn thiếu; (d) rà kỹ
+để thu hẹp RBAC secrets an toàn.
 
 ---
 
