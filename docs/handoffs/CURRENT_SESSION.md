@@ -285,6 +285,48 @@ vào GitOps, từng file một, luôn `kubectl diff` trước).
 
 ---
 
+## Đ73 (2026-08-17, tiếp Đ72) — Tiếp tục các việc không cần MacBook, DONE
+
+User: "tạm gác qua các phase nào liên quan đến macbook, tiếp tục làm các phase khác". Làm 5 việc,
+tất cả verify trực tiếp:
+
+1. **`itops_error_ledger` 4 hash_indexing_failures** — điều tra: 4 key rác cũ (768-dim, từ trước
+   khi đổi NIM 1024-dim, TTL=-1, không tự hết hạn). Write path xác nhận đã dùng đúng
+   `OMNI_EMBED_DIM=1024` cho lỗi mới — xoá 4 key rác an toàn (không mất giá trị, không thể search
+   được nữa dù giữ lại). Verify: 0 key còn lại pattern `doc:itops_error_ledger:*`.
+2. **B3 tiếp — thêm `redis-standalone.yaml` vào ArgoCD** — `kubectl diff`=rỗng trước khi thêm.
+   Verify: 4 resource `Synced`, pod `redis-0` không restart (12d age, RESTARTS không đổi), PVC
+   `data-redis-0` 10Gi vẫn Bound nguyên vẹn.
+3. **B3 tiếp — thêm `omni-postgres.yaml` vào ArgoCD** — cẩn trọng hơn (datastore quan trọng nhất
+   cluster), `kubectl diff`=rỗng, không có Secret trong manifest. Verify: pod không restart, PVC
+   Bound, **query thật** `select count(*) from case_ledger` = 305 (khớp trước/sau, không mất dữ
+   liệu).
+4. **2.5 — thêm invariant `INV_KAFKA_DURABLE`** vào `CLAUDE.md` mục INVARIANTS — ghi lại bài học
+   A1 (Kafka phải có PVC), yêu cầu verify RestartCount ổn định ≥24h cho lần sửa sau.
+5. **B3 — đánh giá Ingress cho GitOps, QUYẾT ĐỊNH HOÃN có chủ đích** (không phải bỏ sót): 11
+   Ingress rải qua ≥4 file khác nhau, 4 namespace, là routing công khai toàn platform — rủi ro cao
+   hơn nhiều so với Kafka/Redis/Postgres (mỗi cái 1 file tự chứa). `kubectl diff` xác nhận cả 4
+   file hiện KHÔNG có drift — rủi ro "chưa làm" hiện tại thấp. Ghi lại đánh giá vào
+   `plans/omni-strategic-roadmap-2026-08-17.md` §7.3, cần phiên riêng để map chính xác trước khi
+   làm.
+
+**Sau Đ73, tất cả TaskList (21 task) đã hoàn tất.** ArgoCD Application `omni-core` giờ quản lý 9
+nguồn qua 3 source path: `k8s/deployments` (7 file gồm cả RBAC/Redis/Postgres), `k8s/gitops` (1
+file, gateway Rollout), `k8s/kafka` (1 file). `sync=Synced health=Healthy` xác nhận cuối phiên.
+
+**KHÔNG làm (đúng theo yêu cầu "gác qua MacBook")**: C1/C2/C3, B2 (retire OrbStack), B6 (giảm tải
+LLM), B7 (seed playbook security), A7 (audit hạng mục 5) — tất cả phụ thuộc traffic/dữ liệu thật
+từ Giai đoạn 1, không thể giả lập từ phiên GCP thuần. B4 (Vault KMS) vẫn treo, không có khuyến
+nghị rõ trong plan, effort lớn — chưa động tới.
+
+**Next step:** Không còn việc "an toàn làm ngay từ GCP" nào rõ ràng trong roadmap — mọi hạng mục
+còn lại đều cần một trong: (a) MacBook để chạy C1/C2, (b) dữ liệu traffic thật sau khi (a) xong,
+hoặc (c) quyết định kiến trúc lớn cần user cân nhắc riêng (B4 Vault KMS, Ingress GitOps mapping).
+Nếu muốn tiếp tục thuần từ GCP, đề xuất duy nhất còn hợp lý: dành 1 phiên riêng map chính xác
+Ingress→file→namespace rồi đưa vào GitOps (đã hoãn ở mục 5 trên).
+
+---
+
 **Cập nhật:** 2026-08-13 (Đ68 — DONE: user cho "toàn quyền" xử lý các mục tồn
 đọng còn lại (sau khi tôi khảo sát ở lượt trước và báo cáo phần lớn cần quyết định/không truy cập
 được). Tôi CHỈ nhận 2 việc có bằng chứng bug thật + verify được, KHÔNG động tới các quyết định
