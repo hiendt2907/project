@@ -6,7 +6,10 @@ metadata:
   namespace: multi-agent
 spec:
   ttlSecondsAfterFinished: 86400
-  backoffLimit: 1
+  # backoffLimit 1→3 (roadmap 2026-08-17, A3): cùng bug Istio webhook race đã sửa cho
+  # omni-postgres-backup-cronjob.yaml — job one-shot này chạy tay nên không cần nhiều như
+  # CronJob định kỳ, nhưng 1 vẫn quá ít nếu chạy đúng lúc istiod chưa Ready sau reboot.
+  backoffLimit: 3
   activeDeadlineSeconds: 21600
   template:
     spec:

@@ -294,13 +294,18 @@ templates:
 
   - template_id: pgvector_status_trip
     allow_auto_execute: true
-    tool: pgvector_status
+    # tool đổi 2026-08-17 (roadmap A6): "pgvector_status" chưa từng tồn tại trong TOOL_REGISTRY
+    # (grep xác nhận 0 kết quả) — repo này dùng Redis Stack HNSW cho RAG (src/rag/
+    # redis_vector_store.py), không phải pgvector/Postgres. 1 entry sai tool này chặn TOÀN BỘ
+    # corpus SOP fail ingest (sop_expand.py::_validate_tool raise cứng cho bất kỳ tool lạ nào) —
+    # đây là nguyên nhân khiến omni:rag:sop rỗng suốt từ sau re-index Đ60.
+    tool: redis_health
     args: {}
     match_text_template: >-
-      {cluster}: {symptom} — {context}. Gọi pgvector_status nhanh.
+      {cluster}: {symptom} — {context}. Gọi redis_health nhanh.
     slots:
       cluster:
-        - Postgres RAG service
+        - Redis RAG vector store
         - multi-agent data plane
         - vector tier
         - RAG dependency

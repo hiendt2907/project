@@ -5,8 +5,20 @@
 > ⚠️ **HẠ TẦNG ĐÃ DI DỜI SANG GCP (2026-08-04) — đọc [`docs/adr/0002-gcp-k3s-full-migration.md`](docs/adr/0002-gcp-k3s-full-migration.md) TRƯỚC khi tin bất kỳ mô tả "OrbStack/MacBook" nào bên dưới.**
 > Core (gateway/fullstack/onboarding/portals/Dex/monitoring/GitOps đầy đủ:
 > Harbor/ArgoCD/Vault/Istio/Argo Rollouts/Vaultwarden) giờ chạy trên GCP VM
-> `omni-k3s-vm` (k3s single-node), domain thật `omnisre.xyz`. Chỉ **Ollama/LLM**
-> còn cố ý ở lại MacBook, nối qua Tailscale. OrbStack lab **vẫn đang chạy song
+> `omni-k3s-vm` (k3s single-node), domain thật `omnisre.xyz`.
+> ⚠️ **LLM ĐÃ RỜI MACBOOK — SỬA 2026-08-17, xác nhận trực tiếp qua `kubectl get cm
+> omni-worker-config`**: dòng cũ ngay dưới đây (*"Chỉ Ollama/LLM còn cố ý ở lại MacBook, nối qua
+> Tailscale"*) đã LỖI THỜI — không rõ đổi chính xác lúc nào (không có entry handoff ghi lại), phát
+> hiện khi audit roadmap Đ71. Production GCP hiện dùng **NVIDIA NIM cloud**:
+> `OMNI_LLM_PROVIDER=nim`, `OMNI_OLLAMA_BASE_URL=OMNI_VLLM_BASE_URL=https://integrate.api.nvidia.com/v1`,
+> `VLLM_MODEL=meta/llama-3.1-8b-instruct`, `OMNI_EMBED_MODEL=nvidia/nv-embedqa-e5-v5`,
+> `OMNI_EMBED_DIM=1024`, trần `OMNI_NIM_RATE_LIMIT_RPM=40`. Deployment `omni-fullstack` đọc
+> `OMNI_NIM_API_KEY` từ Secret `omni-nim-secret`. **SPOF "LLM phụ thuộc MacBook/Tailscale" mà ADR
+> 0002 từng chấp nhận đã không còn** — GCP core giờ tự chủ hoàn toàn về năng lực suy luận. Điều
+> này đổi hẳn phép tính chi phí/lợi ích của "retire OrbStack lab" (chỉ còn 3 VM khách hàng lab là
+> lý do giữ OrbStack, không còn LLM). Xem `plans/omni-strategic-roadmap-2026-08-17.md` §1.2, §7.2.
+> Câu dưới đây (lịch sử, giữ nguyên để biết ADR 0002 từng quyết định gì — **đã lỗi thời**): OrbStack
+> lab **vẫn đang chạy song
 > song**, chưa retire — xem "Chưa làm" trong ADR 0002. Mọi mô tả domain
 > `ai-agent.local`, Cloudflare Tunnel `app.omnisre.xyz`, hay "core trên
 > MacBook" bên dưới đây là **lịch sử của lab/ADR 0001**, không phải trạng thái
@@ -222,10 +234,12 @@ mới rõ ràng.
 - **K8s**: OrbStack, namespace `multi-agent`. **KHÔNG phải pod duy nhất** — xem "DEPLOYMENT STATE" bên
   dưới cho topology thật (đã audit runtime, không phải suy diễn từ tài liệu cũ).
   `make deploy-worker` = `deploy-fullstack` (chỉ deploy `omni-fullstack`, không phải toàn bộ stack).
-- **LLM**: Ollama `qwen3:8b` (active, đổi từ `qwen2.5-coder:7b` 2026-08-03 — xem comment
-  `k8s/deployments/omni-worker-configmap.yaml`: đã thử `qwen3.6:27b` trước, revert vì
-  llama-server ăn 300%+ CPU; `qwen3:8b` gần footprint `qwen2.5-coder:7b` cũ, thế hệ mới hơn)
-  + `nomic-embed-text:latest` (768-dim). Host: `host.orb.internal:11434`.
+- **LLM (OrbStack lab — KHÔNG phải GCP, xem cảnh báo ⚠️ đầu file)**: Ollama `qwen3:8b` (active, đổi
+  từ `qwen2.5-coder:7b` 2026-08-03 — xem comment `k8s/deployments/omni-worker-configmap.yaml`: đã
+  thử `qwen3.6:27b` trước, revert vì llama-server ăn 300%+ CPU; `qwen3:8b` gần footprint
+  `qwen2.5-coder:7b` cũ, thế hệ mới hơn) + `nomic-embed-text:latest` (768-dim). Host:
+  `host.orb.internal:11434`. **GCP production KHÔNG dùng cấu hình này** — dùng NVIDIA NIM cloud
+  (`OMNI_LLM_PROVIDER=nim`, embed 1024-dim), xem cảnh báo ⚠️ đầu file (sửa 2026-08-17).
 - **DB**: PostgreSQL `omni_admin` schema (**32 bảng thật** — xác nhận qua `pg_tables` trực tiếp
   2026-08-03, có `migration_0014_state` nghĩa là ≥14 migration đã chạy, không phải 4; đừng tin số "19
   bảng"/"migration 000{1..4}" nếu thấy ở tài liệu cũ khác), migration tự động lúc worker khởi động qua

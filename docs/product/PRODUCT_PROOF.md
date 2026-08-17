@@ -1,5 +1,19 @@
 # Product Proof
 
+> ⚠️ **TOÀN BỘ TÀI LIỆU NÀY LÀ LỊCH SỬ OrbStack/`staging-sim` — ĐÃ LỖI THỜI, đánh dấu 2026-08-17
+> (roadmap §7.5).** Xác nhận qua audit: tenant `staging-sim` (chủ đạo mọi iteration dưới đây)
+> **không còn tồn tại** trong `omni_admin.tenant` trên GCP production (chỉ còn `default` và
+> `loyalty-uat`). Unit systemd `omni-remote-agent.service` mà tài liệu này tham chiếu **đã gỡ hẳn
+> khỏi cả 3 VM lab** từ 2026-08-11 (xem `docs/audit/regression_agent_dual_process_2026-08-11.md`),
+> thay bằng `aoip-agent.service`. Namespace/cluster OrbStack mô tả dưới đây khác hoàn toàn cluster
+> GCP `omni-k3s-vm` đang chạy production thật (`omnisre.xyz`) — xem
+> `docs/adr/0002-gcp-k3s-full-migration.md`. **Không dùng tài liệu này để suy luận trạng thái hiện
+> tại của hệ thống** — mọi capability matrix/kết luận bên dưới chỉ đúng tại thời điểm viết
+> (2026-06 → 2026-07, OrbStack). Cần một iteration Product Proof MỚI dựa trên GCP + tenant
+> `loyalty-uat` (chưa viết — xem `plans/omni-strategic-roadmap-2026-08-17.md` Giai đoạn 3) trước
+> khi đưa tài liệu bằng chứng sản phẩm cho bên ngoài (khách hàng/nhà đầu tư). Nội dung gốc bên dưới
+> giữ nguyên làm lịch sử, không sửa đè.
+
 Tài liệu này KHÔNG phải bằng chứng tự thân — mỗi dòng phải trỏ tới lệnh/API/log/datastore query
 thật đã chạy. Cập nhật sau mỗi iteration của Continuous Productization Loop.
 

@@ -17,7 +17,11 @@ spec:
   failedJobsHistoryLimit: 5
   jobTemplate:
     spec:
-      backoffLimit: 1
+      # backoffLimit 1→6 (roadmap 2026-08-17, A3): cùng bug đã sửa+verify cho
+      # omni-postgres-backup-cronjob.yaml — namespace multi-agent có istio-injection=enabled +
+      # webhook failurePolicy=Fail, node reboot khiến istiod chưa Ready làm mọi pod creation bị
+      # admission từ chối; backoffLimit=1 hết quá nhanh để chờ istiod phục hồi.
+      backoffLimit: 6
       template:
         metadata:
           labels:

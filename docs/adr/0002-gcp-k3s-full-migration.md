@@ -63,6 +63,18 @@ trên GCP), nhưng vẫn là SPOF cho **năng lực suy luận** (chẩn đoán 
 Máy ngủ/mất mạng ⇒ các tính năng cần LLM treo, nhưng gateway/portal/Grafana/Vault UI
 vẫn phản hồi bình thường (`/healthz` không phụ thuộc LLM).
 
+> ⚠️ **SUPERSEDED 2026-08-17 — quyết định con #2 đã bị đảo ngược trên thực tế.** Production GCP
+> giờ dùng **NVIDIA NIM cloud** cho LLM/embedding, KHÔNG còn nối Tailscale về MacBook:
+> `kubectl get cm omni-worker-config -o jsonpath='{.data}'` xác nhận `OMNI_LLM_PROVIDER=nim`,
+> `OMNI_OLLAMA_BASE_URL=OMNI_VLLM_BASE_URL=https://integrate.api.nvidia.com/v1`,
+> `VLLM_MODEL=meta/llama-3.1-8b-instruct`, `OMNI_EMBED_DIM=1024` (không còn 768/`nomic-embed-text`).
+> Không rõ đổi chính xác lúc nào — không tìm thấy entry handoff nào ghi lại quyết định chuyển sang
+> NIM; phát hiện khi audit `plans/omni-strategic-roadmap-2026-08-17.md`. Đoạn phân tích SPOF ở
+> trên **không còn đúng**: MacBook giờ KHÔNG còn là SPOF cho năng lực suy luận trên GCP — chỉ còn
+> là nơi chạy 3 VM khách hàng lab (`cust-edge/app/db`, qua OrbStack). Điều này đổi phép tính chi
+> phí/lợi ích của "retire OrbStack" — xem roadmap §7.2. Giữ nguyên đoạn gốc bên trên làm lịch sử
+> quyết định tại thời điểm ADR này viết, không xoá.
+
 **3. GitOps đầy đủ thay vì apply tay.** Không chỉ "di dời", mà dựng luôn Harbor
 (registry riêng) + ArgoCD (đồng bộ từ Gitea, `Synced+Healthy` xác nhận qua API) +
 Vault + External Secrets Operator (PoC `omni-gateway-secret` verify khớp giá trị) +

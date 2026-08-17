@@ -12,7 +12,10 @@ spec:
   jobTemplate:
     spec:
       ttlSecondsAfterFinished: 86400
-      backoffLimit: 1
+      # backoffLimit 1→6 (roadmap 2026-08-17, A3): cùng bug Istio webhook race đã sửa cho
+      # omni-postgres-backup-cronjob.yaml. Job này chạy hàng tuần — fail vì race thoáng qua
+      # nghĩa là mất nguyên 1 tuần chờ lần kế tiếp, cần nhiều retry hơn trong 1 lần chạy.
+      backoffLimit: 6
       activeDeadlineSeconds: 21600
       template:
         spec:

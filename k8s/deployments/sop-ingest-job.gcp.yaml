@@ -1,0 +1,67 @@
+# One-shot: seed SOP → NVIDIA NIM embed → Redis Stack HNSW index (COLLECTION_SOP, up to 10k
+# points). Bản GCP song song với sop-ingest-job.yaml (lab) — 2026-08-17, roadmap A6.
+#
+# KHÔNG dùng chung file với bản lab: bản lab trỏ image :latest (không tồn tại trên Harbor GCP,
+# xem argocd-application.yaml comment "no more :latest, anywhere") + OMNI_VLLM_BASE_URL=
+# http://host.orb.internal:11434/v1 (OrbStack, không route được từ GCP) + KHÔNG set OMNI_EMBED_DIM
+# (mặc định 768 trong src/rag/redis_vector_store.py) trong khi index GCP là 1024-dim
+# (nvidia/nv-embedqa-e5-v5) — chạy nhầm bản lab trên GCP sẽ tạo vector sai chiều, cùng lớp bug đã
+# trả giá ở Đ59/Đ60. Bản này dùng envFrom ConfigMap omni-worker-config (đã có sẵn OMNI_LLM_PROVIDER=
+# nim, OMNI_EMBED_DIM=1024, OMNI_VLLM_BASE_URL=NIM endpoint) thay vì hardcode, để không lệch khỏi
+# cấu hình thật của omni-fullstack.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sop-ingest
+  namespace: multi-agent
+spec:
+  ttlSecondsAfterFinished: 86400
+  # backoffLimit 1→3 — cùng lý do đã áp dụng cho sop-ingest-job.yaml (lab) ở A3: bug Istio
+  # webhook race đã sửa cho omni-postgres-backup-cronjob.yaml.
+  backoffLimit: 3
+  activeDeadlineSeconds: 21600
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: omni-fullstack
+      containers:
+        - name: sop-ingest
+          image: 10.43.239.205/library/multi-agent-system:e1561ae
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "training.sop_ingest"]
+          envFrom:
+            - configMapRef:
+                name: omni-worker-config
+          env:
+            - name: PYTHONPATH
+              value: /app/src
+            - name: OMNI_SOP_SEED_PATH
+              value: /app/data/sop/sop_templates.yaml
+            - name: OMNI_MAX_SOP_CONTEXTS
+              value: "10000"
+            - name: OMNI_NIM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: omni-nim-secret
+                  key: api_key
+                  optional: true
+          resources:
+            requests:
+              cpu: "250m"
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            # Đè file baked-in-image bằng bản đã sửa (data/sop/sop_templates.yaml từng có tool
+            # "pgvector_status" không tồn tại trong TOOL_REGISTRY, chặn toàn bộ corpus fail ingest
+            # — xem comment trong data/sop/sop_templates.yaml). Fix đã commit vào git nhưng image
+            # e1561ae hiện tại được build TRƯỚC fix này — mount ConfigMap thay vì đợi rebuild.
+            # Lần deploy kế tiếp (image mới chứa file đã sửa), ConfigMap này thành thừa, không hại.
+            - name: sop-templates-fixed
+              mountPath: /app/data/sop/sop_templates.yaml
+              subPath: sop_templates.yaml
+      volumes:
+        - name: sop-templates-fixed
+          configMap:
+            name: sop-templates-fixed
