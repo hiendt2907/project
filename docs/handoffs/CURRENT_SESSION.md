@@ -1,5 +1,112 @@
 # Current Session Handoff
 
+## Đ74 (2026-08-17) — Đo chất lượng advisory trên NIM: phát hiện truncation JSON, ĐANG CHỜ SỐ CUỐI
+
+Phiên brainstorm (MacBook đã tắt, KHÔNG thay đổi hạ tầng). Chốt hướng: giả lập khách hàng thật
+bằng cách cài agent lên máy Manjaro của user (`hiendt66` = Tailscale `100.114.41.59`, **đang
+online**; MacBook offline 3 ngày). Trước khi làm, user yêu cầu đi sâu vào **cách ĐO hiệu quả** →
+dẫn tới phát hiện dưới đây.
+
+**Phát hiện nền: hệ thống đo đã tồn tại, đã cho điểm trượt, và điểm đó bị vứt đi.**
+`tests/benchmarks/results/benchmark_20260716_155810.json`: `pass_rate=0.4348` (10/23),
+ngưỡng 70.0, model `qwen2.5-coder:7b`, **lần đo cuối cách đây hơn 1 tháng**. `Makefile:258` chạy
+nó với `2>&1 || true` và tự gọi là "informational, non-blocking" ⇒ trượt không chặn gì, không ai
+đọc. Cùng lớp bệnh với "0 agent 4 ngày" / "RAG rỗng 7 ngày" (Đ69-Đ72): suy giảm có tín hiệu,
+không ai nhận.
+
+**Phân tích baseline cũ (43.5%)** — 13/13 case trượt đều trượt ở ĐÚNG một tiêu chí `verdict`=0đ.
+Trung bình từng tiêu chí: verdict 43%, root_cause 57%, **no_hallucination 97%, remediation 81%,
+verification_steps 92%**. Lệch MỘT CHIỀU: luôn đánh giá nhẹ hơn thực tế (`INVESTIGATE` khi đáng
+`CRITICAL`, 8 case) — tức lỗi ở hiệu chỉnh severity, lệch về phía bỏ sót. `avg_score=69.7` sát
+ngưỡng 70 nhưng pass-rate nhị phân hiện 43% → thang đạt/trượt che mất bản chất.
+
+**Đo lại trên NIM (`meta/llama-3.1-8b-instruct`, `https://integrate.api.nvidia.com/v1`, key từ
+Secret `omni-nim-secret`):**
+- Lần 1 (tham số mặc định benchmark `num_predict=512`, ctx 4096): **13.0% (3/23), avg 14.1** —
+  file `tests/benchmarks/results/benchmark_20260817_085814.json` (CHƯA commit).
+- 19/23 case = `advisory_analyst_parse_failed`, score 0.0.
+- Root cause xác định bằng output THÔ (script chẩn đoán ở scratchpad, dùng proxy vì `VLLMClient`
+  là pydantic model nên không monkeypatch được `.chat`): JSON **bị cắt giữa chừng** —
+  `"impact_chain": [ { "cause": "...", "me` ← đứt. Nội dung sinh ra vốn ĐÚNG (root_cause,
+  2 verification step, remediation, `approval_required=true`), chỉ là vượt trần token.
+  `qwen2.5-coder:7b` (model code) viết JSON súc tích nên lọt; `llama-3.1-8b` viết dài (nhiều
+  `rationale`/`reason`/`note`) nên vỡ trần. **Đổi model đã kích hoạt giới hạn có sẵn.**
+- ⚠️ **Tự đính chính: 13% KHÔNG phải chỉ số production.** Benchmark hardcode
+  `BENCHMARK_NUM_PREDICT` default 512, còn production mặc định **1024**
+  (`src/workers/settings.py:844-852`, ConfigMap `omni-worker-config` và Deployment env đều KHÔNG
+  override → 1024 là giá trị hiệu lực thật).
+- Lần 2 (`BENCHMARK_NUM_PREDICT=1024 BENCHMARK_NUM_CTX=8192` = production): **65.2% (15/23),
+  avg_score 73.6** — `tests/benchmarks/results/benchmark_20260817_090230.json`. **0 case parse
+  fail.** Đây là con số production thật, thay cho 13%.
+
+**Quy kết nguyên nhân — chỉ MỘT so sánh là sạch biến:**
+`llama@512 = 13.0%` → `llama@1024 = 65.2%` (đổi đúng 1 biến `num_predict`) ⇒ **truncation một
+mình đã ăn mất ~52 điểm pass-rate.** So sánh `qwen@512 = 43.5%` với `llama@1024 = 65.2%` **đổi
+hai biến cùng lúc (model + num_predict) nên KHÔNG quy kết được model nào giỏi hơn**. Muốn so model
+phải chạy `qwen@1024`, nhưng qwen sống trên Ollama/MacBook đang tắt ⇒ chưa làm được.
+
+**Phát hiện thống kê quan trọng: pass-rate ở ngưỡng 70 là chỉ số tồi.** Trung bình từng tiêu chí
+gần như KHÔNG đổi giữa hai model (verdict +1.3, root_cause +1.3, no_hallucination +0.3,
+remediation +1.1, verification_steps −0.1; tổng avg 69.7→73.6 = **+3.9**), nhưng pass-rate nhảy
+**+21.7 điểm** (43.5%→65.2%) vì rất nhiều case nằm sát vạch 70. Chênh 4 điểm trung bình đẩy 5 case
+qua vạch ⇒ pass-rate nhị phân nhiễu cực mạnh. **avg_score ổn định hơn nhiều — nên dùng nó, kèm
+thang 0–4 theo case, thay cho đạt/trượt.**
+
+**Kết luận chẩn đoán (2 model độc lập, cùng kết quả): lỗi nằm ở PROMPT, không phải model.**
+`verdict` vẫn là tiêu chí yếu nhất (14.3/30 = 48%) và sai **một chiều — luôn đánh giá NHẸ hơn**
+(case_001/003/005/007/010/015/016/017/023 đều dưới mức kỳ vọng; **0 case đánh giá nặng hơn**).
+Cùng thiên lệch xuất hiện ở cả `qwen2.5-coder:7b` lẫn `llama-3.1-8b` ⇒ nguyên nhân ở định nghĩa
+severity trong prompt, không phải năng lực model. Đây là hướng sửa rẻ nhất, tác động lớn nhất.
+Điểm mạnh có thật, cũng xác nhận qua 2 model: `no_hallucination` 19.7/20, và cổng chống bịa đặt
+`advisory_grounding_gate_fired` đã chặn thật ở case_009 (`ungrounded=['omni-llm']`).
+
+**Biến động run-to-run đáng kể** (case_023 −30, case_016 −25, case_002 −16.7 dù cùng hướng cải
+thiện chung) ⇒ n=23 là quá nhỏ để so hai lần chạy tin cậy; cần ~60–100 case, hoặc chạy lặp lấy
+trung bình.
+
+**3 lỗ hổng thật, độc lập với con số cuối:**
+1. **Không chỗ nào trong `src/` kiểm `finish_reason`** (`grep -rn finish_reason src/ --include=*.py`
+   = rỗng). API trả `finish_reason="length"` khi cắt, code phớt lờ và báo `parse_failed` chung
+   chung ⇒ không phân biệt được "LLM nói sai" với "output bị cắt". Sửa rẻ, giá trị cao.
+2. Benchmark không chạy ở tham số production (512/4096 vs 1024/8192) ⇒ phép đo không đại diện.
+3. `|| true` khiến cả (1) và (2) không bao giờ nổi lên.
+Thêm: golden case còn trường `"lane": "SYS_HARD_FAIL"` — trục lane đã gỡ từ Đ39, dataset lệch schema.
+
+**Working tree:** thêm 2 file kết quả benchmark làm mốc time-series —
+`tests/benchmarks/results/benchmark_20260817_085814.json` (512, 13.0%) và
+`benchmark_20260817_090230.json` (1024 = production, 65.2%). Các file untracked cũ (`.venv/`,
+`mcp-server-kubernetes-4.1.2.tgz`, `scripts/backup/`) không đổi. **KHÔNG sửa file source nào
+trong phiên này** — mọi thứ trên là ĐO, chưa SỬA.
+
+**Next step** (thứ tự đã thống nhất với user, chưa bắt đầu mục nào):
+1. Thêm kiểm `finish_reason` trong `src/llm/vllm_client.py` + phân biệt `truncated` với
+   `parse_failed` ở `advisory_analyst_handler.py:382`. Rẻ nhất, chặn đúng lớp bug vừa mất 52 điểm.
+2. Bỏ `|| true` ở `Makefile:258`; ghim benchmark chạy đúng tham số production (1024/8192) thay vì
+   default 512/4096; đổi chỉ số chính từ pass-rate sang avg_score.
+3. Sửa thiên lệch severity trong prompt (nguyên nhân đã quy kết: prompt, không phải model).
+4. Tầng dò năng lực host + fixture ~10 distro (chống hardcode cho one-command install).
+5. Container matrix dry-run (`archlinux` = base của Manjaro).
+6. Route `GET /install.sh` trên gateway.
+7. Cài lên Manjaro (`hiendt66`, không có sshd → user tự chạy lệnh), đo time-to-first-evidence.
+
+Hạ tầng one-command **đã có sẵn 90%**: `POST /webhook/agent/enroll` (`src/gateway/routes/
+agent_enroll.py:63` — KHÔNG cần API key, token one-time single-use trong 1 transaction PG,
+rate-limit theo IP, trả về tenant_id + api_key), `GET /webhook/agent/release/bundle`
+(`agent_commands.py:370`), manifest sha256 (`scripts/publish_agent_release.py`) — chỉ thiếu route
+phục vụ script + tầng dò môi trường.
+
+**4 hardcode chặn Manjaro đã tìm được (chưa sửa):** `remote_agent/settings.py:43` default
+`/var/log/syslog` (Arch chỉ có journald); `remote_agent/discovery.py:158` gọi `dpkg -l`;
+`remote_agent/pkg_origin.py:18,49-58` chỉ biết dpkg/rpm → mọi unit thành `ORIGIN_UNKNOWN`;
+`scripts/aoip-agent.service` cứng `SupplementaryGroups=adm utmp` (Arch thường không có `adm`).
+
+**An toàn khi cài lên máy cá nhân:** dùng **tenant mới** (vd `dogfood`) để tự động nằm ngoài
+`OMNI_LAB_AUTO_EXECUTE_AGENTS=loyalty-uat_*`; giữ `AOIP_AGENT_MODE=observe_only` (unit đã mặc
+định) + tier `shadow`. Lưu ý riêng tư: `collectors/logs.py:115` gửi `"sample": errors[-3:]` = **log
+thô rời khỏi máy** (`ProtectHome=true` chặn `/home`, nhưng vẫn nên thu hẹp `OMNI_AGENT_LOG_PATHS`).
+
+---
+
 ## Đ69 (2026-08-17) — Audit toàn hệ thống qua subagent Opus, KHÔNG sửa gì, chờ quyết định user
 
 User yêu cầu audit rộng (hạ tầng/bảo mật/hardcode/deadcode/logic nghiệp vụ), có bằng chứng, cấm
