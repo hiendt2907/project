@@ -32,9 +32,10 @@
 # directory again, a single low-frequency CronJob — not worth a source yet;
 # Jenkins still applies it directly after committing its tag bump here) and
 # aoip-dex.gcp.yaml (off-the-shelf ghcr.io/dexidp/dex image, this pipeline
-# never builds or tags it). Postgres (omni-postgres-0 StatefulSet — PVC dữ liệu
-# thật, cần cẩn trọng hơn, đang xét riêng), k8s/ingress/*, other CronJobs —
-# still apply-by-hand, tracked as future B3 work in
+# never builds or tags it). omni-postgres.yaml thêm 2026-08-17 (không chứa
+# Secret — bootstrap credential qua Jenkinsfile/openssl rand, xem CLAUDE.md
+# mục Security sweep), kubectl diff=rỗng trước khi thêm. k8s/ingress/*, other
+# CronJobs — still apply-by-hand, tracked as future B3 work in
 # plans/omni-strategic-roadmap-2026-08-17.md, not this Application yet.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -48,7 +49,7 @@ spec:
       targetRevision: main
       path: k8s/deployments
       directory:
-        include: "{omni-fullstack.yaml,omni-onboarding.yaml,omni-worker-configmap.gcp.yaml,aoip-portals.gcp.yaml,aoip-portals-web.yaml,omni-fullstack-rbac.yaml,redis-standalone.yaml}"
+        include: "{omni-fullstack.yaml,omni-onboarding.yaml,omni-worker-configmap.gcp.yaml,aoip-portals.gcp.yaml,aoip-portals-web.yaml,omni-fullstack-rbac.yaml,redis-standalone.yaml,omni-postgres.yaml}"
     - repoURL: http://gitea.cicd.svc.cluster.local:3000/hiendang/project.git
       targetRevision: main
       path: k8s/gitops
